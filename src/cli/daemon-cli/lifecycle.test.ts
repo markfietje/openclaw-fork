@@ -453,11 +453,13 @@ describe("runDaemonRestart health checks", () => {
       attempts?: unknown;
       delayMs?: unknown;
       includeUnknownListenersAsStale?: unknown;
+      requireReachability?: unknown;
       port?: unknown;
     };
     expect(waitParams.attempts).toBe(360);
     expect(waitParams.delayMs).toBe(500);
     expect(waitParams.includeUnknownListenersAsStale).toBe(true);
+    expect(waitParams.requireReachability).toBe(true);
     expect(waitParams.port).toBe(18789);
   });
 

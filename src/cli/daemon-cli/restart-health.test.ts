@@ -66,6 +66,7 @@ async function inspectGatewayRestartWithSnapshot(params: {
   portUsage: PortUsage;
   expectedVersion?: string;
   includeUnknownListenersAsStale?: boolean;
+  requireReachability?: boolean;
 }) {
   const service = makeGatewayService(params.runtime);
   inspectPortUsage.mockResolvedValue(params.portUsage);
@@ -77,6 +78,9 @@ async function inspectGatewayRestartWithSnapshot(params: {
     ...(params.includeUnknownListenersAsStale === undefined
       ? {}
       : { includeUnknownListenersAsStale: params.includeUnknownListenersAsStale }),
+    ...(params.requireReachability === undefined
+      ? {}
+      : { requireReachability: params.requireReachability }),
   });
 }
 
@@ -269,6 +273,69 @@ describe("inspectGatewayRestart", () => {
 
     expect(snapshot.healthy).toBe(true);
     expect(snapshot.staleGatewayPids).toStrictEqual([]);
+  });
+
+  it("keeps waiting on Windows when schtasks owns the port but the gateway probe is down", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const service = makeGatewayService({ status: "running", pid: 8000 });
+    inspectPortUsage.mockResolvedValue({
+      port: 18789,
+      status: "busy",
+      listeners: [{ pid: 8000, commandLine: "openclaw gateway" }],
+      hints: [],
+    });
+    probeGateway
+      .mockResolvedValueOnce({
+        ok: false,
+        close: null,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        close: null,
+      });
+
+    const { waitForGatewayHealthyRestart } = await import("./restart-health.js");
+    const snapshot = await waitForGatewayHealthyRestart({
+      service,
+      port: 18789,
+      attempts: 3,
+      delayMs: 1_000,
+      includeUnknownListenersAsStale: true,
+      requireReachability: true,
+    });
+
+    expect(snapshot).toMatchObject({
+      healthy: true,
+      waitOutcome: "healthy",
+      elapsedMs: 1_000,
+    });
+    expect(probeGateway).toHaveBeenCalledTimes(2);
+    expect(probeGateway).toHaveBeenCalledWith(expect.objectContaining({ includeDetails: false }));
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not bypass required reachability when the first gateway probe throws", async () => {
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    probeGateway
+      .mockRejectedValueOnce(new Error("probe timed out"))
+      .mockResolvedValueOnce({
+        ok: true,
+        close: null,
+      });
+
+    const snapshot = await inspectGatewayRestartWithSnapshot({
+      runtime: { status: "running", pid: 8000 },
+      portUsage: {
+        port: 18789,
+        status: "busy",
+        listeners: [{ pid: 8000, commandLine: "openclaw gateway" }],
+        hints: [],
+      },
+      requireReachability: true,
+    });
+
+    expect(snapshot.healthy).toBe(false);
+    expect(probeGateway).toHaveBeenCalledTimes(1);
   });
 
   it.each([

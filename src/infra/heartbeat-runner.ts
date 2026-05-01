@@ -1170,6 +1170,7 @@ function resolveHeartbeatRunPrompt(params: {
   dueTasks: HeartbeatTask[];
   heartbeatFileContent?: string;
   useHeartbeatResponseTool: boolean;
+  commitmentOnly?: boolean;
 }): HeartbeatPromptResolution {
   const pendingEventEntries = params.preflight.pendingEventEntries;
   const cronEvents = pendingEventEntries
@@ -1193,6 +1194,17 @@ function resolveHeartbeatRunPrompt(params: {
     useHeartbeatResponseTool: false,
   });
   const hasDueCommitments = Boolean(commitmentPrompt);
+
+  if (params.commitmentOnly) {
+    return {
+      prompt: commitmentPrompt,
+      hasExecCompletion: false,
+      hasRelayableExecCompletion: false,
+      hasCronEvents: false,
+      hasDueCommitments,
+      usesHeartbeatResponseTool: false,
+    };
+  }
 
   if (params.preflight.tasks && params.preflight.tasks.length > 0) {
     const dueTasks = params.dueTasks;
@@ -1301,6 +1313,7 @@ export async function runHeartbeatOnce(opts: {
   intent?: HeartbeatWakeIntent;
   reason?: string;
   deps?: HeartbeatDeps;
+  commitmentOnly?: boolean;
 }): Promise<HeartbeatRunResult> {
   const cfg = opts.cfg ?? getRuntimeConfig();
   const explicitAgentId = typeof opts.agentId === "string" ? opts.agentId.trim() : "";
@@ -1440,7 +1453,9 @@ export async function runHeartbeatOnce(opts: {
   }
 
   const previousUpdatedAt = entry?.updatedAt;
-  const dueHeartbeatTasks = resolveDueHeartbeatTasks(preflight, startedAt);
+  const dueHeartbeatTasks = opts.commitmentOnly
+    ? []
+    : resolveDueHeartbeatTasks(preflight, startedAt);
 
   // When isolatedSession is enabled, create a fresh session via the same
   // pattern as cron sessionTarget: "isolated". This gives the heartbeat
@@ -1536,6 +1551,7 @@ export async function runHeartbeatOnce(opts: {
     dueTasks: dueHeartbeatTasks,
     heartbeatFileContent: preflight.heartbeatFileContent,
     useHeartbeatResponseTool: useHeartbeatResponseToolPrompt,
+    ...(opts.commitmentOnly ? { commitmentOnly: true } : {}),
   });
   const dueCommitmentIds = hasDueCommitments
     ? preflight.dueCommitments.map((commitment) => commitment.id)
@@ -1637,7 +1653,7 @@ export async function runHeartbeatOnce(opts: {
   }
   // Update task last run times AFTER successful heartbeat completion
   const updateTaskTimestamps = async () => {
-    if (!preflight.tasks || preflight.tasks.length === 0) {
+    if (opts.commitmentOnly || !preflight.tasks || preflight.tasks.length === 0) {
       return;
     }
     const tasks = preflight.tasks;
@@ -1682,6 +1698,7 @@ export async function runHeartbeatOnce(opts: {
       heartbeat,
       reason: "commitment",
       sessionKey,
+      commitmentOnly: true,
       deps: opts.deps,
     });
     return commitmentResult.status === "failed" ? commitmentResult : undefined;
@@ -2541,6 +2558,7 @@ export function startHeartbeatRunner(opts: {
               heartbeat: agent.heartbeat,
               reason: "commitment",
               sessionKey: dueSessionKey,
+              commitmentOnly: true,
               deps: { runtime: state.runtime },
             });
           } catch (err) {

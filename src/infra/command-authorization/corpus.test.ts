@@ -291,6 +291,24 @@ describe("command authorization planner corpus", () => {
     ]);
   });
 
+  it.each([
+    "false && sh -c 'echo inner || touch marker' && echo outer",
+    "true || sh -c 'echo inner && touch marker'",
+    "printf x | sh -c 'cmd1 || cmd2' && cmd3",
+  ])("makes mixed outer chains with inner wrapper chains prompt-only: %s", async (command) => {
+    const plan = await planCommandForAuthorization({
+      dialect: "posix-shell",
+      command,
+    });
+
+    expect(plan.kind).toBe("prompt-only");
+    if (plan.kind !== "prompt-only") {
+      throw new Error(`expected prompt-only plan, got ${plan.kind}`);
+    }
+    expect(plan.promptOnlyReasons).toContain("unsupported-shell-syntax");
+    expect(plan.units.every((unit) => !unit.allowAlwaysEligible)).toBe(true);
+  });
+
   it("makes interpreter inline eval prompt-only instead of reusable trust", async () => {
     const plan = await planCommandForAuthorization({
       dialect: "posix-shell",

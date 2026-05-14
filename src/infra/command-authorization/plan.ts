@@ -773,7 +773,27 @@ function promptOnlyReasonsFromUnsupportedRender(
   if (explanation.shapes.some((shape) => UNSUPPORTED_RENDER_SHAPES.has(shape))) {
     reasons.push("unsupported-shell-syntax");
   }
+  if (hasMixedWrapperPayloadGroupingRisk(explanation)) {
+    reasons.push("unsupported-shell-syntax");
+  }
   return uniquePromptOnlyReasons(reasons);
+}
+
+function hasMixedWrapperPayloadGroupingRisk(explanation: CommandExplanation): boolean {
+  if (explanation.topLevelCommands.length < 2) {
+    return false;
+  }
+  return explanation.topLevelCommands.some((step) => {
+    const wrapperPayloadSteps = explanation.nestedCommands.filter(
+      (nestedStep) =>
+        nestedStep.context === "wrapper-payload" &&
+        stepContainsSpan(step, nestedStep.span.startIndex, nestedStep.span.endIndex),
+    );
+    return (
+      wrapperPayloadSteps.length > 1 &&
+      shouldPlanWrapperPayload(step, wrapperPayloadSteps, explanation.risks)
+    );
+  });
 }
 
 function spansOverlap(startIndex: number, endIndex: number, risk: CommandRisk): boolean {

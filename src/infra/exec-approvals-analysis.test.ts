@@ -509,6 +509,19 @@ describe("exec approvals shell analysis", () => {
       expect(result.allowlistSatisfied).toBe(false);
     });
 
+    it("treats planner parser failures as allowlist analysis misses", async () => {
+      const result = await evaluateShellAllowlist({
+        command: `echo ${"x".repeat(130 * 1024)}`,
+        allowlist: [{ pattern: "/usr/bin/echo" }],
+        safeBins: new Set(),
+        cwd: "/tmp",
+      });
+
+      expect(result.analysisOk).toBe(false);
+      expect(result.allowlistSatisfied).toBe(false);
+      expect(result.segments).toEqual([]);
+    });
+
     it("does not satisfy bare wrapper allowlist entries for inline cmd payloads", async () => {
       const dir = makeTempDir();
       const cmdPath = path.join(dir, "cmd.exe");

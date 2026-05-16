@@ -1668,14 +1668,19 @@ export async function evaluateShellAllowlist(
     };
   }
 
-  const plan = await planCommandForAuthorization(
-    { dialect: "posix-shell", command: params.command },
-    {
-      cwd: params.cwd,
-      env: params.env,
-      platform: params.platform,
-    },
-  );
+  let plan: Awaited<ReturnType<typeof planCommandForAuthorization>>;
+  try {
+    plan = await planCommandForAuthorization(
+      { dialect: "posix-shell", command: params.command },
+      {
+        cwd: params.cwd,
+        env: params.env,
+        platform: params.platform,
+      },
+    );
+  } catch {
+    return analysisFailure();
+  }
   if (plan.kind === "unanalyzable") {
     return analysisFailure();
   }

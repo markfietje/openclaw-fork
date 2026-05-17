@@ -175,6 +175,79 @@ describe("config shared auth disconnects", () => {
     expect(scheduleGatewaySigusr1RestartMock).not.toHaveBeenCalled();
   });
 
+  it("marks protected config.patch edits as explicit control-plane writes", async () => {
+    const prevConfig: OpenClawConfig = {
+      commands: {
+        ownerAllowFrom: ["webchat:old"],
+      },
+    };
+    const nextConfig: OpenClawConfig = {
+      commands: {
+        ownerAllowFrom: ["webchat:new"],
+      },
+    };
+    readConfigFileSnapshotForWriteMock.mockResolvedValue(createConfigWriteSnapshot(prevConfig));
+
+    const { options } = createConfigHandlerHarness({
+      method: "config.patch",
+      params: {
+        baseHash: "base-hash",
+        raw: JSON.stringify({ commands: { ownerAllowFrom: ["webchat:new"] } }),
+      },
+    });
+
+    await configHandlers["config.patch"](options);
+    await flushConfigHandlerMicrotasks();
+
+    expect(writeConfigFileMock).toHaveBeenCalledWith(
+      nextConfig,
+      expect.objectContaining({
+        explicitSetPaths: [["commands", "ownerAllowFrom"]],
+      }),
+    );
+  });
+
+  it("marks protected parent removals as explicit control-plane writes", async () => {
+    const prevConfig: OpenClawConfig = {
+      commands: {
+        ownerAllowFrom: ["webchat:owner"],
+      },
+      tools: {
+        elevated: {
+          allowFrom: ["webchat:admin"],
+        },
+      },
+      agents: {
+        list: [{ id: "ops", directory: "/tmp/ops" }],
+      },
+      channels: {
+        whatsapp: {
+          enabled: true,
+        },
+      },
+    };
+    const nextConfig: OpenClawConfig = {};
+    readConfigFileSnapshotForWriteMock.mockResolvedValue(createConfigWriteSnapshot(prevConfig));
+
+    const { options } = createConfigHandlerHarness({
+      method: "config.set",
+      params: {
+        raw: JSON.stringify(nextConfig),
+        baseHash: "base-hash",
+      },
+    });
+
+    await configHandlers["config.set"](options);
+    await flushConfigHandlerMicrotasks();
+
+    expect(writeConfigFileMock).toHaveBeenCalledWith(
+      nextConfig,
+      expect.objectContaining({
+        explicitSetPaths: [["commands"], ["tools"], ["agents"], ["channels"]],
+      }),
+    );
+  });
+
   it("lets the config reloader own hybrid-mode auth restarts", async () => {
     const prevConfig: OpenClawConfig = {
       gateway: {
@@ -368,6 +441,49 @@ describe("config shared auth disconnects", () => {
     await configHandlers["config.patch"](options);
     await flushConfigHandlerMicrotasks();
 
+    expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("schedules a direct hot-mode restart when config.patch enables an unloaded channel", async () => {
+    const prevConfig: OpenClawConfig = {
+      gateway: {
+        reload: {
+          mode: "hot",
+        },
+      },
+      channels: {},
+    };
+    readConfigFileSnapshotForWriteMock.mockResolvedValue(createConfigWriteSnapshot(prevConfig));
+
+    const { options } = createConfigHandlerHarness({
+      method: "config.patch",
+      params: {
+        baseHash: "base-hash",
+        raw: JSON.stringify({ channels: { whatsapp: { enabled: true } } }),
+        restartDelayMs: 1_000,
+      },
+    });
+
+    await configHandlers["config.patch"](options);
+    await flushConfigHandlerMicrotasks();
+
+    expect(writeConfigFileMock).toHaveBeenCalledWith(
+      {
+        gateway: {
+          reload: {
+            mode: "hot",
+          },
+        },
+        channels: {
+          whatsapp: {
+            enabled: true,
+          },
+        },
+      },
+      expect.objectContaining({
+        explicitSetPaths: [["channels", "whatsapp"]],
+      }),
+    );
     expect(scheduleGatewaySigusr1RestartMock).toHaveBeenCalledTimes(1);
   });
 

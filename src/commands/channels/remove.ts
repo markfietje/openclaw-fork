@@ -10,6 +10,7 @@ import {
 import { commitConfigWithPendingPluginInstalls } from "../../cli/plugins-install-record-commit.js";
 import { refreshPluginRegistryAfterConfigMutation } from "../../cli/plugins-registry-refresh.js";
 import { replaceConfigFile, type OpenClawConfig } from "../../config/config.js";
+import type { ConfigWriteOptions } from "../../config/io.js";
 import { callGateway } from "../../gateway/call.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../../routing/session-key.js";
@@ -25,6 +26,19 @@ export type ChannelsRemoveOptions = {
   account?: string;
   delete?: boolean;
 };
+
+function resolveDeleteWriteOptions(params: {
+  nextConfig: OpenClawConfig;
+  channel: ChatChannel;
+  accountId: string;
+}): ConfigWriteOptions {
+  const nextChannel = params.nextConfig.channels?.[params.channel];
+  const channelPath = ["channels", params.channel] as const;
+  const accountPath = [...channelPath, "accounts", params.accountId] as const;
+  return {
+    explicitSetPaths: [nextChannel && typeof nextChannel === "object" ? accountPath : channelPath],
+  };
+}
 
 function listAccountIds(
   cfg: OpenClawConfig,
@@ -237,10 +251,18 @@ export async function channelsRemoveCommand(
   const shouldMovePluginInstalls = Boolean(
     next.plugins?.installs && Object.keys(next.plugins.installs).length > 0,
   );
+  const writeOptions = deleteConfig
+    ? resolveDeleteWriteOptions({
+        nextConfig: next,
+        channel: resolvedChannelId,
+        accountId: accountKey,
+      })
+    : undefined;
   if (shouldMovePluginInstalls) {
     const committed = await commitConfigWithPendingPluginInstalls({
       nextConfig: next,
       ...(baseHash !== undefined ? { baseHash } : {}),
+      ...(writeOptions ? { writeOptions } : {}),
     });
     next = committed.config;
     await refreshPluginRegistryAfterConfigMutation({
@@ -253,6 +275,7 @@ export async function channelsRemoveCommand(
     await replaceConfigFile({
       nextConfig: next,
       ...(baseHash !== undefined ? { baseHash } : {}),
+      ...(writeOptions ? { writeOptions } : {}),
     });
     if (resolvedPluginState?.pluginInstalled) {
       await refreshPluginRegistryAfterConfigMutation({

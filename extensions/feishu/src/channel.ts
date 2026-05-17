@@ -1240,8 +1240,29 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount, FeishuProbeResul
           const prompter = createClackPrompter();
           const nextCfg = await runFeishuLogin({ cfg, prompter });
           if (nextCfg !== cfg) {
+            const fields = [
+              "appId",
+              "appSecret",
+              "connectionMode",
+              "domain",
+              "dmPolicy",
+              "allowFrom",
+              "groupPolicy",
+              "requireMention",
+            ];
+            const accounts = {
+              ...((cfg.channels?.feishu?.accounts ?? {}) as Record<string, unknown>),
+              ...((nextCfg.channels?.feishu?.accounts ?? {}) as Record<string, unknown>),
+            };
+            const explicitSetPaths = [
+              ...fields.map((field) => ["channels", "feishu", field]),
+              ...Object.keys(accounts).flatMap((accountId) =>
+                fields.map((field) => ["channels", "feishu", "accounts", accountId, field]),
+              ),
+            ];
             await replaceConfigFile({
               nextConfig: nextCfg,
+              writeOptions: { explicitSetPaths },
               afterWrite: { mode: "auto" },
             });
           }

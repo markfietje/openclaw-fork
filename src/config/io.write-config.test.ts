@@ -2,8 +2,10 @@ import fsNode from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { clearCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import { readPersistedInstalledPluginIndex } from "../plugins/installed-plugin-index-store.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
+import { clearLoadPluginMetadataSnapshotMemo } from "../plugins/plugin-metadata-snapshot.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { CONFIG_CLOBBER_SNAPSHOT_LIMIT } from "./io.clobber-snapshot.js";
 import {
@@ -73,19 +75,49 @@ describe("config io write", () => {
     return fn(home);
   }
 
+  const mockEmptyPluginManifestRegistry = () => {
+    mockLoadPluginManifestRegistry.mockReturnValue({
+      diagnostics: [],
+      plugins: [],
+    } satisfies PluginManifestRegistry);
+  };
+
+  const mockChannelPluginManifestRegistry = (...channelIds: string[]) => {
+    mockLoadPluginManifestRegistry.mockReturnValue({
+      diagnostics: [],
+      plugins: channelIds.map((channelId) => ({
+        id: `test-${channelId}`,
+        origin: "global",
+        channels: [channelId],
+        providers: [],
+        cliBackends: [],
+        skills: [],
+        hooks: [],
+        rootDir: path.join("/tmp", `openclaw-test-${channelId}`),
+        source: path.join("/tmp", `openclaw-test-${channelId}`, "index.js"),
+        manifestPath: path.join("/tmp", `openclaw-test-${channelId}`, "openclaw.plugin.json"),
+        channelConfigs: {
+          [channelId]: {
+            schema: { type: "object", additionalProperties: true },
+          },
+        },
+      })),
+    } satisfies PluginManifestRegistry);
+  };
+
   beforeAll(async () => {
     await suiteRootTracker.setup();
 
     // Default: return an empty plugin list so existing tests that don't need
     // plugin-owned channel schemas keep working unchanged.
-    mockLoadPluginManifestRegistry.mockReturnValue({
-      diagnostics: [],
-      plugins: [],
-    } satisfies PluginManifestRegistry);
+    mockEmptyPluginManifestRegistry();
   });
 
   afterEach(() => {
     resetConfigRuntimeState();
+    clearCurrentPluginMetadataSnapshot();
+    clearLoadPluginMetadataSnapshotMemo();
+    mockEmptyPluginManifestRegistry();
     mockMaintainConfigBackups.mockReset();
     mockMaintainConfigBackups.mockResolvedValue(undefined);
   });
@@ -901,7 +933,7 @@ describe("config io write", () => {
       expect(rejectedEntries).toHaveLength(1);
       expect(warn.mock.calls).toEqual([
         [
-          `Config write rejected: ${configPath} (gateway-mode-removed). Rejected payload saved to ${path.join(
+          `Config write rejected: ${configPath} (gateway-mode-removed, protected-channel-removed:channels.telegram). Rejected payload saved to ${path.join(
             path.dirname(configPath),
             rejectedEntries[0] ?? "",
           )}.`,
@@ -950,6 +982,7 @@ describe("config io write", () => {
         { meta: original.meta, gateway: { mode: "local" } },
         {
           allowConfigSizeDrop: true,
+          allowProtectedConfigPolicyDrop: true,
           baseSnapshot,
         },
       );
@@ -964,6 +997,1282 @@ describe("config io write", () => {
           },
         ),
       );
+    });
+  });
+
+  it("rejects stale runtime writes that drop protected channel and elevated policy", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        commands: {
+          ownerAllowFrom: ["whatsapp:+15550001111", "telegram:111"],
+        },
+        tools: {
+          elevated: {
+            allowFrom: {
+              webchat: ["session:trusted"],
+            },
+          },
+        },
+        agents: {
+          list: [
+            {
+              id: "main",
+              tools: {
+                elevated: {
+                  allowFrom: {
+                    webchat: ["session:trusted"],
+                  },
+                },
+              },
+            },
+          ],
+        },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            allowFrom: ["+15550001111", "+15550002222"],
+            groupAllowFrom: ["+15550001111", "+15550002222"],
+            accounts: {
+              default: {
+                allowFrom: ["+15550003333", "+15550004444"],
+                groupAllowFrom: ["+15550003333", "+15550004444"],
+              },
+            },
+          },
+          telegram: {
+            enabled: false,
+            accounts: {
+              default: {
+                enabled: false,
+              },
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        commands: {},
+        tools: {
+          elevated: {
+            allowFrom: {
+              webchat: ["*"],
+            },
+          },
+        },
+        agents: {
+          list: [
+            {
+              id: "main",
+              tools: {
+                elevated: {
+                  allowFrom: {
+                    webchat: ["*"],
+                  },
+                },
+              },
+            },
+          ],
+        },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            allowFrom: ["+15550001111"],
+            groupAllowFrom: ["+15550001111"],
+            accounts: {
+              default: {
+                allowFrom: ["+15550003333"],
+                groupAllowFrom: ["+15550003333"],
+              },
+            },
+          },
+          telegram: {
+            enabled: true,
+            accounts: {
+              default: {
+                enabled: true,
+              },
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-removed:commands.ownerAllowFrom",
+          "protected-list-widened:tools.elevated.allowFrom.webchat",
+          "protected-list-widened:agents.list.main.tools.elevated.allowFrom.webchat",
+          "protected-list-shrunk:channels.whatsapp.allowFrom",
+          "protected-list-shrunk:channels.whatsapp.groupAllowFrom",
+          "protected-list-shrunk:channels.whatsapp.accounts.default.allowFrom",
+          "protected-list-shrunk:channels.whatsapp.accounts.default.groupAllowFrom",
+          "protected-channel-enabled:channels.telegram",
+          "protected-channel-enabled:channels.telegram.accounts.default",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("compares protected policy against resolved includes for unrelated root writes", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const authoredRoot = {
+        gateway: { mode: "local" },
+        channels: { $include: "./config/channels.json5" },
+      };
+      const sourceConfig = {
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            allowFrom: ["+15550001111"],
+          },
+        },
+      } satisfies ConfigFileSnapshot["sourceConfig"];
+      const rootRaw = `${JSON.stringify(authoredRoot, null, 2)}\n`;
+      await fs.writeFile(configPath, rootRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: rootRaw,
+        parsed: authoredRoot,
+        sourceConfig,
+        resolved: sourceConfig,
+        valid: true,
+        runtimeConfig: sourceConfig,
+        config: sourceConfig,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(
+        io.writeConfigFile(
+          {
+            ...sourceConfig,
+            gateway: { mode: "local", port: 18789 },
+          },
+          { baseSnapshot, skipPluginValidation: true },
+        ),
+      ).resolves.toMatchObject({
+        persistedConfig: {
+          gateway: { mode: "local", port: 18789 },
+          channels: { $include: "./config/channels.json5" },
+        },
+      });
+    });
+  });
+
+  it("rejects stale runtime writes that resurrect removed channel scopes", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          telegram: {
+            enabled: true,
+            accounts: {},
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        channels: {
+          telegram: {
+            enabled: true,
+            accounts: {
+              default: {
+                enabled: true,
+              },
+            },
+          },
+          whatsapp: {
+            enabled: true,
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-channel-enabled:channels.whatsapp",
+          "protected-channel-enabled:channels.telegram.accounts.default",
+        ]),
+      });
+      await expect(
+        io.writeConfigFile(staleRuntime, {
+          baseSnapshot,
+          explicitSetPaths: [["channels", "whatsapp", "sendReadReceipts"]],
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining(["protected-channel-enabled:channels.whatsapp"]),
+      });
+      await expect(
+        io.writeConfigFile(staleRuntime, {
+          baseSnapshot,
+          explicitSetPaths: [["channels", "telegram", "accounts", "default", "authDir"]],
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-channel-enabled:channels.telegram.accounts.default",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that remove enabled channel blocks without allowlists", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            sendReadReceipts: true,
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        channels: {},
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining(["protected-channel-removed:channels.whatsapp"]),
+      });
+      await expect(
+        io.writeConfigFile(staleRuntime, {
+          baseSnapshot,
+          explicitSetPaths: [["channels", "whatsapp", "sendReadReceipts"]],
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining(["protected-channel-removed:channels.whatsapp"]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that remove enabled channel accounts without allowlists", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            accounts: {
+              work: {
+                enabled: true,
+                authDir: "/tmp/auth-work",
+              },
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        channels: {
+          whatsapp: {
+            enabled: true,
+            accounts: {},
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-channel-removed:channels.whatsapp.accounts.work",
+        ]),
+      });
+      await expect(
+        io.writeConfigFile(staleRuntime, {
+          baseSnapshot,
+          explicitSetPaths: [["channels", "whatsapp", "accounts", "work", "authDir"]],
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-channel-removed:channels.whatsapp.accounts.work",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that reintroduce channel allowlists", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            dm: {},
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        channels: {
+          whatsapp: {
+            enabled: true,
+            allowFrom: ["*"],
+            dm: {
+              allowFrom: ["*"],
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-widened:channels.whatsapp.allowFrom",
+          "protected-list-widened:channels.whatsapp.dm.allowFrom",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that resurrect agents with elevated allowlists", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        agents: {
+          list: [],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        agents: {
+          list: [
+            {
+              id: "main",
+              tools: {
+                elevated: {
+                  allowFrom: {
+                    webchat: ["*"],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-widened:agents.list.main.tools.elevated.allowFrom.webchat",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("does not treat global channels buckets as channel activation policy", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          defaults: {
+            groupPolicy: "open",
+          },
+          modelByChannel: {
+            telegram: {
+              "123": "openai/gpt-5.4",
+            },
+          },
+        },
+      } as unknown as ConfigFileSnapshot["config"];
+      const next = {
+        meta: original.meta,
+        gateway: { mode: "local" },
+        channels: {},
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      const result = await io.writeConfigFile(next, { baseSnapshot });
+
+      expect(result.persistedConfig.channels).toEqual({});
+    });
+  });
+
+  it("keeps env-authored protected policy writable for unrelated runtime edits", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.writeFile(
+        configPath,
+        `${JSON.stringify(
+          {
+            gateway: { mode: "local" },
+            commands: {
+              ownerAllowFrom: ["${OPENCLAW_TEST_OWNER_ALLOW}"],
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf-8",
+      );
+      const io = createConfigIO({
+        env: {
+          OPENCLAW_CONFIG_PATH: configPath,
+          OPENCLAW_TEST_OWNER_ALLOW: "webchat:owner",
+          VITEST: "true",
+        } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const snapshot = await io.readConfigFileSnapshot();
+      expect(snapshot.resolved.commands?.ownerAllowFrom).toEqual(["webchat:owner"]);
+
+      const result = await io.writeConfigFile({
+        ...snapshot.resolved,
+        gateway: { mode: "local", port: 18789 },
+      });
+
+      expect(result.persistedConfig.gateway).toEqual({ mode: "local", port: 18789 });
+      const persisted = JSON.parse(await fs.readFile(configPath, "utf-8")) as {
+        commands?: { ownerAllowFrom?: string[] };
+      };
+      expect(persisted.commands?.ownerAllowFrom).toEqual(["${OPENCLAW_TEST_OWNER_ALLOW}"]);
+    });
+  });
+
+  it("still rejects sibling protected allowlist drops during explicit bucket edits", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        tools: {
+          elevated: {
+            allowFrom: {
+              webchat: ["session:trusted"],
+              telegram: ["telegram:111"],
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        tools: {
+          elevated: {
+            allowFrom: {
+              webchat: ["session:trusted", "session:second"],
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(
+        io.writeConfigFile(staleRuntime, {
+          baseSnapshot,
+          explicitSetPaths: [["tools", "elevated", "allowFrom", "webchat"]],
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-removed:tools.elevated.allowFrom.telegram",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("does not treat unrelated explicit agent list edits as protected policy edits", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        agents: {
+          list: [
+            {
+              id: "main",
+              model: "openai/gpt-5.4",
+              tools: {
+                elevated: {
+                  allowFrom: {
+                    webchat: ["session:trusted"],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        agents: {
+          list: [
+            {
+              id: "main",
+              model: "openrouter/anthropic/claude-sonnet-4.6",
+              tools: {
+                elevated: {
+                  allowFrom: {},
+                },
+              },
+            },
+          ],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(
+        io.writeConfigFile(staleRuntime, {
+          baseSnapshot,
+          explicitSetPaths: [["agents", "list", "0", "model"]],
+        }),
+      ).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-removed:agents.list.main.tools.elevated.allowFrom.webchat",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("allows explicit whole-agent edits to protected policy paths", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        agents: {
+          list: [
+            {
+              id: "main",
+              tools: {
+                elevated: {
+                  allowFrom: {
+                    webchat: ["session:trusted"],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const next = {
+        meta: original.meta,
+        gateway: { mode: "local" },
+        agents: {
+          list: [],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      const result = await io.writeConfigFile(next, {
+        baseSnapshot,
+        explicitSetPaths: [["agents", "list", "0"]],
+      });
+
+      expect(result.persistedConfig.agents?.list).toEqual([]);
+    });
+  });
+
+  it("rejects stale runtime writes that broaden protected allowlists without wildcards", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        commands: {
+          ownerAllowFrom: ["webchat:owner"],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        commands: {
+          ownerAllowFrom: ["webchat:owner", "telegram:111"],
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining(["protected-list-widened:commands.ownerAllowFrom"]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that resurrect removed protected allowlist map entries", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        tools: {
+          elevated: {
+            allowFrom: {
+              webchat: ["session:trusted"],
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        tools: {
+          elevated: {
+            allowFrom: {
+              webchat: ["session:trusted"],
+              telegram: ["telegram:111"],
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-widened:tools.elevated.allowFrom.telegram",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that resurrect removed protected policy blocks", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        commands: {
+          ownerAllowFrom: ["webchat:owner"],
+        },
+        tools: {
+          elevated: {
+            allowFrom: {
+              telegram: ["telegram:111"],
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-widened:commands.ownerAllowFrom",
+          "protected-list-widened:tools.elevated.allowFrom.telegram",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that re-open empty protected allowlists", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        commands: {
+          ownerAllowFrom: [],
+        },
+        channels: {
+          whatsapp: {
+            allowFrom: [],
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        commands: {
+          ownerAllowFrom: ["webchat:owner"],
+        },
+        channels: {
+          whatsapp: {
+            allowFrom: ["*"],
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-widened:commands.ownerAllowFrom",
+          "protected-list-widened:channels.whatsapp.allowFrom",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("rejects stale runtime writes that drop nested channel allowlists", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          googlechat: {
+            dm: { allowFrom: ["space:trusted"] },
+          },
+          matrix: {
+            accounts: {
+              ops: {
+                dm: { allowFrom: ["@trusted:example.org"] },
+              },
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const staleRuntime = {
+        ...original,
+        channels: {
+          googlechat: {
+            dm: {},
+          },
+          matrix: {
+            accounts: {
+              ops: {
+                dm: { allowFrom: ["@trusted:example.org", "@stale:example.org"] },
+              },
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      await expect(io.writeConfigFile(staleRuntime, { baseSnapshot })).rejects.toMatchObject({
+        code: "CONFIG_WRITE_REJECTED",
+        reasons: expect.arrayContaining([
+          "protected-list-removed:channels.googlechat.dm.allowFrom",
+          "protected-list-widened:channels.matrix.accounts.ops.dm.allowFrom",
+        ]),
+      });
+      await expect(fs.readFile(configPath, "utf-8")).resolves.toBe(originalRaw);
+    });
+  });
+
+  it("allows explicit config edits to protected policy paths", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            allowFrom: ["+15550001111", "+15550002222"],
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const next = {
+        meta: original.meta,
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            allowFrom: ["+15550001111"],
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      const result = await io.writeConfigFile(next, {
+        baseSnapshot,
+        explicitSetPaths: [["channels", "whatsapp", "allowFrom"]],
+      });
+
+      expect(result.persistedConfig.channels?.whatsapp?.allowFrom).toEqual(["+15550001111"]);
+    });
+  });
+
+  it("allows explicit config unsets to protected policy paths", async () => {
+    await withSuiteHome(async (home) => {
+      mockChannelPluginManifestRegistry("whatsapp");
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+            allowFrom: ["+15550001111"],
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const next = {
+        meta: original.meta,
+        gateway: { mode: "local" },
+        channels: {
+          whatsapp: {
+            enabled: true,
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      const result = await io.writeConfigFile(next, {
+        baseSnapshot,
+        unsetPaths: [["channels", "whatsapp", "allowFrom"]],
+      });
+
+      expect(result.persistedConfig.channels?.whatsapp?.allowFrom).toBeUndefined();
+    });
+  });
+
+  it("allows explicit unsets that remove the final protected allowFrom map entry", async () => {
+    await withSuiteHome(async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      const original = {
+        meta: { lastTouchedVersion: "2026.5.17" },
+        gateway: { mode: "local" },
+        tools: {
+          elevated: {
+            allowFrom: {
+              webchat: ["session:trusted"],
+            },
+          },
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const next = {
+        meta: original.meta,
+        gateway: { mode: "local" },
+        tools: {
+          elevated: {},
+        },
+      } satisfies ConfigFileSnapshot["config"];
+      const originalRaw = `${JSON.stringify(original, null, 2)}\n`;
+      await fs.writeFile(configPath, originalRaw, "utf-8");
+      const io = createConfigIO({
+        env: { VITEST: "true" } as NodeJS.ProcessEnv,
+        homedir: () => home,
+        logger: silentLogger,
+      });
+      const baseSnapshot = {
+        path: configPath,
+        exists: true,
+        raw: originalRaw,
+        parsed: original,
+        sourceConfig: original,
+        resolved: original,
+        valid: true,
+        runtimeConfig: original,
+        config: original,
+        issues: [],
+        warnings: [],
+        legacyIssues: [],
+      } satisfies ConfigFileSnapshot;
+
+      const result = await io.writeConfigFile(next, {
+        baseSnapshot,
+        unsetPaths: [["tools", "elevated", "allowFrom", "webchat"]],
+      });
+
+      expect(result.persistedConfig.tools?.elevated?.allowFrom).toBeUndefined();
     });
   });
 

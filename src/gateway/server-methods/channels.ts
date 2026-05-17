@@ -1,3 +1,5 @@
+import { resolveChannelConfigBlockError } from "../../channels/config-block.js";
+import { normalizeChatChannelId } from "../../channels/ids.js";
 import { buildChannelUiCatalog } from "../../channels/plugins/catalog.js";
 import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import {
@@ -552,7 +554,10 @@ export const channelsHandlers: GatewayRequestHandlers = {
       return;
     }
     const rawChannel = (params as { channel?: unknown }).channel;
-    const channelId = typeof rawChannel === "string" ? normalizeChannelId(rawChannel) : null;
+    const channelId =
+      typeof rawChannel === "string"
+        ? (normalizeChannelId(rawChannel) ?? normalizeChatChannelId(rawChannel))
+        : null;
     if (!channelId) {
       respond(
         false,
@@ -561,13 +566,30 @@ export const channelsHandlers: GatewayRequestHandlers = {
       );
       return;
     }
+    const runtimeConfig = context.getRuntimeConfig();
+    const configBlockError = resolveChannelConfigBlockError({
+      cfg: runtimeConfig,
+      channelId,
+      action: "starting it",
+    });
+    const cfg = applyPluginAutoEnable({
+      config: runtimeConfig,
+      env: process.env,
+    }).config;
     const plugin = getChannelPlugin(channelId);
     if (!plugin) {
       respond(
         false,
         undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, `unknown channel: ${formatForLog(rawChannel)}`),
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          configBlockError ?? `unknown channel: ${formatForLog(rawChannel)}`,
+        ),
       );
+      return;
+    }
+    if (configBlockError) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, configBlockError));
       return;
     }
     if (!plugin.gateway?.startAccount) {
@@ -579,10 +601,6 @@ export const channelsHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const cfg = applyPluginAutoEnable({
-        config: context.getRuntimeConfig(),
-        env: process.env,
-      }).config;
       const payload = await startChannelAccount({
         channelId,
         accountId: (params as { accountId?: string | null }).accountId,

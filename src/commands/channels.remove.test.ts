@@ -179,6 +179,13 @@ describe("channelsRemoveCommand", () => {
     expect(registryRefreshMocks.refreshPluginRegistryAfterConfigMutation).not.toHaveBeenCalled();
     const writtenConfig = firstWrittenChannelsConfig();
     expect(writtenConfig?.channels?.["external-chat"]).toBeUndefined();
+    expect(configMocks.replaceConfigFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        writeOptions: {
+          explicitSetPaths: [["channels", "external-chat"]],
+        },
+      }),
+    );
     expect(runtime.error).not.toHaveBeenCalled();
     expect(runtime.exit).not.toHaveBeenCalled();
   });

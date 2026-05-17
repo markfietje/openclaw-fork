@@ -70,6 +70,7 @@ vi.mock("../../config/config.js", async () => {
       await mocks.writeConfigFile(params.nextConfig),
     mutateConfigFileWithRetry: async (params: {
       mutate: (draft: Record<string, unknown>, context: unknown) => unknown;
+      writeOptions?: unknown;
     }) => {
       const draft = structuredClone(mocks.loadConfigReturn);
       const result = await params.mutate(draft, {
@@ -77,7 +78,7 @@ vi.mock("../../config/config.js", async () => {
         previousHash: "test-hash",
         attempt: 0,
       });
-      await mocks.writeConfigFile(draft);
+      await mocks.writeConfigFile(draft, params.writeOptions);
       return {
         path: "/tmp/openclaw/config.json",
         previousHash: "test-hash",
@@ -1127,6 +1128,12 @@ describe("agents.delete", () => {
       undefined,
     );
     expect(mocks.writeConfigFile).toHaveBeenCalled();
+    expect(mocks.writeConfigFile).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        explicitSetPaths: [["agents", "list", "test-agent"]],
+      }),
+    );
     // moveToTrashBestEffort calls fs.access then movePathToTrash for each dir
     expect(mocks.movePathToTrash).toHaveBeenCalled();
   });

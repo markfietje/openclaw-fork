@@ -230,6 +230,11 @@ export type ConfigWriteOptions = {
    */
   allowConfigSizeDrop?: boolean;
   /**
+   * Allow intentional removal or broadening of channel/command/elevated
+   * allowlists. Normal runtime writers must keep this false.
+   */
+  allowProtectedConfigPolicyDrop?: boolean;
+  /**
    * Suppress human-readable output logs (overwrite/anomaly messages).
    * Useful when the caller wants machine-readable output only (--json mode).
    */
@@ -383,6 +388,560 @@ function normalizeStatId(value: number | bigint | null | undefined): string | nu
   return null;
 }
 
+function getObjectPathValue(value: unknown, pathSegments: readonly string[]): unknown {
+  let current = value;
+  for (const segment of pathSegments) {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    current = current[segment];
+  }
+  return current;
+}
+
+function hasObjectPathValue(value: unknown, pathSegments: readonly string[]): boolean {
+  let current = value;
+  for (const segment of pathSegments) {
+    if (!isRecord(current) || !Object.prototype.hasOwnProperty.call(current, segment)) {
+      return false;
+    }
+    current = current[segment];
+  }
+  return true;
+}
+
+function formatProtectedConfigPath(pathSegments: readonly string[]): string {
+  return pathSegments.join(".");
+}
+
+function isExplicitConfigWritePath(
+  protectedPath: readonly string[],
+  explicitSetPaths: readonly (readonly string[])[] | undefined,
+): boolean {
+  if (!explicitSetPaths || explicitSetPaths.length === 0) {
+    return false;
+  }
+  return explicitSetPaths.some((explicitPath) => {
+    const sharedLength = Math.min(explicitPath.length, protectedPath.length);
+    for (let index = 0; index < sharedLength; index += 1) {
+      if (explicitPath[index] !== protectedPath[index]) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+function isExplicitConfigWritePathAncestorOrSelf(
+  protectedPath: readonly string[],
+  explicitSetPaths: readonly (readonly string[])[] | undefined,
+): boolean {
+  if (!explicitSetPaths || explicitSetPaths.length === 0) {
+    return false;
+  }
+  return explicitSetPaths.some((explicitPath) => {
+    if (explicitPath.length > protectedPath.length) {
+      return false;
+    }
+    return explicitPath.every((segment, index) => segment === protectedPath[index]);
+  });
+}
+
+function isSameConfigPath(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
+}
+
+function isExplicitChannelActivationPath(
+  channelPath: readonly string[],
+  explicitSetPaths: readonly (readonly string[])[] | undefined,
+): boolean {
+  if (!explicitSetPaths || explicitSetPaths.length === 0) {
+    return false;
+  }
+  const enabledPath = [...channelPath, "enabled"];
+  return explicitSetPaths.some(
+    (explicitPath) =>
+      isSameConfigPath(explicitPath, channelPath) || isSameConfigPath(explicitPath, enabledPath),
+  );
+}
+
+function normalizeProtectedList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value.map((entry) => String(entry));
+}
+
+function appendProtectedListValueChangeReasons(params: {
+  previousValue: unknown;
+  nextValue: unknown;
+  nextExists: boolean;
+  pathLabel: string;
+  reasons: string[];
+}): void {
+  const previousList = normalizeProtectedList(params.previousValue);
+  if (!previousList) {
+    return;
+  }
+  if (!params.nextExists) {
+    params.reasons.push(`protected-list-removed:${params.pathLabel}`);
+    return;
+  }
+  const nextList = normalizeProtectedList(params.nextValue);
+  if (!nextList || nextList.length === 0) {
+    if (previousList.length > 0) {
+      params.reasons.push(`protected-list-removed:${params.pathLabel}`);
+    }
+    return;
+  }
+  if (previousList.length === 0) {
+    params.reasons.push(`protected-list-widened:${params.pathLabel}`);
+    return;
+  }
+  const previousSet = new Set(previousList);
+  const nextSet = new Set(nextList);
+  const previousHasWildcard = previousSet.has("*");
+  const nextHasWildcard = nextSet.has("*");
+  if (!previousHasWildcard && nextHasWildcard) {
+    params.reasons.push(`protected-list-widened:${params.pathLabel}`);
+    return;
+  }
+  if (nextList.some((entry) => !previousSet.has(entry))) {
+    params.reasons.push(`protected-list-widened:${params.pathLabel}`);
+    return;
+  }
+  if (previousList.some((entry) => !nextSet.has(entry))) {
+    params.reasons.push(`protected-list-shrunk:${params.pathLabel}`);
+  }
+}
+
+function appendProtectedListChangeReasons(params: {
+  previousConfig: unknown;
+  nextConfig: unknown;
+  path: readonly string[];
+  explicitSetPaths?: readonly (readonly string[])[];
+  reasons: string[];
+}): void {
+  if (isExplicitConfigWritePath(params.path, params.explicitSetPaths)) {
+    return;
+  }
+  const previousExists = hasObjectPathValue(params.previousConfig, params.path);
+  if (!previousExists) {
+    const nextList = normalizeProtectedList(getObjectPathValue(params.nextConfig, params.path));
+    if (nextList && nextList.length > 0) {
+      params.reasons.push(`protected-list-widened:${formatProtectedConfigPath(params.path)}`);
+    }
+    return;
+  }
+  const nextExists = hasObjectPathValue(params.nextConfig, params.path);
+  appendProtectedListValueChangeReasons({
+    previousValue: getObjectPathValue(params.previousConfig, params.path),
+    nextValue: getObjectPathValue(params.nextConfig, params.path),
+    nextExists,
+    pathLabel: formatProtectedConfigPath(params.path),
+    reasons: params.reasons,
+  });
+}
+
+function appendProtectedAllowFromMapChangeReasons(params: {
+  previousConfig: unknown;
+  nextConfig: unknown;
+  path: readonly string[];
+  displayPath?: readonly string[];
+  explicitSetPaths?: readonly (readonly string[])[];
+  reasons: string[];
+}): void {
+  const previousMap = getObjectPathValue(params.previousConfig, params.path);
+  const nextMap = getObjectPathValue(params.nextConfig, params.path);
+  const displayPath = params.displayPath ?? params.path;
+  const pathLabel = formatProtectedConfigPath(displayPath);
+  if (!isRecord(previousMap) || Object.keys(previousMap).length === 0) {
+    if (!isRecord(nextMap)) {
+      return;
+    }
+    if (isExplicitConfigWritePathAncestorOrSelf(params.path, params.explicitSetPaths)) {
+      return;
+    }
+    for (const key of Object.keys(nextMap)) {
+      const protectedPath = [...params.path, key];
+      if (isExplicitConfigWritePath(protectedPath, params.explicitSetPaths)) {
+        continue;
+      }
+      const nextList = normalizeProtectedList(nextMap[key]);
+      if (nextList && nextList.length > 0) {
+        params.reasons.push(
+          `protected-list-widened:${formatProtectedConfigPath([...displayPath, key])}`,
+        );
+      }
+    }
+    return;
+  }
+  if (!isRecord(nextMap)) {
+    const allPreviousEntriesExplicit = Object.keys(previousMap).every((key) =>
+      isExplicitConfigWritePath([...params.path, key], params.explicitSetPaths),
+    );
+    if (
+      isExplicitConfigWritePathAncestorOrSelf(params.path, params.explicitSetPaths) ||
+      allPreviousEntriesExplicit
+    ) {
+      return;
+    }
+    params.reasons.push(`protected-map-removed:${pathLabel}`);
+    return;
+  }
+  for (const key of Object.keys(previousMap)) {
+    const protectedPath = [...params.path, key];
+    if (isExplicitConfigWritePath(protectedPath, params.explicitSetPaths)) {
+      continue;
+    }
+    const previousValue = previousMap[key];
+    const nextExists = Object.prototype.hasOwnProperty.call(nextMap, key);
+    appendProtectedListValueChangeReasons({
+      previousValue,
+      nextValue: nextMap[key],
+      nextExists,
+      pathLabel: formatProtectedConfigPath([...displayPath, key]),
+      reasons: params.reasons,
+    });
+  }
+  for (const key of Object.keys(nextMap)) {
+    if (Object.prototype.hasOwnProperty.call(previousMap, key)) {
+      continue;
+    }
+    const protectedPath = [...params.path, key];
+    if (isExplicitConfigWritePath(protectedPath, params.explicitSetPaths)) {
+      continue;
+    }
+    const nextList = normalizeProtectedList(nextMap[key]);
+    if (nextList && nextList.length > 0) {
+      params.reasons.push(
+        `protected-list-widened:${formatProtectedConfigPath([...displayPath, key])}`,
+      );
+    }
+  }
+}
+
+function appendNestedProtectedListChangeReasons(params: {
+  previousConfig: unknown;
+  nextConfig: unknown;
+  path: readonly string[];
+  protectedKeys: ReadonlySet<string>;
+  explicitSetPaths?: readonly (readonly string[])[];
+  reasons: string[];
+}): void {
+  const previousValue = getObjectPathValue(params.previousConfig, params.path);
+  const nextValue = getObjectPathValue(params.nextConfig, params.path);
+  if (!isRecord(previousValue) && !isRecord(nextValue)) {
+    return;
+  }
+  const previousRecord = isRecord(previousValue) ? previousValue : {};
+  const nextRecord = isRecord(nextValue) ? nextValue : {};
+  const keys = new Set([...Object.keys(previousRecord), ...Object.keys(nextRecord)]);
+  for (const key of keys) {
+    const previousChild = previousRecord[key];
+    const nextChild = nextRecord[key];
+    const childPath = [...params.path, key];
+    if (
+      params.protectedKeys.has(key) &&
+      (Array.isArray(previousChild) || Array.isArray(nextChild))
+    ) {
+      appendProtectedListChangeReasons({
+        previousConfig: params.previousConfig,
+        nextConfig: params.nextConfig,
+        path: childPath,
+        explicitSetPaths: params.explicitSetPaths,
+        reasons: params.reasons,
+      });
+      continue;
+    }
+    if (isRecord(previousChild) || isRecord(nextChild)) {
+      appendNestedProtectedListChangeReasons({
+        previousConfig: params.previousConfig,
+        nextConfig: params.nextConfig,
+        path: childPath,
+        protectedKeys: params.protectedKeys,
+        explicitSetPaths: params.explicitSetPaths,
+        reasons: params.reasons,
+      });
+    }
+  }
+}
+
+function listAgentRelativeExplicitSetPaths(params: {
+  explicitSetPaths?: readonly (readonly string[])[];
+  agentId: string | null;
+  index: number;
+}): readonly (readonly string[])[] | undefined {
+  const relativePaths = params.explicitSetPaths?.flatMap((explicitPath) => {
+    if (explicitPath[0] !== "agents") {
+      return [];
+    }
+    if (explicitPath.length === 1) {
+      return [[]];
+    }
+    if (explicitPath[1] !== "list") {
+      return [];
+    }
+    if (explicitPath.length === 2) {
+      return [[]];
+    }
+    const selector = explicitPath[2];
+    if (selector !== String(params.index) && (!params.agentId || selector !== params.agentId)) {
+      return [];
+    }
+    const relativePath = explicitPath.slice(3);
+    return [relativePath];
+  });
+  return relativePaths && relativePaths.length > 0 ? relativePaths : undefined;
+}
+
+function appendAgentProtectedPolicyChangeReasons(params: {
+  previousConfig: unknown;
+  nextConfig: unknown;
+  explicitSetPaths?: readonly (readonly string[])[];
+  reasons: string[];
+}): void {
+  const previousAgents = getObjectPathValue(params.previousConfig, ["agents", "list"]);
+  const nextAgents = getObjectPathValue(params.nextConfig, ["agents", "list"]);
+  const previousAgentsById = new Map<string, unknown>();
+  if (Array.isArray(previousAgents)) {
+    for (const agent of previousAgents) {
+      const id = isRecord(agent) && typeof agent.id === "string" ? agent.id : null;
+      if (id) {
+        previousAgentsById.set(id, agent);
+      }
+    }
+  }
+  const nextAgentsById = new Map<string, unknown>();
+  if (Array.isArray(nextAgents)) {
+    for (const agent of nextAgents) {
+      const id = isRecord(agent) && typeof agent.id === "string" ? agent.id : null;
+      if (id) {
+        nextAgentsById.set(id, agent);
+      }
+    }
+  }
+  if (Array.isArray(previousAgents)) {
+    previousAgents.forEach((previousAgent, index) => {
+      if (!isRecord(previousAgent)) {
+        return;
+      }
+      const id = typeof previousAgent.id === "string" ? previousAgent.id : null;
+      const nextAgent = id
+        ? nextAgentsById.get(id)
+        : Array.isArray(nextAgents)
+          ? nextAgents[index]
+          : null;
+      appendProtectedAllowFromMapChangeReasons({
+        previousConfig: previousAgent,
+        nextConfig: nextAgent,
+        path: ["tools", "elevated", "allowFrom"],
+        displayPath: ["agents", "list", id ?? String(index), "tools", "elevated", "allowFrom"],
+        explicitSetPaths: listAgentRelativeExplicitSetPaths({
+          explicitSetPaths: params.explicitSetPaths,
+          agentId: id,
+          index,
+        }),
+        reasons: params.reasons,
+      });
+    });
+  }
+  if (!Array.isArray(nextAgents)) {
+    return;
+  }
+  nextAgents.forEach((nextAgent, index) => {
+    if (!isRecord(nextAgent)) {
+      return;
+    }
+    const id = typeof nextAgent.id === "string" ? nextAgent.id : null;
+    const previousAgent = id
+      ? previousAgentsById.get(id)
+      : Array.isArray(previousAgents)
+        ? previousAgents[index]
+        : null;
+    if (isRecord(previousAgent)) {
+      return;
+    }
+    appendProtectedAllowFromMapChangeReasons({
+      previousConfig: previousAgent,
+      nextConfig: nextAgent,
+      path: ["tools", "elevated", "allowFrom"],
+      displayPath: ["agents", "list", id ?? String(index), "tools", "elevated", "allowFrom"],
+      explicitSetPaths: listAgentRelativeExplicitSetPaths({
+        explicitSetPaths: params.explicitSetPaths,
+        agentId: id,
+        index,
+      }),
+      reasons: params.reasons,
+    });
+  });
+}
+
+function appendChannelProtectedPolicyChangeReasons(params: {
+  previousConfig: unknown;
+  nextConfig: unknown;
+  explicitSetPaths?: readonly (readonly string[])[];
+  reasons: string[];
+}): void {
+  const protectedChannelAllowlistKeys = new Set(["allowFrom", "groupAllowFrom"]);
+  const channelConfigMetaKeys = new Set(["defaults", "modelByChannel"]);
+  const previousChannels = getObjectPathValue(params.previousConfig, ["channels"]);
+  const nextChannels = getObjectPathValue(params.nextConfig, ["channels"]);
+  if (!isRecord(previousChannels) && !isRecord(nextChannels)) {
+    return;
+  }
+  if (isRecord(nextChannels)) {
+    for (const [channelId, nextChannel] of Object.entries(nextChannels)) {
+      if (channelConfigMetaKeys.has(channelId)) {
+        continue;
+      }
+      if (!isRecord(nextChannel)) {
+        continue;
+      }
+      const channelPath = ["channels", channelId] as const;
+      const previousChannel = isRecord(previousChannels) ? previousChannels[channelId] : undefined;
+      if (!isRecord(previousChannel)) {
+        if (
+          nextChannel.enabled !== false &&
+          !isExplicitChannelActivationPath(channelPath, params.explicitSetPaths)
+        ) {
+          params.reasons.push(`protected-channel-enabled:${formatProtectedConfigPath(channelPath)}`);
+        }
+        continue;
+      }
+      const nextAccounts = nextChannel.accounts;
+      if (!isRecord(nextAccounts)) {
+        continue;
+      }
+      const previousAccounts = isRecord(previousChannel.accounts) ? previousChannel.accounts : null;
+      for (const [accountId, nextAccount] of Object.entries(nextAccounts)) {
+        if (!isRecord(nextAccount)) {
+          continue;
+        }
+        const accountPath = [...channelPath, "accounts", accountId] as const;
+        if (
+          !isRecord(previousAccounts?.[accountId]) &&
+          nextAccount.enabled !== false &&
+          !isExplicitChannelActivationPath(accountPath, params.explicitSetPaths)
+        ) {
+          params.reasons.push(
+            `protected-channel-enabled:${formatProtectedConfigPath(accountPath)}`,
+          );
+        }
+      }
+    }
+  }
+  if (!isRecord(previousChannels)) {
+    return;
+  }
+  for (const [channelId, previousChannel] of Object.entries(previousChannels)) {
+    if (channelConfigMetaKeys.has(channelId)) {
+      continue;
+    }
+    if (!isRecord(previousChannel)) {
+      continue;
+    }
+    const channelPath = ["channels", channelId] as const;
+    const nextChannel = isRecord(nextChannels) ? nextChannels[channelId] : undefined;
+    const channelRemoved = !isRecord(nextChannel);
+    if (
+      channelRemoved &&
+      previousChannel.enabled !== false &&
+      !isExplicitConfigWritePathAncestorOrSelf(channelPath, params.explicitSetPaths)
+    ) {
+      params.reasons.push(`protected-channel-removed:${formatProtectedConfigPath(channelPath)}`);
+    }
+    appendNestedProtectedListChangeReasons({
+      previousConfig: params.previousConfig,
+      nextConfig: params.nextConfig,
+      path: channelPath,
+      protectedKeys: protectedChannelAllowlistKeys,
+      explicitSetPaths: params.explicitSetPaths,
+      reasons: params.reasons,
+    });
+    const previousAccounts = previousChannel.accounts;
+    if (isRecord(previousAccounts)) {
+      for (const [accountId, previousAccount] of Object.entries(previousAccounts)) {
+        if (!isRecord(previousAccount)) {
+          continue;
+        }
+        const accountPath = [...channelPath, "accounts", accountId] as const;
+        const nextAccount = getObjectPathValue(params.nextConfig, accountPath);
+        if (!isRecord(nextAccount)) {
+          if (
+            previousAccount.enabled !== false &&
+            !isExplicitConfigWritePathAncestorOrSelf(accountPath, params.explicitSetPaths)
+          ) {
+            params.reasons.push(
+              `protected-channel-removed:${formatProtectedConfigPath(accountPath)}`,
+            );
+          }
+          continue;
+        }
+        if (
+          previousAccount.enabled === false &&
+          nextAccount.enabled !== false &&
+          !isExplicitChannelActivationPath(accountPath, params.explicitSetPaths)
+        ) {
+          params.reasons.push(
+            `protected-channel-enabled:${formatProtectedConfigPath(accountPath)}`,
+          );
+        }
+      }
+    }
+    if (
+      !channelRemoved &&
+      previousChannel.enabled === false &&
+      nextChannel.enabled !== false &&
+      !isExplicitChannelActivationPath(channelPath, params.explicitSetPaths)
+    ) {
+      params.reasons.push(`protected-channel-enabled:${formatProtectedConfigPath(channelPath)}`);
+    }
+  }
+}
+
+function listProtectedConfigPolicyChangeReasons(params: {
+  previousConfig: unknown;
+  nextConfig: unknown;
+  explicitSetPaths?: readonly (readonly string[])[];
+}): string[] {
+  const reasons: string[] = [];
+  appendProtectedListChangeReasons({
+    previousConfig: params.previousConfig,
+    nextConfig: params.nextConfig,
+    path: ["commands", "ownerAllowFrom"],
+    explicitSetPaths: params.explicitSetPaths,
+    reasons,
+  });
+  appendProtectedAllowFromMapChangeReasons({
+    previousConfig: params.previousConfig,
+    nextConfig: params.nextConfig,
+    path: ["commands", "allowFrom"],
+    explicitSetPaths: params.explicitSetPaths,
+    reasons,
+  });
+  appendProtectedAllowFromMapChangeReasons({
+    previousConfig: params.previousConfig,
+    nextConfig: params.nextConfig,
+    path: ["tools", "elevated", "allowFrom"],
+    explicitSetPaths: params.explicitSetPaths,
+    reasons,
+  });
+  appendAgentProtectedPolicyChangeReasons({
+    previousConfig: params.previousConfig,
+    nextConfig: params.nextConfig,
+    explicitSetPaths: params.explicitSetPaths,
+    reasons,
+  });
+  appendChannelProtectedPolicyChangeReasons({
+    previousConfig: params.previousConfig,
+    nextConfig: params.nextConfig,
+    explicitSetPaths: params.explicitSetPaths,
+    reasons,
+  });
+  return reasons;
+}
+
 function resolveConfigStatMetadata(
   stat: fs.Stats | null,
 ): Pick<ConfigHealthFingerprint, "dev" | "ino" | "mode" | "nlink" | "uid" | "gid"> {
@@ -403,6 +962,9 @@ function resolveConfigWriteSuspiciousReasons(params: {
   hasMetaBefore: boolean;
   gatewayModeBefore: string | null;
   gatewayModeAfter: string | null;
+  previousConfig: unknown;
+  nextConfig: unknown;
+  explicitSetPaths?: readonly (readonly string[])[];
 }): string[] {
   const reasons: string[] = [];
   if (!params.existsBefore) {
@@ -422,17 +984,41 @@ function resolveConfigWriteSuspiciousReasons(params: {
   if (params.gatewayModeBefore && !params.gatewayModeAfter) {
     reasons.push("gateway-mode-removed");
   }
+  reasons.push(
+    ...listProtectedConfigPolicyChangeReasons({
+      previousConfig: params.previousConfig,
+      nextConfig: params.nextConfig,
+      explicitSetPaths: params.explicitSetPaths,
+    }),
+  );
   return reasons;
 }
 
 function resolveConfigWriteBlockingReasons(
   suspicious: string[],
-  options: Pick<ConfigWriteOptions, "allowConfigSizeDrop"> = {},
+  options: Pick<ConfigWriteOptions, "allowConfigSizeDrop" | "allowProtectedConfigPolicyDrop"> = {},
 ): string[] {
   return suspicious.filter(
     (reason) =>
       (reason.startsWith("size-drop:") && options.allowConfigSizeDrop !== true) ||
-      reason === "gateway-mode-removed",
+      reason === "gateway-mode-removed" ||
+      (reason.startsWith("protected-") && options.allowProtectedConfigPolicyDrop !== true),
+  );
+}
+
+export function resolveProtectedConfigPolicyWriteBlockingReasons(params: {
+  previousConfig: unknown;
+  nextConfig: unknown;
+  explicitSetPaths?: readonly (readonly string[])[];
+  allowProtectedConfigPolicyDrop?: boolean;
+}): string[] {
+  return resolveConfigWriteBlockingReasons(
+    listProtectedConfigPolicyChangeReasons({
+      previousConfig: params.previousConfig,
+      nextConfig: params.nextConfig,
+      explicitSetPaths: params.explicitSetPaths,
+    }),
+    { allowProtectedConfigPolicyDrop: params.allowProtectedConfigPolicyDrop },
   );
 }
 
@@ -2139,6 +2725,7 @@ export function createConfigIO(
     const hasMetaAfter = hasConfigMeta(stampedOutputConfig);
     const gatewayModeBefore = resolveGatewayMode(snapshot.resolved);
     const gatewayModeAfter = resolveGatewayMode(stampedOutputConfig);
+    const protectedPolicyNextConfig = applyUnsetPathsForWrite(cfg, unsetPaths);
     const suspiciousReasons = resolveConfigWriteSuspiciousReasons({
       existsBefore: snapshot.exists,
       previousBytes,
@@ -2146,6 +2733,9 @@ export function createConfigIO(
       hasMetaBefore,
       gatewayModeBefore,
       gatewayModeAfter,
+      previousConfig: snapshot.resolved,
+      nextConfig: protectedPolicyNextConfig,
+      explicitSetPaths: [...(options.explicitSetPaths ?? []), ...unsetPaths],
     });
     const logConfigOverwrite = () => {
       if (!snapshot.exists) {
@@ -2474,6 +3064,7 @@ export async function writeConfigFile(
     afterWrite: options.afterWrite,
     allowDestructiveWrite: options.allowDestructiveWrite,
     allowConfigSizeDrop: options.allowConfigSizeDrop,
+    allowProtectedConfigPolicyDrop: options.allowProtectedConfigPolicyDrop,
     skipRuntimeSnapshotRefresh: options.skipRuntimeSnapshotRefresh,
     skipOutputLogs: options.skipOutputLogs,
     skipPluginValidation: options.skipPluginValidation,

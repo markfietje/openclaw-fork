@@ -733,7 +733,7 @@ describe("model-selection", () => {
       ).toBe("google");
     });
 
-    it("infers proxy providers from canonicalized nested Google catalog ids", () => {
+    it("infers proxy providers from unchanged nested Google catalog ids", () => {
       const cfg = {
         models: {
           providers: {
@@ -747,7 +747,7 @@ describe("model-selection", () => {
       expect(
         inferUniqueProviderFromConfiguredModels({
           cfg,
-          model: "google/gemini-3.1-pro-preview",
+          model: "google/gemini-3-pro-preview",
         }),
       ).toBe("kilocode");
     });
@@ -800,7 +800,7 @@ describe("model-selection", () => {
       expect(model?.name).toBe("Gemini 3 Pro");
     });
 
-    it("emits canonical nested Google Gemini 3.1 ids from proxy provider catalog rows", () => {
+    it("keeps nested retired Google Gemini ids unchanged for proxy provider catalog rows", () => {
       const cfg = {
         models: {
           providers: {
@@ -817,10 +817,10 @@ describe("model-selection", () => {
       } as unknown as OpenClawConfig;
 
       const model = buildConfiguredModelCatalog({ cfg }).find(
-        (entry) => entry.provider === "kilocode" && entry.id === "google/gemini-3.1-pro-preview",
+        (entry) => entry.provider === "kilocode" && entry.id === "google/gemini-3-pro-preview",
       );
       expect(model?.provider).toBe("kilocode");
-      expect(model?.id).toBe("google/gemini-3.1-pro-preview");
+      expect(model?.id).toBe("google/gemini-3-pro-preview");
       expect(model?.name).toBe("Gemini 3 Pro");
     });
   });
@@ -1815,7 +1815,7 @@ describe("model-selection", () => {
       ).toEqual({ provider: "modelstudio", model: "qwen3.6-plus" });
     });
 
-    it("normalizes retired nested Gemini ids in exact configured provider refs", () => {
+    it("keeps retired nested Gemini ids unchanged in exact configured proxy provider refs", () => {
       const cfg = {
         agents: {
           defaults: {
@@ -1840,7 +1840,7 @@ describe("model-selection", () => {
           defaultModel: "claude-opus-4-6",
           allowPluginNormalization: false,
         }),
-      ).toEqual({ provider: "kilocode", model: "google/gemini-3.1-pro-preview" });
+      ).toEqual({ provider: "kilocode", model: "google/gemini-3-pro-preview" });
     });
 
     it("keeps legacy modelstudio aliases when no exact foreign api owner is configured", () => {

@@ -244,7 +244,7 @@ describe("applyProviderAuthConfigPatch", () => {
 
     const next = applyProviderAuthConfigPatch({}, patch);
 
-    expect(next.models?.providers?.kilocode?.models?.[0]?.id).toBe("google/gemini-3.1-pro-preview");
+    expect(next.models?.providers?.kilocode?.models?.[0]?.id).toBe("google/gemini-3-pro-preview");
   });
 });
 

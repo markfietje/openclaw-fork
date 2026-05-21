@@ -253,7 +253,7 @@ describe("applyModelDefaults", () => {
     expect(next.models?.providers?.google?.models?.[0]?.id).toBe("google/gemini-3.1-pro-preview");
   });
 
-  it("normalizes nested retired Gemini ids in proxy provider rows", () => {
+  it("keeps nested retired Gemini ids unchanged in proxy provider rows", () => {
     const cfg = buildProxyProviderConfig();
     const model = cfg.models.providers.myproxy.models[0];
     model.id = "google/gemini-3-pro-preview";
@@ -261,10 +261,10 @@ describe("applyModelDefaults", () => {
 
     const next = applyModelDefaults(cfg);
 
-    expect(next.models?.providers?.myproxy?.models?.[0]?.id).toBe("google/gemini-3.1-pro-preview");
+    expect(next.models?.providers?.myproxy?.models?.[0]?.id).toBe("google/gemini-3-pro-preview");
   });
 
-  it("normalizes provider-prefixed nested retired Gemini ids in proxy provider rows", () => {
+  it("keeps provider-prefixed nested retired Gemini ids unchanged in proxy provider rows", () => {
     const cfg = buildProxyProviderConfig();
     const model = cfg.models.providers.myproxy.models[0];
     model.id = "myproxy/google/gemini-3-pro-preview";
@@ -273,7 +273,7 @@ describe("applyModelDefaults", () => {
     const next = applyModelDefaults(cfg);
 
     expect(next.models?.providers?.myproxy?.models?.[0]?.id).toBe(
-      "myproxy/google/gemini-3.1-pro-preview",
+      "myproxy/google/gemini-3-pro-preview",
     );
   });
 

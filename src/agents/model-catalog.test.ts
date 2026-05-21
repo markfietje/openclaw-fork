@@ -889,7 +889,7 @@ describe("loadModelCatalog", () => {
 
     const result = await loadModelCatalog({ config: {} as OpenClawConfig });
 
-    const entry = requireCatalogEntry(result, "kilocode", "google/gemini-3.1-pro-preview");
+    const entry = requireCatalogEntry(result, "kilocode", "google/gemini-3-pro-preview");
     expect(entry.name).toBe("Gemini 3 Pro Preview");
   });
 

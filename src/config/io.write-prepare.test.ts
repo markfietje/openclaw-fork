@@ -297,7 +297,7 @@ describe("config io write prepare", () => {
     expect(persisted.gateway?.port).toBe(18888);
   });
 
-  it("normalizes retired Google provider catalog refs during unrelated config writes", () => {
+  it("normalizes only Google-owned retired provider catalog refs during unrelated config writes", () => {
     const makeModel = (id: string, name: string) => ({
       id,
       name,
@@ -331,7 +331,7 @@ describe("config io write prepare", () => {
           },
           kilocode: {
             baseUrl: "https://kilocode.test/v1",
-            models: [makeModel("google/gemini-3.1-pro-preview", "Gemini via Kilo")],
+            models: [makeModel("google/gemini-3-pro-preview", "Gemini via Kilo")],
           },
         },
       },
@@ -350,7 +350,7 @@ describe("config io write prepare", () => {
       makeModel("google/gemini-3.1-pro-preview", "Gemini 3 Pro"),
     ]);
     expect(persisted.models?.providers?.kilocode?.models).toEqual([
-      makeModel("google/gemini-3.1-pro-preview", "Gemini via Kilo"),
+      makeModel("google/gemini-3-pro-preview", "Gemini via Kilo"),
     ]);
     expect(persisted.gateway?.port).toBe(18888);
   });

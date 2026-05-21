@@ -158,7 +158,7 @@ describe("onboard auth provider config merges", () => {
     ]);
   });
 
-  it("normalizes retired Google model ids before emitting provider catalog config", () => {
+  it("keeps retired Google model ids unchanged for non-Google provider catalog config", () => {
     const next = applyProviderConfigWithModelCatalog(
       {
         models: {
@@ -176,16 +176,16 @@ describe("onboard auth provider config merges", () => {
         providerId: "kilocode",
         api: "openai-completions",
         baseUrl: "https://example.com/v1",
-        catalogModels: [makeModel("google/gemini-3.1-pro-preview")],
+        catalogModels: [makeModel("google/gemini-3-pro-preview")],
       },
     );
 
     expect(next.models?.providers?.kilocode?.models?.map((m) => m.id)).toEqual([
-      "google/gemini-3.1-pro-preview",
+      "google/gemini-3-pro-preview",
     ]);
   });
 
-  it("normalizes retired Google provider catalog ids when applying only an agent default", () => {
+  it("normalizes only Google-owned retired provider catalog ids when applying only an agent default", () => {
     const next = applyAgentDefaultModelPrimary(
       {
         models: {
@@ -210,7 +210,7 @@ describe("onboard auth provider config merges", () => {
       "google/gemini-3.1-pro-preview",
     ]);
     expect(next.models?.providers?.kilocode?.models?.map((m) => m.id)).toEqual([
-      "google/gemini-3.1-pro-preview",
+      "google/gemini-3-pro-preview",
     ]);
     expect(next.agents?.defaults?.model).toEqual({ primary: "google/gemini-3.1-pro-preview" });
   });

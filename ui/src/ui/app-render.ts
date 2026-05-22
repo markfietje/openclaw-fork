@@ -802,6 +802,10 @@ export function extractQuickSettingsSecurity(state: AppViewState): {
           execPolicy = trimmedSecurity;
         }
       }
+      const mode = (exec as Record<string, unknown>).mode;
+      if (typeof mode === "string" && (typeof security !== "string" || security.trim() === "")) {
+        execPolicy = resolveExecPolicyFromMode(mode) ?? execPolicy;
+      }
     }
   }
   let browserEnabled = true;
@@ -823,6 +827,21 @@ export function extractQuickSettingsSecurity(state: AppViewState): {
     }
   }
   return { gatewayAuth, execPolicy, deviceAuth, browserEnabled, toolProfile };
+}
+
+function resolveExecPolicyFromMode(mode: string): string | null {
+  switch (mode.trim().toLowerCase()) {
+    case "deny":
+      return "deny";
+    case "full":
+      return "full";
+    case "allowlist":
+    case "ask":
+    case "auto":
+      return "allowlist";
+    default:
+      return null;
+  }
 }
 
 function resolveQuickSettingsSessionRow(state: AppViewState) {

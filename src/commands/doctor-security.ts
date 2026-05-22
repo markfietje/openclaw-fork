@@ -9,10 +9,12 @@ import { resolveGatewayAuthTokenSourceConflict } from "../gateway/auth-token-sou
 import { resolveGatewayAuth } from "../gateway/auth.js";
 import { isLoopbackHost, resolveGatewayBindHost } from "../gateway/net.js";
 import { resolveExecPolicyScopeSnapshot } from "../infra/exec-approvals-effective.js";
-import { loadExecApprovals, type ExecAsk, type ExecSecurity } from "../infra/exec-approvals.js";
-import { isLikelySensitiveModelProviderHeaderName } from "../secrets/model-provider-header-policy.js";
-import { hasConfiguredPlaintextSecretValue } from "../secrets/secret-value.js";
-import { discoverConfigSecretTargets } from "../secrets/target-registry.js";
+import {
+  loadExecApprovals,
+  type ExecAsk,
+  type ExecMode,
+  type ExecSecurity,
+} from "../infra/exec-approvals.js";
 import { collectExecFilesystemPolicyDriftHits } from "../security/exec-filesystem-policy.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { note } from "../terminal/note.js";
@@ -86,11 +88,12 @@ function collectExecPolicyConflictWarnings(cfg: OpenClawConfig): string[] {
   const approvals = loadExecApprovals();
   const defaultRequestedSecuritySource = "OpenClaw default (full)";
   const defaultRequestedAskSource = "OpenClaw default (off)";
+  type ExecPolicyConfig = { mode?: ExecMode; security?: ExecSecurity; ask?: ExecAsk };
 
   const maybeWarn = (params: {
     scopeLabel: string;
-    scopeExecConfig: { security?: ExecSecurity; ask?: ExecAsk } | undefined;
-    globalExecConfig?: { security?: ExecSecurity; ask?: ExecAsk } | undefined;
+    scopeExecConfig: ExecPolicyConfig | undefined;
+    globalExecConfig?: ExecPolicyConfig | undefined;
     agentId?: string;
   }) => {
     const scopeExecConfig = params.scopeExecConfig;
@@ -98,8 +101,10 @@ function collectExecPolicyConflictWarnings(cfg: OpenClawConfig): string[] {
     if (
       !scopeExecConfig?.security &&
       !scopeExecConfig?.ask &&
+      !scopeExecConfig?.mode &&
       !globalExecConfig?.security &&
-      !globalExecConfig?.ask
+      !globalExecConfig?.ask &&
+      !globalExecConfig?.mode
     ) {
       return;
     }

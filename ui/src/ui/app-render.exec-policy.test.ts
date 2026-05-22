@@ -24,6 +24,18 @@ describe("extractQuickSettingsSecurity", () => {
     expect(result.execPolicy).toBe("deny");
   });
 
+  it("derives execPolicy from tools.exec.mode when legacy security is absent", () => {
+    expect(
+      extractQuickSettingsSecurity(makeState({ tools: { exec: { mode: "full" } } })).execPolicy,
+    ).toBe("full");
+    expect(
+      extractQuickSettingsSecurity(makeState({ tools: { exec: { mode: "deny" } } })).execPolicy,
+    ).toBe("deny");
+    expect(
+      extractQuickSettingsSecurity(makeState({ tools: { exec: { mode: "auto" } } })).execPolicy,
+    ).toBe("allowlist");
+  });
+
   it("falls back to allowlist when tools.exec.security is missing", () => {
     expect(extractQuickSettingsSecurity(makeState({})).execPolicy).toBe("allowlist");
     expect(extractQuickSettingsSecurity(makeState({ tools: { exec: {} } })).execPolicy).toBe(

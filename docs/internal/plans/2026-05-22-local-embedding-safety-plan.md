@@ -23,17 +23,21 @@ safety work should stay on the existing local memory embedding path.
 Make local GGUF embeddings safer on macOS Apple Silicon without waiting for the
 new plugin SDK embedding provider bridge.
 
-The first deliverable should make a native local embedding failure degrade memory
-search instead of threatening the Gateway process. The second deliverable should
-give operators an explicit CPU or Metal policy for local embeddings.
+The headline deliverable is a worker boundary: a native local embedding failure
+must degrade memory search instead of threatening the Gateway process. Supporting
+deliverables should reduce native runtime stress, give operators an explicit CPU
+or Metal policy for local embeddings, and make degraded memory state visible.
 
 ## Non-Goals
 
 - Do not redesign the public plugin embedding provider contract.
-- Do not migrate memory to generic `embeddingProviders` in this fix.
+- Do not require migrating memory to generic `embeddingProviders` in this fix.
 - Do not add a new production embedding provider.
 - Do not make local embedding failures silently fall back to cloud providers.
 - Do not remove existing `memoryEmbeddingProviders` compatibility.
+- Do not treat QMD and the in-process local provider as the same runtime shape:
+  QMD is already a subprocess and needs policy/status/backoff integration, while
+  the OpenClaw local provider needs a new worker boundary.
 
 ## Current Problem Shape
 
@@ -53,6 +57,9 @@ give operators an explicit CPU or Metal policy for local embeddings.
 ### Phase 1: Safer Local Batch Semantics
 
 Make local `embedBatch` sequential by default in the existing local provider.
+This is a mitigation, not the crash fix: it reduces concurrent pressure on
+`node-llama-cpp`, but a native abort can still kill the Gateway until worker
+isolation lands.
 
 Files:
 
@@ -78,7 +85,7 @@ Candidate config:
     defaults: {
       memorySearch: {
         local: {
-          gpu: "auto" // "auto" | "metal" | false
+          gpu: "auto" // "auto" | "metal" | "cpu"
         }
       }
     }
@@ -90,13 +97,12 @@ Implementation notes:
 
 - Map `"auto"` to `getLlama({ gpu: "auto" })`.
 - Map `"metal"` to `getLlama({ gpu: "metal" })`.
-- Map `false` to `getLlama({ gpu: false })`.
+- Map `"cpu"` to `getLlama({ gpu: false })`.
 - Consider `loadModel({ gpuLayers: 0 })` for CPU-only mode if upstream
   `node-llama-cpp` behavior requires it.
-- Keep the default conservative. If maintainers want current behavior preserved,
-  default to `"auto"` and document that CPU-only is the safer Apple Silicon
-  mitigation. If maintainers want safety first on macOS, default Apple Silicon
-  local embeddings to CPU-only and document the performance tradeoff.
+- Preserve current behavior by defaulting to `"auto"` unless maintainers
+  explicitly choose a safety-first Apple Silicon default. Document `"cpu"` as the
+  safer Apple Silicon mitigation and call out the performance tradeoff.
 
 Files:
 
@@ -116,8 +122,10 @@ Acceptance:
 - Runtime passes the selected GPU policy to `node-llama-cpp`.
 - Docs explain the Apple Silicon CPU-only path and the performance tradeoff.
 - Tests cover default behavior, CPU-only, Metal, and invalid config rejection.
+- Docs avoid promising that CPU-only prevents every crash when the installed
+  macOS arm64 package is still linked to Metal libraries.
 
-### Phase 3: Worker Or Subprocess Isolation
+### Phase 3: Gateway-Safe Worker Isolation
 
 Move local embedding execution out of the Gateway process.
 
@@ -130,6 +138,11 @@ Preferred shape:
 - Worker exits or native aborts are reported as local provider failure.
 - Memory search marks the local provider unhealthy with backoff instead of
   restart-looping the Gateway.
+- The published package spawns a built worker entrypoint from `dist/`; source
+  checkouts can use the existing development loader path only where the repo
+  already supports that pattern.
+- The worker protocol is private to the memory host package. Do not expose it as
+  public plugin SDK.
 
 Likely files:
 
@@ -147,6 +160,8 @@ Acceptance:
 - `close()` terminates the worker cleanly.
 - Request cancellation tears down or ignores in-flight worker work safely.
 - Logs identify local embedding worker failures without printing secrets.
+- Packaged OpenClaw can locate and start the worker without relying on source
+  checkout paths.
 
 ### Phase 4: Memory Degradation And Operator Feedback
 
@@ -173,6 +188,42 @@ Acceptance:
 - Status output distinguishes missing optional runtime, model load failure, and
   worker crash or abort.
 - Tests cover degraded status and no accidental cloud fallback.
+
+### Phase 5: QMD Policy And Status Integration
+
+Handle QMD as a separate subprocess-backed path.
+
+Behavior:
+
+- Pass the configured CPU or Metal policy into QMD where QMD supports it.
+- Treat non-zero QMD embedding exits as memory degradation with backoff.
+- Keep `memory.qmd.searchMode = "search"` as the lexical-only mitigation that
+  avoids semantic vector probes and embedding maintenance.
+- Do not wrap QMD inside the same local embedding worker unless a later design
+  proves that is simpler and safer than QMD's existing process boundary.
+
+Acceptance:
+
+- QMD status and doctor output can distinguish missing QMD, QMD embedding
+  failure, and lexical-only mode.
+- Tests cover QMD non-zero exits without causing a Gateway crash loop.
+
+### Phase 6: Optional Plugin Contract Bridge
+
+PR #84947 has landed, so the generic `embeddingProviders` contract is available.
+Use it as follow-up wiring after the safety path is proven.
+
+Guidance:
+
+- Do not block worker isolation on the bridge.
+- Bridge the worker-backed local provider into `embeddingProviders` only if the
+  adapter stays small and preserves existing memory behavior.
+- Keep current `memorySearch.local` compatibility while the bridge rolls out.
+
+Acceptance:
+
+- Existing memory local embeddings still work through the old path.
+- New contract registration is additive and does not change operator defaults.
 
 ## Mac Proof Required
 
@@ -226,18 +277,25 @@ platform-specific proof.
 ## Open Decisions
 
 - Should Apple Silicon default to CPU-only for local embeddings, or should CPU
-  remain an explicit operator choice?
-- Should worker isolation ship before or after the config policy? The safest
-  user-facing fix is worker isolation first, but the config policy is smaller.
-- Should QMD use the same local embedding worker, or should it get a separate
-  worker wrapper if its process model differs?
+  remain an explicit operator choice? Defaulting to CPU-only needs maintainer
+  approval because it changes performance expectations.
+- Should the first PR include both worker isolation and GPU policy, or should it
+  land worker isolation first with current `"auto"` behavior preserved?
+- Which QMD versions expose enough CPU/Metal controls for OpenClaw to pass policy
+  through reliably?
 - What is the exact backoff policy after repeated worker crashes?
+- Should the `embeddingProviders` bridge land in the safety PR or remain a small
+  follow-up after Apple Silicon proof?
 
 ## Suggested Implementation Order
 
 1. Serialize local `embedBatch`.
-2. Add `memorySearch.local.gpu` config and node-llama-cpp option plumbing.
-3. Add local embedding worker isolation.
+2. Add local embedding worker isolation.
+3. Add `memorySearch.local.gpu: "auto" | "metal" | "cpu"` config and
+   node-llama-cpp option plumbing.
 4. Add memory degradation and status reporting.
-5. Run Apple Silicon proof.
-6. Update #44202 with exact commands, host class, result, and remaining gaps.
+5. Add QMD policy/status handling as a separate subprocess path.
+6. Run Apple Silicon proof.
+7. Bridge to the `embeddingProviders` contract only if it stays additive and
+   small; otherwise leave it as a follow-up.
+8. Update #44202 with exact commands, host class, result, and remaining gaps.

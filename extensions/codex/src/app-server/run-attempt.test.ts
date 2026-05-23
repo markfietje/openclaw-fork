@@ -79,6 +79,7 @@ import { createCodexTestModel } from "./test-support.js";
 import {
   buildContextEngineBinding,
   buildTurnCollaborationMode,
+  buildThreadStartParams,
   buildThreadResumeParams,
   buildTurnStartParams,
   startOrResumeThread,
@@ -1053,60 +1054,60 @@ describe("runCodexAppServerAttempt", () => {
     );
   });
 
-  it("starts active OpenClaw sandbox turns with Codex native execution disabled", async () => {
-    const restoreSandboxBackend = registerSandboxBackend("codex-test-sandbox", async () => ({
-      id: "codex-test-sandbox",
-      runtimeId: "codex-test-runtime",
-      runtimeLabel: "Codex Test Sandbox",
-      workdir: "/workspace",
-      buildExecSpec: async () => ({
-        argv: ["true"],
-        env: {},
-        stdinMode: "pipe-closed" as const,
-      }),
-      runShellCommand: async () => ({
-        stdout: Buffer.alloc(0),
-        stderr: Buffer.alloc(0),
-        code: 0,
-      }),
-    }));
-    try {
-      testing.setOpenClawCodingToolsFactoryForTests(() => [
-        createRuntimeDynamicTool("exec"),
-        createRuntimeDynamicTool("process"),
-        createRuntimeDynamicTool("message"),
-      ]);
-      const sessionFile = path.join(tempDir, "session.jsonl");
-      const workspaceDir = path.join(tempDir, "workspace");
-      const params = createParams(sessionFile, workspaceDir);
-      params.sessionKey = `agent:main:${path.basename(tempDir)}:sandbox`;
-      params.disableTools = false;
-      params.runtimePlan = createCodexRuntimePlanFixture();
-      params.config = createCodexSandboxTestConfig();
-      const { requests, waitForMethod, completeTurn } = createStartedThreadHarness();
-
-      const run = runCodexAppServerAttempt(params, {
-        pluginConfig: { appServer: { mode: "yolo" } },
-      });
-      await waitForMethod("turn/start");
-      await completeTurn({ threadId: "thread-1", turnId: "turn-1" });
-      await run;
-
-      const startRequest = requests.find((request) => request.method === "thread/start");
-      const startParams = startRequest?.params as Record<string, unknown> | undefined;
-      const startConfig = startParams?.config as Record<string, unknown> | undefined;
-      const dynamicTools = startParams?.dynamicTools as Array<{ name: string }> | undefined;
-      expect(startConfig?.["features.code_mode"]).toBe(false);
-      expect(startConfig?.["features.code_mode_only"]).toBe(false);
-      expect(startParams?.environments).toEqual([]);
-      expect(dynamicTools?.map((tool) => tool.name)).toEqual([
-        "message",
-        "sandbox_exec",
-        "sandbox_process",
-      ]);
-    } finally {
-      restoreSandboxBackend();
+  it("builds active OpenClaw sandbox turns with Codex native execution disabled", async () => {
+    testing.setOpenClawCodingToolsFactoryForTests(() => [
+      createRuntimeDynamicTool("exec"),
+      createRuntimeDynamicTool("process"),
+      createRuntimeDynamicTool("message"),
+    ]);
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createParams(sessionFile, workspaceDir);
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    params.config = createCodexSandboxTestConfig();
+    const sandboxSessionKey = params.sessionKey;
+    if (!sandboxSessionKey) {
+      throw new Error("createParams must provide a sessionKey for Codex dynamic tool tests.");
     }
+    const dynamicTools = await testing.buildDynamicTools({
+      params,
+      resolvedWorkspace: workspaceDir,
+      effectiveWorkspace: workspaceDir,
+      sandboxSessionKey,
+      sandbox: {
+        enabled: true,
+        backendId: "docker",
+        docker: { binds: ["/tmp/openclaw-data:/data:rw"] },
+      } as never,
+      nativeToolSurfaceEnabled: false,
+      runAbortController: new AbortController(),
+      sessionAgentId: "main",
+      pluginConfig: { appServer: { mode: "yolo" } },
+      onYieldDetected: () => undefined,
+    });
+    const appServer = resolveCodexAppServerRuntimeOptions({
+      pluginConfig: { appServer: { mode: "yolo" } },
+      env: {},
+      requirementsToml: null,
+    });
+    const startParams = buildThreadStartParams(params, {
+      cwd: workspaceDir,
+      dynamicTools,
+      appServer,
+      nativeCodeModeEnabled: false,
+      nativeCodeModeOnlyEnabled: false,
+      environmentSelection: [],
+    });
+    const startConfig = startParams.config as Record<string, unknown>;
+    expect(startConfig["features.code_mode"]).toBe(false);
+    expect(startConfig["features.code_mode_only"]).toBe(false);
+    expect(startParams.environments).toEqual([]);
+    expect(startParams.dynamicTools?.map((tool) => tool.name)).toEqual([
+      "message",
+      "sandbox_exec",
+      "sandbox_process",
+    ]);
   });
 
   it("routes native Codex execution through an OpenClaw sandbox exec-server when opted in", async () => {

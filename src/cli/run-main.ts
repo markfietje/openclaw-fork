@@ -591,10 +591,11 @@ export async function runCli(argv: string[] = process.argv) {
       }
     }
 
-    // Must stay above bare-root Crestodian and the gateway fast paths — those
-    // return early, and the embedded runtimes they start cannot prompt for the
-    // macOS Keychain on their own.
-    if (!isHelpOrVersionInvocation) {
+    // Must stay above all early-returning fast paths (bare-root Crestodian,
+    // modern-onboard Crestodian, gateway) — the embedded runtimes they start
+    // cannot prompt for the macOS Keychain on their own. The hook itself is
+    // macOS-only; gate the import here so non-darwin pays no dynamic-import cost.
+    if (!isHelpOrVersionInvocation && process.platform === "darwin") {
       const { maybeAutoMigrateLegacyOAuthSidecarOnInteractiveCli } = await startupTrace.measure(
         "auto-migrate-legacy-oauth-sidecar-import",
         () => import("./auto-migrate-legacy-oauth-sidecar.js"),

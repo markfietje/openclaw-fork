@@ -1,17 +1,37 @@
 import fs from "node:fs";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createCodexAppServerAgentHarness } from "./harness.js";
 import plugin from "./index.js";
 
 const runCodexAppServerAttemptMock = vi.hoisted(() => vi.fn());
 const runCodexAppServerSideQuestionMock = vi.hoisted(() => vi.fn());
+const getSharedCodexAppServerClientMock = vi.hoisted(() => vi.fn());
+const readCodexAppServerBindingMock = vi.hoisted(() => vi.fn());
+const resolveCodexAppServerAuthProfileIdForAgentMock = vi.hoisted(() =>
+  vi.fn((params: { authProfileId?: string }) => params.authProfileId),
+);
+const resolveCodexAppServerRuntimeOptionsMock = vi.hoisted(() =>
+  vi.fn(() => ({ start: { command: "codex", args: ["app-server"] } })),
+);
 
 vi.mock("./src/app-server/run-attempt.js", () => ({
   runCodexAppServerAttempt: runCodexAppServerAttemptMock,
 }));
 vi.mock("./src/app-server/side-question.js", () => ({
   runCodexAppServerSideQuestion: runCodexAppServerSideQuestionMock,
+}));
+vi.mock("./src/app-server/shared-client.js", () => ({
+  getSharedCodexAppServerClient: getSharedCodexAppServerClientMock,
+}));
+vi.mock("./src/app-server/config.js", () => ({
+  resolveCodexAppServerRuntimeOptions: resolveCodexAppServerRuntimeOptionsMock,
+}));
+vi.mock("./src/app-server/auth-bridge.js", () => ({
+  resolveCodexAppServerAuthProfileIdForAgent: resolveCodexAppServerAuthProfileIdForAgentMock,
+}));
+vi.mock("./src/app-server/session-binding.js", () => ({
+  readCodexAppServerBinding: readCodexAppServerBindingMock,
 }));
 
 function mockCall(mock: { mock: { calls: unknown[][] } }, index = 0) {
@@ -23,6 +43,10 @@ function mockCallArg(mock: { mock: { calls: unknown[][] } }, index = 0, argIndex
 }
 
 describe("codex plugin", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("is opt-in by default", () => {
     const manifest = JSON.parse(
       fs.readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
@@ -75,6 +99,7 @@ describe("codex plugin", () => {
     expect(agentHarnessRegistration.deliveryDefaults).toEqual({
       sourceVisibleReplies: "message_tool",
     });
+    expect(typeof agentHarnessRegistration.prewarm).toBe("function");
     expect(typeof agentHarnessRegistration.dispose).toBe("function");
     expect(mediaProviderRegistration?.id).toBe("codex");
     expect(mediaProviderRegistration?.capabilities).toEqual(["image"]);
@@ -94,6 +119,45 @@ describe("codex plugin", () => {
     expect(inboundClaimRegistration?.[0]).toBe("inbound_claim");
     expect(typeof inboundClaimRegistration?.[1]).toBe("function");
     expect(typeof bindingResolvedRegistration?.[0]).toBe("function");
+  });
+
+  it("prewarms existing sessions with the bound app-server auth profile", async () => {
+    readCodexAppServerBindingMock.mockResolvedValueOnce({ authProfileId: "openai-codex:work" });
+    getSharedCodexAppServerClientMock.mockResolvedValueOnce({});
+    const harness = createCodexAppServerAgentHarness({ pluginConfig: { appServer: {} } });
+
+    await expect(
+      harness.prewarm?.({
+        cfg: { agents: { list: [] } } as never,
+        agentDir: "/tmp/openclaw-agent",
+        provider: "codex",
+        modelId: "gpt-5.5",
+        sessionKey: "agent:main:main",
+        sessionFile: "/tmp/openclaw-session.jsonl",
+        reason: "tui-startup",
+      }),
+    ).resolves.toEqual({ warmed: true });
+
+    expect(resolveCodexAppServerRuntimeOptionsMock).toHaveBeenCalledWith({
+      pluginConfig: { appServer: {} },
+    });
+    expect(readCodexAppServerBindingMock).toHaveBeenCalledWith("/tmp/openclaw-session.jsonl", {
+      agentDir: "/tmp/openclaw-agent",
+      config: { agents: { list: [] } },
+    });
+    expect(resolveCodexAppServerAuthProfileIdForAgentMock).toHaveBeenCalledWith({
+      authProfileId: "openai-codex:work",
+      agentDir: "/tmp/openclaw-agent",
+      config: { agents: { list: [] } },
+    });
+    expect(getSharedCodexAppServerClientMock).toHaveBeenCalledWith({
+      startOptions: { command: "codex", args: ["app-server"] },
+      timeoutMs: 60_000,
+      agentDir: "/tmp/openclaw-agent",
+      authProfileId: "openai-codex:work",
+      config: { agents: { list: [] } },
+    });
+    expect(runCodexAppServerAttemptMock).not.toHaveBeenCalled();
   });
 
   it("registers with capture APIs that do not expose conversation binding hooks yet", () => {

@@ -42,6 +42,24 @@ export type AgentHarnessSideQuestionParams = {
 export type AgentHarnessSideQuestionResult = {
   text: string;
 };
+export type AgentHarnessPrewarmReason = "tui-startup" | "gateway-startup" | "manual" | "unknown";
+export type AgentHarnessPrewarmParams = {
+  cfg?: import("../../config/types.openclaw.js").OpenClawConfig;
+  agentDir?: string;
+  provider: string;
+  modelId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  sessionFile?: string;
+  agentId?: string;
+  workspaceDir?: string;
+  authProfileId?: string;
+  authProfileIdSource?: "auto" | "user";
+  reason: AgentHarnessPrewarmReason;
+};
+export type AgentHarnessPrewarmResult = {
+  warmed?: boolean;
+};
 export type AgentHarnessCompactParams =
   import("../pi-embedded-runner/compact.types.js").CompactEmbeddedPiSessionParams;
 export type AgentHarnessCompactResult =
@@ -77,6 +95,7 @@ export type AgentHarness = {
   contextEngineHostCapabilities?: readonly import("../../context-engine/types.js").ContextEngineHostCapability[];
   deliveryDefaults?: AgentHarnessDeliveryDefaults;
   supports(ctx: AgentHarnessSupportContext): AgentHarnessSupport;
+  prewarm?(params: AgentHarnessPrewarmParams): Promise<AgentHarnessPrewarmResult | void> | void;
   runAttempt(params: AgentHarnessAttemptParams): Promise<AgentHarnessAttemptResult>;
   runSideQuestion?(params: AgentHarnessSideQuestionParams): Promise<AgentHarnessSideQuestionResult>;
   classify?(

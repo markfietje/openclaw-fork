@@ -50,6 +50,40 @@ export function createCodexAppServerAgentHarness(options?: {
         reason: `provider is not one of: ${[...providerIds].toSorted().join(", ")}`,
       };
     },
+    prewarm: async (params) => {
+      const [
+        { resolveCodexAppServerRuntimeOptions },
+        { getSharedCodexAppServerClient },
+        { resolveCodexAppServerAuthProfileIdForAgent },
+        { readCodexAppServerBinding },
+      ] = await Promise.all([
+        import("./src/app-server/config.js"),
+        import("./src/app-server/shared-client.js"),
+        import("./src/app-server/auth-bridge.js"),
+        import("./src/app-server/session-binding.js"),
+      ]);
+      const pluginConfig = options?.resolvePluginConfig?.() ?? options?.pluginConfig;
+      const configuredAppServer = resolveCodexAppServerRuntimeOptions({ pluginConfig });
+      const binding = params.sessionFile
+        ? await readCodexAppServerBinding(params.sessionFile, {
+            agentDir: params.agentDir,
+            config: params.cfg,
+          })
+        : undefined;
+      const authProfileId = resolveCodexAppServerAuthProfileIdForAgent({
+        authProfileId: params.authProfileId ?? binding?.authProfileId,
+        agentDir: params.agentDir,
+        config: params.cfg,
+      });
+      await getSharedCodexAppServerClient({
+        startOptions: configuredAppServer.start,
+        timeoutMs: 60_000,
+        agentDir: params.agentDir,
+        authProfileId,
+        config: params.cfg,
+      });
+      return { warmed: true };
+    },
     runAttempt: async (params) => {
       const { runCodexAppServerAttempt } = await import("./src/app-server/run-attempt.js");
       return runCodexAppServerAttempt(params, {

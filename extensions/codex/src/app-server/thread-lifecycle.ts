@@ -30,7 +30,6 @@ import {
   assertCodexThreadStartResponse,
 } from "./protocol-validators.js";
 import {
-  isJsonObject,
   type CodexDynamicToolSpec,
   type CodexSandboxPolicy,
   type CodexThreadResumeParams,
@@ -1082,15 +1081,17 @@ function fingerprintUserMcpServersConfigPatch(
 function fingerprintEnvironmentSelection(
   environments: CodexTurnEnvironmentParams[] | undefined,
 ): string | undefined {
-  return environments ? JSON.stringify(environments.map(stabilizeJsonValue)) : undefined;
+  return environments
+    ? JSON.stringify(environments.map((environment) => stabilizeJsonValue(environment)))
+    : undefined;
 }
 
-function fingerprintDynamicToolSpec(tool: JsonValue): JsonValue {
-  if (!isJsonObject(tool)) {
+function fingerprintDynamicToolSpec(tool: unknown): JsonValue {
+  if (!isRecord(tool)) {
     return stabilizeJsonValue(tool);
   }
   const stable: JsonObject = {};
-  for (const [key, child] of Object.entries(tool).toSorted(([left], [right]) =>
+  for (const [key, child] of readableRecordEntries(tool).toSorted(([left], [right]) =>
     left.localeCompare(right),
   )) {
     // Tool-search presentation can change per turn without changing the
@@ -1103,20 +1104,79 @@ function fingerprintDynamicToolSpec(tool: JsonValue): JsonValue {
   return stable;
 }
 
-function stabilizeJsonValue(value: JsonValue): JsonValue {
-  if (Array.isArray(value)) {
-    return value.map(stabilizeJsonValue);
-  }
-  if (!isJsonObject(value)) {
+const UNREADABLE_FINGERPRINT_VALUE = "[unreadable]";
+const CIRCULAR_FINGERPRINT_VALUE = "[circular]";
+
+function stabilizeJsonValue(value: unknown, stack: WeakSet<object> = new WeakSet()): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
     return value;
   }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (
+    value === undefined ||
+    typeof value === "bigint" ||
+    typeof value === "function" ||
+    typeof value === "symbol"
+  ) {
+    return `[non-json:${typeof value}]`;
+  }
+  if (Array.isArray(value)) {
+    if (stack.has(value)) {
+      return CIRCULAR_FINGERPRINT_VALUE;
+    }
+    stack.add(value);
+    try {
+      return Array.from({ length: value.length }, (_entry, index) => {
+        try {
+          return stabilizeJsonValue(value[index], stack);
+        } catch {
+          return UNREADABLE_FINGERPRINT_VALUE;
+        }
+      });
+    } finally {
+      stack.delete(value);
+    }
+  }
+  if (!isRecord(value)) {
+    return UNREADABLE_FINGERPRINT_VALUE;
+  }
+  if (stack.has(value)) {
+    return CIRCULAR_FINGERPRINT_VALUE;
+  }
+  stack.add(value);
   const stable: JsonObject = {};
-  for (const [key, child] of Object.entries(value).toSorted(([left], [right]) =>
-    left.localeCompare(right),
-  )) {
-    stable[key] = stabilizeJsonValue(child);
+  try {
+    for (const [key, child] of readableRecordEntries(value).toSorted(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      stable[key] = stabilizeJsonValue(child, stack);
+    }
+  } finally {
+    stack.delete(value);
   }
   return stable;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readableRecordEntries(record: Record<string, unknown>): Array<[string, unknown]> {
+  let keys: string[];
+  try {
+    keys = Object.keys(record);
+  } catch {
+    return [[UNREADABLE_FINGERPRINT_VALUE, true]];
+  }
+  return keys.map((key) => {
+    try {
+      return [key, record[key]];
+    } catch {
+      return [key, UNREADABLE_FINGERPRINT_VALUE];
+    }
+  });
 }
 
 const EMPTY_DYNAMIC_TOOLS_FINGERPRINT = JSON.stringify([]);

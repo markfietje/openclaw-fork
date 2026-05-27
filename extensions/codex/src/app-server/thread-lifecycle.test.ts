@@ -61,6 +61,15 @@ function createAppServerOptions() {
   } as const;
 }
 
+function defineThrowingProperty(target: object, key: string): void {
+  Object.defineProperty(target, key, {
+    enumerable: true,
+    get() {
+      throw new Error(`fuzzplugin unreadable ${key}`);
+    },
+  });
+}
+
 describe("Codex app-server native code mode config", () => {
   it("keeps Codex-native subagents primary while limiting OpenClaw spawn to OpenClaw delegation", () => {
     const instructions = buildDeveloperInstructions(createAttemptParams({ provider: "openai" }));
@@ -144,6 +153,20 @@ describe("Codex app-server native code mode config", () => {
     ]);
 
     expect(searchableFingerprint).toBe(directFingerprint);
+  });
+
+  it("fingerprints unreadable synthetic dynamic tool fields without throwing", () => {
+    const tool: Record<string, unknown> = {
+      name: "fuzz_move_delta",
+      description: "Synthetic dynamic tool with unreadable fields",
+      inputSchema: { type: "object" },
+    };
+    defineThrowingProperty(tool, "inputSchema");
+
+    const fingerprint = codexDynamicToolsFingerprint([tool as never]);
+
+    expect(fingerprint).toContain("fuzz_move_delta");
+    expect(fingerprint).toContain("[unreadable]");
   });
 
   it("keeps OpenClaw skill catalogs out of developer instructions", () => {

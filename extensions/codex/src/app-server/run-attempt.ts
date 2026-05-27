@@ -183,6 +183,7 @@ import {
   buildTurnStartParams,
   codexDynamicToolsFingerprint,
   isContextEngineBindingCompatible,
+  isCodexThreadStartRequestError,
   startOrResumeThread,
   type CodexAppServerThreadLifecycleBinding,
   type CodexContextEngineThreadBootstrapProjection,
@@ -1833,7 +1834,11 @@ export async function runCodexAppServerAttempt(
   } catch (error) {
     nativeHookRelay?.unregister();
     await releaseSandboxExecEnvironment();
-    clearSharedCodexAppServerClientIfCurrent(startupClientForCleanup);
+    const preserveSpawnedThreadStartFailureClient =
+      Boolean(params.spawnedBy?.trim()) && isCodexThreadStartRequestError(error);
+    if (!preserveSpawnedThreadStartFailureClient) {
+      clearSharedCodexAppServerClientIfCurrent(startupClientForCleanup);
+    }
     params.abortSignal?.removeEventListener("abort", abortFromUpstream);
     throw error;
   }

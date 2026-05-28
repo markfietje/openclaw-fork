@@ -139,6 +139,7 @@ describe("stuck session recovery", () => {
     expect(mocks.waitForEmbeddedAgentRunEnd).not.toHaveBeenCalled();
     expect(mocks.forceClearEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(mocks.resetCommandLane).not.toHaveBeenCalled();
+    expect(mocks.clearDiagnosticSessionActivity).not.toHaveBeenCalled();
     expect(warnLogMessages()).toEqual([
       "stuck session recovery skipped: sessionId=session-1 sessionKey=agent:main:main age=180s queueDepth=1 activeSessionId=session-1",
       "stuck session recovery outcome: status=skipped action=observe_only sessionId=session-1 sessionKey=agent:main:main activeSessionId=session-1 activeWorkKind=embedded_run reason=active_embedded_run",
@@ -165,6 +166,7 @@ describe("stuck session recovery", () => {
     });
     expect(mocks.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(mocks.resetCommandLane).not.toHaveBeenCalled();
+    expect(mocks.clearDiagnosticSessionActivity).not.toHaveBeenCalled();
   });
 
   it("reclaims a stale active embedded run with queued work and no forward progress (#85639)", async () => {
@@ -352,6 +354,7 @@ describe("stuck session recovery", () => {
     expect(mocks.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(mocks.forceClearEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(mocks.resetCommandLane).not.toHaveBeenCalled();
+    expect(mocks.clearDiagnosticSessionActivity).not.toHaveBeenCalled();
     expect(warnLogMessages()).toEqual([
       "stuck session recovery outcome: status=skipped action=keep_lane sessionId=queued-reply-session sessionKey=agent:main:main activeSessionId=queued-reply-session activeWorkKind=embedded_run reason=active_reply_work",
     ]);
@@ -444,6 +447,7 @@ describe("stuck session recovery", () => {
     expect(mocks.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(mocks.forceClearEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(mocks.resetCommandLane).not.toHaveBeenCalled();
+    expect(mocks.clearDiagnosticSessionActivity).not.toHaveBeenCalled();
     expect(warnLogMessages()).toEqual([
       "stuck session recovery outcome: status=skipped action=keep_lane sessionId=unregistered-work-session sessionKey=agent:main:main lane=session:agent:main:main reason=active_lane_task laneActive=1 laneQueued=1",
     ]);

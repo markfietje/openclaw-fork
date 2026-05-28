@@ -54,8 +54,18 @@ describe("stuck session recovery integration", () => {
       sessionId,
       resetTriggered: false,
     });
+    markDiagnosticToolStartedForTest({
+      sessionId,
+      sessionKey,
+      runId: "active-reply-run",
+      toolName: "bash",
+      toolCallId: "tool-active",
+    });
 
     expect(getQueueSize(lane)).toBe(2);
+    expect(getDiagnosticSessionActivitySnapshot({ sessionId, sessionKey }).activeWorkKind).toBe(
+      "tool_call",
+    );
 
     await recoverStuckDiagnosticSession({
       sessionId,
@@ -66,6 +76,9 @@ describe("stuck session recovery integration", () => {
 
     await expect(Promise.race([queued, delay(100)])).resolves.toBe("blocked");
     expect(getQueueSize(lane)).toBe(2);
+    expect(getDiagnosticSessionActivitySnapshot({ sessionId, sessionKey }).activeWorkKind).toBe(
+      "tool_call",
+    );
 
     operation.complete();
     expect(resetCommandLane(lane)).toBe(1);

@@ -13,6 +13,94 @@ type ToolMetadata = NonNullable<PluginManifestRecord["toolMetadata"]>[string];
 export type ManifestConfigAvailabilitySignal = PluginManifestCapabilityProviderConfigSignal;
 export type ManifestAuthAvailabilitySignal = PluginManifestCapabilityProviderAuthSignal;
 
+type ReadValueResult = { ok: true; value: unknown } | { ok: false };
+type ArrayCopyResult = { ok: true; entries: unknown[] } | { ok: false; entries: [] };
+type StringArrayCopyResult = { ok: true; entries: string[] } | { ok: false; entries: [] };
+
+function readRecordValueResult(record: unknown, key: string): ReadValueResult {
+  if (!isRecord(record)) {
+    return { ok: true, value: undefined };
+  }
+  try {
+    return { ok: true, value: record[key] };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function readRecordValue(record: unknown, key: string): unknown {
+  const result = readRecordValueResult(record, key);
+  return result.ok ? result.value : undefined;
+}
+
+function copyRecordEntries(value: unknown): Array<[string, unknown]> {
+  if (!isRecord(value)) {
+    return [];
+  }
+  let keys: string[] = [];
+  try {
+    keys = Object.keys(value);
+  } catch {
+    return [];
+  }
+  return keys.flatMap((key) => {
+    try {
+      return [[key, value[key]]];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function copyRecord(value: unknown): Record<string, unknown> | undefined {
+  const entries = copyRecordEntries(value);
+  return entries.length > 0 ? Object.fromEntries(entries) : isRecord(value) ? {} : undefined;
+}
+
+function copyArrayEntriesResult(value: unknown): ArrayCopyResult {
+  if (!Array.isArray(value)) {
+    return { ok: true, entries: [] };
+  }
+  let length = 0;
+  try {
+    length = value.length;
+  } catch {
+    return { ok: false, entries: [] };
+  }
+  const entries: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    try {
+      entries.push(value[index]);
+    } catch {
+      return { ok: false, entries: [] };
+    }
+  }
+  return { ok: true, entries };
+}
+
+function copyArrayEntries(value: unknown): unknown[] {
+  return copyArrayEntriesResult(value).entries;
+}
+
+function readArrayField(record: unknown, key: string): ArrayCopyResult {
+  const result = readRecordValueResult(record, key);
+  return result.ok ? copyArrayEntriesResult(result.value) : { ok: false, entries: [] };
+}
+
+function copyStringArrayEntries(value: unknown): string[] {
+  return copyArrayEntries(value).filter((entry): entry is string => typeof entry === "string");
+}
+
+function readStringArrayField(record: unknown, key: string): StringArrayCopyResult {
+  const result = readArrayField(record, key);
+  return result.ok
+    ? {
+        ok: true,
+        entries: result.entries.filter((entry): entry is string => typeof entry === "string"),
+      }
+    : { ok: false, entries: [] };
+}
+
 function readPath(root: unknown, path: string | undefined): unknown {
   if (!path?.trim()) {
     return root;
@@ -23,10 +111,10 @@ function readPath(root: unknown, path: string | undefined): unknown {
     if (!key) {
       return undefined;
     }
-    if (!isRecord(current) || !(key in current)) {
+    current = readRecordValue(current, key);
+    if (current === undefined) {
       return undefined;
     }
-    current = current[key];
   }
   return current;
 }
@@ -45,7 +133,13 @@ function readEffectiveConfig(params: {
     return undefined;
   }
   const overlay = readPath(root, params.overlayPath);
-  return isRecord(overlay) ? { ...root, ...overlay } : root;
+  if (!isRecord(overlay)) {
+    return copyRecord(root);
+  }
+  return {
+    ...copyRecord(root),
+    ...copyRecord(overlay),
+  };
 }
 
 function hasConfiguredSecretRefInConfigPath(params: {
@@ -53,18 +147,23 @@ function hasConfiguredSecretRefInConfigPath(params: {
   env: NodeJS.ProcessEnv;
   ref: SecretRef;
 }): boolean {
-  const providerConfig = params.config?.secrets?.providers?.[params.ref.provider];
+  const providerConfig = readRecordValue(
+    readRecordValue(readRecordValue(params.config, "secrets"), "providers"),
+    params.ref.provider,
+  );
   if (params.ref.source !== "env") {
-    return Boolean(providerConfig && providerConfig.source === params.ref.source);
+    return Boolean(isRecord(providerConfig) && providerConfig.source === params.ref.source);
   }
   if (!providerConfig) {
     return params.ref.provider === resolveDefaultSecretProviderAlias(params.config ?? {}, "env");
   }
-  if (providerConfig.source !== "env") {
+  if (!isRecord(providerConfig) || providerConfig.source !== "env") {
     return false;
   }
-  const allowlist = providerConfig.allowlist;
-  return !allowlist || allowlist.includes(params.ref.id);
+  const allowlist = readRecordValue(providerConfig, "allowlist");
+  return copyStringArrayEntries(allowlist).length === 0
+    ? allowlist === undefined
+    : copyStringArrayEntries(allowlist).includes(params.ref.id);
 }
 
 function hasConfiguredValue(params: {
@@ -90,7 +189,7 @@ function hasConfiguredValue(params: {
     return params.value.length > 0;
   }
   if (isRecord(params.value)) {
-    return Object.keys(params.value).length > 0;
+    return copyRecordEntries(params.value).length > 0;
   }
   return params.value !== undefined && params.value !== null;
 }
@@ -100,29 +199,66 @@ export function manifestConfigSignalPasses(params: {
   env: NodeJS.ProcessEnv;
   signal: ManifestConfigAvailabilitySignal;
 }): boolean {
+  const rootPathResult = readRecordValueResult(params.signal, "rootPath");
+  if (!rootPathResult.ok) {
+    return false;
+  }
+  const rootPath = rootPathResult.value;
+  if (typeof rootPath !== "string") {
+    return false;
+  }
+  const overlayPathResult = readRecordValueResult(params.signal, "overlayPath");
+  if (!overlayPathResult.ok) {
+    return false;
+  }
   const effectiveConfig = readEffectiveConfig({
     config: params.config,
-    rootPath: params.signal.rootPath,
-    overlayPath: params.signal.overlayPath,
+    rootPath,
+    overlayPath: typeof overlayPathResult.value === "string" ? overlayPathResult.value : undefined,
   });
   if (!effectiveConfig) {
     return false;
   }
-  const modeSignal = params.signal.mode;
-  if (modeSignal) {
-    const modePath = modeSignal.path?.trim() || "mode";
-    const mode = readStringAtPath(effectiveConfig, modePath) ?? modeSignal.default;
+  const modeSignalResult = readRecordValueResult(params.signal, "mode");
+  if (!modeSignalResult.ok) {
+    return false;
+  }
+  const modeSignal = modeSignalResult.value;
+  if (isRecord(modeSignal)) {
+    const rawModePathResult = readRecordValueResult(modeSignal, "path");
+    const rawDefaultResult = readRecordValueResult(modeSignal, "default");
+    if (!rawModePathResult.ok || !rawDefaultResult.ok) {
+      return false;
+    }
+    const rawModePath = rawModePathResult.value;
+    const modePath = typeof rawModePath === "string" && rawModePath.trim() ? rawModePath : "mode";
+    const rawDefault = rawDefaultResult.value;
+    const mode =
+      readStringAtPath(effectiveConfig, modePath) ??
+      (typeof rawDefault === "string" ? rawDefault : undefined);
     if (!mode) {
       return false;
     }
-    if (modeSignal.allowed?.length && !modeSignal.allowed.includes(mode)) {
+    const allowedResult = readStringArrayField(modeSignal, "allowed");
+    const disallowedResult = readStringArrayField(modeSignal, "disallowed");
+    if (!allowedResult.ok || !disallowedResult.ok) {
       return false;
     }
-    if (modeSignal.disallowed?.includes(mode)) {
+    const allowed = allowedResult.entries;
+    const disallowed = disallowedResult.entries;
+    if (allowed.length > 0 && !allowed.includes(mode)) {
+      return false;
+    }
+    if (disallowed.includes(mode)) {
       return false;
     }
   }
-  for (const requiredPath of params.signal.required ?? []) {
+  const requiredResult = readStringArrayField(params.signal, "required");
+  const requiredAnyResult = readStringArrayField(params.signal, "requiredAny");
+  if (!requiredResult.ok || !requiredAnyResult.ok) {
+    return false;
+  }
+  for (const requiredPath of requiredResult.entries) {
     if (
       !hasConfiguredValue({
         config: params.config,
@@ -133,7 +269,7 @@ export function manifestConfigSignalPasses(params: {
       return false;
     }
   }
-  const requiredAny = params.signal.requiredAny ?? [];
+  const requiredAny = requiredAnyResult.entries;
   if (
     requiredAny.length > 0 &&
     !requiredAny.some((path) =>
@@ -158,19 +294,30 @@ export function manifestProviderBaseUrlGuardPasses(params: {
   guard: ManifestAuthAvailabilitySignal["providerBaseUrl"];
 }): boolean {
   const guard = params.guard;
-  if (!guard) {
+  if (!isRecord(guard)) {
     return true;
   }
-  const providerConfig = params.config?.models?.providers?.[guard.provider];
+  const provider = readRecordValue(guard, "provider");
+  if (typeof provider !== "string") {
+    return false;
+  }
+  const providerConfig = readRecordValue(
+    readRecordValue(readRecordValue(params.config, "models"), "providers"),
+    provider,
+  );
+  const baseUrl = readRecordValue(providerConfig, "baseUrl");
+  const defaultBaseUrl = readRecordValue(guard, "defaultBaseUrl");
   const rawBaseUrl =
-    typeof providerConfig?.baseUrl === "string" && providerConfig.baseUrl.trim()
-      ? providerConfig.baseUrl
-      : guard.defaultBaseUrl;
+    typeof baseUrl === "string" && baseUrl.trim()
+      ? baseUrl
+      : typeof defaultBaseUrl === "string"
+        ? defaultBaseUrl
+        : undefined;
   if (!rawBaseUrl) {
     return false;
   }
   const normalizedBaseUrl = normalizeBaseUrlForManifestGuard(rawBaseUrl);
-  return guard.allowedBaseUrls.some(
+  return copyStringArrayEntries(readRecordValue(guard, "allowedBaseUrls")).some(
     (allowedBaseUrl) => normalizeBaseUrlForManifestGuard(allowedBaseUrl) === normalizedBaseUrl,
   );
 }
@@ -179,30 +326,67 @@ export function manifestPluginSetupProviderEnvVars(
   plugin: PluginManifestRecord,
   providerId: string,
 ): readonly string[] {
-  const direct = plugin.setup?.providers?.find((provider) => provider.id === providerId)?.envVars;
-  if (direct && direct.length > 0) {
+  const directProvider = copyArrayEntries(
+    readRecordValue(readRecordValue(plugin, "setup"), "providers"),
+  )
+    .filter(isRecord)
+    .find((provider) => readRecordValue(provider, "id") === providerId);
+  const direct = copyStringArrayEntries(readRecordValue(directProvider, "envVars"));
+  if (direct.length > 0) {
     return direct;
   }
-  return plugin.providerAuthEnvVars?.[providerId] ?? [];
+  return copyStringArrayEntries(
+    readRecordValue(readRecordValue(plugin, "providerAuthEnvVars"), providerId),
+  );
 }
 
 export function hasNonEmptyManifestEnvCandidate(
   env: NodeJS.ProcessEnv,
   envVars: readonly string[],
 ): boolean {
-  return envVars.some((envVar) => {
+  return copyStringArrayEntries(envVars).some((envVar) => {
     const key = envVar.trim();
     return key.length > 0 && Boolean(env[key]?.trim());
   });
 }
 
-function listToolAuthSignals(metadata: ToolMetadata): ManifestAuthAvailabilitySignal[] {
-  if (metadata.authSignals?.length) {
-    return metadata.authSignals;
+function listToolAuthSignals(metadata: ToolMetadata): {
+  signals: ManifestAuthAvailabilitySignal[];
+  unreadable: boolean;
+} {
+  const authSignalEntries = readArrayField(metadata, "authSignals");
+  if (!authSignalEntries.ok) {
+    return { signals: [], unreadable: true };
   }
-  return [...(metadata.authProviders ?? []), ...(metadata.aliases ?? [])].map((provider) => ({
-    provider,
-  }));
+  let unreadable = false;
+  const authSignals = authSignalEntries.entries.filter(isRecord).flatMap((signal) => {
+    const providerResult = readRecordValueResult(signal, "provider");
+    const providerBaseUrlResult = readRecordValueResult(signal, "providerBaseUrl");
+    if (!providerResult.ok || !providerBaseUrlResult.ok) {
+      unreadable = true;
+      return [];
+    }
+    const provider = providerResult.value;
+    if (typeof provider !== "string") {
+      return [];
+    }
+    const providerBaseUrl = providerBaseUrlResult.value as
+      | ManifestAuthAvailabilitySignal["providerBaseUrl"]
+      | undefined;
+    return [{ provider, ...(providerBaseUrl ? { providerBaseUrl } : {}) }];
+  });
+  if (authSignals.length > 0) {
+    return { signals: authSignals, unreadable };
+  }
+  const authProviders = readStringArrayField(metadata, "authProviders");
+  const aliases = readStringArrayField(metadata, "aliases");
+  if (!authProviders.ok || !aliases.ok) {
+    return { signals: [], unreadable: true };
+  }
+  return {
+    signals: [...authProviders.entries, ...aliases.entries].map((provider) => ({ provider })),
+    unreadable,
+  };
 }
 
 function toolMetadataPasses(params: {
@@ -213,11 +397,20 @@ function toolMetadataPasses(params: {
   hasAuthForProvider?: (providerId: string) => boolean;
 }): boolean {
   const authSignals = listToolAuthSignals(params.metadata);
-  if (!params.metadata.configSignals?.length && authSignals.length === 0) {
+  const configSignalEntries = readArrayField(params.metadata, "configSignals");
+  const configSignals = configSignalEntries.entries.filter(
+    (signal): signal is ManifestConfigAvailabilitySignal => isRecord(signal),
+  );
+  if (
+    configSignals.length === 0 &&
+    authSignals.signals.length === 0 &&
+    configSignalEntries.ok &&
+    !authSignals.unreadable
+  ) {
     return true;
   }
   if (
-    params.metadata.configSignals?.some((signal) =>
+    configSignals.some((signal) =>
       manifestConfigSignalPasses({
         config: params.config,
         env: params.env,
@@ -227,22 +420,31 @@ function toolMetadataPasses(params: {
   ) {
     return true;
   }
-  for (const signal of authSignals) {
+  if (!configSignalEntries.ok || authSignals.unreadable) {
+    return false;
+  }
+  for (const signal of authSignals.signals) {
     if (
       !manifestProviderBaseUrlGuardPasses({
         config: params.config,
-        guard: signal.providerBaseUrl,
+        guard: readRecordValue(signal, "providerBaseUrl") as
+          | ManifestAuthAvailabilitySignal["providerBaseUrl"]
+          | undefined,
       })
     ) {
       continue;
     }
-    if (params.hasAuthForProvider?.(signal.provider)) {
+    const provider = readRecordValue(signal, "provider");
+    if (typeof provider !== "string") {
+      continue;
+    }
+    if (params.hasAuthForProvider?.(provider)) {
       return true;
     }
     if (
       hasNonEmptyManifestEnvCandidate(
         params.env,
-        manifestPluginSetupProviderEnvVars(params.plugin, signal.provider),
+        manifestPluginSetupProviderEnvVars(params.plugin, provider),
       )
     ) {
       return true;
@@ -258,10 +460,21 @@ export function hasManifestToolAvailability(params: {
   env: NodeJS.ProcessEnv;
   hasAuthForProvider?: (providerId: string) => boolean;
 }): boolean {
-  for (const toolName of params.toolNames) {
-    const metadata = params.plugin.toolMetadata?.[toolName];
+  for (const toolName of copyStringArrayEntries(params.toolNames)) {
+    const metadataMapResult = readRecordValueResult(params.plugin, "toolMetadata");
+    if (!metadataMapResult.ok) {
+      return false;
+    }
+    const metadataResult = readRecordValueResult(metadataMapResult.value, toolName);
+    if (!metadataResult.ok) {
+      continue;
+    }
+    const metadata = metadataResult.value;
     if (!metadata) {
       return true;
+    }
+    if (!isRecord(metadata)) {
+      continue;
     }
     if (
       toolMetadataPasses({

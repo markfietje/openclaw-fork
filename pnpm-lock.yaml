@@ -1,3 +1,4 @@
+# Dependency guard probe: intentional throw-away lockfile diff.
 lockfileVersion: '9.0'
 
 settings:

@@ -12,6 +12,15 @@ const noop = () => {};
 const waitForFast = <T>(callback: () => T | Promise<T>) =>
   vi.waitFor(callback, { timeout: 1_000, interval: 1 });
 
+type LifecycleHandler = (evt: {
+  runId: string;
+  stream: string;
+  data: Record<string, unknown>;
+}) => void;
+type SubagentRegistryModule = typeof import("./subagent-registry.js");
+type RegisterSubagentRunParams = Parameters<SubagentRegistryModule["registerSubagentRun"]>[0];
+type SubagentRunRecord = ReturnType<SubagentRegistryModule["listSubagentRunsForRequester"]>[number];
+
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`expected ${label} to be an object`);
@@ -173,6 +182,57 @@ vi.mock("./subagent-orphan-recovery.js", () => ({
 describe("subagent registry seam flow", () => {
   let mod: typeof import("./subagent-registry.js");
 
+  function registerRun(
+    params: Pick<RegisterSubagentRunParams, "runId"> & Partial<RegisterSubagentRunParams>,
+  ): void {
+    const {
+      runId,
+      childSessionKey = "agent:main:subagent:child",
+      requesterSessionKey = "agent:main:main",
+      requesterDisplayKey = "main",
+      task = runId,
+      cleanup = "keep",
+      ...rest
+    } = params;
+    mod.registerSubagentRun({
+      runId,
+      childSessionKey,
+      requesterSessionKey,
+      requesterDisplayKey,
+      task,
+      cleanup,
+      ...rest,
+    });
+  }
+
+  function findRun(
+    runId: string,
+    requesterSessionKey = "agent:main:main",
+  ): SubagentRunRecord | undefined {
+    return mod
+      .listSubagentRunsForRequester(requesterSessionKey)
+      .find((entry) => entry.runId === runId);
+  }
+
+  function latestLifecycleHandler(): LifecycleHandler {
+    const lastCall = mocks.onAgentEvent.mock.calls.at(-1) as unknown as
+      | [LifecycleHandler]
+      | undefined;
+    const lifecycleHandler = lastCall?.[0];
+    if (typeof lifecycleHandler !== "function") {
+      throw new Error("expected lifecycle handler registration");
+    }
+    return lifecycleHandler;
+  }
+
+  function emitLifecycle(runId: string, data: Record<string, unknown>): void {
+    latestLifecycleHandler()({
+      runId,
+      stream: "lifecycle",
+      data,
+    });
+  }
+
   beforeAll(async () => {
     mod = await import("./subagent-registry.js");
   });
@@ -318,13 +378,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-interrupted-wait",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "resume after transport close",
-      cleanup: "keep",
     });
 
     await waitForFast(() => {
@@ -335,9 +391,7 @@ describe("subagent registry seam flow", () => {
       );
     });
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-interrupted-wait");
+    const run = findRun("run-interrupted-wait");
     expect(run?.endedAt).toBeUndefined();
     expect(run?.outcome).toBeUndefined();
   });
@@ -372,13 +426,9 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-waiter-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "eventually complete",
-      cleanup: "keep",
     });
 
     await waitForFast(() => {
@@ -387,9 +437,7 @@ describe("subagent registry seam flow", () => {
     await waitForFast(() => {
       expect(waitAttempts).toBeGreaterThanOrEqual(2);
     });
-    const activeRun = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-waiter-timeout");
+    const activeRun = findRun("run-waiter-timeout");
     expect(activeRun?.endedAt).toBeUndefined();
     expect(activeRun?.outcome).toBeUndefined();
 
@@ -399,9 +447,7 @@ describe("subagent registry seam flow", () => {
       endedAt: 222,
     });
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-waiter-timeout");
+      const completedRun = findRun("run-waiter-timeout");
       expect(waitAttempts).toBeGreaterThanOrEqual(2);
       expect(completedRun?.endedAt).toBe(222);
       expectRecordFields(completedRun?.outcome, { status: "ok" }, "completed run outcome");
@@ -429,31 +475,23 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-explicit-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "respect explicit timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
 
     await waitForFast(() => {
       expect(waitAttempts).toBeGreaterThanOrEqual(1);
     });
-    const activeRun = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-explicit-timeout");
+    const activeRun = findRun("run-explicit-timeout");
     expect(activeRun?.endedAt).toBeUndefined();
     expect(activeRun?.outcome).toBeUndefined();
 
     await vi.advanceTimersByTimeAsync(5_000);
 
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-explicit-timeout");
+      const completedRun = findRun("run-explicit-timeout");
       expect(waitAttempts).toBeGreaterThanOrEqual(2);
       expect(completedRun?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
@@ -488,46 +526,25 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-late-lifecycle-ok",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout should stay terminal",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
 
     await vi.advanceTimersByTimeAsync(10_000);
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-late-lifecycle-ok");
+      const completedRun = findRun("run-timeout-late-lifecycle-ok");
       expect(completedRun?.endedAt).toBe(startedAt + 1_000);
       expect(completedRun?.outcome?.status).toBe("timeout");
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-late-lifecycle-ok",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        endedAt: startedAt + 2_000,
-      },
+    emitLifecycle("run-timeout-late-lifecycle-ok", {
+      phase: "end",
+      endedAt: startedAt + 2_000,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-late-lifecycle-ok");
+      const run = findRun("run-timeout-late-lifecycle-ok");
       expect(run?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
         run?.outcome,
@@ -561,47 +578,26 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-late-lifecycle-predeadline-ok",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "published timeout should stay stable",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
 
     await vi.advanceTimersByTimeAsync(5_000);
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-late-lifecycle-predeadline-ok");
+      const completedRun = findRun("run-timeout-late-lifecycle-predeadline-ok");
       expect(completedRun?.endedAt).toBe(startedAt + 1_000);
       expect(completedRun?.outcome?.status).toBe("timeout");
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-late-lifecycle-predeadline-ok",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: startedAt + 10,
-        endedAt: startedAt + 500,
-      },
+    emitLifecycle("run-timeout-late-lifecycle-predeadline-ok", {
+      phase: "end",
+      startedAt: startedAt + 10,
+      endedAt: startedAt + 500,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-late-lifecycle-predeadline-ok");
+      const run = findRun("run-timeout-late-lifecycle-predeadline-ok");
       expect(run?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
         run?.outcome,
@@ -626,38 +622,19 @@ describe("subagent registry seam flow", () => {
       }
       return {};
     });
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-lifecycle-success-after-deadline",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "post-deadline lifecycle success should timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-lifecycle-success-after-deadline",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt,
-        endedAt: startedAt + 2_000,
-      },
+    emitLifecycle("run-lifecycle-success-after-deadline", {
+      phase: "end",
+      startedAt,
+      endedAt: startedAt + 2_000,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-lifecycle-success-after-deadline");
+      const run = findRun("run-lifecycle-success-after-deadline");
       expect(run?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
         run?.outcome,
@@ -686,38 +663,19 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-lifecycle-observed-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "respect observed lifecycle start",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-lifecycle-observed-start",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: observedStartedAt,
-        endedAt: createdAt + 65_000,
-      },
+    emitLifecycle("run-lifecycle-observed-start", {
+      phase: "end",
+      startedAt: observedStartedAt,
+      endedAt: createdAt + 65_000,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-lifecycle-observed-start");
+      const run = findRun("run-lifecycle-observed-start");
       expect(run?.endedAt).toBe(createdAt + 65_000);
       expectRecordFields(
         run?.outcome,
@@ -737,13 +695,9 @@ describe("subagent registry seam flow", () => {
 
   it("keeps in-flight explicit deadline timeout stable during cleanup", async () => {
     const createdAt = Date.parse("2026-03-24T11:59:00Z");
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-cleanup-lock-observed-success",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "cleanup lock should not freeze stale timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
     const run = mod.getSubagentRunByChildSessionKey("agent:main:subagent:child");
@@ -761,29 +715,14 @@ describe("subagent registry seam flow", () => {
       },
       cleanupHandled: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-cleanup-lock-observed-success",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: createdAt + 10_000,
-        endedAt: createdAt + 65_000,
-      },
+    emitLifecycle("run-cleanup-lock-observed-success", {
+      phase: "end",
+      startedAt: createdAt + 10_000,
+      endedAt: createdAt + 65_000,
     });
 
     await waitForFast(() => {
-      const correctedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-cleanup-lock-observed-success");
+      const correctedRun = findRun("run-cleanup-lock-observed-success");
       expect(correctedRun?.endedAt).toBe(createdAt + 60_000);
       expectRecordFields(
         correctedRun?.outcome,
@@ -808,13 +747,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
     mocks.runSubagentAnnounceFlow.mockResolvedValueOnce(false);
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-refresh-pending-timeout-payload",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "pending timeout payload should refresh",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
     const run = mod.getSubagentRunByChildSessionKey("agent:main:subagent:child");
@@ -843,23 +778,10 @@ describe("subagent registry seam flow", () => {
         },
       },
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-refresh-pending-timeout-payload",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: createdAt + 10_000,
-        endedAt: createdAt + 65_000,
-      },
+    emitLifecycle("run-refresh-pending-timeout-payload", {
+      phase: "end",
+      startedAt: createdAt + 10_000,
+      endedAt: createdAt + 65_000,
     });
 
     await waitForFast(() => {
@@ -884,13 +806,9 @@ describe("subagent registry seam flow", () => {
 
   it("allows non-explicit published timeouts to be corrected by lifecycle success", async () => {
     const startedAt = Date.parse("2026-03-24T11:59:00Z");
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-non-explicit-timeout-corrected",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "non-explicit timeout remains correctable",
-      cleanup: "keep",
     });
     const run = mod.getSubagentRunByChildSessionKey("agent:main:subagent:child");
     expect(run).not.toBeNull();
@@ -910,29 +828,14 @@ describe("subagent registry seam flow", () => {
         deliveredAt: startedAt + 30_000,
       },
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-non-explicit-timeout-corrected",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt,
-        endedAt: startedAt + 35_000,
-      },
+    emitLifecycle("run-non-explicit-timeout-corrected", {
+      phase: "end",
+      startedAt,
+      endedAt: startedAt + 35_000,
     });
 
     await waitForFast(() => {
-      const correctedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-non-explicit-timeout-corrected");
+      const correctedRun = findRun("run-non-explicit-timeout-corrected");
       expect(correctedRun?.endedAt).toBe(startedAt + 35_000);
       expectRecordFields(
         correctedRun?.outcome,
@@ -949,13 +852,9 @@ describe("subagent registry seam flow", () => {
 
   it("allows pre-deadline lifecycle timeouts to be corrected by lifecycle success", async () => {
     const startedAt = Date.parse("2026-03-24T11:59:00Z");
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-predeadline-timeout-corrected",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "pre-deadline timeout remains correctable",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
     const run = mod.getSubagentRunByChildSessionKey("agent:main:subagent:child");
@@ -976,29 +875,14 @@ describe("subagent registry seam flow", () => {
         deliveredAt: startedAt + 30_000,
       },
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-predeadline-timeout-corrected",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt,
-        endedAt: startedAt + 35_000,
-      },
+    emitLifecycle("run-predeadline-timeout-corrected", {
+      phase: "end",
+      startedAt,
+      endedAt: startedAt + 35_000,
     });
 
     await waitForFast(() => {
-      const correctedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-predeadline-timeout-corrected");
+      const correctedRun = findRun("run-predeadline-timeout-corrected");
       expect(correctedRun?.endedAt).toBe(startedAt + 35_000);
       expectRecordFields(
         correctedRun?.outcome,
@@ -1022,40 +906,21 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-lifecycle-timeout-after-deadline",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "post-deadline lifecycle timeout should cap",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-lifecycle-timeout-after-deadline",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt,
-        endedAt: startedAt + 2_000,
-        aborted: true,
-      },
+    emitLifecycle("run-lifecycle-timeout-after-deadline", {
+      phase: "end",
+      startedAt,
+      endedAt: startedAt + 2_000,
+      aborted: true,
     });
     await vi.advanceTimersByTimeAsync(30_000);
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-lifecycle-timeout-after-deadline");
+      const run = findRun("run-lifecycle-timeout-after-deadline");
       expect(run?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
         run?.outcome,
@@ -1087,49 +952,28 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-late-lifecycle-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "published timeout should ignore late timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
 
     await vi.advanceTimersByTimeAsync(5_000);
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-late-lifecycle-timeout");
+      const completedRun = findRun("run-timeout-late-lifecycle-timeout");
       expect(completedRun?.endedAt).toBe(startedAt + 1_000);
       expect(completedRun?.outcome?.status).toBe("timeout");
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-late-lifecycle-timeout",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: startedAt + 10,
-        endedAt: startedAt + 2_000,
-        aborted: true,
-      },
+    emitLifecycle("run-timeout-late-lifecycle-timeout", {
+      phase: "end",
+      startedAt: startedAt + 10,
+      endedAt: startedAt + 2_000,
+      aborted: true,
     });
     await vi.advanceTimersByTimeAsync(30_000);
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-late-lifecycle-timeout");
+      const run = findRun("run-timeout-late-lifecycle-timeout");
       expect(run?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
         run?.outcome,
@@ -1164,20 +1008,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-boundary-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "deadline skew should still timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
 
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-boundary-timeout");
+      const completedRun = findRun("run-boundary-timeout");
       expect(waitAttempts).toBe(1);
       expect(completedRun?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
@@ -1230,9 +1068,7 @@ describe("subagent registry seam flow", () => {
     mod.initSubagentRegistry();
 
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-resumed-late-success");
+      const completedRun = findRun("run-resumed-late-success");
       expect(completedRun?.endedAt).toBe(startedAt + 60_000);
       expectRecordFields(
         completedRun?.outcome,
@@ -1285,9 +1121,7 @@ describe("subagent registry seam flow", () => {
     mod.initSubagentRegistry();
 
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-resumed-observed-start");
+      const completedRun = findRun("run-resumed-observed-start");
       expect(completedRun?.endedAt).toBe(createdAt + 65_000);
       expectRecordFields(
         completedRun?.outcome,
@@ -1327,20 +1161,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-ok-session-store-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "respect restored success start",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-ok-session-store-start");
+      const completedRun = findRun("run-ok-session-store-start");
       expect(completedRun?.endedAt).toBe(createdAt + 65_000);
       expectRecordFields(
         completedRun?.outcome,
@@ -1379,13 +1207,9 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-plain-timeout-observed-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "do not timeout before observed start deadline",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
@@ -1448,20 +1272,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-plain-timeout-session-store-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "do not timeout before session store start deadline",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-plain-timeout-session-store-start");
+      const run = findRun("run-plain-timeout-session-store-start");
       expect(waitAttempts).toBeGreaterThanOrEqual(1);
       expect(run?.endedAt).toBeUndefined();
       expect(run?.outcome).toBeUndefined();
@@ -1472,9 +1290,7 @@ describe("subagent registry seam flow", () => {
     await vi.advanceTimersByTimeAsync(5_000);
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-plain-timeout-session-store-start");
+      const run = findRun("run-plain-timeout-session-store-start");
       expect(run?.endedAt).toBe(sessionStartedAt + 60_000);
       expectRecordFields(
         run?.outcome,
@@ -1513,20 +1329,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-wait-start-over-session-store-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "prefer wait observed start",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-wait-start-over-session-store-start");
+      const run = findRun("run-wait-start-over-session-store-start");
       expect(run?.endedAt).toBe(createdAt + 65_000);
       expectRecordFields(
         run?.outcome,
@@ -1563,20 +1373,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-session-store-start-after-wait-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "use session store observed start",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-session-store-start-after-wait-timeout");
+      const run = findRun("run-session-store-start-after-wait-timeout");
       expect(run?.endedAt).toBe(createdAt + 65_000);
       expectRecordFields(
         run?.outcome,
@@ -1613,20 +1417,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-ignore-stale-session-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "ignore stale session store start",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-ignore-stale-session-start");
+      const run = findRun("run-ignore-stale-session-start");
       expect(run?.endedAt).toBe(createdAt + 30_000);
       expectRecordFields(
         run?.outcome,
@@ -1661,20 +1459,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-session-row-no-start-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "terminal row without start still honors timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-session-row-no-start-timeout");
+      const run = findRun("run-session-row-no-start-timeout");
       expect(run?.endedAt).toBe(createdAt + 60_000);
       expectRecordFields(
         run?.outcome,
@@ -1729,9 +1521,7 @@ describe("subagent registry seam flow", () => {
 
     await waitForFast(() => {
       expect(waitTimeouts).toEqual([1_000]);
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-resumed-near-deadline");
+      const completedRun = findRun("run-resumed-near-deadline");
       expect(completedRun?.endedAt).toBe(startedAt + 60_000);
       expectRecordFields(
         completedRun?.outcome,
@@ -1771,20 +1561,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-terminal-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "time out terminally",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-terminal-timeout");
+      const run = findRun("run-terminal-timeout");
       expect(run?.endedAt).toBe(222);
       expectRecordFields(
         run?.outcome,
@@ -1825,20 +1609,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-attributed-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "time out before session metadata flush",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-attributed-timeout");
+      const run = findRun("run-attributed-timeout");
       expect(waitAttempts).toBe(1);
       expect(run?.endedAt).toBeLessThan(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "attributed timeout outcome");
@@ -1871,20 +1649,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-hard-wait-timeout-late-lifecycle-success",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "hard wait timeout then late lifecycle success",
-      cleanup: "keep",
     });
 
     let observedTimeoutAt: number | undefined;
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-hard-wait-timeout-late-lifecycle-success");
+      const run = findRun("run-hard-wait-timeout-late-lifecycle-success");
       expect(run?.endedAt).toBeGreaterThanOrEqual(timeoutAt);
       expect(run?.endedAt).toBeLessThan(timeoutAt + 100);
       observedTimeoutAt = run?.endedAt;
@@ -1902,29 +1674,14 @@ describe("subagent registry seam flow", () => {
       );
     });
     expect(observedTimeoutAt).toBeTypeOf("number");
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-hard-wait-timeout-late-lifecycle-success",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt,
-        endedAt: timeoutAt + 1_000,
-      },
+    emitLifecycle("run-hard-wait-timeout-late-lifecycle-success", {
+      phase: "end",
+      startedAt,
+      endedAt: timeoutAt + 1_000,
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-hard-wait-timeout-late-lifecycle-success");
+    const run = findRun("run-hard-wait-timeout-late-lifecycle-success");
     expect(run?.endedAt).toBe(observedTimeoutAt);
     expectRecordFields(
       run?.outcome,
@@ -1959,20 +1716,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-attributed-timeout-with-completion",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "finish before attributed timeout metadata",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-attributed-timeout-with-completion");
+      const run = findRun("run-attributed-timeout-with-completion");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:07Z"));
       expectRecordFields(run?.outcome, { status: "ok" }, "attributed completion outcome");
     });
@@ -2003,20 +1754,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-hard-wait-timeout-late-child-completion",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "late child completion after hard wait timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-hard-wait-timeout-late-child-completion");
+      const run = findRun("run-hard-wait-timeout-late-child-completion");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "late hard wait timeout outcome");
     });
@@ -2031,13 +1776,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
@@ -2046,9 +1787,7 @@ describe("subagent registry seam flow", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback");
+      const run = findRun("run-timeout-fallback");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "fallback timeout outcome");
     });
@@ -2070,21 +1809,15 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-late-success",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "late wait success must not overwrite timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await vi.advanceTimersByTimeAsync(23_000);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-late-success");
+      const run = findRun("run-timeout-fallback-late-success");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "fallback timeout outcome");
     });
@@ -2096,9 +1829,7 @@ describe("subagent registry seam flow", () => {
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-fallback-late-success");
+    const run = findRun("run-timeout-fallback-late-success");
     expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
     expectRecordFields(run?.outcome, { status: "timeout" }, "late wait preserved outcome");
   });
@@ -2112,29 +1843,13 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-start-untimed",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback after untimed start",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-    lifecycleHandler?.({
-      runId: "run-timeout-fallback-start-untimed",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-      },
+    emitLifecycle("run-timeout-fallback-start-untimed", {
+      phase: "start",
     });
 
     await vi.advanceTimersByTimeAsync(22_999);
@@ -2142,9 +1857,7 @@ describe("subagent registry seam flow", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-start-untimed");
+      const run = findRun("run-timeout-fallback-start-untimed");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "untimed start timeout outcome");
     });
@@ -2160,30 +1873,14 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-start-late",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback after late start",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-    lifecycleHandler?.({
-      runId: "run-timeout-fallback-start-late",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: Date.parse("2026-03-24T12:00:20Z"),
-      },
+    emitLifecycle("run-timeout-fallback-start-late", {
+      phase: "start",
+      startedAt: Date.parse("2026-03-24T12:00:20Z"),
     });
 
     await vi.advanceTimersByTimeAsync(22_999);
@@ -2191,9 +1888,7 @@ describe("subagent registry seam flow", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-start-late");
+      const run = findRun("run-timeout-fallback-start-late");
       expect(run?.startedAt).toBe(Date.parse("2026-03-24T12:00:00Z"));
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "late start timeout outcome");
@@ -2210,13 +1905,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-accepted-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback after accepted start",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
@@ -2234,9 +1925,7 @@ describe("subagent registry seam flow", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-accepted-start");
+      const run = findRun("run-timeout-fallback-accepted-start");
       expect(run?.startedAt).toBe(Date.parse("2026-03-24T12:00:05Z"));
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:13Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "accepted start timeout outcome");
@@ -2256,29 +1945,21 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-late-wait-ok",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback after late wait success",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await vi.advanceTimersByTimeAsync(22_999);
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
-    const pendingRun = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-fallback-late-wait-ok");
+    const pendingRun = findRun("run-timeout-fallback-late-wait-ok");
     expect(pendingRun?.endedAt).toBeUndefined();
     expect(pendingRun?.outcome).toBeUndefined();
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-late-wait-ok");
+      const run = findRun("run-timeout-fallback-late-wait-ok");
       expect(run?.startedAt).toBe(Date.parse("2026-03-24T12:00:00Z"));
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "late wait success timeout outcome");
@@ -2299,20 +1980,14 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-late-earlier-wait-ok",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback corrected by late earlier wait success",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-late-earlier-wait-ok");
+      const run = findRun("run-timeout-fallback-late-earlier-wait-ok");
       expect(run?.startedAt).toBe(Date.parse("2026-03-24T12:00:00Z"));
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:07Z"));
       expectRecordFields(run?.outcome, { status: "ok" }, "late earlier wait success outcome");
@@ -2332,20 +2007,14 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-late-wait-error",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback after late wait error",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-late-wait-error");
+      const run = findRun("run-timeout-fallback-late-wait-error");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "late wait error timeout outcome");
     });
@@ -2360,40 +2029,22 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-late-blocked-lifecycle",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback after late blocked lifecycle",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-    lifecycleHandler?.({
-      runId: "run-timeout-fallback-late-blocked-lifecycle",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        aborted: true,
-        endedAt: Date.parse("2026-03-24T12:00:08Z"),
-        livenessState: "blocked",
-        error: "request aborted",
-      },
+    emitLifecycle("run-timeout-fallback-late-blocked-lifecycle", {
+      phase: "end",
+      aborted: true,
+      endedAt: Date.parse("2026-03-24T12:00:08Z"),
+      livenessState: "blocked",
+      error: "request aborted",
     });
 
     await vi.advanceTimersByTimeAsync(0);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-late-blocked-lifecycle");
+      const run = findRun("run-timeout-fallback-late-blocked-lifecycle");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(
         run?.outcome,
@@ -2414,21 +2065,15 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-untimed-wait-ok",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback after untimed wait success",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await vi.advanceTimersByTimeAsync(23_000);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-untimed-wait-ok");
+      const run = findRun("run-timeout-fallback-untimed-wait-ok");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(
         run?.outcome,
@@ -2456,21 +2101,15 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-done",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback done",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await vi.advanceTimersByTimeAsync(23_000);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-done");
+      const run = findRun("run-timeout-fallback-done");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:07Z"));
       expectRecordFields(run?.outcome, { status: "ok" }, "fallback completion outcome");
     });
@@ -2498,20 +2137,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-late-child-completion",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "late child completion",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-late-child-completion");
+      const run = findRun("run-timeout-late-child-completion");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "late completion timeout outcome");
     });
@@ -2535,43 +2168,24 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-hard-event",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback with hard event",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
     await vi.advanceTimersByTimeAsync(10_000);
-    lifecycleHandler?.({
-      runId: "run-timeout-fallback-hard-event",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: Date.parse("2026-03-24T12:00:00Z"),
-        endedAt: Date.parse("2026-03-24T12:00:08Z"),
-        aborted: true,
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-      },
+    emitLifecycle("run-timeout-fallback-hard-event", {
+      phase: "end",
+      startedAt: Date.parse("2026-03-24T12:00:00Z"),
+      endedAt: Date.parse("2026-03-24T12:00:08Z"),
+      aborted: true,
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
     });
 
     await vi.advanceTimersByTimeAsync(13_000);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-hard-event");
+      const run = findRun("run-timeout-fallback-hard-event");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:07Z"));
       expectRecordFields(run?.outcome, { status: "ok" }, "merged fallback completion outcome");
     });
@@ -2585,20 +2199,14 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-large-timeout-fallback",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "large timeout fallback",
-      cleanup: "keep",
       runTimeoutSeconds: 60 * 60 * 24 * 30,
     });
 
     await vi.advanceTimersByTimeAsync(1);
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-large-timeout-fallback");
+    const run = findRun("run-large-timeout-fallback");
     expect(run?.endedAt).toBeUndefined();
     expect(run?.outcome).toBeUndefined();
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
@@ -2622,13 +2230,9 @@ describe("subagent registry seam flow", () => {
     });
     mocks.getAgentRunContext.mockReturnValue({ runId: "run-large-timeout-fallback-late-success" });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-large-timeout-fallback-late-success",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "large timeout fallback should use clamped deadline",
-      cleanup: "keep",
       runTimeoutSeconds: 60 * 60 * 24 * 30,
     });
 
@@ -2636,9 +2240,7 @@ describe("subagent registry seam flow", () => {
       MAX_SUBAGENT_RUN_TIMEOUT_MS + SUBAGENT_RUN_TIMEOUT_RECONCILIATION_GRACE_MS,
     );
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-large-timeout-fallback-late-success");
+      const run = findRun("run-large-timeout-fallback-late-success");
       expect(run?.endedAt).toBe(startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS);
       expectRecordFields(
         run?.outcome,
@@ -2651,29 +2253,14 @@ describe("subagent registry seam flow", () => {
         "clamped timeout fallback outcome",
       );
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-large-timeout-fallback-late-success",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt,
-        endedAt: startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS + 1_000,
-      },
+    emitLifecycle("run-large-timeout-fallback-late-success", {
+      phase: "end",
+      startedAt,
+      endedAt: startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS + 1_000,
     });
     await vi.advanceTimersByTimeAsync(0);
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-large-timeout-fallback-late-success");
+    const run = findRun("run-large-timeout-fallback-late-success");
     expect(run?.endedAt).toBe(startedAt + MAX_SUBAGENT_RUN_TIMEOUT_MS);
     expect(run?.outcome?.status).toBe("timeout");
     expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
@@ -2702,20 +2289,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-hard-timeout-session-failed",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "time out while session store records failure text",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-hard-timeout-session-failed");
+      const run = findRun("run-hard-timeout-session-failed");
       expect(run?.endedAt).toBe(base + 222);
       expectRecordFields(run?.outcome, { status: "timeout" }, "terminal timeout outcome");
     });
@@ -2745,20 +2326,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-hard-timeout-earlier-session-failed",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "fail before timeout attribution",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-hard-timeout-earlier-session-failed");
+      const run = findRun("run-hard-timeout-earlier-session-failed");
       expect(run?.endedAt).toBe(base + 200);
       expectRecordFields(run?.outcome, { status: "error" }, "earlier failure outcome");
     });
@@ -2786,20 +2361,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-terminal-timeout-capped",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "cap terminal timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 1,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-terminal-timeout-capped");
+      const run = findRun("run-terminal-timeout-capped");
       expect(run?.endedAt).toBe(startedAt + 1_000);
       expectRecordFields(
         run?.outcome,
@@ -2838,20 +2407,14 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-terminal-timeout-observed-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "cap timeout using observed start",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-terminal-timeout-observed-start");
+      const run = findRun("run-terminal-timeout-observed-start");
       expect(run?.endedAt).toBe(observedStartedAt + 60_000);
       expectRecordFields(
         run?.outcome,
@@ -2900,21 +2463,15 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-reactivated-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "new run after stale terminal row",
-      cleanup: "keep",
     });
 
     await waitForFast(() => {
       expect(waitAttempts).toBeGreaterThanOrEqual(2);
     });
-    const activeRun = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-reactivated-timeout");
+    const activeRun = findRun("run-reactivated-timeout");
     expect(activeRun?.endedAt).toBeUndefined();
     expect(activeRun?.outcome).toBeUndefined();
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
@@ -2925,9 +2482,7 @@ describe("subagent registry seam flow", () => {
       endedAt: Date.parse("2026-03-24T12:00:02Z"),
     });
     await waitForFast(() => {
-      const completedRun = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-reactivated-timeout");
+      const completedRun = findRun("run-reactivated-timeout");
       expectRecordFields(completedRun?.outcome, { status: "ok" }, "reactivated run outcome");
     });
   });
@@ -2947,20 +2502,14 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-yield-paused",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "wait for child continuation",
-      cleanup: "keep",
       runTimeoutSeconds: 0,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-yield-paused");
+      const run = findRun("run-yield-paused");
       expect(run?.endedAt).toBe(222);
       expect(run?.pauseReason).toBe("sessions_yield");
     });
@@ -2968,9 +2517,7 @@ describe("subagent registry seam flow", () => {
     expect(mod.countPendingDescendantRuns("agent:main:main")).toBe(1);
 
     await vi.advanceTimersByTimeAsync(23_000);
-    const yieldedRun = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-yield-paused");
+    const yieldedRun = findRun("run-yield-paused");
     expect(yieldedRun?.pauseReason).toBe("sessions_yield");
     expect(yieldedRun?.outcome).toBeUndefined();
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
@@ -2981,9 +2528,7 @@ describe("subagent registry seam flow", () => {
         nextRunId: "run-yield-continuation",
       }),
     ).toBe(true);
-    const replacement = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-yield-continuation");
+    const replacement = findRun("run-yield-continuation");
     expect(replacement?.runId).toBe("run-yield-continuation");
     expect(replacement?.pauseReason).toBeUndefined();
     expect(replacement?.endedAt).toBeUndefined();
@@ -3004,29 +2549,21 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-yield-paused-explicit-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "wait for child explicit timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-yield-paused-explicit-timeout");
+      const run = findRun("run-yield-paused-explicit-timeout");
       expect(run?.pauseReason).toBe("sessions_yield");
       expect(run?.outcome).toBeUndefined();
     });
 
     await vi.advanceTimersByTimeAsync(23_000);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-yield-paused-explicit-timeout");
+      const run = findRun("run-yield-paused-explicit-timeout");
       expect(run?.pauseReason).toBeUndefined();
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "paused fallback timeout outcome");
@@ -3049,50 +2586,29 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-yield-paused-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "wait for child timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-yield-paused-timeout");
+      const run = findRun("run-yield-paused-timeout");
       expect(run?.pauseReason).toBe("sessions_yield");
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-yield-paused-timeout",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 111,
-        endedAt: 8_000,
-        livenessState: "blocked",
-        error: "Request timed out while waiting for tool execution to finish.",
-        timeoutPhase: "post_turn",
-        providerStarted: true,
-      },
+    emitLifecycle("run-yield-paused-timeout", {
+      phase: "end",
+      startedAt: 111,
+      endedAt: 8_000,
+      livenessState: "blocked",
+      error: "Request timed out while waiting for tool execution to finish.",
+      timeoutPhase: "post_turn",
+      providerStarted: true,
     });
 
     await vi.advanceTimersByTimeAsync(0);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-yield-paused-timeout");
+      const run = findRun("run-yield-paused-timeout");
       expect(run?.pauseReason).toBeUndefined();
       expect(run?.endedAt).toBe(8_000);
       expectRecordFields(run?.outcome, { status: "timeout" }, "paused hard timeout outcome");
@@ -3115,28 +2631,20 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-with-stale-yield",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout must beat stale yielded metadata",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
     await vi.advanceTimersByTimeAsync(22_999);
-    const pending = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-with-stale-yield");
+    const pending = findRun("run-timeout-with-stale-yield");
     expect(pending?.pauseReason).toBeUndefined();
     expect(pending?.outcome).toBeUndefined();
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-with-stale-yield");
+      const run = findRun("run-timeout-with-stale-yield");
       expect(run?.pauseReason).toBeUndefined();
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "stale yield timeout outcome");
@@ -3152,13 +2660,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-replace-old-timeout",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "replace old timeout",
-      cleanup: "keep",
       runTimeoutSeconds: 8,
     });
 
@@ -3168,20 +2672,9 @@ describe("subagent registry seam flow", () => {
         nextRunId: "run-replace-new-no-timeout",
       }),
     ).toBe(true);
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-    lifecycleHandler?.({
-      runId: "run-replace-new-no-timeout",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: Date.now(),
-      },
+    emitLifecycle("run-replace-new-no-timeout", {
+      phase: "start",
+      startedAt: Date.now(),
     });
 
     await vi.advanceTimersByTimeAsync(22_999);
@@ -3189,9 +2682,7 @@ describe("subagent registry seam flow", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     await waitForFast(() => {
-      const replacement = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-replace-new-no-timeout");
+      const replacement = findRun("run-replace-new-no-timeout");
       expect(replacement?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(
         replacement?.outcome,
@@ -3217,13 +2708,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-blocked-wait",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "overflow wait",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
 
@@ -3247,9 +2734,7 @@ describe("subagent registry seam flow", () => {
       "blocked wait announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-blocked-wait");
+    const run = findRun("run-blocked-wait");
     expect(run?.endedReason).toBe("subagent-error");
     expect(run?.outcome?.status).toBe("error");
   });
@@ -3267,13 +2752,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-aborted-wait",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "aborted wait",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
 
@@ -3297,9 +2778,7 @@ describe("subagent registry seam flow", () => {
       "aborted wait announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-aborted-wait");
+    const run = findRun("run-aborted-wait");
     expect(run?.endedReason).toBe("subagent-killed");
     expect(run?.outcome?.status).toBe("error");
   });
@@ -3317,13 +2796,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-aborted-timeout-wait",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "aborted timeout wait",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
 
@@ -3347,9 +2822,7 @@ describe("subagent registry seam flow", () => {
       "aborted timeout wait announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-aborted-timeout-wait");
+    const run = findRun("run-aborted-timeout-wait");
     expect(run?.endedReason).toBe("subagent-killed");
     expect(run?.outcome?.status).toBe("error");
   });
@@ -3368,13 +2841,9 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-blocked-timeout-wait",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "blocked timeout wait",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
 
@@ -3398,9 +2867,7 @@ describe("subagent registry seam flow", () => {
       "blocked timeout wait announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-blocked-timeout-wait");
+    const run = findRun("run-blocked-timeout-wait");
     expect(run?.endedReason).toBe("subagent-error");
     expect(run?.outcome?.status).toBe("error");
   });
@@ -3426,13 +2893,9 @@ describe("subagent registry seam flow", () => {
     });
 
     vi.setSystemTime(persistedStartedAt - 1);
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-stale-terminal",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "settle from persisted terminal state",
-      cleanup: "keep",
     });
 
     vi.setSystemTime(new Date("2026-03-24T12:02:00Z"));
@@ -3457,9 +2920,7 @@ describe("subagent registry seam flow", () => {
       );
     });
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-stale-terminal");
+    const run = findRun("run-stale-terminal");
     expect(run?.endedAt).toBe(persistedEndedAt);
     expectRecordFields(
       run?.outcome,
@@ -3493,13 +2954,9 @@ describe("subagent registry seam flow", () => {
     });
 
     vi.setSystemTime(createdAt);
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-sweep-session-start",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "sweep should respect session store start",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
@@ -3507,9 +2964,7 @@ describe("subagent registry seam flow", () => {
     await mod.testing.sweepOnceForTests();
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-sweep-session-start");
+      const run = findRun("run-sweep-session-start");
       expect(run?.endedAt).toBe(sessionEndedAt);
       expectRecordFields(
         run?.outcome,
@@ -3541,13 +2996,9 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-stale-aborted",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "resume after restart",
-      cleanup: "keep",
     });
 
     vi.setSystemTime(new Date("2026-03-24T12:02:00Z"));
@@ -3561,20 +3012,15 @@ describe("subagent registry seam flow", () => {
       );
     });
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-stale-aborted");
+    const run = findRun("run-stale-aborted");
     expect(run?.endedAt).toBeUndefined();
     expect(run?.outcome).toBeUndefined();
   });
 
   it("completes a registered run across timing persistence, lifecycle status, and announce cleanup", async () => {
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-1",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
       requesterOrigin: { channel: " quietchat ", accountId: " acct-1 " },
-      requesterDisplayKey: "main",
       task: "finish the task",
       cleanup: "delete",
     });
@@ -3648,13 +3094,9 @@ describe("subagent registry seam flow", () => {
     });
 
     expect(() =>
-      mod.registerSubagentRun({
+      registerRun({
         runId: "run-durability-required",
-        childSessionKey: "agent:main:subagent:child",
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
         task: "must fail closed",
-        cleanup: "keep",
       }),
     ).toThrowError("disk full");
 
@@ -3670,13 +3112,9 @@ describe("subagent registry seam flow", () => {
       new Error("browser cleanup unavailable"),
     );
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-cleanup-warning",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "finish despite cleanup warning",
-      cleanup: "keep",
     });
 
     await waitForFast(() => {
@@ -3694,9 +3132,7 @@ describe("subagent registry seam flow", () => {
       "completion announce params",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-cleanup-warning");
+    const run = findRun("run-cleanup-warning");
     expect(run?.cleanupCompletedAt).toBeTypeOf("number");
   });
 
@@ -3708,42 +3144,21 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-blocked-end",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "overflow task",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-blocked-end",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: 10,
-      },
+    emitLifecycle("run-blocked-end", {
+      phase: "start",
+      startedAt: 10,
     });
-    lifecycleHandler?.({
-      runId: "run-blocked-end",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 10,
-        endedAt: 20,
-        livenessState: "blocked",
-        error: "Context overflow: prompt too large for the model.",
-      },
+    emitLifecycle("run-blocked-end", {
+      phase: "end",
+      startedAt: 10,
+      endedAt: 20,
+      livenessState: "blocked",
+      error: "Context overflow: prompt too large for the model.",
     });
 
     await waitForFast(() => {
@@ -3766,9 +3181,7 @@ describe("subagent registry seam flow", () => {
       "blocked announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-blocked-end");
+    const run = findRun("run-blocked-end");
     expect(run?.endedReason).toBe("subagent-error");
     expect(run?.outcome?.status).toBe("error");
   });
@@ -3781,44 +3194,23 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-error",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout error task",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-error",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: 10,
-      },
+    emitLifecycle("run-timeout-error", {
+      phase: "start",
+      startedAt: 10,
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-error",
-      stream: "lifecycle",
-      data: {
-        phase: "error",
-        startedAt: 10,
-        endedAt: 20,
-        livenessState: "blocked",
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-timeout-error", {
+      phase: "error",
+      startedAt: 10,
+      endedAt: 20,
+      livenessState: "blocked",
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -3841,9 +3233,7 @@ describe("subagent registry seam flow", () => {
       "timeout announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-error");
+    const run = findRun("run-timeout-error");
     expect(run?.endedReason).toBe("subagent-complete");
     expect(run?.outcome?.status).toBe("timeout");
   });
@@ -3856,34 +3246,18 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-duplicate-timeout-events",
       childSessionKey: "agent:main:subagent:duplicate-timeout",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "duplicate timeout events",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-duplicate-timeout-events",
-      stream: "lifecycle",
-      data: {
-        phase: "error",
-        endedAt: 20,
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-duplicate-timeout-events", {
+      phase: "error",
+      endedAt: 20,
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -3891,16 +3265,12 @@ describe("subagent registry seam flow", () => {
       expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
     });
 
-    lifecycleHandler?.({
-      runId: "run-duplicate-timeout-events",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        endedAt: 25,
-        livenessState: "blocked",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-duplicate-timeout-events", {
+      phase: "end",
+      endedAt: 25,
+      livenessState: "blocked",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
 
     await vi.advanceTimersByTimeAsync(15_000);
@@ -3928,44 +3298,23 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-end",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout end task",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-end",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: 10,
-      },
+    emitLifecycle("run-timeout-end", {
+      phase: "start",
+      startedAt: 10,
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-end",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 10,
-        endedAt: 20,
-        livenessState: "blocked",
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-timeout-end", {
+      phase: "end",
+      startedAt: 10,
+      endedAt: 20,
+      livenessState: "blocked",
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -3988,9 +3337,7 @@ describe("subagent registry seam flow", () => {
       "timeout end announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-end");
+    const run = findRun("run-timeout-end");
     expect(run?.endedReason).toBe("subagent-complete");
     expect(run?.outcome?.status).toBe("timeout");
   });
@@ -4012,51 +3359,28 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-end-earlier-session-completion",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout end with earlier session completion",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-end-earlier-session-completion",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: 10,
-      },
+    emitLifecycle("run-timeout-end-earlier-session-completion", {
+      phase: "start",
+      startedAt: 10,
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-end-earlier-session-completion",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 10,
-        endedAt: 20,
-        livenessState: "blocked",
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-timeout-end-earlier-session-completion", {
+      phase: "end",
+      startedAt: 10,
+      endedAt: 20,
+      livenessState: "blocked",
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
 
     await vi.advanceTimersByTimeAsync(0);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-end-earlier-session-completion");
+      const run = findRun("run-timeout-end-earlier-session-completion");
       expect(run?.endedAt).toBe(18);
       expectRecordFields(run?.outcome, { status: "ok" }, "hard timeout corrected outcome");
     });
@@ -4080,52 +3404,29 @@ describe("subagent registry seam flow", () => {
       },
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-end-late-session-completion",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout end with late session completion",
-      cleanup: "keep",
       expectsCompletionMessage: true,
       runTimeoutSeconds: 8,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-end-late-session-completion",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: Date.parse("2026-03-24T12:00:00Z"),
-      },
+    emitLifecycle("run-timeout-end-late-session-completion", {
+      phase: "start",
+      startedAt: Date.parse("2026-03-24T12:00:00Z"),
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-end-late-session-completion",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: Date.parse("2026-03-24T12:00:00Z"),
-        endedAt: Date.parse("2026-03-24T12:00:10Z"),
-        livenessState: "blocked",
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-timeout-end-late-session-completion", {
+      phase: "end",
+      startedAt: Date.parse("2026-03-24T12:00:00Z"),
+      endedAt: Date.parse("2026-03-24T12:00:10Z"),
+      livenessState: "blocked",
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
 
     await vi.advanceTimersByTimeAsync(0);
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-end-late-session-completion");
+      const run = findRun("run-timeout-end-late-session-completion");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:08Z"));
       expectRecordFields(run?.outcome, { status: "timeout" }, "late lifecycle timeout outcome");
     });
@@ -4140,53 +3441,28 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-then-late-ok",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout then late ok task",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-then-late-ok",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: 10,
-      },
+    emitLifecycle("run-timeout-then-late-ok", {
+      phase: "start",
+      startedAt: 10,
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-then-late-ok",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 10,
-        endedAt: 20,
-        aborted: true,
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-timeout-then-late-ok", {
+      phase: "end",
+      startedAt: 10,
+      endedAt: 20,
+      aborted: true,
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-then-late-ok",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 10,
-        endedAt: 30,
-      },
+    emitLifecycle("run-timeout-then-late-ok", {
+      phase: "end",
+      startedAt: 10,
+      endedAt: 30,
     });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -4209,9 +3485,7 @@ describe("subagent registry seam flow", () => {
       "late ok timeout outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-then-late-ok");
+    const run = findRun("run-timeout-then-late-ok");
     expect(run?.endedReason).toBe("subagent-complete");
     expect(run?.outcome?.status).toBe("timeout");
   });
@@ -4224,50 +3498,27 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-fallback-transient-abort",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout fallback transient abort task",
-      cleanup: "keep",
       expectsCompletionMessage: true,
       runTimeoutSeconds: 8,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-fallback-transient-abort",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: Date.parse("2026-03-24T12:00:00Z"),
-        endedAt: Date.parse("2026-03-24T12:00:05Z"),
-        aborted: true,
-        error: "Request timed out before a response was generated.",
-      },
+    emitLifecycle("run-timeout-fallback-transient-abort", {
+      phase: "end",
+      startedAt: Date.parse("2026-03-24T12:00:00Z"),
+      endedAt: Date.parse("2026-03-24T12:00:05Z"),
+      aborted: true,
+      error: "Request timed out before a response was generated.",
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-fallback-transient-abort",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: Date.parse("2026-03-24T12:00:00Z"),
-        endedAt: Date.parse("2026-03-24T12:00:06Z"),
-      },
+    emitLifecycle("run-timeout-fallback-transient-abort", {
+      phase: "end",
+      startedAt: Date.parse("2026-03-24T12:00:00Z"),
+      endedAt: Date.parse("2026-03-24T12:00:06Z"),
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-timeout-fallback-transient-abort");
+      const run = findRun("run-timeout-fallback-transient-abort");
       expect(run?.endedAt).toBe(Date.parse("2026-03-24T12:00:06Z"));
       expectRecordFields(run?.outcome, { status: "ok" }, "transient abort corrected outcome");
     });
@@ -4281,46 +3532,25 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-then-late-error",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout then late error task",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-then-late-error",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 10,
-        endedAt: 20,
-        aborted: true,
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-timeout-then-late-error", {
+      phase: "end",
+      startedAt: 10,
+      endedAt: 20,
+      aborted: true,
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
-    lifecycleHandler?.({
-      runId: "run-timeout-then-late-error",
-      stream: "lifecycle",
-      data: {
-        phase: "error",
-        startedAt: 10,
-        endedAt: 30,
-        error: "agent run aborted",
-      },
+    emitLifecycle("run-timeout-then-late-error", {
+      phase: "error",
+      startedAt: 10,
+      endedAt: 30,
+      error: "agent run aborted",
     });
 
     await vi.advanceTimersByTimeAsync(0);
@@ -4343,9 +3573,7 @@ describe("subagent registry seam flow", () => {
       "late error timeout outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-then-late-error");
+    const run = findRun("run-timeout-then-late-error");
     expect(run?.outcome?.status).toBe("timeout");
   });
 
@@ -4357,43 +3585,22 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-aborted-end",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "aborted task",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-aborted-end",
-      stream: "lifecycle",
-      data: {
-        phase: "start",
-        startedAt: 10,
-      },
+    emitLifecycle("run-aborted-end", {
+      phase: "start",
+      startedAt: 10,
     });
-    lifecycleHandler?.({
-      runId: "run-aborted-end",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 10,
-        endedAt: 20,
-        aborted: true,
-        livenessState: "blocked",
-        stopReason: "aborted",
-      },
+    emitLifecycle("run-aborted-end", {
+      phase: "end",
+      startedAt: 10,
+      endedAt: 20,
+      aborted: true,
+      livenessState: "blocked",
+      stopReason: "aborted",
     });
 
     await waitForFast(() => {
@@ -4416,9 +3623,7 @@ describe("subagent registry seam flow", () => {
       "aborted announce outcome",
     );
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-aborted-end");
+    const run = findRun("run-aborted-end");
     expect(run?.endedReason).toBe("subagent-killed");
     expect(run?.outcome?.status).toBe("error");
 
@@ -4437,45 +3642,22 @@ describe("subagent registry seam flow", () => {
       .mockRejectedValueOnce(new Error("runtime unavailable before cleanup"))
       .mockRejectedValueOnce(new Error("runtime still unavailable before cleanup"));
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-killed-recovery",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "killed recovery test",
-      cleanup: "keep",
       expectsCompletionMessage: false,
     });
+    emitLifecycle("run-killed-recovery", { phase: "start", startedAt: 100 });
 
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-killed-recovery",
-      stream: "lifecycle",
-      data: { phase: "start", startedAt: 100 },
-    });
-
-    lifecycleHandler?.({
-      runId: "run-killed-recovery",
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 100,
-        endedAt: 200,
-        stopReason: "aborted",
-      },
+    emitLifecycle("run-killed-recovery", {
+      phase: "end",
+      startedAt: 100,
+      endedAt: 200,
+      stopReason: "aborted",
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-killed-recovery");
+      const run = findRun("run-killed-recovery");
       expect(mocks.ensureRuntimePluginsLoaded).toHaveBeenCalledTimes(2);
       expect(run?.outcome?.status).toBe("error");
       expect(run?.endedReason).toBe("subagent-killed");
@@ -4485,50 +3667,36 @@ describe("subagent registry seam flow", () => {
   });
 
   it("preserves run-mode keep entries past SESSION_RUN_TTL_MS sweep", async () => {
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-keep-survives-ttl",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "keep me past the session ttl",
-      cleanup: "keep",
       spawnMode: "run",
     });
 
     await waitForFast(() => {
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-keep-survives-ttl");
+      const run = findRun("run-keep-survives-ttl");
       expect(run?.cleanupCompletedAt).toBeTypeOf("number");
     });
 
     vi.setSystemTime(new Date(Date.parse("2026-03-24T12:00:00Z") + 10 * 60_000));
     await mod.testing.sweepOnceForTests();
 
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-keep-survives-ttl");
+    const run = findRun("run-keep-survives-ttl");
     expect(run?.runId).toBe("run-keep-survives-ttl");
   });
 
   it("retries completion hooks before resuming ended cleanup", async () => {
     mocks.ensureRuntimePluginsLoaded.mockRejectedValueOnce(new Error("runtime unavailable"));
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-hook-retry",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "finish after hook retry",
-      cleanup: "keep",
       expectsCompletionMessage: false,
     });
 
     await waitForFast(() => {
       expect(mocks.ensureRuntimePluginsLoaded).toHaveBeenCalledTimes(2);
-      const run = mod
-        .listSubagentRunsForRequester("agent:main:main")
-        .find((entry) => entry.runId === "run-hook-retry");
+      const run = findRun("run-hook-retry");
       expect(run?.cleanupCompletedAt).toBeTypeOf("number");
     });
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
@@ -4542,29 +3710,12 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-then-ok",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout retry",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-then-ok",
-      stream: "lifecycle",
-      data: { phase: "end", endedAt: 1_000, aborted: true },
-    });
+    emitLifecycle("run-timeout-then-ok", { phase: "end", endedAt: 1_000, aborted: true });
     await Promise.resolve();
     await Promise.resolve();
 
@@ -4573,11 +3724,7 @@ describe("subagent registry seam flow", () => {
     await vi.advanceTimersByTimeAsync(14_999);
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
 
-    lifecycleHandler?.({
-      runId: "run-timeout-then-ok",
-      stream: "lifecycle",
-      data: { phase: "end", endedAt: 1_250 },
-    });
+    emitLifecycle("run-timeout-then-ok", { phase: "end", endedAt: 1_250 });
 
     await waitForFast(() => {
       expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
@@ -4609,11 +3756,8 @@ describe("subagent registry seam flow", () => {
       endedAt,
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-delete-give-up",
-      childSessionKey: "agent:main:subagent:child",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "completion cleanup retry",
       cleanup: "delete",
       expectsCompletionMessage: true,
@@ -4741,9 +3885,7 @@ describe("subagent registry seam flow", () => {
     await Promise.resolve();
 
     expect(mocks.runSubagentAnnounceFlow).not.toHaveBeenCalled();
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-resume-keep");
+    const run = findRun("run-resume-keep");
     expect(run).toMatchObject({
       delivery: {
         status: "suspended",
@@ -4802,9 +3944,7 @@ describe("subagent registry seam flow", () => {
       }),
     ).toBe(true);
 
-    const replacement = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-suspended-new");
+    const replacement = findRun("run-suspended-new");
     expect(replacement).toMatchObject({
       runId: "run-suspended-new",
       cleanup: "keep",
@@ -4843,13 +3983,11 @@ describe("subagent registry seam flow", () => {
       cleanupCompletedAt: undefined,
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-child-finished",
-      childSessionKey: "agent:main:subagent:child",
       requesterSessionKey: "agent:main:subagent:parent",
       requesterDisplayKey: "parent",
       task: "descendant settles",
-      cleanup: "keep",
     });
 
     await waitForFast(() => {
@@ -4885,14 +4023,11 @@ describe("subagent registry seam flow", () => {
       mocks.getGlobalHookRunner.mockReturnValue(endedHookRunner as never);
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-killed-init",
       childSessionKey: "agent:main:subagent:killed",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       requesterOrigin: { channel: "quietchat", accountId: "acct-1" },
       task: "kill after init",
-      cleanup: "keep",
       workspaceDir: "/tmp/killed-workspace",
     });
 
@@ -4902,9 +4037,7 @@ describe("subagent registry seam flow", () => {
     });
 
     expect(updated).toBe(1);
-    const killedRun = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-killed-init");
+    const killedRun = findRun("run-killed-init");
     const killedAt = Date.parse("2026-03-24T12:00:00Z");
     expect(killedRun?.outcome).toEqual({
       status: "error",
@@ -4954,34 +4087,18 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-timeout-then-killed",
       childSessionKey: "agent:main:subagent:timeout-then-killed",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "timeout then killed",
-      cleanup: "keep",
       expectsCompletionMessage: true,
     });
-
-    const lastOnAgentEventCall = mocks.onAgentEvent.mock.calls[
-      mocks.onAgentEvent.mock.calls.length - 1
-    ] as unknown as
-      | [(evt: { runId: string; stream: string; data: Record<string, unknown> }) => void]
-      | undefined;
-    const lifecycleHandler = lastOnAgentEventCall?.[0];
-    expect(lifecycleHandler).toBeTypeOf("function");
-
-    lifecycleHandler?.({
-      runId: "run-timeout-then-killed",
-      stream: "lifecycle",
-      data: {
-        phase: "error",
-        endedAt: Date.parse("2026-03-24T12:00:01Z"),
-        error: "Request timed out before a response was generated.",
-        timeoutPhase: "provider",
-        providerStarted: true,
-      },
+    emitLifecycle("run-timeout-then-killed", {
+      phase: "error",
+      endedAt: Date.parse("2026-03-24T12:00:01Z"),
+      error: "Request timed out before a response was generated.",
+      timeoutPhase: "provider",
+      providerStarted: true,
     });
 
     expect(
@@ -4993,20 +4110,16 @@ describe("subagent registry seam flow", () => {
 
     await vi.advanceTimersByTimeAsync(15_000);
 
-    const killedRun = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-timeout-then-killed");
+    const killedRun = findRun("run-timeout-then-killed");
     expect(killedRun?.outcome?.status).toBe("error");
     expect(killedRun?.outcome?.error).toBe("manual kill");
     expect(killedRun?.endedReason).toBe("subagent-killed");
   });
 
   it("deletes killed delete-mode runs and notifies deleted cleanup", async () => {
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-killed-delete",
       childSessionKey: "agent:main:subagent:killed-delete",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "kill and delete",
       cleanup: "delete",
       workspaceDir: "/tmp/killed-delete-workspace",
@@ -5040,11 +4153,9 @@ describe("subagent registry seam flow", () => {
     await fs.mkdir(attachmentsDir, { recursive: true });
     await fs.writeFile(path.join(attachmentsDir, "artifact.txt"), "artifact");
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-killed-delete-attachments",
       childSessionKey: "agent:main:subagent:killed-delete-attachments",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "kill and delete attachments",
       cleanup: "delete",
       attachmentsDir,
@@ -5112,9 +4223,7 @@ describe("subagent registry seam flow", () => {
       );
       expect(String(outcome.error)).toContain("Automatic recovery failed after 2 attempts");
     });
-    const run = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-interrupted");
+    const run = findRun("run-interrupted");
     expect(run?.outcome).toEqual({
       status: "error",
       error:
@@ -5228,13 +4337,10 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-release-task",
       childSessionKey: "agent:main:subagent:release-task",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "registered task",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 
@@ -5257,13 +4363,10 @@ describe("subagent registry seam flow", () => {
       return {};
     });
 
-    mod.registerSubagentRun({
+    registerRun({
       runId: "run-discard-spawn-failed-task",
       childSessionKey: "agent:main:subagent:discard-spawn-failed-task",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
       task: "pre-acceptance spawn failed",
-      cleanup: "keep",
       runTimeoutSeconds: 60,
     });
 

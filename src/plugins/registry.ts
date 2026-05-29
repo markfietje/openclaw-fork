@@ -1970,9 +1970,50 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     record: PluginRecord,
     extension: PluginSessionExtensionRegistration,
   ) => {
-    const namespace = normalizeHostHookString(extension.namespace);
-    const description = normalizeHostHookString(extension.description);
-    const project = extension.project;
+    const namespaceValue = readHostHookField(extension, "namespace");
+    const descriptionValue = readHostHookField(extension, "description");
+    const projectValue = readHostHookField(extension, "project");
+    const cleanupValue = readHostHookField(extension, "cleanup");
+    const sessionEntrySlotKeyValue = readHostHookField(extension, "sessionEntrySlotKey");
+    const sessionEntrySlotSchemaValue = readHostHookField(extension, "sessionEntrySlotSchema");
+    const pushUnreadableDiagnostic = (field: keyof PluginSessionExtensionRegistration) => {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `session extension registration has unreadable field: ${field}`,
+      });
+    };
+    if (!namespaceValue.ok) {
+      pushUnreadableDiagnostic("namespace");
+      return;
+    }
+    if (!descriptionValue.ok) {
+      pushUnreadableDiagnostic("description");
+      return;
+    }
+    if (!projectValue.ok) {
+      pushUnreadableDiagnostic("project");
+      return;
+    }
+    if (!cleanupValue.ok) {
+      pushUnreadableDiagnostic("cleanup");
+      return;
+    }
+    if (!sessionEntrySlotKeyValue.ok) {
+      pushUnreadableDiagnostic("sessionEntrySlotKey");
+      return;
+    }
+    if (!sessionEntrySlotSchemaValue.ok) {
+      pushUnreadableDiagnostic("sessionEntrySlotSchema");
+      return;
+    }
+    const namespace = normalizeHostHookString(namespaceValue.value);
+    const description = normalizeHostHookString(descriptionValue.value);
+    const project = projectValue.value;
+    const cleanup = cleanupValue.value;
+    const sessionEntrySlotKey = sessionEntrySlotKeyValue.value;
+    const sessionEntrySlotSchema = sessionEntrySlotSchemaValue.value;
     let normalizedSessionEntrySlotKey: string | undefined;
     let invalidMessage: string | undefined;
     if (!namespace || !description) {
@@ -1981,10 +2022,12 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       invalidMessage = "session extension projector must be a function";
     } else if (project?.constructor?.name === "AsyncFunction") {
       invalidMessage = "session extension projector must be synchronous";
-    } else if (extension.cleanup !== undefined && typeof extension.cleanup !== "function") {
+    } else if (cleanup !== undefined && typeof cleanup !== "function") {
       invalidMessage = "session extension cleanup must be a function";
-    } else if (extension.sessionEntrySlotKey !== undefined) {
-      const slotKey = normalizeSessionEntrySlotKey(extension.sessionEntrySlotKey);
+    } else if (sessionEntrySlotSchema !== undefined && !isPluginJsonValue(sessionEntrySlotSchema)) {
+      invalidMessage = `session extension sessionEntrySlotSchema must be JSON-compatible: ${namespace}`;
+    } else if (sessionEntrySlotKey !== undefined) {
+      const slotKey = normalizeSessionEntrySlotKey(sessionEntrySlotKey);
       if (!slotKey.ok) {
         invalidMessage = slotKey.error;
       } else {
@@ -2000,6 +2043,8 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       });
       return;
     }
+    const entrySlotSchema =
+      sessionEntrySlotSchema as PluginSessionExtensionRegistration["sessionEntrySlotSchema"];
     const existing = (registry.sessionExtensions ?? []).find(
       (entry) => entry.pluginId === record.id && entry.extension.namespace === namespace,
     );
@@ -2038,12 +2083,18 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       pluginId: record.id,
       pluginName: record.name,
       extension: {
-        ...extension,
         namespace,
         description,
+        ...(project !== undefined
+          ? { project: project as PluginSessionExtensionRegistration["project"] }
+          : {}),
+        ...(cleanup !== undefined
+          ? { cleanup: cleanup as PluginSessionExtensionRegistration["cleanup"] }
+          : {}),
         ...(normalizedSessionEntrySlotKey
           ? { sessionEntrySlotKey: normalizedSessionEntrySlotKey }
           : {}),
+        ...(entrySlotSchema !== undefined ? { sessionEntrySlotSchema: entrySlotSchema } : {}),
       },
       source: record.source,
       rootDir: record.rootDir,
@@ -2063,9 +2114,33 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       });
       return;
     }
-    const id = normalizeHostHookString(policy.id);
-    const description = normalizeHostHookString(policy.description);
-    if (!id || !description || typeof policy.evaluate !== "function") {
+    const idValue = readHostHookField(policy, "id");
+    const descriptionValue = readHostHookField(policy, "description");
+    const evaluateValue = readHostHookField(policy, "evaluate");
+    const pushUnreadableDiagnostic = (field: keyof PluginTrustedToolPolicyRegistration) => {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `trusted tool policy registration has unreadable field: ${field}`,
+      });
+    };
+    if (!idValue.ok) {
+      pushUnreadableDiagnostic("id");
+      return;
+    }
+    if (!descriptionValue.ok) {
+      pushUnreadableDiagnostic("description");
+      return;
+    }
+    if (!evaluateValue.ok) {
+      pushUnreadableDiagnostic("evaluate");
+      return;
+    }
+    const id = normalizeHostHookString(idValue.value);
+    const description = normalizeHostHookString(descriptionValue.value);
+    const evaluate = evaluateValue.value;
+    if (!id || !description || typeof evaluate !== "function") {
       pushDiagnostic({
         level: "error",
         pluginId: record.id,
@@ -2088,9 +2163,9 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       pluginId: record.id,
       pluginName: record.name,
       policy: {
-        ...policy,
         id,
         description,
+        evaluate: evaluate as PluginTrustedToolPolicyRegistration["evaluate"],
       },
       source: record.source,
       rootDir: record.rootDir,

@@ -322,6 +322,64 @@ describe("host-hook fixture plugin contract", () => {
     });
   });
 
+  it("fails closed on unreadable session extension and trusted policy hooks without aborting plugin registration", () => {
+    const { config, registry } = createPluginRegistryFixture();
+    const extension: Record<string, unknown> = {
+      namespace: "mockplugin-workflow",
+      description: "Mock workflow state",
+      project: () => ({ ok: true }),
+    };
+    Object.defineProperty(extension, "sessionEntrySlotSchema", {
+      enumerable: true,
+      get() {
+        throw new Error("fuzzplugin session extension schema is unreadable");
+      },
+    });
+    const policy: Record<string, unknown> = {
+      id: "mockplugin-policy",
+      evaluate: () => undefined,
+    };
+    Object.defineProperty(policy, "description", {
+      enumerable: true,
+      get() {
+        throw new Error("fuzzplugin trusted policy description is unreadable");
+      },
+    });
+
+    registerTestPlugin({
+      registry,
+      config,
+      record: createPluginRecord({
+        id: "fuzzplugin",
+        name: "Fuzz Plugin",
+        origin: "bundled",
+      }),
+      register(api) {
+        api.registerSessionExtension(extension as never);
+        api.registerTrustedToolPolicy(policy as never);
+        api.registerCommand({
+          name: "mockplugin-extension",
+          description: "Healthy command sibling",
+          handler: async () => ({ text: "ok" }),
+        });
+      },
+    });
+
+    expect(registry.registry.sessionExtensions ?? []).toHaveLength(0);
+    expect(registry.registry.trustedToolPolicies ?? []).toHaveLength(0);
+    expect(registry.registry.commands.map((entry) => entry.command.name)).toEqual([
+      "mockplugin-extension",
+    ]);
+    expect(diagnosticSummaries(registry.registry.diagnostics)).toContainEqual({
+      pluginId: "fuzzplugin",
+      message: "session extension registration has unreadable field: sessionEntrySlotSchema",
+    });
+    expect(diagnosticSummaries(registry.registry.diagnostics)).toContainEqual({
+      pluginId: "fuzzplugin",
+      message: "trusted tool policy registration has unreadable field: description",
+    });
+  });
+
   it("rejects external plugins from trusted policy and reserved command ownership", () => {
     const { config, registry } = createPluginRegistryFixture();
     registerTestPlugin({

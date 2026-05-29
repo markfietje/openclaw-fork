@@ -164,6 +164,48 @@ describe("host-hook fixture plugin contract", () => {
     });
   });
 
+  it("fails closed on unreadable Control UI descriptors without aborting plugin registration", () => {
+    const { config, registry } = createPluginRegistryFixture();
+    const descriptor: Record<string, unknown> = {
+      id: "mockplugin-card",
+      surface: "session",
+      label: "Mock Card",
+    };
+    Object.defineProperty(descriptor, "schema", {
+      enumerable: true,
+      get() {
+        throw new Error("fuzzplugin control descriptor schema is unreadable");
+      },
+    });
+
+    registerTestPlugin({
+      registry,
+      config,
+      record: createPluginRecord({
+        id: "fuzzplugin",
+        name: "Fuzz Plugin",
+        origin: "workspace",
+      }),
+      register(api) {
+        api.session.controls.registerControlUiDescriptor(descriptor as never);
+        api.registerCommand({
+          name: "mockplugin-card",
+          description: "Healthy command sibling",
+          handler: async () => ({ text: "ok" }),
+        });
+      },
+    });
+
+    expect(registry.registry.controlUiDescriptors ?? []).toHaveLength(0);
+    expect(registry.registry.commands.map((entry) => entry.command.name)).toEqual([
+      "mockplugin-card",
+    ]);
+    expect(diagnosticSummaries(registry.registry.diagnostics)).toContainEqual({
+      pluginId: "fuzzplugin",
+      message: "control UI descriptor registration has unreadable field: schema",
+    });
+  });
+
   it("rejects external plugins from trusted policy and reserved command ownership", () => {
     const { config, registry } = createPluginRegistryFixture();
     registerTestPlugin({

@@ -1869,8 +1869,12 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
 
   const readHostHookField = (
     value: unknown,
-    key: keyof PluginToolMetadataRegistration,
-  ): { ok: true; value: unknown } | { ok: false } => {
+    key: string,
+  ):
+    | { ok: true; value: unknown }
+    | {
+        ok: false;
+      } => {
     try {
       return { ok: true, value: (value as Record<string, unknown>)[key] };
     } catch {
@@ -2206,12 +2210,57 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     record: PluginRecord,
     descriptor: PluginControlUiDescriptor,
   ) => {
-    const id = normalizeHostHookString(descriptor.id);
-    const label = normalizeHostHookString(descriptor.label);
-    const description = normalizeOptionalHostHookString(descriptor.description);
-    const placement = normalizeOptionalHostHookString(descriptor.placement);
-    const requiredScopes = normalizeHostHookStringList(descriptor.requiredScopes);
-    const surface = typeof descriptor.surface === "string" ? descriptor.surface : "";
+    const idValue = readHostHookField(descriptor, "id");
+    const surfaceValue = readHostHookField(descriptor, "surface");
+    const labelValue = readHostHookField(descriptor, "label");
+    const descriptionValue = readHostHookField(descriptor, "description");
+    const placementValue = readHostHookField(descriptor, "placement");
+    const schemaValue = readHostHookField(descriptor, "schema");
+    const requiredScopesValue = readHostHookField(descriptor, "requiredScopes");
+    const pushUnreadableDiagnostic = (field: string) => {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `control UI descriptor registration has unreadable field: ${field}`,
+      });
+    };
+    if (!idValue.ok) {
+      pushUnreadableDiagnostic("id");
+      return;
+    }
+    if (!surfaceValue.ok) {
+      pushUnreadableDiagnostic("surface");
+      return;
+    }
+    if (!labelValue.ok) {
+      pushUnreadableDiagnostic("label");
+      return;
+    }
+    if (!descriptionValue.ok) {
+      pushUnreadableDiagnostic("description");
+      return;
+    }
+    if (!placementValue.ok) {
+      pushUnreadableDiagnostic("placement");
+      return;
+    }
+    if (!schemaValue.ok) {
+      pushUnreadableDiagnostic("schema");
+      return;
+    }
+    if (!requiredScopesValue.ok) {
+      pushUnreadableDiagnostic("requiredScopes");
+      return;
+    }
+
+    const id = normalizeHostHookString(idValue.value);
+    const label = normalizeHostHookString(labelValue.value);
+    const description = normalizeOptionalHostHookString(descriptionValue.value);
+    const placement = normalizeOptionalHostHookString(placementValue.value);
+    const requiredScopes = normalizeHostHookStringList(requiredScopesValue.value);
+    const surface = typeof surfaceValue.value === "string" ? surfaceValue.value : "";
+    const schema = schemaValue.value;
     if (
       !id ||
       !label ||
@@ -2244,7 +2293,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
         return;
       }
     }
-    if (descriptor.schema !== undefined && !isPluginJsonValue(descriptor.schema)) {
+    if (schema !== undefined && !isPluginJsonValue(schema)) {
       pushDiagnostic({
         level: "error",
         pluginId: record.id,
@@ -2269,12 +2318,12 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       pluginId: record.id,
       pluginName: record.name,
       descriptor: {
-        ...descriptor,
         id,
         surface: surface as PluginControlUiDescriptor["surface"],
         label,
         ...(description !== undefined ? { description } : {}),
         ...(placement !== undefined ? { placement } : {}),
+        ...(schema !== undefined ? { schema } : {}),
         ...(requiredScopes !== undefined
           ? { requiredScopes: requiredScopes as OperatorScope[] }
           : {}),

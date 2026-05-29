@@ -271,6 +271,57 @@ describe("tool-policy-pipeline", () => {
     expect(filtered.map((t) => (t as unknown as DummyTool).name)).toEqual(["exec"]);
   });
 
+  test("filters tools with unreadable synthetic names without dropping healthy siblings", () => {
+    const unreadableName: Record<string, unknown> = {};
+    Object.defineProperty(unreadableName, "name", {
+      enumerable: true,
+      get() {
+        throw new Error("fuzzplugin policy name read failed");
+      },
+    });
+    const unreadablePluginName: Record<string, unknown> = {};
+    Object.defineProperty(unreadablePluginName, "name", {
+      enumerable: true,
+      get() {
+        throw new Error("mockplugin policy name read failed");
+      },
+    });
+    const pluginMeta = new WeakMap<object, { pluginId: string }>([
+      [unreadablePluginName, { pluginId: "mockplugin" }],
+    ]);
+    const tools = [
+      unreadableName,
+      unreadablePluginName,
+      { name: "exec" },
+      { name: "read" },
+    ] as unknown as DummyTool[];
+
+    const filtered = applyToolPolicyPipeline({
+      tools: tools as any,
+      toolMeta: (tool) => pluginMeta.get(tool as object),
+      warn: () => {},
+      steps: [
+        {
+          policy: { allow: ["exec"] },
+          label: "tools.allow",
+          stripPluginOnlyAllowlist: true,
+        },
+      ],
+    });
+
+    expect(filtered.map((t) => (t as unknown as DummyTool).name)).toEqual(["exec"]);
+    expect(toolPolicyAuditInfo).toHaveBeenCalledWith(
+      "tool policy removed 3 tool(s) via tools.allow: read, tool[0], tool[1]",
+      {
+        rule: "tools.allow",
+        ruleKind: "allow",
+        removedToolCount: 3,
+        removedTools: ["read", "tool[0]", "tool[1]"],
+        removedToolsTruncated: false,
+      },
+    );
+  });
+
   test("applies deny filtering after allow filtering", () => {
     const tools = [{ name: "exec" }, { name: "process" }] as unknown as DummyTool[];
     const filtered = applyToolPolicyPipeline({

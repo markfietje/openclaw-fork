@@ -35,6 +35,7 @@ import {
 import { isToolAllowedByPolicyName } from "./tool-policy-match.js";
 import {
   mergeAlsoAllowPolicy,
+  normalizeToolDescriptorName,
   normalizeToolName,
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
@@ -175,7 +176,10 @@ export function filterToolsByPolicy(tools: AnyAgentTool[], policy?: SandboxToolP
   if (!policy) {
     return tools;
   }
-  return tools.filter((tool) => isToolAllowedByPolicyName(tool.name, policy));
+  return tools.filter((tool) => {
+    const name = normalizeToolDescriptorName(tool);
+    return Boolean(name) && isToolAllowedByPolicyName(name, policy);
+  });
 }
 
 type ToolPolicyConfig = {

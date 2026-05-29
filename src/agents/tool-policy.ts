@@ -51,7 +51,7 @@ export function replaceWithEffectiveToolAllowlist(
   target.length = 0;
   const seen = new Set<string>();
   for (const tool of tools) {
-    const normalized = normalizeToolName(tool.name);
+    const normalized = normalizeToolDescriptorName(tool);
     if (!normalized || seen.has(normalized)) {
       continue;
     }
@@ -104,6 +104,14 @@ export function collectExplicitDenylist(policies: Array<ToolPolicyLike | undefin
   return entries;
 }
 
+export function normalizeToolDescriptorName(tool: { name: string }): string {
+  try {
+    return normalizeToolName(tool.name);
+  } catch {
+    return "";
+  }
+}
+
 export function buildPluginToolGroups<T extends { name: string }>(params: {
   tools: T[];
   toolMeta: (tool: T) => { pluginId: string } | undefined;
@@ -115,7 +123,10 @@ export function buildPluginToolGroups<T extends { name: string }>(params: {
     if (!meta) {
       continue;
     }
-    const name = normalizeToolName(tool.name);
+    const name = normalizeToolDescriptorName(tool);
+    if (!name) {
+      continue;
+    }
     all.push(name);
     const pluginId = normalizeOptionalLowercaseString(meta.pluginId);
     if (!pluginId) {

@@ -66,4 +66,52 @@ describe("shouldUseDirectLoopbackGatewayAuth", () => {
       ).toBe(true);
     });
   });
+
+  it("does not resolve configured token refs for remote explicit-token URLs", async () => {
+    await withEnvOverride({ CONFIG_GATEWAY_TOKEN: undefined }, async () => {
+      expect(
+        await shouldUseDirectLoopbackGatewayAuth({
+          url: "wss://remote.example.test/ws",
+          token: "explicit-token",
+          config: {
+            gateway: {
+              auth: {
+                mode: "token",
+                token: { source: "env", provider: "default", id: "CONFIG_GATEWAY_TOKEN" },
+              },
+            },
+            secrets: {
+              providers: {
+                default: { source: "env" },
+              },
+            },
+          },
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it("treats unresolved configured token refs as non-shared loopback tokens", async () => {
+    await withEnvOverride({ CONFIG_GATEWAY_TOKEN: undefined }, async () => {
+      expect(
+        await shouldUseDirectLoopbackGatewayAuth({
+          url: "ws://127.0.0.1:18789",
+          token: "explicit-token",
+          config: {
+            gateway: {
+              auth: {
+                mode: "token",
+                token: { source: "env", provider: "default", id: "CONFIG_GATEWAY_TOKEN" },
+              },
+            },
+            secrets: {
+              providers: {
+                default: { source: "env" },
+              },
+            },
+          },
+        }),
+      ).toBe(false);
+    });
+  });
 });

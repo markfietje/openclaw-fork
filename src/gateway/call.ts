@@ -687,6 +687,31 @@ async function resolveGatewayCredentialsWithEnv(
 
 export { resolveGatewayCredentialsWithSecretInputs };
 
+async function resolveConfiguredGatewayCredentialsForExplicitToken(
+  context: ResolvedGatewayCallContext,
+): Promise<
+  | {
+      token?: string;
+      password?: string;
+    }
+  | undefined
+> {
+  if (!context.explicitAuth.token) {
+    return undefined;
+  }
+  try {
+    return await resolveGatewayCredentialsWithEnv(
+      {
+        ...context,
+        explicitAuth: {},
+      },
+      process.env,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 async function resolveGatewayTlsFingerprint(params: {
   opts: CallGatewayBaseOptions;
   context: ResolvedGatewayCallContext;
@@ -1029,15 +1054,8 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
   const url = connectionDetails.url;
   const tlsFingerprint = await resolveGatewayTlsFingerprint({ opts, context, url });
   const { token, password } = resolvedCredentials;
-  const configuredCredentials = context.explicitAuth.token
-    ? await resolveGatewayCredentialsWithEnv(
-        {
-          ...context,
-          explicitAuth: {},
-        },
-        process.env,
-      )
-    : resolvedCredentials;
+  const configuredCredentials =
+    (await resolveConfiguredGatewayCredentialsForExplicitToken(context)) ?? resolvedCredentials;
   const tokenIsSharedAuth = Boolean(
     token &&
     (configuredCredentials.token === token ||

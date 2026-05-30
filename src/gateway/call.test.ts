@@ -475,6 +475,34 @@ describe("callGateway url resolution", () => {
     expect(lastClientOptions?.deviceIdentity).toBeNull();
   });
 
+  it("keeps explicit backend token auth usable when configured token SecretRef is unavailable", async () => {
+    setLocalLoopbackGatewayConfig();
+    getRuntimeConfig.mockReturnValue({
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        auth: {
+          mode: "token",
+          token: { source: "env", provider: "default", id: "MISSING_LOCAL_REF_TOKEN" },
+        },
+      },
+      secrets: {
+        providers: {
+          default: { source: "env" },
+        },
+      },
+    } as never);
+
+    await callGateway({
+      method: "health",
+      token: "explicit-token",
+    });
+
+    expect(lastClientOptions?.url).toBe("ws://127.0.0.1:18789");
+    expect(lastClientOptions?.token).toBe("explicit-token");
+    expect(lastClientOptions?.deviceIdentity).toBeNull();
+  });
+
   it("fails before opening a websocket when backend token auth has no shared or paired credential", async () => {
     getRuntimeConfig.mockReturnValue({
       gateway: { mode: "local", bind: "loopback", auth: { mode: "token" } },

@@ -29,14 +29,21 @@ async function isConfiguredSharedGatewayToken(params: {
   if (auth.mode !== "token") {
     return false;
   }
-  if (!config) {
-    return auth.token === params.token;
+  if (auth.token === params.token) {
+    return true;
   }
-  const credentials = await resolveGatewayConnectionAuth({
-    config,
-    env: process.env,
-  });
-  return credentials.token === params.token;
+  if (!config) {
+    return false;
+  }
+  try {
+    const credentials = await resolveGatewayConnectionAuth({
+      config,
+      env: process.env,
+    });
+    return credentials.token === params.token;
+  } catch {
+    return false;
+  }
 }
 
 function loadConfigForDirectAuthProbe(): OpenClawConfig | undefined {
@@ -52,17 +59,19 @@ export async function shouldUseDirectLoopbackGatewayAuth(
 ): Promise<boolean> {
   const token = normalizeStringifiedOptionalString(opts.token);
   const password = normalizeStringifiedOptionalString(opts.password);
-  const hasExplicitSharedAuth = Boolean(
-    password || (await isConfiguredSharedGatewayToken({ token, config: opts.config })),
-  );
-  if (!hasExplicitSharedAuth) {
+  if (!token && !password) {
     return false;
   }
   const explicitUrl = normalizeStringifiedOptionalString(opts.url);
   const gatewayUrl = explicitUrl ?? buildGatewayConnectionDetails({ config: opts.config }).url;
   try {
-    return isLoopbackHost(new URL(gatewayUrl).hostname);
+    if (!isLoopbackHost(new URL(gatewayUrl).hostname)) {
+      return false;
+    }
   } catch {
     return false;
   }
+  return Boolean(
+    password || (await isConfiguredSharedGatewayToken({ token, config: opts.config })),
+  );
 }

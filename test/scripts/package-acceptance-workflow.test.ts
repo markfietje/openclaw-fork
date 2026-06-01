@@ -179,7 +179,7 @@ describe("package acceptance workflow", () => {
     expect(hydrateWindowsPnpm.run).toContain('"--filter",');
     expect(hydrateWindowsPnpm.run).toContain('"openclaw",');
     expect(hydrateWindowsPnpm.run).toContain(
-      'New-Item -ItemType Junction -Path $workspaceNodeModules -Target $env:PNPM_CONFIG_MODULES_DIR',
+      "New-Item -ItemType Junction -Path $workspaceNodeModules -Target $env:PNPM_CONFIG_MODULES_DIR",
     );
     expect(hydrateWindowsPnpm.run).toContain(".pnpm-workspace-state-v1.json");
     expect(hydrateWindowsPnpm.run).not.toContain("Remove-Item -Recurse -Force");
@@ -1111,8 +1111,13 @@ describe("package artifact reuse", () => {
       for (const [jobName, job] of Object.entries(jobs)) {
         for (const step of job.steps ?? []) {
           if (step.run === "pnpm build") {
+            const expectedHeap =
+              workflowPath === RELEASE_CHECKS_WORKFLOW &&
+              jobName === "qa_lab_runtime_parity_release_checks"
+                ? "12288"
+                : "8192";
             expect(step.env, `${workflowPath}:${jobName}:${step.name}`).toEqual({
-              NODE_OPTIONS: "--max-old-space-size=8192",
+              NODE_OPTIONS: `--max-old-space-size=${expectedHeap}`,
             });
           }
         }

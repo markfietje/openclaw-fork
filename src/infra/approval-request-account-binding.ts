@@ -28,6 +28,7 @@ function normalizeOptionalChannel(value?: string | null): string | undefined {
   return normalizeMessageChannel(value);
 }
 
+/** Load the persisted session entry addressed by an approval request's session key. */
 export function resolvePersistedApprovalRequestSessionEntry(params: {
   cfg: OpenClawConfig;
   request: ApprovalRequestLike;
@@ -65,7 +66,12 @@ function resolvePersistedApprovalRequestSessionBinding(params: {
   return channel || accountId ? { channel, accountId } : null;
 }
 
-/** Resolve the account id that owns an approval request for an optional expected channel. */
+/**
+ * Resolve the freshest account id that owns an approval request.
+ *
+ * Turn-source account metadata wins when its channel matches the requested channel; otherwise
+ * callers may fall back to the persisted session binding from the approval's session key.
+ */
 export function resolveApprovalRequestAccountId(params: {
   cfg: OpenClawConfig;
   request: ApprovalRequestLike;
@@ -94,7 +100,12 @@ export function resolveApprovalRequestAccountId(params: {
   return sessionBinding?.accountId ?? null;
 }
 
-/** Resolve an approval request account for one concrete channel, allowing session fallback. */
+/**
+ * Resolve the account id for one concrete approval channel.
+ *
+ * This variant can recover a session-bound account even when the live turn source came from a
+ * different channel, which lets explicit channel routes verify their own persisted binding.
+ */
 export function resolveApprovalRequestChannelAccountId(params: {
   cfg: OpenClawConfig;
   request: ApprovalRequestLike;
@@ -115,7 +126,12 @@ export function resolveApprovalRequestChannelAccountId(params: {
   return sessionBinding?.channel === expectedChannel ? (sessionBinding.accountId ?? null) : null;
 }
 
-/** Check whether an approval request is eligible for a channel/account-specific route. */
+/**
+ * Check whether an approval request is eligible for a channel/account-specific route.
+ *
+ * Explicit turn-source accounts are authoritative; persisted accounts only narrow the match when
+ * no fresher account metadata is present.
+ */
 export function doesApprovalRequestMatchChannelAccount(params: {
   cfg: OpenClawConfig;
   request: ApprovalRequestLike;

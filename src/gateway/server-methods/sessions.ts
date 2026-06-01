@@ -44,10 +44,8 @@ import {
   waitForEmbeddedAgentRunEnd,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { compactEmbeddedAgentSession } from "../../agents/embedded-agent.js";
-import { resolveModelRefFromString } from "../../agents/model-selection-shared.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import { normalizeReasoningLevel, normalizeThinkLevel } from "../../auto-reply/thinking.js";
-import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import {
   loadSessionStore,
   runSessionsCleanup,
@@ -109,6 +107,7 @@ import {
   readSessionMessageCountAsync,
   readSessionPreviewItemsFromTranscript,
   resolveDeletedAgentIdFromSessionKey,
+  resolveSessionExpectedSelectedModelRef,
   resolveFreshestSessionEntryFromStoreKeys,
   resolveGatewaySessionStoreTarget,
   resolveGatewaySessionStoreTargetWithStore,
@@ -212,53 +211,28 @@ function resolveParentExpectedRuntimeSelection(
   agentId: string,
   store?: Record<string, SessionEntry>,
 ): { provider: string; model: string; config: OpenClawConfig } {
-  const defaultSelection = resolveSessionModelRef(cfg, undefined, agentId);
+  const defaultSelection = resolveSessionExpectedSelectedModelRef({ cfg, agentId });
   const visited = new Set<string>();
   let currentEntry = parentEntry;
   let currentAgentId = agentId;
 
   for (let depth = 0; currentEntry && depth < 8; depth += 1) {
-    const explicitProviderOverride = normalizeOptionalString(currentEntry.providerOverride);
-    const explicitModelOverride = normalizeOptionalString(currentEntry.modelOverride);
-    if (explicitProviderOverride || explicitModelOverride) {
-      return {
-        ...resolveSessionModelRef(
-          cfg,
-          {
-            providerOverride: explicitProviderOverride,
-            modelOverride: explicitModelOverride,
-          },
-          currentAgentId,
-        ),
-        config: cfg,
-      };
-    }
-
-    const entryDefaultSelection = resolveSessionModelRef(cfg, undefined, currentAgentId);
-    const channelModelOverride = cfg.channels?.modelByChannel
-      ? resolveChannelModelOverride({
-          cfg,
-          channel:
-            currentEntry.channel ?? currentEntry.origin?.provider ?? currentEntry.lastChannel,
-          groupId: currentEntry.groupId,
-          groupChatType: currentEntry.chatType,
-          groupChannel: currentEntry.groupChannel,
-          groupSubject: currentEntry.subject,
-          parentSessionKey: currentEntry.parentSessionKey,
-        })
-      : null;
-    const channelSelection = channelModelOverride
-      ? resolveModelRefFromString({
-          cfg,
-          raw: channelModelOverride.model,
-          defaultProvider: entryDefaultSelection.provider,
-        })?.ref
-      : null;
-    if (channelSelection) {
-      return {
-        ...channelSelection,
-        config: cfg,
-      };
+    const currentDefaultSelection = resolveSessionExpectedSelectedModelRef({
+      cfg,
+      agentId: currentAgentId,
+    });
+    const currentSelection = resolveSessionExpectedSelectedModelRef({
+      cfg,
+      entry: currentEntry,
+      agentId: currentAgentId,
+    });
+    if (
+      normalizeOptionalString(currentEntry.providerOverride) ||
+      normalizeOptionalString(currentEntry.modelOverride) ||
+      currentSelection.provider !== currentDefaultSelection.provider ||
+      currentSelection.model !== currentDefaultSelection.model
+    ) {
+      return { ...currentSelection, config: cfg };
     }
 
     const parentKey = normalizeOptionalString(currentEntry.parentSessionKey);

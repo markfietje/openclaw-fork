@@ -9,23 +9,44 @@ export type ModelOverrideSelection = {
   isDefault?: boolean;
 };
 
+export type StaleAutoRuntimeAuthProfileEntry = Pick<
+  SessionEntry,
+  | "authProfileOverride"
+  | "authProfileOverrideCompactionCount"
+  | "authProfileOverrideSource"
+  | "providerOverride"
+  | "modelOverride"
+  | "modelProvider"
+  | "model"
+>;
+
+type ExpectedModelSelection = {
+  provider: string;
+  model: string;
+  config?: OpenClawConfig;
+};
+
+const STALE_AUTO_RUNTIME_AUTH_PROFILE_FIELDS = [
+  "modelProvider",
+  "model",
+  "contextTokens",
+  "contextBudgetStatus",
+  "authProfileOverride",
+  "authProfileOverrideSource",
+  "authProfileOverrideCompactionCount",
+  "fallbackNoticeSelectedModel",
+  "fallbackNoticeActiveModel",
+  "fallbackNoticeReason",
+] as const satisfies readonly (keyof SessionEntry)[];
+
 export function hasStaleAutoRuntimeAuthProfileSelection(
-  entry:
-    | Pick<
-        SessionEntry,
-        | "authProfileOverride"
-        | "authProfileOverrideCompactionCount"
-        | "authProfileOverrideSource"
-        | "providerOverride"
-        | "modelOverride"
-        | "modelProvider"
-        | "model"
-      >
-    | undefined,
-  expectedSelection: { provider: string; model: string; config?: OpenClawConfig },
+  entry: StaleAutoRuntimeAuthProfileEntry | undefined,
+  expectedSelection: ExpectedModelSelection,
 ): boolean {
   const hasAutoAuthProfileSelection =
     entry?.authProfileOverrideSource === "auto" ||
+    // Older rows used the compaction counter as the only durable marker that
+    // an auth-profile override came from automatic fallback/rotation.
     (entry?.authProfileOverrideSource === undefined &&
       typeof entry?.authProfileOverrideCompactionCount === "number");
   if (
@@ -59,7 +80,7 @@ export function hasStaleAutoRuntimeAuthProfileSelection(
 
 export function clearStaleAutoRuntimeAuthProfileSelection(
   entry: SessionEntry,
-  expectedSelection: { provider: string; model: string; config?: OpenClawConfig },
+  expectedSelection: ExpectedModelSelection,
 ): { updated: boolean } {
   if (!hasStaleAutoRuntimeAuthProfileSelection(entry, expectedSelection)) {
     return { updated: false };
@@ -73,16 +94,9 @@ export function clearStaleAutoRuntimeAuthProfileSelection(
     }
   };
 
-  clear("modelProvider");
-  clear("model");
-  clear("contextTokens");
-  clear("contextBudgetStatus");
-  clear("authProfileOverride");
-  clear("authProfileOverrideSource");
-  clear("authProfileOverrideCompactionCount");
-  clear("fallbackNoticeSelectedModel");
-  clear("fallbackNoticeActiveModel");
-  clear("fallbackNoticeReason");
+  for (const key of STALE_AUTO_RUNTIME_AUTH_PROFILE_FIELDS) {
+    clear(key);
+  }
 
   if (updated) {
     entry.updatedAt = Date.now();

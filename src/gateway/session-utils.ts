@@ -76,7 +76,10 @@ import {
   normalizeMainKey,
   parseAgentSessionKey,
 } from "../routing/session-key.js";
-import { hasStaleAutoRuntimeAuthProfileSelection } from "../sessions/model-overrides.js";
+import {
+  hasStaleAutoRuntimeAuthProfileSelection,
+  type StaleAutoRuntimeAuthProfileEntry,
+} from "../sessions/model-overrides.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import {
   AVATAR_MAX_BYTES,
@@ -140,6 +143,26 @@ export type {
   SessionsPreviewEntry,
   SessionsPreviewResult,
 } from "./session-utils.types.js";
+
+type SessionRuntimeModelEntry = Pick<
+  SessionEntry,
+  "model" | "modelProvider" | "modelOverride" | "providerOverride"
+>;
+
+type SessionChannelModelSelectionEntry = Pick<
+  SessionEntry,
+  | "channel"
+  | "origin"
+  | "lastChannel"
+  | "groupId"
+  | "chatType"
+  | "groupChannel"
+  | "subject"
+  | "parentSessionKey"
+>;
+
+export type SessionExpectedModelEntry = StaleAutoRuntimeAuthProfileEntry &
+  SessionChannelModelSelectionEntry;
 
 const DERIVED_TITLE_MAX_LEN = 60;
 
@@ -767,31 +790,14 @@ function resolveSessionSelectedModelRef(params: {
   return selected;
 }
 
-function resolveStaleAutoRuntimeExpectedModelRef(params: {
+// Expected selection ignores transient runtime fields; callers use it to decide
+// whether auto-owned runtime/auth state should be repaired or inherited.
+export function resolveSessionExpectedSelectedModelRef(params: {
   cfg: OpenClawConfig;
-  entry?:
-    | SessionEntry
-    | Pick<
-        SessionEntry,
-        | "authProfileOverride"
-        | "authProfileOverrideCompactionCount"
-        | "authProfileOverrideSource"
-        | "providerOverride"
-        | "modelOverride"
-        | "modelProvider"
-        | "model"
-        | "channel"
-        | "origin"
-        | "lastChannel"
-        | "groupId"
-        | "chatType"
-        | "groupChannel"
-        | "subject"
-        | "parentSessionKey"
-      >;
+  entry?: SessionExpectedModelEntry;
   agentId?: string;
   allowPluginNormalization?: boolean;
-}): ReturnType<typeof resolveSessionModelRef> | null {
+}): { provider: string; model: string } {
   const defaultSelection = params.agentId
     ? resolveDefaultModelForAgent({
         cfg: params.cfg,
@@ -804,6 +810,23 @@ function resolveStaleAutoRuntimeExpectedModelRef(params: {
         defaultModel: DEFAULT_MODEL,
         allowPluginNormalization: params.allowPluginNormalization,
       });
+
+  const normalizedOverride = normalizeStoredOverrideModel({
+    providerOverride: params.entry?.providerOverride,
+    modelOverride: params.entry?.modelOverride,
+  });
+  if (normalizedOverride.modelOverride) {
+    return resolveSessionModelRef(
+      params.cfg,
+      {
+        providerOverride: normalizedOverride.providerOverride,
+        modelOverride: normalizedOverride.modelOverride,
+      },
+      params.agentId,
+      { allowPluginNormalization: params.allowPluginNormalization },
+    );
+  }
+
   const channelModelOverride = params.entry
     ? resolveChannelModelOverride({
         cfg: params.cfg,
@@ -823,7 +846,16 @@ function resolveStaleAutoRuntimeExpectedModelRef(params: {
         allowPluginNormalization: params.allowPluginNormalization,
       })?.ref
     : null;
-  const expected = channelSelection ?? defaultSelection;
+  return channelSelection ?? defaultSelection;
+}
+
+function resolveStaleAutoRuntimeExpectedModelRef(params: {
+  cfg: OpenClawConfig;
+  entry?: SessionExpectedModelEntry;
+  agentId?: string;
+  allowPluginNormalization?: boolean;
+}): ReturnType<typeof resolveSessionModelRef> | null {
+  const expected = resolveSessionExpectedSelectedModelRef(params);
   return hasStaleAutoRuntimeAuthProfileSelection(params.entry, {
     ...expected,
     config: params.cfg,
@@ -1674,9 +1706,7 @@ export function getSessionDefaults(
 
 export function resolveSessionModelRef(
   cfg: OpenClawConfig,
-  entry?:
-    | SessionEntry
-    | Pick<SessionEntry, "model" | "modelProvider" | "modelOverride" | "providerOverride">,
+  entry?: SessionRuntimeModelEntry,
   agentId?: string,
   options?: { allowPluginNormalization?: boolean },
 ): { provider: string; model: string } {
@@ -1726,29 +1756,12 @@ export function resolveSessionModelRef(
 
 export function resolveSessionNextRunModelRef(
   cfg: OpenClawConfig,
-  entry?:
-    | SessionEntry
-    | Pick<
-        SessionEntry,
-        | "authProfileOverride"
-        | "authProfileOverrideCompactionCount"
-        | "authProfileOverrideSource"
-        | "providerOverride"
-        | "modelOverride"
-        | "modelProvider"
-        | "model"
-        | "channel"
-        | "origin"
-        | "lastChannel"
-        | "groupId"
-        | "chatType"
-        | "groupChannel"
-        | "subject"
-        | "parentSessionKey"
-      >,
+  entry?: SessionExpectedModelEntry,
   agentId?: string,
   options?: { allowPluginNormalization?: boolean },
 ): { provider: string; model: string } {
+  // Dispatch/preflight wants the model the next run should use; generic row and
+  // history callers may still need the stored runtime model exactly as recorded.
   const staleRuntimeExpected = resolveStaleAutoRuntimeExpectedModelRef({
     cfg,
     entry,
@@ -1838,18 +1851,7 @@ export async function resolveGatewayModelSupportsImages(params: {
 
 export function resolveSessionModelIdentityRef(
   cfg: OpenClawConfig,
-  entry?:
-    | SessionEntry
-    | Pick<
-        SessionEntry,
-        | "model"
-        | "modelProvider"
-        | "modelOverride"
-        | "providerOverride"
-        | "authProfileOverride"
-        | "authProfileOverrideSource"
-        | "authProfileOverrideCompactionCount"
-      >,
+  entry?: SessionExpectedModelEntry,
   agentId?: string,
   fallbackModelRef?: string,
   options?: { allowPluginNormalization?: boolean },

@@ -116,6 +116,7 @@ function scanWrapperInvocation(
   return argv.slice(commandIndex);
 }
 
+/** Collects env assignment keys from transparent `env` dispatch wrappers before resolution. */
 export function extractEnvAssignmentKeysFromDispatchWrappers(
   argv: string[],
   maxDepth = MAX_DISPATCH_WRAPPER_DEPTH,
@@ -517,6 +518,10 @@ function blockedDispatchWrapperPlan(params: {
   };
 }
 
+/**
+ * Resolves transparent dispatch wrappers while marking semantic or too-deep
+ * wrapper chains as policy-blocked so allowlist matching keeps a safe boundary.
+ */
 export function resolveDispatchWrapperTrustPlan(
   argv: string[],
   maxDepth = MAX_DISPATCH_WRAPPER_DEPTH,

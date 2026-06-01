@@ -10,6 +10,7 @@ import { parseInlineOptionToken } from "./inline-option-token.js";
 
 export { unwrapEnvInvocation } from "./command-carriers.js";
 
+/** Maximum transparent wrapper hops considered before policy blocks the chain. */
 export const MAX_DISPATCH_WRAPPER_DEPTH = 4;
 
 const NICE_OPTIONS_WITH_VALUE = new Set(["-n", "--adjustment", "--priority"]);
@@ -430,9 +431,13 @@ type DispatchWrapperUnwrapResult =
   | { kind: "unwrapped"; wrapper: string; argv: string[] };
 
 type DispatchWrapperTrustPlan = {
+  /** Final argv after transparent dispatch wrappers have been removed. */
   argv: string[];
+  /** Wrapper executable names encountered in order from outermost to innermost. */
   wrappers: string[];
+  /** True when resolution stopped at a semantic, unsupported, or too-deep wrapper. */
   policyBlocked: boolean;
+  /** The wrapper that forced policy to keep the current argv boundary. */
   blockedWrapper?: string;
 };
 
@@ -449,10 +454,12 @@ function unwrapDispatchWrapper(
     : blockDispatchWrapper(wrapper);
 }
 
+/** Returns true when the executable is a known process-dispatch wrapper. */
 export function isDispatchWrapperExecutable(token: string): boolean {
   return DISPATCH_WRAPPER_SPEC_BY_NAME.has(normalizeExecutableToken(token));
 }
 
+/** Attempts to unwrap one known dispatch wrapper invocation. */
 export function unwrapKnownDispatchWrapperInvocation(
   argv: string[],
   platform: NodeJS.Platform = process.platform,
@@ -471,6 +478,7 @@ export function unwrapKnownDispatchWrapperInvocation(
     : blockDispatchWrapper(wrapper);
 }
 
+/** Returns the argv that command resolution should inspect after transparent wrappers. */
 export function unwrapDispatchWrappersForResolution(
   argv: string[],
   maxDepth = MAX_DISPATCH_WRAPPER_DEPTH,
@@ -541,6 +549,8 @@ export function resolveDispatchWrapperTrustPlan(
   if (wrappers.length >= maxDepth) {
     const overflow = unwrapKnownDispatchWrapperInvocation(current, platform);
     if (overflow.kind === "blocked" || overflow.kind === "unwrapped") {
+      // A still-recognizable wrapper beyond maxDepth is suspicious enough that
+      // policy keeps the current boundary instead of trusting deeper argv.
       return blockedDispatchWrapperPlan({
         argv: current,
         wrappers,
@@ -551,6 +561,7 @@ export function resolveDispatchWrapperTrustPlan(
   return { argv: current, wrappers, policyBlocked: false };
 }
 
+/** Detects env dispatch wrappers that mutate environment state before command launch. */
 export function hasDispatchEnvManipulation(argv: string[]): boolean {
   const unwrap = unwrapKnownDispatchWrapperInvocation(argv);
   return (

@@ -105,6 +105,10 @@ export function splitSetupEntries(raw: string): string[] {
 
 type ParsedSetupEntry = { value: string } | { error: string };
 
+/**
+ * Parses delimited setup entries with a channel-specific parser, returning the
+ * first validation error instead of partially applying mixed-valid input.
+ */
 export function parseSetupEntriesWithParser(
   raw: string,
   parseEntry: (entry: string) => ParsedSetupEntry,
@@ -556,7 +560,7 @@ export function createNestedChannelAllowFromSetter(params: {
     });
 }
 
-/** Creates a top-level group-policy setter suitable for wizard descriptors. */
+/** Creates a reusable setter for top-level channel group policy fields. */
 export function createTopLevelChannelGroupPolicySetter(params: {
   channel: string;
   enabled?: boolean;
@@ -936,7 +940,8 @@ function patchConfigForScopedAccount(params: {
           cfg,
           channelKey: channel,
         });
-  // Named-account writes first seed existing root config into the default account.
+  // First named-account write seeds root single-account config into default so
+  // adding a second account does not steal the original account's credentials.
   return patchScopedAccountConfig({
     cfg: seededCfg,
     channelKey: channel,

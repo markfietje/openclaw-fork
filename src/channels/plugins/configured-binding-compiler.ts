@@ -17,6 +17,7 @@ import type {
 // Configured bindings are channel-owned rules compiled from config, separate
 // from runtime plugin-owned conversation bindings.
 
+/** Compiled configured binding rules grouped by channel for route-time lookup. */
 export type CompiledConfiguredBindingRegistry = {
   rulesByChannel: Map<ConfiguredBindingChannel, CompiledConfiguredBinding[]>;
 };
@@ -162,18 +163,21 @@ function compileConfiguredBindingRegistry(params: {
   };
 }
 
+/** Compiles configured binding rules from current config and loaded channel plugins. */
 export function resolveCompiledBindingRegistry(
   cfg: OpenClawConfig,
 ): CompiledConfiguredBindingRegistry {
   return compileConfiguredBindingRegistry({ cfg });
 }
 
+/** Compiles configured bindings for startup diagnostics without caching the result. */
 export function primeCompiledBindingRegistry(
   cfg: OpenClawConfig,
 ): CompiledConfiguredBindingRegistry {
   return compileConfiguredBindingRegistry({ cfg });
 }
 
+/** Counts compiled binding rules and channels for diagnostics. */
 export function countCompiledBindingRegistry(registry: CompiledConfiguredBindingRegistry): {
   bindingCount: number;
   channelCount: number;

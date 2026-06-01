@@ -8,6 +8,8 @@ const DEFAULT_MAX_QUEUED_AUDIO_BYTES = TELEPHONY_SAMPLE_RATE * 120;
 const PCM16_MAX_AMPLITUDE = 32768;
 const MULAW_LINEAR_SAMPLES = new Int16Array(256);
 
+// Decode table is process-stable and hot-path reused by the speech detector;
+// build it once instead of recomputing mu-law expansion per audio sample.
 for (let i = 0; i < MULAW_LINEAR_SAMPLES.length; i += 1) {
   MULAW_LINEAR_SAMPLES[i] = decodeMulawSample(i);
 }
@@ -142,6 +144,8 @@ export class RealtimeAudioPacer {
     }
 
     if (!sent) {
+      // Treat a failed send as terminal for queued playback. Keeping stale audio
+      // queued after provider backpressure would play the wrong turn later.
       this.queue = [];
       this.queuedAudioBytes = 0;
       return;
@@ -198,6 +202,8 @@ export class RealtimeMulawSpeechStartDetector {
     this.quietChunks += 1;
     const requiredQuietChunks = this.params.requiredQuietChunks ?? DEFAULT_REQUIRED_QUIET_CHUNKS;
     if (this.quietChunks >= requiredQuietChunks) {
+      // Require sustained quiet before arming the next speech-start edge, so
+      // brief pauses inside one utterance do not trigger repeated barge-ins.
       this.speaking = false;
     }
     return false;

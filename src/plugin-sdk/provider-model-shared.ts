@@ -181,11 +181,17 @@ export function normalizeGooglePreviewModelId(id: string): string {
 
 /** Replay hook families shared by provider plugins with compatible transcript semantics. */
 export type ProviderReplayFamily =
+  /** OpenAI-compatible chat/completions providers with shared tool-id and ordering quirks. */
   | "openai-compatible"
+  /** Anthropic-shaped providers whose thinking policy depends on Claude model ids. */
   | "anthropic-by-model"
+  /** First-party Anthropic transport preserving native tool-use ids and signatures. */
   | "native-anthropic-by-model"
+  /** Google Gemini transport with history sanitation and tagged reasoning output. */
   | "google-gemini"
+  /** OpenAI-compatible transports that proxy Gemini models without Gemini turn validation. */
   | "passthrough-gemini"
+  /** Providers exposing both Anthropic and OpenAI-compatible model families. */
   | "hybrid-anthropic-openai";
 
 type ProviderReplayFamilyHooks = Pick<
@@ -242,6 +248,8 @@ export function buildProviderReplayFamilyHooks(
       };
     case "google-gemini":
       return {
+        // Gemini needs both replay policy and transcript bootstrap sanitation;
+        // callers that only copy buildReplayPolicy will miss session repair.
         buildReplayPolicy: () => buildGoogleGeminiReplayPolicy(),
         sanitizeReplayHistory: (ctx: ProviderSanitizeReplayHistoryContext) =>
           sanitizeGoogleGeminiReplayHistory(ctx),

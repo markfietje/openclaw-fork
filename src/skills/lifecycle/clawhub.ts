@@ -1,11 +1,13 @@
 import fsSync from "node:fs";
 import path from "node:path";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   downloadClawHubSkillArchive,
   fetchClawHubSkillDetail,
   resolveClawHubBaseUrl,
   searchClawHubSkills,
   type ClawHubSkillDetail,
+  type ClawHubSkillInstallSource,
   type ClawHubSkillSearchResult,
 } from "../../infra/clawhub.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -26,12 +28,23 @@ const SKILL_ORIGIN_RELATIVE_PATH = path.join(DOT_DIR, "origin.json");
 const LOCAL_SKILL_CARD_FILENAME = "skill-card.md";
 const LOCAL_SKILL_CARD_MAX_BYTES = 256 * 1024;
 
+export type ClawHubSkillGithubSourceOrigin = {
+  type: "github";
+  url: string;
+  commit: string;
+  path?: string;
+  ref?: string;
+  checkedAt?: number;
+  security?: unknown;
+};
+
 export type ClawHubSkillOrigin = {
   version: 1;
   registry: string;
   slug: string;
   installedVersion: string;
   installedAt: number;
+  source?: ClawHubSkillGithubSourceOrigin;
 };
 
 export type ClawHubSkillsLockfile = {
@@ -42,6 +55,7 @@ export type ClawHubSkillsLockfile = {
       version: string;
       installedAt: number;
       registry?: string;
+      source?: ClawHubSkillGithubSourceOrigin;
     }
   >;
 };
@@ -61,6 +75,7 @@ export type ClawHubSkillStatusLink =
       installedAt: number;
       originPath: string;
       lockPath: string;
+      source?: ClawHubSkillGithubSourceOrigin;
     }
   | {
       status: "invalid";
@@ -72,6 +87,7 @@ export type ClawHubSkillStatusLink =
       installedAt?: number;
       originPath?: string;
       lockPath?: string;
+      source?: ClawHubSkillGithubSourceOrigin;
     };
 
 export type LocalSkillCardStatus = {
@@ -217,6 +233,33 @@ function normalizeStoredRegistry(registry: string): string {
   return trimmed.replace(/\/+$/, "") || trimmed;
 }
 
+function normalizeGithubSourceOrigin(raw: unknown): ClawHubSkillGithubSourceOrigin | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.type !== "github") {
+    return undefined;
+  }
+  const url = typeof record.url === "string" ? record.url.trim() : "";
+  const commit = typeof record.commit === "string" ? record.commit.trim() : "";
+  if (!url || !commit) {
+    return undefined;
+  }
+  const pathValue = normalizeOptionalString(record.path);
+  const ref = normalizeOptionalString(record.ref);
+  const checkedAt = typeof record.checkedAt === "number" ? record.checkedAt : undefined;
+  return {
+    type: "github",
+    url,
+    commit,
+    ...(pathValue ? { path: pathValue } : {}),
+    ...(ref ? { ref } : {}),
+    ...(checkedAt !== undefined ? { checkedAt } : {}),
+    ...("security" in record ? { security: record.security } : {}),
+  };
+}
+
 function readRealPathSync(candidate: string): string | undefined {
   try {
     return fsSync.realpathSync.native(candidate);
@@ -284,12 +327,14 @@ function normalizeClawHubSkillOrigin(
     raw.installedVersion.trim().length > 0 &&
     typeof raw.installedAt === "number"
   ) {
+    const source = normalizeGithubSourceOrigin(raw.source);
     return {
       version: 1,
       registry: normalizeStoredRegistry(raw.registry),
       slug: raw.slug,
       installedVersion: raw.installedVersion,
       installedAt: raw.installedAt,
+      ...(source ? { source } : {}),
     };
   }
   return null;
@@ -527,6 +572,7 @@ export function resolveClawHubSkillStatusLinkSync(params: {
     installedAt: locked.installedAt,
     originPath: originRead.path,
     lockPath: lockRead.path,
+    ...(originRead.origin.source ? { source: originRead.origin.source } : {}),
   };
 }
 
@@ -606,6 +652,69 @@ async function writeClawHubSkillOrigin(
 ): Promise<void> {
   const targetPath = path.join(skillDir, SKILL_ORIGIN_RELATIVE_PATH);
   await writeJson(targetPath, origin, { trailingNewline: true });
+}
+
+function normalizeGithubInstallSource(
+  source: ClawHubSkillInstallSource | null | undefined,
+): ClawHubSkillGithubSourceOrigin | null {
+  if (!source || source.type !== "github") {
+    return null;
+  }
+  const url =
+    normalizeOptionalString(source.url) ??
+    normalizeOptionalString(source.repositoryUrl) ??
+    normalizeOptionalString(source.repo);
+  const commit =
+    normalizeOptionalString(source.commit) ??
+    normalizeOptionalString(source.resolvedCommit) ??
+    normalizeOptionalString(source.sourceCommit);
+  if (!url || !commit) {
+    return null;
+  }
+  const sourcePath = normalizeOptionalString(source.path);
+  const ref = normalizeOptionalString(source.ref);
+  const checkedAt = typeof source.checkedAt === "number" ? source.checkedAt : undefined;
+  return {
+    type: "github",
+    url,
+    commit,
+    ...(sourcePath ? { path: sourcePath } : {}),
+    ...(ref ? { ref } : {}),
+    ...(checkedAt !== undefined ? { checkedAt } : {}),
+    ...(source.security !== undefined ? { security: source.security } : {}),
+  };
+}
+
+async function installClawHubGithubSource(params: {
+  workspaceDir: string;
+  slug: string;
+  source: ClawHubSkillGithubSourceOrigin;
+  force?: boolean;
+  timeoutMs?: number;
+  logger?: Logger;
+}): Promise<{ ok: true; targetDir: string } | { ok: false; error: string }> {
+  const { installSkillFromGitSource } = await import("./source-install.js");
+  const install = await installSkillFromGitSource({
+    workspaceDir: params.workspaceDir,
+    url: params.source.url,
+    commit: params.source.commit,
+    sourcePath: params.source.path,
+    slug: params.slug,
+    force: params.force,
+    timeoutMs: params.timeoutMs,
+    logger: params.logger,
+    preserveClawHubTracking: true,
+  });
+  if (!install.ok) {
+    return { ok: false, error: install.error };
+  }
+  if (install.git?.commit !== params.source.commit) {
+    return {
+      ok: false,
+      error: `GitHub skill source resolved to ${install.git?.commit ?? "unknown"} instead of scanned commit ${params.source.commit}`,
+    };
+  }
+  return { ok: true, targetDir: install.targetDir };
 }
 
 export async function searchSkillsFromClawHub(params: {
@@ -730,11 +839,15 @@ export async function resolveClawHubSkillVerificationTarget(params: {
   }
 }
 
-async function resolveInstallVersion(params: {
+async function resolveInstallTarget(params: {
   slug: string;
   version?: string;
   baseUrl?: string;
-}): Promise<{ detail: ClawHubSkillDetail; version: string }> {
+}): Promise<{
+  detail: ClawHubSkillDetail;
+  version: string;
+  source: ClawHubSkillGithubSourceOrigin | null;
+}> {
   const detail = await fetchClawHubSkillDetail({
     slug: params.slug,
     baseUrl: params.baseUrl,
@@ -742,13 +855,15 @@ async function resolveInstallVersion(params: {
   if (!detail.skill) {
     throw new Error(`Skill "${params.slug}" not found on ClawHub.`);
   }
+  const source = normalizeGithubInstallSource(detail.latestVersion?.source ?? detail.source);
   const resolvedVersion = params.version ?? detail.latestVersion?.version;
-  if (!resolvedVersion) {
+  if (!resolvedVersion && !source) {
     throw new Error(`Skill "${params.slug}" has no installable version.`);
   }
   return {
     detail,
-    version: resolvedVersion,
+    version: resolvedVersion ?? source?.commit ?? params.slug,
+    source,
   };
 }
 
@@ -756,7 +871,7 @@ async function performClawHubSkillInstall(
   params: ClawHubInstallParams,
 ): Promise<InstallClawHubSkillResult> {
   try {
-    const { detail, version } = await resolveInstallVersion({
+    const { detail, version, source } = await resolveInstallTarget({
       slug: params.slug,
       version: params.version,
       baseUrl: params.baseUrl,
@@ -766,6 +881,45 @@ async function performClawHubSkillInstall(
       return {
         ok: false,
         error: `Skill already exists at ${targetDir}. Re-run with force/update.`,
+      };
+    }
+
+    if (source) {
+      const install = await installClawHubGithubSource({
+        workspaceDir: params.workspaceDir,
+        slug: params.slug,
+        source,
+        force: params.force,
+        timeoutMs: 120_000,
+        logger: params.logger,
+      });
+      if (!install.ok) {
+        return { ok: false, error: install.error };
+      }
+      const installedAt = Date.now();
+      await writeClawHubSkillOrigin(install.targetDir, {
+        version: 1,
+        registry: resolveClawHubBaseUrl(params.baseUrl),
+        slug: params.slug,
+        installedVersion: version,
+        installedAt,
+        source,
+      });
+      const lock = await readClawHubSkillsLockfile(params.workspaceDir);
+      lock.skills[params.slug] = {
+        version,
+        installedAt,
+        registry: resolveClawHubBaseUrl(params.baseUrl),
+        source,
+      };
+      await writeClawHubSkillsLockfile(params.workspaceDir, lock);
+
+      return {
+        ok: true,
+        slug: params.slug,
+        version,
+        targetDir: install.targetDir,
+        detail,
       };
     }
 

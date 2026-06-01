@@ -280,6 +280,22 @@ export type ClawHubSkillSearchResult = {
   updatedAt?: number;
 };
 
+export type ClawHubSkillGithubSource = {
+  type: "github";
+  url?: string | null;
+  repositoryUrl?: string | null;
+  repo?: string | null;
+  path?: string | null;
+  ref?: string | null;
+  commit?: string | null;
+  resolvedCommit?: string | null;
+  sourceCommit?: string | null;
+  checkedAt?: number | null;
+  security?: unknown;
+};
+
+export type ClawHubSkillInstallSource = ClawHubSkillGithubSource;
+
 export type ClawHubSkillDetail = {
   skill: {
     slug: string;
@@ -293,7 +309,9 @@ export type ClawHubSkillDetail = {
     version: string;
     createdAt: number;
     changelog?: string;
+    source?: ClawHubSkillInstallSource | null;
   } | null;
+  source?: ClawHubSkillInstallSource | null;
   metadata?: {
     os?: string[] | null;
     systems?: string[] | null;

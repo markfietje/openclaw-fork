@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { runCommandWithTimeout } from "../../process/exec.js";
 
 const fetchClawHubSkillDetailMock = vi.fn();
 const downloadClawHubSkillArchiveMock = vi.fn();
@@ -128,6 +129,54 @@ async function writeClawHubOriginFixture(params: {
   return skillDir;
 }
 
+async function writeSkill(dir: string, name = "agentreceipt") {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "SKILL.md"),
+    [
+      "---",
+      `name: ${name}`,
+      "description: A ClawHub-linked GitHub skill",
+      "---",
+      "",
+      "# Skill",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+}
+
+async function runGitOk(repoDir: string, args: string[]): Promise<string> {
+  const result = await runCommandWithTimeout(["git", ...args], {
+    cwd: repoDir,
+    timeoutMs: 30_000,
+  });
+  if (result.code !== 0) {
+    throw new Error(result.stderr || result.stdout || `git ${args.join(" ")} failed`);
+  }
+  return result.stdout.trim();
+}
+
+async function initGitSkillRepo(repoDir: string, sourcePath = "."): Promise<string> {
+  const skillDir = sourcePath === "." ? repoDir : path.join(repoDir, sourcePath);
+  await writeSkill(skillDir);
+  if (sourcePath !== ".") {
+    await fs.writeFile(path.join(repoDir, "README.md"), "# fixture\n", "utf8");
+  }
+  await runGitOk(repoDir, ["init"]);
+  await runGitOk(repoDir, ["add", "."]);
+  await runGitOk(repoDir, [
+    "-c",
+    "user.email=test@example.com",
+    "-c",
+    "user.name=Test User",
+    "commit",
+    "-m",
+    "add skill",
+  ]);
+  return await runGitOk(repoDir, ["rev-parse", "HEAD"]);
+}
+
 describe("skills-clawhub", () => {
   beforeEach(() => {
     fetchClawHubSkillDetailMock.mockReset();
@@ -191,6 +240,67 @@ describe("skills-clawhub", () => {
       targetDir: "/tmp/workspace/skills/agentreceipt",
     });
     expect(archiveCleanupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("installs ClawHub-linked GitHub sources at the scanned commit", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skills-clawhub-git-"));
+    try {
+      const workspaceDir = path.join(root, "workspace");
+      const repoDir = path.join(root, "repo");
+      const sourcePath = path.join("skills", "agentreceipt");
+      await fs.mkdir(repoDir, { recursive: true });
+      const commit = await initGitSkillRepo(repoDir, sourcePath);
+      installPackageDirMock.mockResolvedValueOnce({
+        ok: true,
+        targetDir: path.join(workspaceDir, "skills", "agentreceipt"),
+      });
+      fetchClawHubSkillDetailMock.mockResolvedValueOnce({
+        skill: {
+          slug: "agentreceipt",
+          displayName: "AgentReceipt",
+          createdAt: 1,
+          updatedAt: 2,
+        },
+        latestVersion: {
+          version: "github-main",
+          createdAt: 3,
+          source: {
+            type: "github",
+            url: `file://${repoDir}`,
+            path: sourcePath,
+            commit,
+            ref: "main",
+            checkedAt: 4,
+            security: { status: "approved", passed: true },
+          },
+        },
+      });
+
+      const result = await installSkillFromClawHub({
+        workspaceDir,
+        slug: "agentreceipt",
+      });
+
+      expectInstalledSkill(result, {
+        slug: "agentreceipt",
+        version: "github-main",
+        targetDir: path.join(workspaceDir, "skills", "agentreceipt"),
+      });
+      expect(downloadClawHubSkillArchiveMock).not.toHaveBeenCalled();
+      const origin = JSON.parse(
+        await fs.readFile(
+          path.join(workspaceDir, "skills", "agentreceipt", ".clawhub", "origin.json"),
+          "utf8",
+        ),
+      ) as { source?: { type?: string; commit?: string } };
+      expect(origin.source).toMatchObject({ type: "github", commit });
+      const lock = JSON.parse(
+        await fs.readFile(path.join(workspaceDir, ".clawhub", "lock.json"), "utf8"),
+      ) as { skills: Record<string, { source?: { type?: string; commit?: string } }> };
+      expect(lock.skills.agentreceipt?.source).toMatchObject({ type: "github", commit });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it.each(["skill.md", "skills.md", "SKILL.MD"])(

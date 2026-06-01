@@ -3,6 +3,7 @@ import path from "node:path";
 import { redactSensitiveUrlLikeString } from "@openclaw/net-policy/redact-sensitive-url";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { sanitizeHostExecEnv } from "../../infra/host-env-security.js";
 import { withTempDir } from "../../infra/install-source-utils.js";
 import { writeJson } from "../../infra/json-files.js";
@@ -175,12 +176,35 @@ async function removeClawHubInstallMetadata(targetDir: string): Promise<void> {
   ]);
 }
 
+function resolveGitSourcePath(sourcePath: string | undefined): string {
+  const trimmed = sourcePath?.trim() || ".";
+  if (path.isAbsolute(trimmed)) {
+    throw new Error(`Invalid git skill source path: ${sourcePath}`);
+  }
+  const normalized = path.normalize(trimmed);
+  if (normalized === ".." || normalized.startsWith(`..${path.sep}`)) {
+    throw new Error(`Invalid git skill source path: ${sourcePath}`);
+  }
+  return normalized;
+}
+
 async function copyGitWorktreeExport(params: {
   repoDir: string;
+  sourcePath?: string;
   exportDir: string;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
+  let sourceDir: string;
   try {
-    await fs.cp(params.repoDir, params.exportDir, {
+    sourceDir = path.join(params.repoDir, resolveGitSourcePath(params.sourcePath));
+  } catch (err) {
+    return { ok: false, error: formatErrorMessage(err) };
+  }
+  try {
+    const stat = await fs.stat(sourceDir);
+    if (!stat.isDirectory()) {
+      return { ok: false, error: `git skill source path is not a directory: ${params.sourcePath}` };
+    }
+    await fs.cp(sourceDir, params.exportDir, {
       recursive: true,
       filter: (source) => !path.relative(params.repoDir, source).split(path.sep).includes(".git"),
     });
@@ -201,6 +225,7 @@ async function installLocalSkillDir(params: {
   timeoutMs?: number;
   logger?: Logger;
   git?: SkillSourceOrigin["git"];
+  preserveClawHubTracking?: boolean;
 }): Promise<SkillSourceInstallResult> {
   const slug = await resolveSkillInstallSlug({
     sourceDir: params.sourceDir,
@@ -232,7 +257,9 @@ async function installLocalSkillDir(params: {
     installedAt: Date.now(),
     ...(params.git ? { git: params.git } : {}),
   });
-  await untrackClawHubSkill(params.workspaceDir, slug);
+  if (!params.preserveClawHubTracking) {
+    await untrackClawHubSkill(params.workspaceDir, slug);
+  }
 
   return {
     ok: true,
@@ -250,6 +277,8 @@ async function installGitSkill(params: {
   force?: boolean;
   timeoutMs?: number;
   logger?: Logger;
+  sourcePath?: string;
+  preserveClawHubTracking?: boolean;
 }): Promise<SkillSourceInstallResult> {
   const parsed = parseGitPluginSpec(params.spec);
   if (!parsed) {
@@ -314,7 +343,11 @@ async function installGitSkill(params: {
       commit: normalizeOptionalString(rev.stdout),
       resolvedAt: new Date().toISOString(),
     };
-    const exported = await copyGitWorktreeExport({ repoDir, exportDir });
+    const exported = await copyGitWorktreeExport({
+      repoDir,
+      sourcePath: params.sourcePath,
+      exportDir,
+    });
     if (!exported.ok) {
       return exported;
     }
@@ -330,7 +363,31 @@ async function installGitSkill(params: {
       timeoutMs: params.timeoutMs,
       logger: params.logger,
       git,
+      preserveClawHubTracking: params.preserveClawHubTracking,
     });
+  });
+}
+
+export async function installSkillFromGitSource(params: {
+  workspaceDir: string;
+  url: string;
+  commit: string;
+  sourcePath?: string;
+  slug?: string;
+  force?: boolean;
+  timeoutMs?: number;
+  logger?: Logger;
+  preserveClawHubTracking?: boolean;
+}): Promise<SkillSourceInstallResult> {
+  return await installGitSkill({
+    workspaceDir: params.workspaceDir,
+    spec: `git:${params.url}@${params.commit}`,
+    sourcePath: params.sourcePath,
+    slug: params.slug,
+    force: params.force,
+    timeoutMs: params.timeoutMs,
+    logger: params.logger,
+    preserveClawHubTracking: params.preserveClawHubTracking,
   });
 }
 

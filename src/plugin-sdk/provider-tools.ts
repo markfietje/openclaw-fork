@@ -33,6 +33,8 @@ export function findUnsupportedSchemaKeywords(
       ? (record.properties as Record<string, unknown>)
       : undefined;
   if (properties) {
+    // Preserve property names in diagnostic paths; treating `properties` like
+    // a normal schema object would report the container instead of the field.
     for (const [key, value] of Object.entries(properties)) {
       violations.push(
         ...findUnsupportedSchemaKeywords(value, `${path}.properties.${key}`, unsupportedKeywords),
@@ -127,6 +129,9 @@ function shouldApplyOpenAIToolCompat(ctx: ProviderNormalizeToolSchemasContext): 
   const api = (ctx.model?.api ?? ctx.modelApi ?? "").trim().toLowerCase();
   const baseUrl = (ctx.model?.baseUrl ?? "").trim().toLowerCase();
 
+  // Only native OpenAI/ChatGPT endpoints get strict schema normalization. Other
+  // OpenAI-compatible providers often accept wider JSON Schema and may reject
+  // OpenAI-specific object-shape rewrites.
   if (provider === "openai") {
     if (api === "openai-responses") {
       return !baseUrl || isOpenAIResponsesBaseUrl(baseUrl);
@@ -451,6 +456,8 @@ function normalizeDeepSeekSchema(schema: unknown): unknown {
 
   const selected = nonNullVariants[0] ?? normalizedVariants[0];
   if (!selected || typeof selected !== "object" || Array.isArray(selected)) {
+    // If no object variant exists, stripping the union keyword is the least
+    // surprising DeepSeek-compatible shape we can preserve.
     return normalized;
   }
 

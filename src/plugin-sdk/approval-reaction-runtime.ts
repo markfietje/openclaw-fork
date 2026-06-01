@@ -45,42 +45,59 @@ export type ApprovalReactionTargetStore<TTarget> = {
 
 /** Product-ordered mapping from approval decisions to channel reaction labels. */
 export type ApprovalReactionDecisionBinding = {
+  /** Approval decision submitted when this reaction is accepted. */
   decision: ExecApprovalReplyDecision;
+  /** Canonical emoji sent to users and matched after normalization. */
   emoji: string;
+  /** Human-readable label shown next to the emoji in fallback text. */
   label: string;
 };
 
 /** Result of matching one normalized reaction key to an allowed approval decision. */
 export type ApprovalReactionDecisionResolution = {
+  /** Decision resolved from the reaction binding. */
   decision: ExecApprovalReplyDecision;
+  /** Emoji after variation selector and skin-tone normalization. */
   normalizedEmoji: string;
 };
 
 /** Channel-owned target metadata attached to an outbound approval prompt. */
 export type ApprovalReactionTargetRecord<TRoute = unknown> = {
+  /** Approval id passed back to the approval resolver. */
   approvalId: string;
+  /** Optional explicit kind; omitted values are inferred from plugin-prefixed ids. */
   approvalKind?: ApprovalKind;
+  /** Decisions this prompt permits; reactions outside this set are ignored. */
   allowedDecisions: readonly ExecApprovalReplyDecision[];
+  /** Channel route metadata needed to verify and complete the inbound reaction. */
   route?: TRoute;
+  /** Optional expiry mirrored from the underlying approval request. */
   expiresAtMs?: number;
 };
 
 export type ApprovalReactionTargetResolution<TRoute = unknown> =
   ApprovalReactionDecisionResolution & {
+    /** Approval id after blank-id validation. */
     approvalId: string;
+    /** Resolved exec/plugin kind used by reaction handlers. */
     approvalKind: ApprovalKind;
+    /** Channel route metadata copied from the registered target. */
     route?: TRoute;
   };
 
 /** Reply payload enriched with reaction affordances for channels that support emoji decisions. */
 export type ApprovalReactionPromptPayload = ReplyPayload & {
+  /** Decisions available for this approval after policy/action filtering. */
   allowedDecisions: readonly ExecApprovalReplyDecision[];
+  /** Reaction bindings filtered to `allowedDecisions` in product order. */
   reactionBindings: readonly ApprovalReactionDecisionBinding[];
 };
 
 /** Reaction prompt plus manual fallback prompt for channels with mixed delivery support. */
 export type ApprovalReactionPendingContent = {
+  /** Rich prompt that channels can render with reaction decision affordances. */
   reactionPayload: ApprovalReactionPromptPayload;
+  /** Plain approval prompt retained for channels/users that cannot react. */
   manualFallbackPayload: ReplyPayload;
 };
 
@@ -433,16 +450,22 @@ export function buildApprovalReactionPendingContentForRequest(params: {
 
 /** Create a bounded target store with in-memory TTLs and optional best-effort persistence. */
 export function createApprovalReactionTargetStore<TTarget>(params: {
+  /** Persistent-store namespace for this channel/plugin's approval reaction targets. */
   namespace: string;
+  /** Maximum in-memory target count before oldest keys are pruned. */
   maxEntries: number;
+  /** TTL used when register callers do not supply a per-target TTL. */
   defaultTtlMs: number;
   openStore?: (params: {
     namespace: string;
     maxEntries: number;
     defaultTtlMs: number;
   }) => KeyedStore<PersistedApprovalReactionTarget<TTarget>> | undefined;
+  /** Receives persistent-store failures before persistence is disabled for the process. */
   logPersistentError?: (error: unknown) => void;
+  /** Validates/deserializes persisted targets before they are returned to handlers. */
   readPersistedTarget?: (target: unknown) => TTarget | null;
+  /** Clock injection for TTL tests and deterministic pruning. */
   nowMs?: () => number;
 }): ApprovalReactionTargetStore<TTarget> {
   const nowMs = params.nowMs ?? Date.now;

@@ -1261,6 +1261,7 @@ export function commandRequiresSecurityAuditSuppressionApproval(params: {
   return textMentionsSecurityAuditSuppressions(params.command);
 }
 
+/** Checks whether allow-always state already provides durable trust for this command. */
 export function hasDurableExecApproval(params: {
   analysisOk: boolean;
   segmentAllowlistEntries: Array<ExecAllowlistEntry | null>;
@@ -1312,6 +1313,7 @@ function hasSegmentDurableExecApproval(params: {
   );
 }
 
+/** Updates last-use metadata for a single matched allowlist entry. */
 export function recordAllowlistUse(
   approvals: ExecApprovalsFile,
   agentId: string | undefined,
@@ -1345,6 +1347,7 @@ function buildAllowlistEntryMatchKey(
   return `${entry.pattern}\x00${entry.argPattern?.trim() ?? ""}`;
 }
 
+/** Updates last-use metadata for each unique matched allowlist entry. */
 export function recordAllowlistMatchesUse(params: {
   approvals: ExecApprovalsFile;
   agentId: string | undefined;
@@ -1375,6 +1378,7 @@ export function recordAllowlistMatchesUse(params: {
   }
 }
 
+/** Adds or refreshes an agent allowlist entry, keyed by pattern and optional argv pattern. */
 export function addAllowlistEntry(
   approvals: ExecApprovalsFile,
   agentId: string | undefined,
@@ -1426,6 +1430,7 @@ export function addAllowlistEntry(
   saveExecApprovals(approvals);
 }
 
+/** Stores an exact-command allow-always approval as a digest instead of plaintext command text. */
 export function addDurableCommandApproval(
   approvals: ExecApprovalsFile,
   agentId: string | undefined,
@@ -1440,6 +1445,7 @@ export function addDurableCommandApproval(
   });
 }
 
+/** Persists executable and argv patterns derived from approved command segments. */
 export function persistAllowAlwaysPatterns(params: {
   approvals: ExecApprovalsFile;
   agentId: string | undefined;

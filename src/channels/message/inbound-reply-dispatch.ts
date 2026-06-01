@@ -147,6 +147,8 @@ export async function dispatchReplyFromConfigWithSettledDispatcher(params: {
   return await withReplyDispatcher({
     dispatcher: params.dispatcher,
     onSettled: params.onSettled,
+    // withReplyDispatcher owns the finally path so streamed/block dispatchers
+    // release typing, buffers, and channel resources even when dispatch throws.
     run: () =>
       dispatchReplyFromConfig({
         ctx: params.ctxPayload,
@@ -292,8 +294,8 @@ export async function recordChannelMessageReplyDispatch(
         payload && typeof payload === "object" ? normalizeOutboundReplyPayload(payload) : {},
       deliver: async (payload, info) => {
         if (params.durable) {
-          // Durable delivery owns normalized message lifecycle results; fall back only when the
-          // adapter reports that this payload was not handled by the durable path.
+          // Durable delivery owns normalized message lifecycle results; fall
+          // back only when the adapter reports that this payload was unhandled.
           const durable = await deliverInboundReplyWithMessageSendContext({
             cfg: params.cfg,
             channel: params.channel,
@@ -309,6 +311,8 @@ export async function recordChannelMessageReplyDispatch(
             return durable.delivery;
           }
         }
+        // Compatibility callers still own legacy delivery when durable routing
+        // is disabled or cannot handle this specific normalized payload.
         return await params.deliver(payload as OutboundReplyPayload);
       },
       onError: params.onDispatchError,

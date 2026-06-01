@@ -11,6 +11,12 @@ import { isDirectScriptRun, runVitestBatch } from "./lib/vitest-batch-runner.mjs
 const FS_MODULE_CACHE_PATH_ENV_KEY = "OPENCLAW_VITEST_FS_MODULE_CACHE_PATH";
 const PARALLEL_ENV_KEY = "OPENCLAW_EXTENSION_BATCH_PARALLEL";
 const TARGET_CHUNK_SIZE_ENV_KEY = "OPENCLAW_EXTENSION_BATCH_TARGET_CHUNK_SIZE";
+const MEMORY_VITEST_CONFIG = "test/vitest/vitest.extension-memory.config.ts";
+const MEMORY_TARGET_CHUNK_SIZE = 25;
+const MEMORY_ISOLATED_TARGETS = new Set([
+  "extensions/memory-core/src/memory/manager-embedding-timeout.test.ts",
+  "extensions/memory-core/src/memory/qmd-manager.test.ts",
+]);
 const TELEGRAM_VITEST_CONFIG = "test/vitest/vitest.extension-telegram.config.ts";
 const TELEGRAM_TARGET_CHUNK_SIZE = 40;
 const ALLOW_NO_TESTS_FLAG = "--allow-no-tests";
@@ -148,17 +154,36 @@ function resolveGroupTargetChunkSize(group, env) {
   if (override !== null) {
     return override;
   }
+  if (group.config === MEMORY_VITEST_CONFIG) {
+    return MEMORY_TARGET_CHUNK_SIZE;
+  }
   return group.config === TELEGRAM_VITEST_CONFIG ? TELEGRAM_TARGET_CHUNK_SIZE : null;
 }
 
-function chunkTargets(targets, chunkSize) {
+function chunkTargets(targets, chunkSize, isolatedTargets = new Set()) {
   if (!chunkSize || targets.length <= chunkSize) {
     return [targets];
   }
   const chunks = [];
-  for (let index = 0; index < targets.length; index += chunkSize) {
-    chunks.push(targets.slice(index, index + chunkSize));
+  let currentChunk = [];
+  const flushCurrentChunk = () => {
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+    }
+  };
+  for (const target of targets) {
+    if (isolatedTargets.has(target)) {
+      flushCurrentChunk();
+      chunks.push([target]);
+      continue;
+    }
+    currentChunk.push(target);
+    if (currentChunk.length >= chunkSize) {
+      flushCurrentChunk();
+    }
   }
+  flushCurrentChunk();
   return chunks;
 }
 
@@ -173,7 +198,9 @@ async function runPlanGroup(group, params) {
   console.log(
     `[test-extension-batch] ${group.config}: ${group.extensionIds.join(", ")} (${targets.length} targets)`,
   );
-  const targetChunks = chunkTargets(targets, targetChunkSize);
+  const isolatedTargets =
+    group.config === MEMORY_VITEST_CONFIG ? MEMORY_ISOLATED_TARGETS : new Set();
+  const targetChunks = chunkTargets(targets, targetChunkSize, isolatedTargets);
   for (const [index, chunk] of targetChunks.entries()) {
     if (targetChunks.length > 1) {
       console.log(

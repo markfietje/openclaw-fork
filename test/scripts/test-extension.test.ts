@@ -777,6 +777,40 @@ describe("scripts/test-extension.mjs", () => {
     expect(runGroup.mock.calls.map(([params]) => params.targets.length)).toEqual([50, 50, 25]);
   });
 
+  it("chunks memory extension batch groups by default", async () => {
+    const runGroup = vi.fn<() => Promise<number>>().mockResolvedValue(0);
+    const result = await runExtensionBatchPlan(
+      {
+        extensionCount: 2,
+        extensionIds: ["memory-core", "memory-lancedb"],
+        estimatedCost: 64,
+        hasTests: true,
+        planGroups: [
+          {
+            config: "test/vitest/vitest.extension-memory.config.ts",
+            estimatedCost: 64,
+            extensionIds: ["memory-core", "memory-lancedb"],
+            roots: [bundledPluginRoot("memory-core"), bundledPluginRoot("memory-lancedb")],
+            testFileCount: 64,
+          },
+        ],
+        testFileCount: 64,
+      },
+      { runGroup },
+    );
+
+    expect(result).toBe(0);
+    expect(
+      runGroup.mock.calls.map(([params]) => params.targets.length).reduce((a, b) => a + b, 0),
+    ).toBe(64);
+    expect(runGroup.mock.calls.map(([params]) => params.targets)).toContainEqual([
+      bundledPluginFile("memory-core", "src/memory/manager-embedding-timeout.test.ts"),
+    ]);
+    expect(runGroup.mock.calls.map(([params]) => params.targets)).toContainEqual([
+      bundledPluginFile("memory-core", "src/memory/qmd-manager.test.ts"),
+    ]);
+  });
+
   it("fails extension batch groups when exact excludes remove every test", async () => {
     const runGroup = vi.fn<() => Promise<number>>().mockResolvedValue(0);
     const result = await runExtensionBatchPlan(

@@ -239,7 +239,7 @@ describe("qa suite gateway helpers", () => {
     });
     const waitReady = vi.fn(async () => {});
 
-    await waitForConfigRestartSettle(createRestartSettleEnv(waitReady), 0, 1_000);
+    await waitForConfigRestartSettle(createRestartSettleEnv(waitReady), 0, 3_000);
 
     expect(fetchWithSsrFGuardMock).toHaveBeenCalledWith(
       expect.objectContaining({

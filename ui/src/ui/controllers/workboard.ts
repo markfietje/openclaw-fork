@@ -1805,6 +1805,7 @@ export async function syncWorkboardLifecycle(params: {
       if (
         !currentCard ||
         hasPendingStatusTransition(params.host, currentCard.id) ||
+        (currentCard.status !== card.status && responseCard.status !== currentCard.status) ||
         (shouldSkipStaleLifecycleStatus(currentCard, lifecycle) &&
           responseCard.status !== currentCard.status)
       ) {

@@ -28,6 +28,11 @@ function createClient(
   return { request };
 }
 
+function requestPatch(client: ReturnType<typeof createClient>, index: number) {
+  return (client.request.mock.calls[index]?.[1] as { patch?: Record<string, unknown> } | undefined)
+    ?.patch;
+}
+
 function createDeferred<T>() {
   let resolve: ((value: T) => void) | undefined;
   const promise = new Promise<T>((res) => {
@@ -431,7 +436,7 @@ describe("workboard controller", () => {
       id: "card-1",
       patch: { execution: expect.objectContaining({ status: "review" }) },
     });
-    expect(client.request.mock.calls[1]?.[1]?.patch).not.toHaveProperty("status");
+    expect(requestPatch(client, 1)).not.toHaveProperty("status");
     expect(state.cards[0]).toMatchObject({ status: "running" });
   });
 
@@ -487,7 +492,7 @@ describe("workboard controller", () => {
           return {
             card: {
               ...linked,
-              execution: { ...linked.execution!, status: "succeeded", updatedAt: 3 },
+              execution: { ...linked.execution, status: "succeeded", updatedAt: 3 },
               updatedAt: 3,
             },
           };
@@ -510,7 +515,7 @@ describe("workboard controller", () => {
       id: "card-1",
       patch: { execution: expect.objectContaining({ status: "review" }) },
     });
-    expect(client.request.mock.calls[1]?.[1]?.patch).not.toHaveProperty("status");
+    expect(requestPatch(client, 1)).not.toHaveProperty("status");
     saveResponse.resolve({ card: saved });
     await saving;
     expect(state.cards[0]).toMatchObject({ status: "running" });
@@ -616,8 +621,8 @@ describe("workboard controller", () => {
         kind: "agent-session",
         engine: "codex",
         mode: "autonomous",
-        status: "running",
         model: "openai/gpt-5.5",
+        status: "running",
         sessionKey: sampleSession.key,
         startedAt: 1,
         updatedAt: 1,
@@ -1252,8 +1257,8 @@ describe("workboard controller", () => {
         kind: "agent-session",
         engine: "codex",
         mode: "autonomous",
-        status: "running",
         model: "openai/gpt-5.5",
+        status: "running",
         sessionKey: sampleTaskSessionKey,
         runId: "run-1",
         startedAt: 10,
@@ -1554,8 +1559,8 @@ describe("workboard controller", () => {
         kind: "agent-session",
         engine: "codex",
         mode: "autonomous",
-        status: "running",
         model: "openai/gpt-5.5",
+        status: "running",
         sessionKey: sampleSession.key,
         startedAt: 1,
         updatedAt: 1,
@@ -1611,7 +1616,7 @@ describe("workboard controller", () => {
       id: "card-1",
       patch: { execution: expect.objectContaining({ status: "review" }) },
     });
-    expect(client.request.mock.calls[1]?.[1]?.patch).not.toHaveProperty("status");
+    expect(requestPatch(client, 1)).not.toHaveProperty("status");
     expect(state.cards[0]).toMatchObject({ status: "running", position: 2000 });
   });
 
@@ -1685,7 +1690,7 @@ describe("workboard controller", () => {
       id: "card-1",
       patch: { execution: expect.objectContaining({ status: "review" }) },
     });
-    expect(client.request.mock.calls[1]?.[1]?.patch).not.toHaveProperty("status");
+    expect(requestPatch(client, 1)).not.toHaveProperty("status");
     moveResponse.resolve({ card: moved });
     await moving;
     expect(state.cards[0]).toMatchObject({ status: "running", position: 2000 });
@@ -1751,6 +1756,86 @@ describe("workboard controller", () => {
         status: "review",
         metadata: { lifecycleStatusSourceUpdatedAt: 1 },
       }),
+    });
+    expect(client.request).toHaveBeenCalledWith("workboard.cards.move", {
+      id: "card-1",
+      status: "running",
+      position: 2000,
+    });
+    expect(state.cards[0]).toMatchObject({ status: "running", position: 2000 });
+  });
+
+  it("ignores lifecycle responses without provenance when dragged status changes while sync is in flight", async () => {
+    const host = {};
+    const state = getWorkboardState(host);
+    const linked = {
+      ...sampleCard,
+      sessionKey: sampleSession.key,
+      execution: {
+        id: "exec-1",
+        kind: "agent-session",
+        engine: "codex",
+        mode: "autonomous",
+        model: "openai/gpt-5.5",
+        status: "running",
+        sessionKey: sampleSession.key,
+        startedAt: 1,
+        updatedAt: 1,
+      },
+    } satisfies WorkboardCard;
+    const moved = {
+      ...linked,
+      status: "running",
+      position: 2000,
+      updatedAt: 2,
+      events: [
+        {
+          id: "move-1",
+          kind: "moved",
+          at: 2,
+          fromStatus: "todo",
+          toStatus: "running",
+        },
+      ],
+    } satisfies WorkboardCard;
+    const staleLifecycleCard = {
+      ...linked,
+      status: "review",
+      updatedAt: 3,
+      execution: { ...linked.execution, status: "review" as const, updatedAt: 3 },
+    } satisfies WorkboardCard;
+    state.loaded = true;
+    state.cards = [linked];
+    const lifecycleResponse = createDeferred<{ card: WorkboardCard }>();
+    const client = createClient((method) => {
+      if (method === "workboard.cards.update") {
+        return lifecycleResponse.promise;
+      }
+      if (method === "workboard.cards.move") {
+        return { card: moved };
+      }
+      return {};
+    });
+
+    const syncing = syncWorkboardLifecycle({
+      host,
+      client: client as never,
+      sessions: [{ ...sampleSession, hasActiveRun: false, status: "done", updatedAt: null }],
+    });
+    await Promise.resolve();
+    await moveWorkboardCard({
+      host,
+      client: client as never,
+      cardId: "card-1",
+      status: "running",
+      position: 2000,
+    });
+    lifecycleResponse.resolve({ card: staleLifecycleCard });
+    await syncing;
+
+    expect(client.request).toHaveBeenCalledWith("workboard.cards.update", {
+      id: "card-1",
+      patch: { execution: expect.objectContaining({ status: "review" }) },
     });
     expect(client.request).toHaveBeenCalledWith("workboard.cards.move", {
       id: "card-1",

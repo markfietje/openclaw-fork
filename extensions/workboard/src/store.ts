@@ -2647,9 +2647,17 @@ export class WorkboardStore {
       // Ignore stale lifecycle status writes, but still accept any non-status updates in the patch.
       patch.status = undefined;
       if (patch.metadata && typeof patch.metadata === "object" && !Array.isArray(patch.metadata)) {
-        const { lifecycleStatusSourceUpdatedAt: _ignored, ...rest } =
-          patch.metadata as Record<string, unknown>;
-        patch.metadata = rest;
+        const metadataPatch = patch.metadata as Record<string, unknown>;
+        const { lifecycleStatusSourceUpdatedAt: _ignored, ...rest } = metadataPatch;
+        patch.metadata = Object.values(rest).some((value) => value !== undefined)
+          ? rest
+          : undefined;
+      }
+      const hasSemanticPatch = Object.entries(patch).some(
+        ([key, value]) => key !== "status" && key !== "metadata" && value !== undefined,
+      );
+      if (!hasSemanticPatch && patch.metadata === undefined) {
+        return existing;
       }
     }
     const status = normalizeStatus(patch.status, existing.status);

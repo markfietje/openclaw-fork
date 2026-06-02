@@ -375,6 +375,8 @@ describe("WorkboardStore", () => {
       metadata: { lifecycleStatusSourceUpdatedAt: 2000 },
     });
     expect(staleLifecycle.status).toBe("running");
+    expect(staleLifecycle.updatedAt).toBe(manual.updatedAt);
+    expect(staleLifecycle.events).toHaveLength(manual.events?.length ?? 0);
     expect(staleLifecycle.metadata?.lifecycleStatusSourceUpdatedAt).toBeUndefined();
 
     const freshLifecycleSourceUpdatedAt = Date.now() + 1000;

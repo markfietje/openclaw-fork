@@ -1,7 +1,9 @@
 const DEFAULT_MAX_OUTPUT_CHARS = 16_384;
 
 export type BoundedChildOutput = {
+  /** Retained output tail, kept within the configured character limit. */
   text: string;
+  /** True once older output has been dropped from the accumulator. */
   truncated: boolean;
 };
 

@@ -67,7 +67,9 @@ type VoiceCallContinueOperationRequest = {
 
 /** Create a short-lived async operation store for gateway-driven continue-call requests. */
 export function createVoiceCallContinueOperationStore(params: {
+  /** Resolved voice-call config used as fallback for transcript and TTS polling windows. */
   config: VoiceCallConfig;
+  /** Core config fallback for global TTS timeout defaults. */
   coreConfig: CoreConfig;
 }) {
   const operations = new Map<string, VoiceCallContinueOperation>();

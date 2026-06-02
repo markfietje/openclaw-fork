@@ -39,9 +39,12 @@ import {
   TwilioStreamFrameAdapter,
 } from "./stream-frame-adapter.js";
 
+/** Context passed to realtime tool handlers with caller speech captured outside provider tool args. */
 export type ToolHandlerContext = {
+  /** Best current user transcript assembled from partial/final provider events. */
   partialUserTranscript?: string;
 };
+/** Tool callback invoked by the realtime voice bridge for call-scoped actions. */
 export type ToolHandlerFn = (
   args: unknown,
   callId: string,
@@ -223,6 +226,7 @@ type PendingStreamToken = {
   callId?: string;
 };
 
+/** Metadata used to mint a one-shot provider websocket stream URL. */
 export type StreamSessionRequest = {
   providerName?: "twilio" | "telnyx";
   callId?: string;
@@ -231,8 +235,11 @@ export type StreamSessionRequest = {
   direction?: "inbound" | "outbound";
 };
 
+/** One-shot stream authorization returned to telephony providers in TwiML/API payloads. */
 export type StreamSession = {
+  /** Opaque path token consumed on the first websocket upgrade attempt. */
   token: string;
+  /** Public `wss://` URL carrying the stream token as the final path segment. */
   streamUrl: string;
 };
 
@@ -292,6 +299,7 @@ function appendRecentTalkEventMetadata(
   call.metadata = metadata;
 }
 
+/** Bridges telephony websocket media to a realtime voice provider and call manager state. */
 export class RealtimeCallHandler {
   private readonly toolHandlers = new Map<string, ToolHandlerFn>();
   private readonly pendingStreamTokens = new Map<string, PendingStreamToken>();
@@ -326,6 +334,7 @@ export class RealtimeCallHandler {
     private readonly coreConfig?: OpenClawConfig,
   ) {}
 
+  /** Records the public webhook origin/path prefix used to build carrier stream URLs. */
   setPublicUrl(url: string): void {
     try {
       const parsed = new URL(url);
@@ -340,10 +349,12 @@ export class RealtimeCallHandler {
     }
   }
 
+  /** Returns the websocket path pattern, including any public path prefix before servePath. */
   getStreamPathPattern(): string {
     return `${this.publicPathPrefix}${normalizePath(this.config.streamPath ?? "/voice/stream/realtime")}`;
   }
 
+  /** Builds TwiML that connects Twilio to a one-shot realtime stream session. */
   buildTwiMLPayload(req: http.IncomingMessage, params?: URLSearchParams): WebhookResponsePayload {
     const rawDirection = params?.get("Direction");
     const previousOrigin = this.publicOrigin;
@@ -373,6 +384,7 @@ export class RealtimeCallHandler {
     }
   }
 
+  /** Accepts a carrier websocket upgrade after consuming its one-shot stream token. */
   handleWebSocketUpgrade(request: http.IncomingMessage, socket: Duplex, head: Buffer): void {
     const url = new URL(request.url ?? "/", "wss://localhost");
     const token = url.pathname.split("/").pop() ?? null;
@@ -477,10 +489,12 @@ export class RealtimeCallHandler {
     });
   }
 
+  /** Registers a realtime tool implementation scoped by name for active call bridges. */
   registerToolHandler(name: string, fn: ToolHandlerFn): void {
     this.toolHandlers.set(name, fn);
   }
 
+  /** Injects speech instructions into an active realtime call bridge. */
   speak(callId: string, instructions: string): RealtimeSpeakResult {
     const bridge = this.activeBridgesByCallId.get(callId);
     if (!bridge) {
@@ -494,6 +508,7 @@ export class RealtimeCallHandler {
     }
   }
 
+  /** Issues the one-shot token and public stream URL embedded in provider connect payloads. */
   issueStreamSession(request: StreamSessionRequest = {}): StreamSession {
     const token = this.issueStreamToken({
       providerName: request.providerName ?? "twilio",

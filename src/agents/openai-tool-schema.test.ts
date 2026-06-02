@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearOpenAIToolSchemaCacheForTest,
+  findOpenAIStrictToolSchemaDiagnostics,
   isStrictOpenAIJsonSchemaCompatible,
   normalizeStrictOpenAIJsonSchema,
   resolveOpenAIStrictToolFlagForInventory,
@@ -90,5 +91,163 @@ describe("OpenAI strict tool schema normalization", () => {
         unsupportedToolSchemaKeywords: ["minimum"],
       }),
     ).toBe(third);
+  });
+
+  it("reports circular strict schemas without recursing forever", () => {
+    const schema: {
+      type: "object";
+      properties: Record<string, unknown>;
+      required: string[];
+      additionalProperties: false;
+    } = {
+      type: "object",
+      properties: {},
+      required: ["self"],
+      additionalProperties: false,
+    };
+    schema.properties.self = schema;
+
+    expect(() => normalizeStrictOpenAIJsonSchema(schema)).not.toThrow();
+    expect(isStrictOpenAIJsonSchemaCompatible(schema)).toBe(false);
+    expect(findOpenAIStrictToolSchemaDiagnostics([{ name: "cycle", parameters: schema }])).toEqual([
+      {
+        toolIndex: 0,
+        toolName: "cycle",
+        violations: ["cycle.parameters is not inspectable for OpenAI strict schema compatibility"],
+      },
+    ]);
+    expect(
+      resolveOpenAIStrictToolFlagForInventory([{ name: "cycle", parameters: schema }], true),
+    ).toBe(false);
+  });
+
+  it("reports hostile properties maps without throwing", () => {
+    const hostileProperties = new Proxy(
+      {},
+      {
+        ownKeys() {
+          throw new Error("strict schema properties ownKeys exploded");
+        },
+      },
+    );
+    const schema = {
+      type: "object",
+      properties: hostileProperties,
+      required: [],
+      additionalProperties: false,
+    };
+
+    expect(() => normalizeStrictOpenAIJsonSchema(schema)).not.toThrow();
+    expect(isStrictOpenAIJsonSchemaCompatible(schema)).toBe(false);
+    expect(
+      findOpenAIStrictToolSchemaDiagnostics([{ name: "hostile", parameters: schema }]),
+    ).toEqual([
+      {
+        toolIndex: 0,
+        toolName: "hostile",
+        violations: [
+          "hostile.parameters is not inspectable for OpenAI strict schema compatibility",
+        ],
+      },
+    ]);
+  });
+
+  it("reports circular schema arrays without recursing forever", () => {
+    const enumValues: unknown[] = [];
+    enumValues.push(enumValues);
+    const schema = {
+      type: "object",
+      properties: {
+        choice: { type: "string", enum: enumValues },
+      },
+      required: ["choice"],
+      additionalProperties: false,
+    };
+
+    expect(() => normalizeStrictOpenAIJsonSchema(schema)).not.toThrow();
+    expect(isStrictOpenAIJsonSchemaCompatible(schema)).toBe(false);
+    expect(
+      findOpenAIStrictToolSchemaDiagnostics([{ name: "circular_enum", parameters: schema }]),
+    ).toEqual([
+      {
+        toolIndex: 0,
+        toolName: "circular_enum",
+        violations: [
+          "circular_enum.parameters is not inspectable for OpenAI strict schema compatibility",
+        ],
+      },
+    ]);
+  });
+
+  it("normalizes schema arrays before strict compatibility walkers inspect them", () => {
+    const required = new Proxy(["path"], {
+      get(target, property, receiver) {
+        if (property === "filter") {
+          throw new Error("source required.filter should not be used");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const schema = {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required,
+      additionalProperties: false,
+    };
+
+    expect(isStrictOpenAIJsonSchemaCompatible(schema)).toBe(true);
+    expect(findOpenAIStrictToolSchemaDiagnostics([{ name: "read", parameters: schema }])).toEqual(
+      [],
+    );
+  });
+
+  it("does not trust source tool array traversal methods", () => {
+    const healthy = {
+      name: "healthy",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+    };
+    const tools = new Proxy([healthy], {
+      get(target, property, receiver) {
+        if (property === "every" || property === "flatMap") {
+          throw new Error(`source ${property} should not be used`);
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+
+    expect(resolveOpenAIStrictToolFlagForInventory(tools, true)).toBe(true);
+    expect(findOpenAIStrictToolSchemaDiagnostics(tools)).toEqual([]);
+  });
+
+  it("reports unreadable tool schemas before strict compatibility checks", () => {
+    const tool = {
+      name: "fuzzplugin_unreadable",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      },
+    };
+    Object.defineProperty(tool, "parameters", {
+      enumerable: true,
+      get() {
+        throw new Error("strict schema parameters getter exploded");
+      },
+    });
+
+    expect(resolveOpenAIStrictToolFlagForInventory([tool], true)).toBe(false);
+    expect(findOpenAIStrictToolSchemaDiagnostics([tool])).toEqual([
+      {
+        toolIndex: 0,
+        toolName: "fuzzplugin_unreadable",
+        violations: ["fuzzplugin_unreadable.parameters is unreadable"],
+      },
+    ]);
   });
 });

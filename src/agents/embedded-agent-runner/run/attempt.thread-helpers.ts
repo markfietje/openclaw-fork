@@ -5,7 +5,12 @@ import { normalizeStructuredPromptSection } from "../../prompt-cache-stability.j
 /** Custom transcript marker recording when cache-TTL pruning was touched. */
 export const ATTEMPT_CACHE_TTL_CUSTOM_TYPE = "openclaw.cache-ttl";
 
-/** Combines hook-provided system context around the base prompt. */
+/**
+ * Combines hook-provided system context around the base prompt using the same
+ * structured-section normalization as prompt-cache boundaries. Returns
+ * undefined when hooks contributed nothing so callers can avoid rewriting an
+ * otherwise cache-stable system prompt.
+ */
 export function composeSystemPromptWithHookContext(params: {
   baseSystemPrompt?: string;
   prependSystemContext?: string;
@@ -27,7 +32,11 @@ export function composeSystemPromptWithHookContext(params: {
   });
 }
 
-/** Returns the workspace dir to expose to spawned subagents under sandbox limits. */
+/**
+ * Returns the workspace dir to expose to spawned subagents under sandbox limits.
+ * Read-only sandbox runs must spawn from the canonical workspace, not the
+ * sandbox copy, so children inherit the same agent-owned bootstrap context.
+ */
 export function resolveAttemptSpawnWorkspaceDir(params: {
   sandbox?: {
     enabled?: boolean;
@@ -59,7 +68,11 @@ function shouldAppendAttemptCacheTtl(params: {
   );
 }
 
-/** Appends cache-TTL metadata after a clean non-compaction attempt. */
+/**
+ * Appends cache-TTL metadata after a clean non-compaction attempt. The marker is
+ * consumed by later prompt-cache pruning, so it is skipped whenever compaction
+ * already rewrote the transcript in this attempt.
+ */
 export function appendAttemptCacheTtlIfNeeded(params: {
   sessionManager: {
     appendCustomEntry?: (customType: string, data: unknown) => void;
@@ -86,7 +99,11 @@ export function appendAttemptCacheTtlIfNeeded(params: {
   return true;
 }
 
-/** Decides whether a completed bootstrap turn is safe to persist. */
+/**
+ * Decides whether a completed bootstrap turn is safe to persist. A failed,
+ * aborted, or compacted attempt cannot mark bootstrap complete because the next
+ * retry still needs the original bootstrap context available.
+ */
 export function shouldPersistCompletedBootstrapTurn(params: {
   shouldRecordCompletedBootstrapTurn: boolean;
   promptError: unknown;

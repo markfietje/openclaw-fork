@@ -480,6 +480,32 @@ describe("openai transport stream", () => {
     }
   });
 
+  it("skips unreadable model payload tool names in debug summaries", () => {
+    const previous = process.env.OPENCLAW_DEBUG_MODEL_PAYLOAD;
+    process.env.OPENCLAW_DEBUG_MODEL_PAYLOAD = "tools";
+    try {
+      const hostileTool = {
+        type: "function",
+        get function(): { name: string } {
+          throw new Error("responses debug tool function getter exploded");
+        },
+      };
+
+      expect(
+        testing.summarizeResponsesTools([
+          hostileTool,
+          { type: "function", function: { name: "wait" } },
+        ]),
+      ).toBe("count=2 names=wait");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENCLAW_DEBUG_MODEL_PAYLOAD;
+      } else {
+        process.env.OPENCLAW_DEBUG_MODEL_PAYLOAD = previous;
+      }
+    }
+  });
+
   it("redacts full model payload debug summaries", () => {
     const previous = process.env.OPENCLAW_DEBUG_MODEL_PAYLOAD;
     process.env.OPENCLAW_DEBUG_MODEL_PAYLOAD = "full-redacted";
@@ -508,6 +534,25 @@ describe("openai transport stream", () => {
       tools: [
         { type: "function", name: "exec" },
         { type: "web_search_preview" },
+        { type: "function", function: { name: "wait" } },
+      ],
+    };
+
+    testing.enforceCodeModeResponsesToolSurface(payload);
+    testing.assertCodeModeResponsesToolSurface(payload);
+    expect(payload.tools).toHaveLength(2);
+  });
+
+  it("skips unreadable code mode response payload tool names", () => {
+    const payload = {
+      tools: [
+        { type: "function", name: "exec" },
+        {
+          type: "function",
+          get function(): { name: string } {
+            throw new Error("responses code mode function getter exploded");
+          },
+        },
         { type: "function", function: { name: "wait" } },
       ],
     };

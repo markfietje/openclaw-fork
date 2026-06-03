@@ -1,10 +1,10 @@
 import path from "node:path";
 import type { NormalizedModelCatalogRow } from "@openclaw/model-catalog-core/model-catalog-types";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
+import { sortUniqueStrings } from "../../packages/normalization-core/src/string-normalization.js";
 import type { ModelDefinitionConfig, ModelProviderConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { planManifestModelCatalogRows } from "../model-catalog/manifest-planner.js";
-import { sortUniqueStrings } from "../../packages/normalization-core/src/string-normalization.js";
 import { loadManifestMetadataSnapshot } from "./manifest-contract-eligibility.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
 import { clearNativeRequireJavaScriptModuleCache } from "./native-module-require.js";
@@ -211,28 +211,32 @@ function resolveManifestModelCatalogProviders(
 ): ProviderPlugin[] {
   const providers: ProviderPlugin[] = [];
   for (const plugin of pluginRecords) {
-    if (!plugin.modelCatalog?.providers) {
+    try {
+      if (!plugin.modelCatalog?.providers) {
+        continue;
+      }
+      const plan = planManifestModelCatalogRows({ registry: { plugins: [plugin] } });
+      for (const entry of plan.entries) {
+        if (entry.rows.length === 0 || entry.discovery === "runtime") {
+          continue;
+        }
+        const providerConfig = providerConfigFromManifestRows(entry.rows);
+        if (!providerConfig) {
+          continue;
+        }
+        providers.push({
+          id: entry.provider,
+          pluginId: plugin.id,
+          label: entry.provider,
+          auth: [],
+          staticCatalog: {
+            order: "simple",
+            run: async () => ({ providers: { [entry.provider]: providerConfig } }),
+          },
+        });
+      }
+    } catch {
       continue;
-    }
-    const plan = planManifestModelCatalogRows({ registry: { plugins: [plugin] } });
-    for (const entry of plan.entries) {
-      if (entry.rows.length === 0 || entry.discovery === "runtime") {
-        continue;
-      }
-      const providerConfig = providerConfigFromManifestRows(entry.rows);
-      if (!providerConfig) {
-        continue;
-      }
-      providers.push({
-        id: entry.provider,
-        pluginId: plugin.id,
-        label: entry.provider,
-        auth: [],
-        staticCatalog: {
-          order: "simple",
-          run: async () => ({ providers: { [entry.provider]: providerConfig } }),
-        },
-      });
     }
   }
   return providers;
@@ -243,23 +247,27 @@ function resolveRuntimeManifestCatalogPluginIds(
 ): Set<string> {
   const pluginIds = new Set<string>();
   for (const plugin of pluginRecords) {
-    const ownedProviders = new Set(
-      plugin.providers.map((provider) => normalizeProviderId(provider)),
-    );
-    const ownsRuntimeDiscovery = Object.entries(plugin.modelCatalog?.discovery ?? {}).some(
-      ([provider, discovery]) =>
-        discovery === "runtime" && ownedProviders.has(normalizeProviderId(provider)),
-    );
-    if (ownsRuntimeDiscovery) {
-      pluginIds.add(plugin.id);
-    }
+    try {
+      const ownedProviders = new Set(
+        plugin.providers.map((provider) => normalizeProviderId(provider)),
+      );
+      const ownsRuntimeDiscovery = Object.entries(plugin.modelCatalog?.discovery ?? {}).some(
+        ([provider, discovery]) =>
+          discovery === "runtime" && ownedProviders.has(normalizeProviderId(provider)),
+      );
+      if (ownsRuntimeDiscovery) {
+        pluginIds.add(plugin.id);
+      }
 
-    if (!plugin.modelCatalog?.providers) {
+      if (!plugin.modelCatalog?.providers) {
+        continue;
+      }
+      const plan = planManifestModelCatalogRows({ registry: { plugins: [plugin] } });
+      if (plan.entries.some((entry) => entry.discovery === "runtime")) {
+        pluginIds.add(plugin.id);
+      }
+    } catch {
       continue;
-    }
-    const plan = planManifestModelCatalogRows({ registry: { plugins: [plugin] } });
-    if (plan.entries.some((entry) => entry.discovery === "runtime")) {
-      pluginIds.add(plugin.id);
     }
   }
   return pluginIds;

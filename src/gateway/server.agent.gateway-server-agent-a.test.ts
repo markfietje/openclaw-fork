@@ -513,6 +513,41 @@ describe("gateway server agent", () => {
     expect(images?.[0]?.data).toBe(BASE_IMAGE_PNG);
   });
 
+  test("agent validates image attachments against selected model when auto auth runtime metadata is stale", async () => {
+    testState.agentConfig = { model: { primary: "ollama-cloud/deepseek-v4-flash" } };
+    await setGatewayModelCatalogForTest([TEXT_ONLY_AGENT_MODEL, VISION_AGENT_MODEL]);
+    await setTestSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main-stale-image-runtime",
+          updatedAt: Date.now(),
+          modelProvider: "ollama-cloud",
+          model: "gemma4:31b",
+          authProfileOverride: "ollama-cloud:default",
+          authProfileOverrideSource: "auto",
+        },
+      },
+    });
+
+    const res = await rpcReq(ws, "agent", {
+      message: "what is in the image?",
+      sessionKey: "main",
+      attachments: [
+        {
+          mimeType: "image/png",
+          fileName: "tiny.png",
+          content: BASE_IMAGE_PNG,
+        },
+      ],
+      idempotencyKey: "idem-agent-stale-runtime-image",
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.error?.code).toBe("INVALID_REQUEST");
+    expect(res.error?.message).toContain("active model does not accept image inputs");
+    expect(vi.mocked(agentCommand)).not.toHaveBeenCalled();
+  });
+
   test("agent errors when delivery requested and no last channel exists", async () => {
     testState.allowFrom = ["+1555"];
     try {

@@ -252,6 +252,42 @@ describe("applyModelOverrideToSessionEntry", () => {
     expect((entry.updatedAt ?? 0) > before).toBe(true);
   });
 
+  it("clears stale runtime model fields when selecting the default model", () => {
+    const before = Date.now() - 5_000;
+    const entry: SessionEntry = {
+      sessionId: "sess-default-runtime",
+      updatedAt: before,
+      modelProvider: "opencode-go",
+      model: "deepseek-v4-pro",
+      contextTokens: 64_000,
+      contextBudgetStatus: contextBudgetStatus({
+        updatedAt: before,
+        provider: "opencode-go",
+        model: "deepseek-v4-pro",
+        contextTokenBudget: 64_000,
+      }),
+    };
+
+    const result = applyModelOverrideToSessionEntry({
+      entry,
+      selection: {
+        provider: "opencode-go",
+        model: "qwen3.6-plus",
+        isDefault: true,
+      },
+    });
+
+    expect(result.updated).toBe(true);
+    expect(entry.providerOverride).toBeUndefined();
+    expect(entry.modelOverride).toBeUndefined();
+    expect(entry.modelOverrideSource).toBeUndefined();
+    expect(entry.modelProvider).toBeUndefined();
+    expect(entry.model).toBeUndefined();
+    expect(entry.contextTokens).toBeUndefined();
+    expect(entry.contextBudgetStatus).toBeUndefined();
+    expect((entry.updatedAt ?? 0) > before).toBe(true);
+  });
+
   it("marks non-default overrides with the provided source", () => {
     const entry: SessionEntry = {
       sessionId: "sess-5a",

@@ -140,6 +140,7 @@ import {
   resolveGatewaySessionStoreTarget,
   resolveGatewayModelSupportsImages,
   resolveSessionStoreKey,
+  resolveSessionNextRunModelRef,
   resolveSessionModelRef,
 } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
@@ -1361,7 +1362,7 @@ export const agentHandlers: GatewayRequestHandlers = {
             sessCanonicalKey === "global" && agentId
               ? agentId
               : resolveAgentIdFromSessionKey(sessCanonicalKey);
-          const modelRef = resolveSessionModelRef(sessCfg, sessEntry, sessionAgentId);
+          const modelRef = resolveSessionNextRunModelRef(sessCfg, sessEntry, sessionAgentId);
           baseProvider = modelRef.provider;
           baseModel = modelRef.model;
           requestedAcpMeta = readAcpSessionMeta({ sessionKey: sessCanonicalKey });

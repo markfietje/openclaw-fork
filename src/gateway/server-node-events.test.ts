@@ -11,6 +11,8 @@ const buildSessionLookup = (
     sessionId?: string;
     model?: string;
     modelProvider?: string;
+    authProfileOverride?: string;
+    authProfileOverrideSource?: "auto" | "user";
     lastChannel?: string;
     lastTo?: string;
     lastAccountId?: string;
@@ -29,6 +31,8 @@ const buildSessionLookup = (
     updatedAt: entry.updatedAt ?? Date.now(),
     model: entry.model,
     modelProvider: entry.modelProvider,
+    authProfileOverride: entry.authProfileOverride,
+    authProfileOverrideSource: entry.authProfileOverrideSource,
     lastChannel: entry.lastChannel,
     lastTo: entry.lastTo,
     lastAccountId: entry.lastAccountId,
@@ -120,6 +124,12 @@ const runtimeMocks = vi.hoisted(() => ({
   ),
   resolveOutboundTarget: vi.fn(({ to }: { to: string }) => ({ ok: true, to })),
   resolveSessionAgentId: vi.fn(() => "main"),
+  resolveSessionNextRunModelRef: vi.fn(
+    (_cfg: OpenClawConfig, entry?: { model?: string; modelProvider?: string }) => ({
+      provider: entry?.modelProvider ?? "test-provider",
+      model: entry?.model ?? "default-model",
+    }),
+  ),
   resolveSessionModelRef: vi.fn(
     (_cfg: OpenClawConfig, entry?: { model?: string; modelProvider?: string }) => ({
       provider: entry?.modelProvider ?? "test-provider",
@@ -159,6 +169,7 @@ const loadConfigMock = runtimeMocks.getRuntimeConfig;
 const agentCommandMock = runtimeMocks.agentCommandFromIngress;
 const updateSessionStoreMock = runtimeMocks.updateSessionStore;
 const loadSessionEntryMock = runtimeMocks.loadSessionEntry;
+const resolveSessionNextRunModelRefMock = runtimeMocks.resolveSessionNextRunModelRef;
 const registerApnsRegistrationVi = runtimeMocks.registerApnsRegistration;
 const normalizeChannelIdVi = runtimeMocks.normalizeChannelId;
 
@@ -1106,6 +1117,13 @@ describe("agent request events", () => {
     parseMessageWithAttachmentsMock.mockReset();
     updateSessionStoreMock.mockClear();
     loadSessionEntryMock.mockClear();
+    resolveSessionNextRunModelRefMock.mockClear();
+    resolveSessionNextRunModelRefMock.mockImplementation(
+      (_cfg: OpenClawConfig, entry?: { model?: string; modelProvider?: string }) => ({
+        provider: entry?.modelProvider ?? "test-provider",
+        model: entry?.model ?? "default-model",
+      }),
+    );
     normalizeChannelIdVi.mockClear();
     normalizeChannelIdVi.mockImplementation((channel?: string | null) => channel ?? null);
     parseMessageWithAttachmentsMock.mockResolvedValue({
@@ -1219,6 +1237,58 @@ describe("agent request events", () => {
     const parseCall = mockCall(parseMessageWithAttachmentsMock);
     expect(parseCall?.[0]).toBe("describe");
     expect(Array.isArray(parseCall?.[1])).toBe(true);
+    expectFields(parseCall?.[2], { supportsInlineImages: false });
+  });
+
+  it("checks attachments against the selected next-run model when runtime metadata is stale", async () => {
+    const ctx = buildCtx();
+    ctx.loadGatewayModelCatalog = async () => [
+      {
+        id: "default-model",
+        name: "Default text model",
+        provider: "test-provider",
+        input: ["text"],
+      },
+      {
+        id: "vision-model",
+        name: "Stale vision model",
+        provider: "test-provider",
+        input: ["text", "image"],
+      },
+    ];
+    loadSessionEntryMock.mockReturnValueOnce({
+      ...buildSessionLookup("agent:main:main", {
+        model: "vision-model",
+        modelProvider: "test-provider",
+        authProfileOverride: "test-provider:default",
+        authProfileOverrideSource: "auto",
+      }),
+      canonicalKey: "agent:main:main",
+    });
+    resolveSessionNextRunModelRefMock.mockReturnValueOnce({
+      provider: "test-provider",
+      model: "default-model",
+    });
+
+    await handleNodeEvent(ctx, "node-stale-runtime-image", {
+      event: "agent.request",
+      payloadJSON: JSON.stringify({
+        message: "describe",
+        sessionKey: "agent:main:main",
+        attachments: [
+          {
+            type: "image",
+            mimeType: "image/png",
+            fileName: "dot.png",
+            content: "AAAA",
+          },
+        ],
+      }),
+    });
+
+    expect(resolveSessionNextRunModelRefMock).toHaveBeenCalledTimes(1);
+    expect(parseMessageWithAttachmentsMock).toHaveBeenCalledTimes(1);
+    const parseCall = mockCall(parseMessageWithAttachmentsMock);
     expectFields(parseCall?.[2], { supportsInlineImages: false });
   });
 

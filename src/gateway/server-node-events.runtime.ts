@@ -21,6 +21,7 @@ export {
   loadSessionEntry,
   migrateAndPruneGatewaySessionStoreKey,
   resolveGatewayModelSupportsImages,
+  resolveSessionNextRunModelRef,
   resolveSessionModelRef,
 } from "./session-utils.js";
 export { formatForLog } from "./ws-log.js";

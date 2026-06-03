@@ -40,7 +40,7 @@ import {
   resolveGatewayModelSupportsImages,
   resolveOutboundTarget,
   resolveSessionAgentId,
-  resolveSessionModelRef,
+  resolveSessionNextRunModelRef,
   sanitizeInboundSystemTags,
   sendDurableMessageBatch,
   updateSessionStore,
@@ -485,7 +485,7 @@ export const handleNodeEvent = async (
       }
       if (normalizedAttachments.length > 0) {
         const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
-        const modelRef = resolveSessionModelRef(cfg, entry, sessionAgentId);
+        const modelRef = resolveSessionNextRunModelRef(cfg, entry, sessionAgentId);
         const supportsInlineImages = await resolveGatewayModelSupportsImages({
           loadGatewayModelCatalog: ctx.loadGatewayModelCatalog,
           provider: modelRef.provider,

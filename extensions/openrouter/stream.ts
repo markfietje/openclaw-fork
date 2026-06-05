@@ -62,22 +62,54 @@ function shouldPatchOpenRouterRoutingPayload(model: Parameters<StreamFn>[0]): bo
   return (api === undefined || api === "openai-completions") && isVerifiedOpenRouterRoute(model);
 }
 
+type PayloadFieldRead = { ok: true; value: unknown } | { ok: false };
+
+function readPayloadField(record: Record<string, unknown>, key: string): PayloadFieldRead {
+  try {
+    return { ok: true, value: record[key] };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function forcePayloadField(record: Record<string, unknown>, key: string, value: unknown): boolean {
+  try {
+    Object.defineProperty(record, key, {
+      configurable: true,
+      enumerable: true,
+      value,
+      writable: true,
+    });
+    const next = readPayloadField(record, key);
+    return next.ok && next.value === value;
+  } catch {
+    return false;
+  }
+}
+
 function assistantMessageHasOpenAIToolCalls(message: Record<string, unknown>): boolean {
-  return Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+  const toolCalls = readPayloadField(message, "tool_calls");
+  return toolCalls.ok && Array.isArray(toolCalls.value) && toolCalls.value.length > 0;
 }
 
 function isAnthropicToolCallContentBlock(value: unknown): boolean {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    ((value as { type?: unknown }).type === "tool_use" ||
-      (value as { type?: unknown }).type === "toolCall")
-  );
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const type = readPayloadField(value as Record<string, unknown>, "type");
+  if (!type.ok) {
+    return false;
+  }
+  return type.value === "tool_use" || type.value === "toolCall";
 }
 
 function assistantMessageHasAnthropicToolUse(message: Record<string, unknown>): boolean {
-  const content = message.content;
-  return Array.isArray(content) && content.some(isAnthropicToolCallContentBlock);
+  const content = readPayloadField(message, "content");
+  return (
+    content.ok &&
+    Array.isArray(content.value) &&
+    content.value.some(isAnthropicToolCallContentBlock)
+  );
 }
 
 function shouldStripOpenRouterTrailingMessage(value: unknown): boolean {
@@ -85,28 +117,30 @@ function shouldStripOpenRouterTrailingMessage(value: unknown): boolean {
     return false;
   }
   const message = value as Record<string, unknown>;
+  const role = readPayloadField(message, "role");
   return (
-    message.role === "assistant" &&
+    role.ok &&
+    role.value === "assistant" &&
     !assistantMessageHasOpenAIToolCalls(message) &&
     !assistantMessageHasAnthropicToolUse(message)
   );
 }
 
 function stripTrailingOpenRouterAssistantPrefillMessages(payload: Record<string, unknown>): number {
-  const messages = payload.messages;
-  if (!Array.isArray(messages)) {
+  const messages = readPayloadField(payload, "messages");
+  if (!messages.ok || !Array.isArray(messages.value)) {
     return 0;
   }
 
-  let keep = messages.length;
-  while (keep > 0 && shouldStripOpenRouterTrailingMessage(messages[keep - 1])) {
+  let keep = messages.value.length;
+  while (keep > 0 && shouldStripOpenRouterTrailingMessage(messages.value[keep - 1])) {
     keep -= 1;
   }
-  if (keep === messages.length) {
+  if (keep === messages.value.length) {
     return 0;
   }
-  const stripped = messages.length - keep;
-  messages.splice(keep);
+  const stripped = messages.value.length - keep;
+  messages.value.splice(keep);
   return stripped;
 }
 
@@ -143,8 +177,13 @@ function isEnabledReasoningValue(value: unknown): boolean {
 }
 
 function isOpenRouterReasoningPayloadEnabled(payload: Record<string, unknown>): boolean {
+  const reasoning = readPayloadField(payload, "reasoning");
+  const reasoningEffort = readPayloadField(payload, "reasoning_effort");
   return (
-    isEnabledReasoningValue(payload.reasoning) || isEnabledReasoningValue(payload.reasoning_effort)
+    !reasoning.ok ||
+    !reasoningEffort.ok ||
+    isEnabledReasoningValue(reasoning.value) ||
+    isEnabledReasoningValue(reasoningEffort.value)
   );
 }
 
@@ -174,8 +213,12 @@ function injectOpenRouterRouting(
   return createPayloadPatchStreamWrapper(
     routedStreamFn,
     ({ payload }) => {
-      if (payload.provider === undefined) {
-        payload.provider = providerRouting;
+      const provider = readPayloadField(payload, "provider");
+      if (provider.ok && provider.value !== undefined) {
+        return;
+      }
+      if (!forcePayloadField(payload, "provider", providerRouting)) {
+        throw new Error("OpenRouter provider routing payload patch failed");
       }
     },
     {

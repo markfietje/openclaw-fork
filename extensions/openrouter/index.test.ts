@@ -302,6 +302,100 @@ describe("openrouter provider hooks", () => {
     });
   });
 
+  it("overwrites hostile configurable provider routing payload fields", async () => {
+    const provider = await registerSingleProviderPlugin(openrouterPlugin);
+    let capturedPayload: Record<string, unknown> | undefined;
+    const baseStreamFn = vi.fn(
+      (
+        ...args: Parameters<import("openclaw/plugin-sdk/agent-core").StreamFn>
+      ): ReturnType<import("openclaw/plugin-sdk/agent-core").StreamFn> => {
+        const payload: Record<string, unknown> = {};
+        Object.defineProperty(payload, "provider", {
+          configurable: true,
+          get() {
+            throw new Error("provider getter failed");
+          },
+        });
+        void args[2]?.onPayload?.(payload, args[0]);
+        capturedPayload = payload;
+        return { async *[Symbol.asyncIterator]() {} } as never;
+      },
+    );
+
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "openrouter",
+      modelId: "openai/gpt-5.4",
+      extraParams: {
+        provider: {
+          order: ["moonshot"],
+        },
+      },
+      streamFn: baseStreamFn,
+      thinkingLevel: "high",
+    } as never);
+
+    expect(() =>
+      wrapped?.(
+        {
+          provider: "openrouter",
+          api: "openai-completions",
+          id: "openai/gpt-5.4",
+          compat: {},
+        } as never,
+        { messages: [] } as never,
+        {},
+      ),
+    ).not.toThrow();
+
+    expect(capturedPayload?.provider).toEqual({
+      order: ["moonshot"],
+    });
+  });
+
+  it("fails closed when provider routing cannot patch the payload", async () => {
+    const provider = await registerSingleProviderPlugin(openrouterPlugin);
+    const baseStreamFn = vi.fn(
+      (
+        ...args: Parameters<import("openclaw/plugin-sdk/agent-core").StreamFn>
+      ): ReturnType<import("openclaw/plugin-sdk/agent-core").StreamFn> => {
+        const payload: Record<string, unknown> = {};
+        Object.defineProperty(payload, "provider", {
+          configurable: false,
+          get() {
+            throw new Error("provider getter failed");
+          },
+        });
+        void args[2]?.onPayload?.(payload, args[0]);
+        return { async *[Symbol.asyncIterator]() {} } as never;
+      },
+    );
+
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "openrouter",
+      modelId: "openai/gpt-5.4",
+      extraParams: {
+        provider: {
+          order: ["moonshot"],
+        },
+      },
+      streamFn: baseStreamFn,
+      thinkingLevel: "high",
+    } as never);
+
+    expect(() =>
+      wrapped?.(
+        {
+          provider: "openrouter",
+          api: "openai-completions",
+          id: "openai/gpt-5.4",
+          compat: {},
+        } as never,
+        { messages: [] } as never,
+        {},
+      ),
+    ).toThrow("OpenRouter provider routing payload patch failed");
+  });
+
   it("merges resolved OpenRouter model params into transport params", async () => {
     const provider = await registerSingleProviderPlugin(openrouterPlugin);
     const patch = provider.extraParamsForTransport?.({
@@ -594,6 +688,56 @@ describe("openrouter provider hooks", () => {
     expect(capturedPayload?.messages).toEqual([{ role: "user", content: "Return JSON." }]);
     expect(capturedPayload?.reasoning).toEqual({ effort: "high" });
     expect(baseStreamFn).toHaveBeenCalledOnce();
+  });
+
+  it("strips OpenRouter-routed Anthropic assistant prefill with unreadable tool calls", async () => {
+    const provider = await registerSingleProviderPlugin(openrouterPlugin);
+    let capturedPayload: Record<string, unknown> | undefined;
+    const baseStreamFn = vi.fn(
+      (
+        ...args: Parameters<import("openclaw/plugin-sdk/agent-core").StreamFn>
+      ): ReturnType<import("openclaw/plugin-sdk/agent-core").StreamFn> => {
+        const assistantPrefill: Record<string, unknown> = {
+          role: "assistant",
+          content: "{",
+        };
+        Object.defineProperty(assistantPrefill, "tool_calls", {
+          configurable: true,
+          get() {
+            throw new Error("tool_calls getter failed");
+          },
+        });
+        const payload: Record<string, unknown> = {
+          messages: [{ role: "user", content: "Return JSON." }, assistantPrefill],
+        };
+        void args[2]?.onPayload?.(payload, args[0]);
+        capturedPayload = payload;
+        return { async *[Symbol.asyncIterator]() {} } as never;
+      },
+    );
+
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "openrouter",
+      modelId: "anthropic/claude-opus-4.6",
+      streamFn: baseStreamFn,
+      thinkingLevel: "high",
+    } as never);
+
+    expect(() =>
+      wrapped?.(
+        {
+          provider: "openrouter",
+          api: "openai-completions",
+          id: "anthropic/claude-opus-4.6",
+          baseUrl: "https://openrouter.ai/api/v1",
+          compat: {},
+        } as never,
+        { messages: [] } as never,
+        {},
+      ),
+    ).not.toThrow();
+
+    expect(capturedPayload?.messages).toEqual([{ role: "user", content: "Return JSON." }]);
   });
 
   it("keeps OpenRouter-routed Anthropic tool-use assistant messages when reasoning is enabled", async () => {

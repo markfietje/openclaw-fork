@@ -113,6 +113,7 @@ vi.mock("../plugins/provider-runtime.js", () => ({
 }));
 
 let resolveEffectiveToolInventory: typeof import("./tools-effective-inventory.js").resolveEffectiveToolInventory;
+let buildEffectiveToolInventoryEntries: typeof import("./tools-effective-inventory-build.js").buildEffectiveToolInventoryEntries;
 
 async function loadHarness(options?: {
   tools?: AnyAgentTool[];
@@ -148,6 +149,7 @@ async function loadHarness(options?: {
 describe("resolveEffectiveToolInventory", () => {
   beforeAll(async () => {
     ({ resolveEffectiveToolInventory } = await import("./tools-effective-inventory.js"));
+    ({ buildEffectiveToolInventoryEntries } = await import("./tools-effective-inventory-build.js"));
   });
 
   beforeEach(() => {
@@ -323,6 +325,55 @@ describe("resolveEffectiveToolInventory", () => {
       risk: "low",
       tags: ["docs", "fixture"],
     });
+  });
+
+  it("skips inventory entries with unreadable names and guards display metadata", () => {
+    const unreadableName = Object.defineProperty(
+      {
+        execute: vi.fn(),
+        parameters: { type: "object", properties: {} },
+      },
+      "name",
+      {
+        get() {
+          throw new Error("broken inventory tool name");
+        },
+      },
+    ) as AnyAgentTool;
+    const hostileDisplayFields = Object.defineProperties(
+      {
+        execute: vi.fn(),
+        name: "guarded_lookup",
+        parameters: { type: "object", properties: {} },
+      },
+      {
+        description: {
+          get() {
+            throw new Error("broken inventory description");
+          },
+        },
+        displaySummary: {
+          get() {
+            throw new Error("broken inventory summary");
+          },
+        },
+        label: {
+          get() {
+            throw new Error("broken inventory label");
+          },
+        },
+      },
+    ) as AnyAgentTool;
+
+    expect(buildEffectiveToolInventoryEntries([unreadableName, hostileDisplayFields])).toEqual([
+      {
+        id: "guarded_lookup",
+        label: "Guarded Lookup",
+        description: "Tool",
+        rawDescription: "",
+        source: "core",
+      },
+    ]);
   });
 
   it("quarantines tools with schemas that cannot be projected to the model runtime", async () => {

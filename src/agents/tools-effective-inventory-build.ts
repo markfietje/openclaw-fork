@@ -28,25 +28,56 @@ import type {
 } from "./tools-effective-inventory.types.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
-function resolveEffectiveToolLabel(tool: AnyAgentTool): string {
-  const rawLabel = normalizeOptionalString(tool.label) ?? "";
+type EffectiveToolInventorySnapshot = {
+  name: string;
+  label?: string;
+  description?: string;
+  displaySummary?: string;
+};
+
+function readEffectiveToolStringField(
+  tool: AnyAgentTool,
+  key: "name" | "label" | "description" | "displaySummary",
+): string | undefined {
+  try {
+    return normalizeOptionalString((tool as Record<string, unknown>)[key]) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function snapshotEffectiveTool(tool: AnyAgentTool): EffectiveToolInventorySnapshot | undefined {
+  const name = readEffectiveToolStringField(tool, "name")?.trim();
+  if (!name) {
+    return undefined;
+  }
+  return {
+    name,
+    label: readEffectiveToolStringField(tool, "label"),
+    description: readEffectiveToolStringField(tool, "description"),
+    displaySummary: readEffectiveToolStringField(tool, "displaySummary"),
+  };
+}
+
+function resolveEffectiveToolLabel(snapshot: EffectiveToolInventorySnapshot): string {
+  const rawLabel = snapshot.label ?? "";
   if (
     rawLabel &&
-    normalizeLowercaseStringOrEmpty(rawLabel) !== normalizeLowercaseStringOrEmpty(tool.name)
+    normalizeLowercaseStringOrEmpty(rawLabel) !== normalizeLowercaseStringOrEmpty(snapshot.name)
   ) {
     return rawLabel;
   }
-  return resolveToolDisplay({ name: tool.name }).title;
+  return resolveToolDisplay({ name: snapshot.name }).title;
 }
 
-function resolveRawToolDescription(tool: AnyAgentTool): string {
-  return normalizeOptionalString(tool.description) ?? "";
+function resolveRawToolDescription(snapshot: EffectiveToolInventorySnapshot): string {
+  return snapshot.description ?? "";
 }
 
-function summarizeToolDescription(tool: AnyAgentTool): string {
+function summarizeToolDescription(snapshot: EffectiveToolInventorySnapshot): string {
   return summarizeToolDescriptionText({
-    rawDescription: resolveRawToolDescription(tool),
-    displaySummary: tool.displaySummary,
+    rawDescription: resolveRawToolDescription(snapshot),
+    displaySummary: snapshot.displaySummary,
   });
 }
 
@@ -61,7 +92,7 @@ function resolveEffectiveToolSource(
   channelId?: string;
 } {
   const pluginMeta =
-    getPluginToolMeta(tool) ?? (fallbackTool ? getPluginToolMeta(fallbackTool) : undefined);
+    readPluginToolMeta(tool) ?? (fallbackTool ? readPluginToolMeta(fallbackTool) : undefined);
   if (pluginMeta) {
     if (pluginMeta.pluginId === "bundle-mcp") {
       return { source: "mcp", pluginId: pluginMeta.pluginId };
@@ -69,12 +100,27 @@ function resolveEffectiveToolSource(
     return { source: "plugin", pluginId: pluginMeta.pluginId };
   }
   const channelMeta =
-    getChannelAgentToolMeta(tool as never) ??
-    (fallbackTool ? getChannelAgentToolMeta(fallbackTool as never) : undefined);
+    readChannelToolMeta(tool) ?? (fallbackTool ? readChannelToolMeta(fallbackTool) : undefined);
   if (channelMeta) {
     return { source: "channel", channelId: channelMeta.channelId };
   }
   return { source: "core" };
+}
+
+function readPluginToolMeta(tool: AnyAgentTool): ReturnType<typeof getPluginToolMeta> {
+  try {
+    return getPluginToolMeta(tool);
+  } catch {
+    return undefined;
+  }
+}
+
+function readChannelToolMeta(tool: AnyAgentTool): ReturnType<typeof getChannelAgentToolMeta> {
+  try {
+    return getChannelAgentToolMeta(tool as never);
+  } catch {
+    return undefined;
+  }
 }
 
 // Unsupported-schema notices need owner context when available so operators know
@@ -126,7 +172,9 @@ function readMatchingTool(
 ): AnyAgentTool | undefined {
   try {
     const tool = tools[diagnostic.toolIndex];
-    return tool?.name === diagnostic.toolName ? tool : undefined;
+    return tool && readEffectiveToolStringField(tool, "name") === diagnostic.toolName
+      ? tool
+      : undefined;
   } catch {
     return undefined;
   }
@@ -158,7 +206,10 @@ function buildReadableRawToolsByName(
   for (let index = 0; index < toolCount; index += 1) {
     try {
       const tool = tools[index];
-      toolsByName.set(tool.name, tool);
+      const name = readEffectiveToolStringField(tool, "name")?.trim();
+      if (name) {
+        toolsByName.set(name, tool);
+      }
     } catch {
       // Unreadable entries are reported by the schema projection diagnostics.
     }
@@ -198,27 +249,35 @@ export function buildEffectiveToolInventoryEntries(
 
   return disambiguateLabels(
     tools
-      .map((tool) => {
-        const source = resolveEffectiveToolSource(tool, rawToolsByName.get(tool.name));
+      .flatMap((tool) => {
+        const snapshot = snapshotEffectiveTool(tool);
+        if (!snapshot) {
+          return [];
+        }
+        const source = resolveEffectiveToolSource(tool, rawToolsByName.get(snapshot.name));
         const metadata = source.pluginId
-          ? pluginToolMetadata.get(buildPluginToolMetadataKey(source.pluginId, tool.name))
+          ? pluginToolMetadata.get(buildPluginToolMetadataKey(source.pluginId, snapshot.name))
           : undefined;
-        return Object.assign(
-          {
-            id: tool.name,
-            label:
-              normalizeOptionalString(metadata?.displayName) ?? resolveEffectiveToolLabel(tool),
-            description:
-              normalizeOptionalString(metadata?.description) ?? summarizeToolDescription(tool),
-            rawDescription:
-              normalizeOptionalString(metadata?.description) ??
-              resolveRawToolDescription(tool) ??
-              summarizeToolDescription(tool),
-            ...(metadata?.risk ? { risk: metadata.risk } : {}),
-            ...(metadata?.tags ? { tags: metadata.tags } : {}),
-          },
-          source,
-        ) satisfies EffectiveToolInventoryEntry;
+        return [
+          Object.assign(
+            {
+              id: snapshot.name,
+              label:
+                normalizeOptionalString(metadata?.displayName) ??
+                resolveEffectiveToolLabel(snapshot),
+              description:
+                normalizeOptionalString(metadata?.description) ??
+                summarizeToolDescription(snapshot),
+              rawDescription:
+                normalizeOptionalString(metadata?.description) ??
+                resolveRawToolDescription(snapshot) ??
+                summarizeToolDescription(snapshot),
+              ...(metadata?.risk ? { risk: metadata.risk } : {}),
+              ...(metadata?.tags ? { tags: metadata.tags } : {}),
+            },
+            source,
+          ) satisfies EffectiveToolInventoryEntry,
+        ];
       })
       .toSorted((a, b) => a.label.localeCompare(b.label)),
   );

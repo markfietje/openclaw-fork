@@ -1135,7 +1135,10 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
   };
 
   const registerCliBackend = (record: PluginRecord, backend: CliBackendPlugin) => {
-    const id = backend.id.trim();
+    const id = readCliBackendId(record, backend);
+    if (id === undefined) {
+      return;
+    }
     if (!id) {
       pushDiagnostic({
         level: "error",
@@ -1155,13 +1158,14 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       });
       return;
     }
+    const snapshot = snapshotCliBackend(record, backend, id);
+    if (!snapshot) {
+      return;
+    }
     (registry.cliBackends ??= []).push({
       pluginId: record.id,
       pluginName: record.name,
-      backend: {
-        ...backend,
-        id,
-      },
+      backend: snapshot,
       source: record.source,
       rootDir: record.rootDir,
     });
@@ -1265,6 +1269,204 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       }
     }
     return { ok: true, value: replacements };
+  };
+
+  const readCliBackendId = (
+    record: PluginRecord,
+    backend: CliBackendPlugin,
+  ): string | undefined => {
+    try {
+      const rawId = backend.id;
+      return typeof rawId === "string" ? rawId.trim() : "";
+    } catch (error) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `cli backend registration has unreadable id: ${formatErrorMessage(error)}`,
+      });
+      return undefined;
+    }
+  };
+
+  const snapshotCliBackend = (
+    record: PluginRecord,
+    backend: CliBackendPlugin,
+    id: string,
+  ): CliBackendPlugin | undefined => {
+    try {
+      const rawConfig = backend.config;
+      const modelProvider = backend.modelProvider;
+      const rawContextEngineHostCapabilities = backend.contextEngineHostCapabilities;
+      const ownsNativeCompaction = backend.ownsNativeCompaction;
+      const rawLiveTest = backend.liveTest;
+      const bundleMcp = backend.bundleMcp;
+      const bundleMcpMode = backend.bundleMcpMode;
+      const rawNormalizeConfig = backend.normalizeConfig;
+      const rawTransformSystemPrompt = backend.transformSystemPrompt;
+      const rawTextTransforms = backend.textTransforms;
+      const defaultAuthProfileId = backend.defaultAuthProfileId;
+      const authEpochMode = backend.authEpochMode;
+      const rawPrepareExecution = backend.prepareExecution;
+      const rawResolveExecutionArgs = backend.resolveExecutionArgs;
+      const nativeToolMode = backend.nativeToolMode;
+      const config = snapshotCliBackendObjectField(record, "config", rawConfig) as
+        | CliBackendPlugin["config"]
+        | undefined;
+      if (!config) {
+        return undefined;
+      }
+      const textTransforms =
+        rawTextTransforms === undefined
+          ? undefined
+          : snapshotTextTransforms(record, rawTextTransforms);
+      if (rawTextTransforms !== undefined && !textTransforms) {
+        return undefined;
+      }
+      const liveTest =
+        rawLiveTest === undefined
+          ? undefined
+          : (snapshotCliBackendObjectField(record, "liveTest", rawLiveTest) as
+              | NonNullable<CliBackendPlugin["liveTest"]>
+              | undefined);
+      if (rawLiveTest !== undefined && !liveTest) {
+        return undefined;
+      }
+      const contextEngineHostCapabilities =
+        rawContextEngineHostCapabilities === undefined
+          ? undefined
+          : (snapshotCliBackendArrayField(
+              record,
+              "contextEngineHostCapabilities",
+              rawContextEngineHostCapabilities,
+            ) as NonNullable<CliBackendPlugin["contextEngineHostCapabilities"]> | undefined);
+      if (rawContextEngineHostCapabilities !== undefined && !contextEngineHostCapabilities) {
+        return undefined;
+      }
+      const normalizeConfig = snapshotCliBackendCallback(
+        record,
+        backend,
+        "normalizeConfig",
+        rawNormalizeConfig,
+      );
+      const transformSystemPrompt = snapshotCliBackendCallback(
+        record,
+        backend,
+        "transformSystemPrompt",
+        rawTransformSystemPrompt,
+      );
+      const prepareExecution = snapshotCliBackendCallback(
+        record,
+        backend,
+        "prepareExecution",
+        rawPrepareExecution,
+      );
+      const resolveExecutionArgs = snapshotCliBackendCallback(
+        record,
+        backend,
+        "resolveExecutionArgs",
+        rawResolveExecutionArgs,
+      );
+      if (
+        normalizeConfig === false ||
+        transformSystemPrompt === false ||
+        prepareExecution === false ||
+        resolveExecutionArgs === false
+      ) {
+        return undefined;
+      }
+      return {
+        id,
+        config,
+        ...(typeof modelProvider === "string" ? { modelProvider } : {}),
+        ...(contextEngineHostCapabilities ? { contextEngineHostCapabilities } : {}),
+        ...(typeof ownsNativeCompaction === "boolean" ? { ownsNativeCompaction } : {}),
+        ...(liveTest ? { liveTest } : {}),
+        ...(typeof bundleMcp === "boolean" ? { bundleMcp } : {}),
+        ...(typeof bundleMcpMode === "string" ? { bundleMcpMode } : {}),
+        ...(normalizeConfig ? { normalizeConfig } : {}),
+        ...(transformSystemPrompt ? { transformSystemPrompt } : {}),
+        ...(textTransforms ? { textTransforms } : {}),
+        ...(typeof defaultAuthProfileId === "string" ? { defaultAuthProfileId } : {}),
+        ...(typeof authEpochMode === "string" ? { authEpochMode } : {}),
+        ...(prepareExecution ? { prepareExecution } : {}),
+        ...(resolveExecutionArgs ? { resolveExecutionArgs } : {}),
+        ...(typeof nativeToolMode === "string" ? { nativeToolMode } : {}),
+      };
+    } catch (error) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `cli backend registration has unreadable fields: ${formatErrorMessage(error)}`,
+      });
+      return undefined;
+    }
+  };
+
+  const snapshotCliBackendObjectField = (
+    record: PluginRecord,
+    field: string,
+    value: unknown,
+  ): Record<string, unknown> | undefined => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `cli backend ${field} must be an object`,
+      });
+      return undefined;
+    }
+    try {
+      return structuredClone(value) as Record<string, unknown>;
+    } catch (error) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `cli backend ${field} has unreadable fields: ${formatErrorMessage(error)}`,
+      });
+      return undefined;
+    }
+  };
+
+  const snapshotCliBackendArrayField = (
+    record: PluginRecord,
+    field: string,
+    value: unknown,
+  ): readonly unknown[] | undefined => {
+    if (!Array.isArray(value)) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `cli backend ${field} must be an array`,
+      });
+      return undefined;
+    }
+    return [...value];
+  };
+
+  const snapshotCliBackendCallback = <T extends (...args: never[]) => unknown>(
+    record: PluginRecord,
+    backend: CliBackendPlugin,
+    field: string,
+    callback: T | undefined,
+  ): T | false | undefined => {
+    if (callback === undefined) {
+      return undefined;
+    }
+    if (typeof callback !== "function") {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `cli backend ${field} must be a function`,
+      });
+      return false;
+    }
+    return ((...args: Parameters<T>) => callback.call(backend, ...args)) as T;
   };
 
   const registerEmbeddingProviderForPlugin = (

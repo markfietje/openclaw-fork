@@ -12,6 +12,12 @@ import {
 import { dirname } from "node:path";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+  formatErrorMessage,
+  hasErrnoCode,
+  readErrorName,
+  toErrorObject,
+} from "../../../infra/errors.js";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
 import type { AgentTool } from "../../runtime/index.js";
@@ -256,13 +262,21 @@ function formatWriteResult(
 }
 
 function isMissingFileError(error: unknown): boolean {
-  if (!error || typeof error !== "object") {
-    return false;
-  }
-  if ("code" in error && (error as { code?: unknown }).code === "ENOENT") {
+  if (hasErrnoCode(error, "ENOENT")) {
     return true;
   }
-  return error instanceof Error && error.message.includes("No such file or directory");
+  if (!isErrorInstance(error)) {
+    return false;
+  }
+  return formatErrorMessage(error).includes("No such file or directory");
+}
+
+function isErrorInstance(error: unknown): error is Error {
+  try {
+    return error instanceof Error;
+  } catch {
+    return false;
+  }
 }
 
 async function readOriginalWriteState(
@@ -322,13 +336,14 @@ function isWriteRecoveryCandidate(error: unknown, signal: AbortSignal | undefine
   if (signal?.aborted) {
     return true;
   }
-  if (!(error instanceof Error)) {
+  if (!isErrorInstance(error)) {
     return false;
   }
-  const message = error.message.toLowerCase();
+  const message = formatErrorMessage(error).toLowerCase();
+  const name = readErrorName(error);
   return (
-    error.name === "AbortError" ||
-    error.name === "TimeoutError" ||
+    name === "AbortError" ||
+    name === "TimeoutError" ||
     message.includes("timed out") ||
     message.includes("timeout")
   );
@@ -427,7 +442,7 @@ export function createWriteToolDefinition(
           if (recovered) {
             return recovered;
           }
-          throw error;
+          throw toErrorObject(error, "Write tool error");
         }
       });
     },

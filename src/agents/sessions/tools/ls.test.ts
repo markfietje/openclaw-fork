@@ -13,6 +13,23 @@ function operations(entries: string[]): LsOperations {
   };
 }
 
+function createHostileThrownValue(): unknown {
+  return new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("property trap");
+      },
+      getPrototypeOf() {
+        throw new Error("prototype trap");
+      },
+      ownKeys() {
+        throw new Error("ownKeys trap");
+      },
+    },
+  );
+}
+
 function textContent(
   result: Awaited<ReturnType<ReturnType<typeof createLsToolDefinition>["execute"]>>,
 ): string {
@@ -50,5 +67,37 @@ describe("ls tool", () => {
 
     expect(textContent(result)).toBe("alpha.txt\nbeta.txt");
     expect(result.details).toBeUndefined();
+  });
+
+  it("rejects hostile directory read failures without stringifying them", async () => {
+    const tool = createLsToolDefinition("/workspace", {
+      operations: {
+        exists: () => true,
+        stat: () => ({ isDirectory: () => true }),
+        readdir: () => {
+          throw createHostileThrownValue();
+        },
+      },
+    });
+
+    await expect(
+      tool.execute("call-1", { path: "." }, undefined, undefined, {} as never),
+    ).rejects.toThrow("Cannot read directory: Unknown error");
+  });
+
+  it("rejects hostile backend failures without retaining raw causes", async () => {
+    const tool = createLsToolDefinition("/workspace", {
+      operations: {
+        exists: () => {
+          throw createHostileThrownValue();
+        },
+        stat: () => ({ isDirectory: () => true }),
+        readdir: () => [],
+      },
+    });
+
+    await expect(
+      tool.execute("call-1", { path: "." }, undefined, undefined, {} as never),
+    ).rejects.toThrow("Ls tool error");
   });
 });

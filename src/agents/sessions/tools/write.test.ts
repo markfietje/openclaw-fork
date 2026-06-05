@@ -50,6 +50,26 @@ describe("write tool", () => {
     };
   }
 
+  function createHostileThrownValue(): unknown {
+    return new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("property trap");
+        },
+        getPrototypeOf() {
+          throw new Error("prototype trap");
+        },
+        has() {
+          throw new Error("has trap");
+        },
+        ownKeys() {
+          throw new Error("ownKeys trap");
+        },
+      },
+    );
+  }
+
   it("recovers success after a post-write abort when readback matches requested content", async () => {
     // Remote transports can report cancellation after the write landed; verify
     // by readback before surfacing a false failure to the model.
@@ -121,5 +141,41 @@ describe("write tool", () => {
     );
 
     await expect(fs.readFile(filePath, "utf-8")).resolves.toBe("finished\n");
+  });
+
+  it("continues when precheck stat throws a hostile value", async () => {
+    const filePath = await createTempPath();
+    const tool = createWriteTool(tmpDir, {
+      operations: {
+        mkdir: (dir) => fs.mkdir(dir, { recursive: true }).then(() => {}),
+        statFile: async () => {
+          throw createHostileThrownValue();
+        },
+        writeFile: (absolutePath, content) => fs.writeFile(absolutePath, content, "utf-8"),
+        readFile: (absolutePath) => fs.readFile(absolutePath),
+      },
+    });
+
+    const result = await tool.execute(
+      "call-1",
+      { path: filePath, content: "finished\n" },
+      undefined,
+    );
+
+    expect(result.content[0]?.type).toBe("text");
+    await expect(fs.readFile(filePath, "utf-8")).resolves.toBe("finished\n");
+  });
+
+  it("rejects hostile write failures without stringifying them", async () => {
+    const filePath = await createTempPath();
+    const tool = createWriteTool(tmpDir, {
+      operations: createRecoverableOperations(async () => {
+        throw createHostileThrownValue();
+      }),
+    });
+
+    await expect(
+      tool.execute("call-1", { path: filePath, content: "finished\n" }, undefined),
+    ).rejects.toThrow("Write tool error");
   });
 });

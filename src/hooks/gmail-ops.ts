@@ -24,6 +24,8 @@ import {
 } from "./gmail-setup-utils.js";
 import {
   buildDefaultHookUrl,
+  buildGogWatchPullArgs,
+  buildGogWatchPullLogArgs,
   buildGogWatchServeLogArgs,
   buildGogWatchServeArgs,
   buildGogWatchStartArgs,
@@ -39,6 +41,7 @@ import {
   type GmailHookOverrides,
   type GmailHookRuntimeConfig,
   generateHookToken,
+  isGmailHookPushRuntimeConfig,
   mergeHookPresets,
   normalizeHooksPath,
   normalizeServePath,
@@ -305,7 +308,7 @@ export async function runGmailService(opts: GmailRunOptions) {
 
   const runtimeConfig = resolved.value;
 
-  if (runtimeConfig.tailscale.mode !== "off") {
+  if (isGmailHookPushRuntimeConfig(runtimeConfig) && runtimeConfig.tailscale.mode !== "off") {
     await ensureDependency("tailscale", ["tailscale"]);
     await ensureTailscaleEndpoint({
       mode: runtimeConfig.tailscale.mode,
@@ -318,7 +321,7 @@ export async function runGmailService(opts: GmailRunOptions) {
   await startGmailWatch(runtimeConfig);
 
   let shuttingDown = false;
-  let child = spawnGogServe(runtimeConfig);
+  let child = spawnGogRunner(runtimeConfig);
 
   const renewMs = runtimeConfig.renewEveryMinutes * 60_000;
   const renewTimer = setInterval(() => {
@@ -348,19 +351,21 @@ export async function runGmailService(opts: GmailRunOptions) {
       detachSignals();
       return;
     }
-    defaultRuntime.log("gog watch serve exited; restarting in 2s");
+    defaultRuntime.log(`gog watch ${runtimeConfig.delivery.mode} exited; restarting in 2s`);
     setTimeout(() => {
       if (shuttingDown) {
         return;
       }
-      child = spawnGogServe(runtimeConfig);
+      child = spawnGogRunner(runtimeConfig);
     }, 2000);
   });
 }
 
-function spawnGogServe(cfg: GmailHookRuntimeConfig) {
-  const args = buildGogWatchServeArgs(cfg);
-  defaultRuntime.log(`Starting gog ${buildGogWatchServeLogArgs(cfg).join(" ")}`);
+function spawnGogRunner(cfg: GmailHookRuntimeConfig) {
+  const pushMode = isGmailHookPushRuntimeConfig(cfg);
+  const args = pushMode ? buildGogWatchServeArgs(cfg) : buildGogWatchPullArgs(cfg);
+  const logArgs = pushMode ? buildGogWatchServeLogArgs(cfg) : buildGogWatchPullLogArgs(cfg);
+  defaultRuntime.log(`Starting gog ${logArgs.join(" ")}`);
   const invocation = resolveGogServeInvocation(args);
   return spawn(invocation.command, invocation.args, {
     stdio: "inherit",

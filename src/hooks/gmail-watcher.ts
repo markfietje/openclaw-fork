@@ -1,7 +1,7 @@
 /**
  * Gmail Watcher Service
  *
- * Automatically starts `gog gmail watch serve` when the gateway starts,
+ * Automatically starts the configured `gog gmail watch` runner when the gateway starts,
  * if hooks.gmail is configured with an account.
  */
 
@@ -13,10 +13,13 @@ import { hasBinary } from "../skills/loading/config.js";
 import { ensureTailscaleEndpoint } from "./gmail-setup-utils.js";
 import { isAddressInUseError } from "./gmail-watcher-errors.js";
 import {
+  buildGogWatchPullArgs,
+  buildGogWatchPullLogArgs,
   buildGogWatchServeLogArgs,
   buildGogWatchServeArgs,
   buildGogWatchStartArgs,
   type GmailHookRuntimeConfig,
+  isGmailHookPushRuntimeConfig,
   resolveGogExecutable,
   resolveGogServeInvocation,
   resolveGmailHookRuntimeConfig,
@@ -64,11 +67,13 @@ async function startGmailWatch(
 }
 
 /**
- * Spawn the gog gmail watch serve process
+ * Spawn the gog gmail watch serve/pull process
  */
-function spawnGogServe(cfg: GmailHookRuntimeConfig): ChildProcess {
-  const args = buildGogWatchServeArgs(cfg);
-  log.info(`starting gog ${buildGogWatchServeLogArgs(cfg).join(" ")}`);
+function spawnGogWatcherProcess(cfg: GmailHookRuntimeConfig): ChildProcess {
+  const pushMode = isGmailHookPushRuntimeConfig(cfg);
+  const args = pushMode ? buildGogWatchServeArgs(cfg) : buildGogWatchPullArgs(cfg);
+  const logArgs = pushMode ? buildGogWatchServeLogArgs(cfg) : buildGogWatchPullLogArgs(cfg);
+  log.info(`starting gog ${logArgs.join(" ")}`);
   let addressInUse = false;
   const invocation = resolveGogServeInvocation(args);
 
@@ -91,7 +96,7 @@ function spawnGogServe(cfg: GmailHookRuntimeConfig): ChildProcess {
     if (!line) {
       return;
     }
-    if (isAddressInUseError(line)) {
+    if (pushMode && isAddressInUseError(line)) {
       addressInUse = true;
     }
     log.warn(`[gog] ${line}`);
@@ -124,7 +129,7 @@ function spawnGogServe(cfg: GmailHookRuntimeConfig): ChildProcess {
       if (shuttingDown || !currentConfig) {
         return;
       }
-      watcherProcess = spawnGogServe(currentConfig);
+      watcherProcess = spawnGogWatcherProcess(currentConfig);
     }, 5000);
   });
 
@@ -299,7 +304,7 @@ export async function startGmailWatcher(
       const oldProcess = watcherProcess;
       watcherProcess = null;
       await settleProcess(oldProcess);
-      // Remove lingering spawnGogServe listeners so a late exit (after the
+      // Remove lingering watcher listeners so a late exit (after the
       // settleProcess timeout) cannot trigger a duplicate respawn while
       // watcherProcess is null and shuttingDown is false.
       oldProcess.removeAllListeners();
@@ -308,7 +313,7 @@ export async function startGmailWatcher(
   }
 
   // Set up Tailscale endpoint if needed
-  if (runtimeConfig.tailscale.mode !== "off") {
+  if (isGmailHookPushRuntimeConfig(runtimeConfig) && runtimeConfig.tailscale.mode !== "off") {
     const cancellation = createGmailWatcherCancellation(options);
     try {
       await ensureTailscaleEndpoint({
@@ -354,7 +359,7 @@ export async function startGmailWatcher(
     return cancelledGmailWatcherStart(runtimeConfig);
   }
   shuttingDown = false;
-  watcherProcess = spawnGogServe(runtimeConfig);
+  watcherProcess = spawnGogWatcherProcess(runtimeConfig);
   const renewMs = runtimeConfig.renewEveryMinutes * 60_000;
   renewInterval = setInterval(() => {
     if (shuttingDown) {
@@ -364,7 +369,7 @@ export async function startGmailWatcher(
   }, renewMs);
 
   log.info(
-    `gmail watcher started for ${runtimeConfig.account} (renew every ${runtimeConfig.renewEveryMinutes}m)`,
+    `gmail watcher started for ${runtimeConfig.account} (${runtimeConfig.delivery.mode}, renew every ${runtimeConfig.renewEveryMinutes}m)`,
   );
 
   return { started: true };

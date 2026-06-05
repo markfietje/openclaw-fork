@@ -45,6 +45,23 @@ function createGmailConfig(account = "me@example.com") {
   } as never;
 }
 
+function createGmailPullConfig(account = "me@example.com") {
+  return {
+    hooks: {
+      enabled: true,
+      token: "hook-token",
+      gmail: {
+        account,
+        topic: "projects/demo/topics/gmail",
+        delivery: {
+          mode: "pull",
+          subscription: "projects/demo/subscriptions/gmail-pull",
+        },
+      },
+    },
+  } as never;
+}
+
 function deferredCommandResult() {
   let resolve!: (result: { code: number; stdout: string; stderr: string }) => void;
   const promise = new Promise<{ code: number; stdout: string; stderr: string }>((settle) => {
@@ -70,6 +87,35 @@ describe("startGmailWatcher", () => {
         killed: false,
       });
     });
+  });
+
+  it("starts gog pull delivery without Tailscale setup", async () => {
+    mocks.runCommandWithTimeout.mockResolvedValue({ code: 0, stdout: "", stderr: "" });
+
+    await expect(startGmailWatcher(createGmailPullConfig())).resolves.toEqual({
+      started: true,
+    });
+
+    expect(mocks.runCommandWithTimeout).toHaveBeenCalledTimes(1);
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    const spawnArgs = mocks.spawn.mock.calls[0]?.[1] as string[];
+    expect(spawnArgs).toContain("pull");
+    expect(spawnArgs).not.toContain("serve");
+    expect(spawnArgs).toEqual(
+      expect.arrayContaining([
+        "gmail",
+        "watch",
+        "pull",
+        "--account",
+        "me@example.com",
+        "--subscription",
+        "projects/demo/subscriptions/gmail-pull",
+        "--hook-url",
+        "http://127.0.0.1:18789/hooks/gmail",
+        "--hook-token",
+        "hook-token",
+      ]),
+    );
   });
 
   it("does not let a stale cancelled startup clear newer watcher config", async () => {

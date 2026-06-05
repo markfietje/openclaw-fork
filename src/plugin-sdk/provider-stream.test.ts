@@ -6,6 +6,7 @@ import { VERSION } from "../version.js";
 import {
   composeProviderStreamWrappers as composeProviderStreamWrappersShared,
   createMoonshotThinkingWrapper as createMoonshotThinkingWrapperShared,
+  createGoogleThinkingPayloadWrapper as createGoogleThinkingPayloadWrapperShared,
   createPlainTextToolCallCompatWrapper as createPlainTextToolCallCompatWrapperShared,
   createToolStreamWrapper as createToolStreamWrapperShared,
 } from "./provider-stream-shared.js";
@@ -342,6 +343,47 @@ describe("buildProviderStreamFamilyHooks", () => {
     expect(OPENAI_RESPONSES_STREAM_HOOKS.wrapStreamFn).toBeTypeOf("function");
     expect(OPENROUTER_THINKING_STREAM_HOOKS.wrapStreamFn).toBeTypeOf("function");
     expect(TOOL_STREAM_DEFAULT_ON_HOOKS.wrapStreamFn).toBeTypeOf("function");
+  });
+
+  it("ignores unreadable Google model metadata in thinking payload hooks", async () => {
+    const capturedPayloads: Record<string, unknown>[] = [];
+    const baseStreamFn: StreamFn = (model, _context, options) => {
+      const payload = {
+        config: { thinkingConfig: { thinkingBudget: -1 } },
+      };
+      options?.onPayload?.(payload as never, model as never);
+      capturedPayloads.push(payload);
+      return {} as never;
+    };
+    const wrapped = requireStreamFn(createGoogleThinkingPayloadWrapperShared(baseStreamFn, "high"));
+
+    await wrapped(
+      Object.defineProperty({ id: "gemini-3.1-pro-preview" }, "api", {
+        get() {
+          throw new Error("api getter should not be invoked");
+        },
+      }) as never,
+      {} as never,
+      {},
+    );
+    const hostileApiPayload = requirePayload(capturedPayloads.at(-1));
+    const hostileApiConfig = requireRecord(hostileApiPayload.config, "hostile api config");
+    expect(
+      requireRecord(hostileApiConfig.thinkingConfig, "hostile api thinking").thinkingBudget,
+    ).toBe(-1);
+
+    await wrapped(
+      Object.defineProperty({ api: "google-generative-ai" }, "id", {
+        get() {
+          throw new Error("id getter should not be invoked");
+        },
+      }) as never,
+      {} as never,
+      {},
+    );
+    const hostileIdPayload = requirePayload(capturedPayloads.at(-1));
+    const hostileIdConfig = requireRecord(hostileIdPayload.config, "hostile id config");
+    expect(hostileIdConfig).not.toHaveProperty("thinkingConfig");
   });
 });
 

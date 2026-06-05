@@ -37,6 +37,24 @@ function toRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
+function readObjectField(object: unknown, key: string): unknown {
+  if (!object || typeof object !== "object") {
+    return undefined;
+  }
+  let descriptor: PropertyDescriptor | undefined;
+  try {
+    descriptor = Object.getOwnPropertyDescriptor(object, key);
+  } catch {
+    return undefined;
+  }
+  return descriptor && "value" in descriptor ? descriptor.value : undefined;
+}
+
+function readObjectStringField(object: unknown, key: string): string | undefined {
+  const value = readObjectField(object, key);
+  return typeof value === "string" ? value : undefined;
+}
+
 function resolveContextToolNames(context: Parameters<StreamFn>[1]): Set<string> {
   const tools = (context as { tools?: unknown }).tools;
   if (!Array.isArray(tools)) {
@@ -900,10 +918,10 @@ export function createGoogleThinkingPayloadWrapper(
   thinkingLevel?: GoogleThinkingInputLevel,
 ): StreamFn {
   return createPayloadPatchStreamWrapper(baseStreamFn, ({ payload, model }) => {
-    if (model.api === "google-generative-ai") {
+    if (readObjectStringField(model, "api") === "google-generative-ai") {
       sanitizeGoogleThinkingPayload({
         payload,
-        modelId: model.id,
+        modelId: readObjectStringField(model, "id"),
         thinkingLevel,
       });
     }

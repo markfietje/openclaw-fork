@@ -13,7 +13,7 @@
 
 import * as fs from "node:fs";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
-import { fetchWithSsrFGuard, isBlockedHostnameOrIp } from "openclaw/plugin-sdk/ssrf-runtime";
+import { isBlockedHostnameOrIp } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   MediaFileType,
   type ChatScope,
@@ -68,31 +68,20 @@ function assertDirectUploadDownloadHostAllowed(hostname: string): void {
 async function fetchDirectUploadDownload(url: string) {
   const controller = new AbortController();
   const timeoutError = new Error("Direct-upload media URL fetch timed out");
-  let timedOut = false;
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
-      timedOut = true;
       controller.abort(timeoutError);
       reject(timeoutError);
     }, DIRECT_UPLOAD_DOWNLOAD_TIMEOUT_MS);
     unrefTimer(timeout);
   });
-  const guardedFetch = fetchWithSsrFGuard({
-    url,
-    maxRedirects: 0,
+  const downloadFetch = fetch(url, {
     signal: controller.signal,
+    redirect: "follow",
   });
-  void guardedFetch.then(
-    (result) => {
-      if (timedOut) {
-        void result.release().catch(() => undefined);
-      }
-    },
-    () => undefined,
-  );
   try {
-    return await Promise.race([guardedFetch, timeoutPromise]);
+    return await Promise.race([downloadFetch, timeoutPromise]);
   } finally {
     if (timeout) {
       clearTimeout(timeout);
@@ -158,15 +147,11 @@ export async function downloadDirectUploadUrl(
   }
 
   assertDirectUploadDownloadHostAllowed(parsed.hostname);
-  const { response, release } = await fetchDirectUploadDownload(parsed.toString());
-  try {
-    if (!response.ok) {
-      throw new Error(`Direct-upload media URL returned HTTP ${response.status}`);
-    }
-    return await readDirectUploadResponse(response, opts.maxBytes ?? MAX_UPLOAD_SIZE);
-  } finally {
-    await release?.();
+  const response = await fetchDirectUploadDownload(parsed.toString());
+  if (!response.ok) {
+    throw new Error(`Direct-upload media URL returned HTTP ${response.status}`);
   }
+  return await readDirectUploadResponse(response, opts.maxBytes ?? MAX_UPLOAD_SIZE);
 }
 
 /**

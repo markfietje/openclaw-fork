@@ -7,13 +7,23 @@ import {
   readResponseTextSnippet,
   readResponseWithLimit,
 } from "@openclaw/media-core/read-response-with-limit";
+import type { Dispatcher } from "undici";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
-  fetchWithSsrFGuard,
-  withStrictGuardedFetchMode,
-  withTrustedExplicitProxyGuardedFetchMode,
-} from "../infra/net/fetch-guard.js";
-import type { LookupFn, PinnedDispatcherPolicy, SsrFPolicy } from "../infra/net/ssrf.js";
+  closeDispatcher,
+  type LookupFn,
+  type PinnedDispatcherPolicy,
+  type SsrFPolicy,
+} from "../infra/net/ssrf.js";
+import {
+  fetchWithRuntimeDispatcherOrMockedGlobal,
+  type DispatcherAwareRequestInit,
+} from "../infra/net/runtime-fetch.js";
+import {
+  createHttp1Agent,
+  createHttp1EnvHttpProxyAgent,
+  createHttp1ProxyAgent,
+} from "../infra/net/undici-runtime.js";
 import { retryAsync, type RetryOptions } from "../infra/retry.js";
 import { isAbortError, isTransientNetworkError } from "../infra/unhandled-rejections.js";
 import { redactSensitiveText } from "../logging/redact.js";
@@ -38,7 +48,7 @@ export type SavedRemoteMedia = SavedMedia & {
 /** Closed error classes callers can use for retry and diagnostic policy. */
 export type MediaFetchErrorCode = "max_bytes" | "http_error" | "fetch_failed";
 
-/** Retry policy applied around the complete guarded fetch and body read/save operation. */
+/** Retry policy applied around the complete fetch and body read/save operation. */
 export type MediaFetchRetryOptions = RetryOptions;
 
 /** Structured fetch error used for retry decisions and caller-facing diagnostics. */
@@ -58,10 +68,10 @@ export class MediaFetchError extends Error {
   }
 }
 
-/** Fetch-compatible injection point used by tests and guarded network callers. */
+/** Fetch-compatible injection point used by tests and network callers. */
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-/** Alternate dispatcher/lookup pair tried inside a single guarded fetch attempt. */
+/** Deprecated dispatcher/lookup pair retained for existing media option callers. */
 export type FetchDispatcherAttempt = {
   dispatcherPolicy?: PinnedDispatcherPolicy;
   lookupFn?: LookupFn;
@@ -74,7 +84,7 @@ type FetchMediaOptions = {
   filePathHint?: string;
   maxBytes?: number;
   maxRedirects?: number;
-  /** Abort the guarded fetch request if it has not completed by this deadline (ms). */
+  /** Abort the fetch request if it has not completed by this deadline (ms). */
   timeoutMs?: number;
   /** Abort if the response body stops yielding data for this long (ms). */
   readIdleTimeoutMs?: number;
@@ -84,8 +94,7 @@ type FetchMediaOptions = {
   dispatcherAttempts?: FetchDispatcherAttempt[];
   shouldRetryFetchError?: (error: unknown) => boolean;
   /**
-   * Retries the complete guarded fetch/read-or-save operation. Dispatcher
-   * attempts still run inside each retry attempt.
+   * Retries the complete fetch/read-or-save operation.
    */
   retry?: MediaFetchRetryOptions;
   /**
@@ -106,17 +115,17 @@ export type SaveResponseMediaOptions = {
   originalFilename?: string;
 };
 
-/** Options for guarded URL fetches that are saved directly into the media store. */
+/** Options for URL fetches that are saved directly into the media store. */
 export type SaveRemoteMediaOptions = FetchMediaOptions & {
   fallbackContentType?: string;
   subdir?: string;
   originalFilename?: string;
 };
 
-type GuardedMediaResponse = {
+type NativeMediaResponse = {
   response: Response;
   finalUrl: string;
-  release: (() => Promise<void>) | null;
+  release: () => Promise<void>;
   sourceUrl: string;
 };
 
@@ -179,51 +188,149 @@ function redactMediaUrl(url: string): string {
   return redactSensitiveText(url);
 }
 
-async function fetchGuardedMediaResponse(
+function unrefTimer(timeout: ReturnType<typeof setTimeout>): void {
+  if (typeof timeout === "object" && "unref" in timeout) {
+    timeout.unref();
+  }
+}
+
+function resolveFetchSignal(params: {
+  requestSignal?: AbortSignal | null;
+  timeoutMs?: number;
+}): {
+  signal?: AbortSignal;
+  cleanup: () => void;
+} {
+  const { requestSignal, timeoutMs } = params;
+  if (timeoutMs === undefined) {
+    return { ...(requestSignal ? { signal: requestSignal } : {}), cleanup: () => {} };
+  }
+
+  const controller = new AbortController();
+  const timeoutError = new Error(`Media fetch timed out after ${timeoutMs}ms`);
+  const timeout = setTimeout(() => {
+    controller.abort(timeoutError);
+  }, timeoutMs);
+  unrefTimer(timeout);
+
+  let removeAbortListener: (() => void) | undefined;
+  if (requestSignal) {
+    if (typeof AbortSignal.any === "function") {
+      return {
+        signal: AbortSignal.any([requestSignal, controller.signal]),
+        cleanup: () => clearTimeout(timeout),
+      };
+    }
+    const abortFromRequest = () => {
+      controller.abort(requestSignal.reason);
+    };
+    if (requestSignal.aborted) {
+      abortFromRequest();
+    } else {
+      requestSignal.addEventListener("abort", abortFromRequest, { once: true });
+      removeAbortListener = () => {
+        requestSignal.removeEventListener("abort", abortFromRequest);
+      };
+    }
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeout);
+      removeAbortListener?.();
+    },
+  };
+}
+
+function createMediaFetchDispatcher(
+  dispatcherPolicy: PinnedDispatcherPolicy | undefined,
+  timeoutMs: number | undefined,
+): Dispatcher | null {
+  if (dispatcherPolicy?.mode === "direct") {
+    return createHttp1Agent(
+      dispatcherPolicy.connect ? { connect: { ...dispatcherPolicy.connect } } : undefined,
+      timeoutMs,
+    );
+  }
+  if (dispatcherPolicy?.mode === "env-proxy") {
+    return createHttp1EnvHttpProxyAgent(
+      {
+        ...(dispatcherPolicy.connect ? { connect: { ...dispatcherPolicy.connect } } : {}),
+        ...(dispatcherPolicy.proxyTls ? { proxyTls: { ...dispatcherPolicy.proxyTls } } : {}),
+      },
+      timeoutMs,
+    );
+  }
+  if (dispatcherPolicy?.mode === "explicit-proxy") {
+    const proxyUrl = dispatcherPolicy.proxyUrl.trim();
+    return dispatcherPolicy.proxyTls
+      ? createHttp1ProxyAgent(
+          { uri: proxyUrl, requestTls: { ...dispatcherPolicy.proxyTls } },
+          timeoutMs,
+        )
+      : createHttp1ProxyAgent({ uri: proxyUrl }, timeoutMs);
+  }
+  return null;
+}
+
+async function fetchNativeMediaAttempt(
   options: FetchMediaOptions,
-): Promise<GuardedMediaResponse> {
+  attempt: FetchDispatcherAttempt,
+): Promise<NativeMediaResponse> {
+  const { url, fetchImpl, requestInit, maxRedirects, timeoutMs } = options;
+  const signal = resolveFetchSignal({
+    requestSignal: requestInit?.signal,
+    timeoutMs,
+  });
+  const dispatcher = createMediaFetchDispatcher(attempt.dispatcherPolicy, timeoutMs);
+  const release = async () => {
+    await closeDispatcher(dispatcher);
+  };
+  const init: DispatcherAwareRequestInit = {
+    ...requestInit,
+    ...(signal.signal ? { signal: signal.signal } : {}),
+    ...(dispatcher ? { dispatcher } : {}),
+    ...(maxRedirects === 0 && requestInit?.redirect === undefined ? { redirect: "error" } : {}),
+  };
+  try {
+    const response = fetchImpl
+      ? await fetchImpl(url, init)
+      : await fetchWithRuntimeDispatcherOrMockedGlobal(url, init);
+    return {
+      response,
+      finalUrl: response.url || url,
+      release,
+      sourceUrl: redactMediaUrl(url),
+    };
+  } catch (err) {
+    await release();
+    throw err;
+  } finally {
+    signal.cleanup();
+  }
+}
+
+async function fetchNativeMediaResponse(
+  options: FetchMediaOptions,
+): Promise<NativeMediaResponse> {
   const {
     url,
-    fetchImpl,
-    requestInit,
-    maxRedirects,
-    timeoutMs,
-    ssrfPolicy,
-    lookupFn,
     dispatcherPolicy,
     dispatcherAttempts,
+    lookupFn,
     shouldRetryFetchError,
-    trustExplicitProxyDns,
   } = options;
   const sourceUrl = redactMediaUrl(url);
-
-  // Dispatcher attempts are fallback routes inside one logical guarded fetch operation.
   const attempts =
     dispatcherAttempts && dispatcherAttempts.length > 0
       ? dispatcherAttempts
       : [{ dispatcherPolicy, lookupFn }];
-  const runGuardedFetch = async (attempt: FetchDispatcherAttempt) =>
-    await fetchWithSsrFGuard(
-      (trustExplicitProxyDns && attempt.dispatcherPolicy?.mode === "explicit-proxy"
-        ? withTrustedExplicitProxyGuardedFetchMode
-        : withStrictGuardedFetchMode)({
-        url,
-        fetchImpl,
-        init: requestInit,
-        maxRedirects,
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-        policy: ssrfPolicy,
-        lookupFn: attempt.lookupFn ?? lookupFn,
-        dispatcherPolicy: attempt.dispatcherPolicy,
-      }),
-    );
   try {
-    let result!: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
     const attemptErrors: unknown[] = [];
     for (let i = 0; i < attempts.length; i += 1) {
       try {
-        result = await runGuardedFetch(attempts[i]);
-        break;
+        return await fetchNativeMediaAttempt(options, attempts[i]);
       } catch (err) {
         if (
           typeof shouldRetryFetchError !== "function" ||
@@ -252,12 +359,6 @@ async function fetchGuardedMediaResponse(
         attemptErrors.push(err);
       }
     }
-    return {
-      response: result.response,
-      finalUrl: result.finalUrl,
-      release: result.release,
-      sourceUrl,
-    };
   } catch (err) {
     throw new MediaFetchError(
       "fetch_failed",
@@ -267,6 +368,7 @@ async function fetchGuardedMediaResponse(
       },
     );
   }
+  throw new MediaFetchError("fetch_failed", `Failed to fetch media from ${sourceUrl}`);
 }
 
 async function assertMediaResponseOk(params: {
@@ -594,13 +696,13 @@ export async function saveResponseMedia(
   });
 }
 
-/** Fetches media through SSRF guards and saves the body into the media store. */
+/** Fetches media and saves the body into the media store. */
 export async function saveRemoteMedia(options: SaveRemoteMediaOptions): Promise<SavedRemoteMedia> {
   return await withMediaFetchRetry(options, () => saveRemoteMediaOnce(options));
 }
 
 async function saveRemoteMediaOnce(options: SaveRemoteMediaOptions): Promise<SavedRemoteMedia> {
-  const { response: res, finalUrl, release, sourceUrl } = await fetchGuardedMediaResponse(options);
+  const { response: res, finalUrl, sourceUrl, release } = await fetchNativeMediaResponse(options);
   try {
     await assertMediaResponseOk({
       res,
@@ -621,13 +723,11 @@ async function saveRemoteMediaOnce(options: SaveRemoteMediaOptions): Promise<Sav
       originalFilename: options.originalFilename,
     });
   } finally {
-    if (release) {
-      await release();
-    }
+    await release();
   }
 }
 
-/** Fetches media through SSRF guards and returns the bounded response body as a buffer. */
+/** Fetches media and returns the bounded response body as a buffer. */
 export async function readRemoteMediaBuffer(options: FetchMediaOptions): Promise<FetchMediaResult> {
   return await withMediaFetchRetry(options, () => readRemoteMediaBufferOnce(options));
 }
@@ -636,8 +736,7 @@ export async function readRemoteMediaBuffer(options: FetchMediaOptions): Promise
 export const fetchRemoteMedia = readRemoteMediaBuffer;
 
 async function readRemoteMediaBufferOnce(options: FetchMediaOptions): Promise<FetchMediaResult> {
-  const { response: res, finalUrl, release, sourceUrl } = await fetchGuardedMediaResponse(options);
-
+  const { response: res, finalUrl, sourceUrl, release } = await fetchNativeMediaResponse(options);
   try {
     await assertMediaResponseOk({
       res,
@@ -695,9 +794,7 @@ async function readRemoteMediaBufferOnce(options: FetchMediaOptions): Promise<Fe
       fileName,
     };
   } finally {
-    if (release) {
-      await release();
-    }
+    await release();
   }
 }
 

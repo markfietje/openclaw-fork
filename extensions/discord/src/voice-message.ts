@@ -24,7 +24,6 @@ import { unlinkIfExists } from "openclaw/plugin-sdk/media-runtime";
 import { parseStrictFiniteNumber } from "openclaw/plugin-sdk/number-runtime";
 import type { RetryRunner } from "openclaw/plugin-sdk/retry-runtime";
 import { writeExternalFileWithinRoot } from "openclaw/plugin-sdk/security-runtime";
-import { fetchWithSsrFGuard, type SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { DiscordError, RateLimitError, type RequestClient } from "./internal/discord.js";
@@ -34,10 +33,6 @@ const DISCORD_VOICE_MESSAGE_FLAG = 1 << 13;
 const SUPPRESS_NOTIFICATIONS_FLAG = 1 << 12;
 const WAVEFORM_SAMPLES = 256;
 const DISCORD_OPUS_SAMPLE_RATE_HZ = 48_000;
-const DISCORD_VOICE_UPLOAD_SSRF_POLICY: SsrFPolicy = {
-  allowRfc2544BenchmarkRange: true,
-  allowIpv6UniqueLocalRange: true,
-};
 
 async function runFfmpegToOutput(params: {
   outputPath: string;
@@ -337,45 +332,31 @@ async function requestVoiceUploadUrl(params: {
       files: [{ filename: params.filename, file_size: params.fileSize, id: "0" }],
     }),
   };
-  const { response: res, release } = await fetchWithSsrFGuard({
-    url,
-    init: uploadUrlInit,
-    policy: DISCORD_VOICE_UPLOAD_SSRF_POLICY,
-    auditContext: "discord.voice.upload-url",
+  const res = await fetch(url, {
+    ...uploadUrlInit,
+    redirect: "error",
   });
-  try {
-    if (!res.ok) {
-      throw await createVoiceRequestError(res, "Upload URL request failed");
-    }
-    return (await res.json()) as UploadUrlResponse;
-  } finally {
-    await release();
+  if (!res.ok) {
+    throw await createVoiceRequestError(res, "Upload URL request failed");
   }
+  return (await res.json()) as UploadUrlResponse;
 }
 
 async function uploadVoiceAttachment(params: {
   uploadUrl: string;
   audioBuffer: Buffer;
 }): Promise<void> {
-  const { response: uploadResponse, release } = await fetchWithSsrFGuard({
-    url: params.uploadUrl,
-    init: {
-      method: "PUT",
-      headers: {
-        "Content-Type": "audio/ogg",
-      },
-      body: new Uint8Array(params.audioBuffer),
+  const uploadResponse = await fetch(params.uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "audio/ogg",
     },
-    policy: DISCORD_VOICE_UPLOAD_SSRF_POLICY,
-    auditContext: "discord.voice.attachment-upload",
+    body: new Uint8Array(params.audioBuffer),
+    redirect: "error",
   });
 
-  try {
-    if (!uploadResponse.ok) {
-      throw await createVoiceRequestError(uploadResponse, "Failed to upload voice message");
-    }
-  } finally {
-    await release();
+  if (!uploadResponse.ok) {
+    throw await createVoiceRequestError(uploadResponse, "Failed to upload voice message");
   }
 }
 
@@ -402,7 +383,7 @@ export async function sendDiscordVoiceMessage(
 
   // Step 1: Request upload URL from Discord
   // RequestClient auto-converts "files" bodies to multipart/form-data, but Discord's
-  // /attachments endpoint expects JSON, so this path uses a guarded raw HTTP call.
+  // /attachments endpoint expects JSON, so this path uses a raw HTTP call.
   const botToken = token;
   if (!botToken) {
     throw new Error("Discord bot token is required for voice message upload");

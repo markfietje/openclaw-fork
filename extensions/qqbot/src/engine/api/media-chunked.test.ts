@@ -21,12 +21,6 @@ import type { UploadCacheAdapter } from "./media.js";
 import { UPLOAD_PREPARE_FALLBACK_CODE } from "./retry.js";
 import type { TokenManager } from "./token.js";
 
-const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
-
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
-  fetchWithSsrFGuard: fetchWithSsrFGuardMock,
-}));
-
 // ============ Test doubles ============
 
 /** Build a minimal ApiClient stub whose `request` is fully mockable. */
@@ -89,17 +83,15 @@ const FIXTURE_BUFFER = Buffer.from("0123456789abcdefghij"); // 20 bytes
 let originalFetch: typeof globalThis.fetch;
 
 function stubFetchOk(): ReturnType<typeof vi.fn> {
-  fetchWithSsrFGuardMock.mockImplementation(async () => ({
-    response: new Response("", {
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response("", {
       status: 200,
       headers: {
         ETag: '"etag-value"',
         "x-cos-request-id": "req-id",
       },
     }),
-    release: vi.fn(),
-  }));
-  return fetchWithSsrFGuardMock;
+  );
 }
 
 // ============ Tests ============
@@ -128,7 +120,6 @@ describe("media-chunked: ChunkedMediaApi.uploadChunked", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    fetchWithSsrFGuardMock.mockReset();
     vi.restoreAllMocks();
   });
 
@@ -243,7 +234,7 @@ describe("media-chunked: ChunkedMediaApi.uploadChunked", () => {
 
     // 3 COS PUTs, one per part, each to the presigned URL.
     expect(fetchSpy).toHaveBeenCalledTimes(3);
-    const putUrls = fetchSpy.mock.calls.map((c) => (c[0] as { url: string }).url);
+    const putUrls = fetchSpy.mock.calls.map((c) => String(c[0]));
     expect(new Set(putUrls)).toEqual(
       new Set([
         "https://cos.example.com/part-1",
@@ -251,6 +242,9 @@ describe("media-chunked: ChunkedMediaApi.uploadChunked", () => {
         "https://cos.example.com/part-3",
       ]),
     );
+    for (const [, init] of fetchSpy.mock.calls) {
+      expect(init).toMatchObject({ method: "PUT", redirect: "error" });
+    }
 
     // FILE uploads carry filename metadata in upload_prepare, so the content-only
     // cache is bypassed to avoid reusing file_info with a stale name.

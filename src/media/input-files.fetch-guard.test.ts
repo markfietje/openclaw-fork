@@ -1,13 +1,8 @@
 // Input file fetch guard tests cover network fetch limits for media inputs.
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const fetchWithSsrFGuardMock = vi.fn();
 const convertHeicToJpegMock = vi.fn();
 const detectMimeMock = vi.fn();
-
-vi.mock("../infra/net/fetch-guard.js", () => ({
-  fetchWithSsrFGuard: (...args: unknown[]) => fetchWithSsrFGuardMock(...args),
-}));
 
 vi.mock("./media-services.js", () => ({
   convertHeicToJpeg: (...args: unknown[]) => convertHeicToJpegMock(...args),
@@ -34,6 +29,10 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 function createImageSourceLimits(allowedMimes: string[], allowUrl = false) {
@@ -65,27 +64,33 @@ function mockUrlFetchResponse(params: {
   fetchedBody?: Uint8Array;
 }) {
   if (params.source.type !== "url") {
-    return null;
+    return;
   }
 
-  const release = vi.fn(async () => {});
   const responseBody = Uint8Array.from(params.fetchedBody ?? Buffer.from("url-source"));
-  fetchWithSsrFGuardMock.mockResolvedValueOnce({
-    response: new Response(
-      responseBody.buffer.slice(
-        responseBody.byteOffset,
-        responseBody.byteOffset + responseBody.byteLength,
-      ),
-      {
-        status: 200,
-        headers: { "content-type": params.fetchedContentType ?? "application/octet-stream" },
-      },
+  const response = new Response(
+    responseBody.buffer.slice(
+      responseBody.byteOffset,
+      responseBody.byteOffset + responseBody.byteLength,
     ),
-    release,
-    finalUrl: params.fetchedUrl ?? params.source.url,
-  });
+    {
+      status: 200,
+      headers: { "content-type": params.fetchedContentType ?? "application/octet-stream" },
+    },
+  );
+  if (params.fetchedUrl) {
+    Object.defineProperty(response, "url", { value: params.fetchedUrl });
+  }
+  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response);
+}
 
-  return release;
+function mockFetchResponse(params: {
+  body: BodyInit | null;
+  init?: ResponseInit;
+}): Response {
+  const response = new Response(params.body, params.init);
+  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response);
+  return response;
 }
 
 async function expectRejectedImageMimeCase(params: {
@@ -96,13 +101,10 @@ async function expectRejectedImageMimeCase(params: {
   fetchedContentType?: string;
   fetchedBody?: Uint8Array;
 }) {
-  const release = mockUrlFetchResponse(params);
+  mockUrlFetchResponse(params);
   await expect(extractImageContentFromSource(params.source, params.limits)).rejects.toThrow(
     params.expectedError,
   );
-  if (release) {
-    expect(release).toHaveBeenCalledTimes(1);
-  }
 }
 
 type ImageSourceLimits = Parameters<typeof extractImageContentFromSource>[1];
@@ -117,7 +119,7 @@ async function expectResolvedImageContentCase(params: {
   fetchedBody?: Uint8Array;
   expectedImage: Awaited<ReturnType<typeof extractImageContentFromSource>>;
 }) {
-  const release = mockUrlFetchResponse(params);
+  mockUrlFetchResponse(params);
   detectMimeMock.mockResolvedValueOnce(params.detectedMime);
   if (params.convertedBytes) {
     convertHeicToJpegMock.mockResolvedValueOnce(params.convertedBytes);
@@ -128,9 +130,6 @@ async function expectResolvedImageContentCase(params: {
   expect(image).toEqual(params.expectedImage);
   expect(detectMimeMock).toHaveBeenCalledTimes(1);
   expect(convertHeicToJpegMock).toHaveBeenCalledTimes(params.convertedBytes ? 1 : 0);
-  if (release) {
-    expect(release).toHaveBeenCalledTimes(1);
-  }
 }
 
 async function expectBase64ImageValidationCase(params: {
@@ -236,6 +235,35 @@ describe("HEIC input image normalization", () => {
 });
 
 describe("fetchWithGuard", () => {
+  it("uses native no-redirect fetch behavior when maxRedirects is zero", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(Buffer.from("input"), {
+          status: 200,
+          headers: { "content-type": "text/plain" },
+        }),
+      );
+
+    await expect(
+      fetchWithGuard({
+        url: "https://example.com/file.txt",
+        maxBytes: 1024,
+        timeoutMs: 1000,
+        maxRedirects: 0,
+      }),
+    ).resolves.toMatchObject({
+      buffer: Buffer.from("input"),
+      mimeType: "text/plain",
+      contentType: "text/plain",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://example.com/file.txt",
+      expect.objectContaining({ redirect: "error" }),
+    );
+  });
+
   it("cancels ignored HTTP error bodies", async () => {
     let canceled = false;
     const stream = new ReadableStream<Uint8Array>({
@@ -246,14 +274,12 @@ describe("fetchWithGuard", () => {
         canceled = true;
       },
     });
-    const release = vi.fn(async () => {});
-    fetchWithSsrFGuardMock.mockResolvedValueOnce({
-      response: new Response(stream, {
+    mockFetchResponse({
+      body: stream,
+      init: {
         status: 503,
         statusText: "Service Unavailable",
-      }),
-      release,
-      finalUrl: "https://example.com/file.bin",
+      },
     });
 
     await expect(
@@ -266,7 +292,6 @@ describe("fetchWithGuard", () => {
     ).rejects.toThrow("Failed to fetch: 503 Service Unavailable");
 
     expect(canceled).toBe(true);
-    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("cancels ignored bodies when content-length exceeds the byte limit", async () => {
@@ -279,14 +304,12 @@ describe("fetchWithGuard", () => {
         canceled = true;
       },
     });
-    const release = vi.fn(async () => {});
-    fetchWithSsrFGuardMock.mockResolvedValueOnce({
-      response: new Response(stream, {
+    mockFetchResponse({
+      body: stream,
+      init: {
         status: 200,
         headers: { "content-length": "2048", "content-type": "application/octet-stream" },
-      }),
-      release,
-      finalUrl: "https://example.com/file.bin",
+      },
     });
 
     await expect(
@@ -299,7 +322,6 @@ describe("fetchWithGuard", () => {
     ).rejects.toThrow("Content too large: 2048 bytes");
 
     expect(canceled).toBe(true);
-    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("rejects malformed content-length before reading input files", async () => {
@@ -312,14 +334,12 @@ describe("fetchWithGuard", () => {
         canceled = true;
       },
     });
-    const release = vi.fn(async () => {});
-    fetchWithSsrFGuardMock.mockResolvedValueOnce({
-      response: new Response(stream, {
+    mockFetchResponse({
+      body: stream,
+      init: {
         status: 200,
         headers: { "content-length": "1e9", "content-type": "application/octet-stream" },
-      }),
-      release,
-      finalUrl: "https://example.com/file.bin",
+      },
     });
 
     await expect(
@@ -332,7 +352,6 @@ describe("fetchWithGuard", () => {
     ).rejects.toThrow("invalid content-length header: 1e9");
 
     expect(canceled).toBe(true);
-    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("rejects oversized streamed payloads and cancels the stream", async () => {
@@ -354,14 +373,12 @@ describe("fetchWithGuard", () => {
       },
     });
 
-    const release = vi.fn(async () => {});
-    fetchWithSsrFGuardMock.mockResolvedValueOnce({
-      response: new Response(stream, {
+    mockFetchResponse({
+      body: stream,
+      init: {
         status: 200,
         headers: { "content-type": "application/octet-stream" },
-      }),
-      release,
-      finalUrl: "https://example.com/file.bin",
+      },
     });
 
     await expect(
@@ -377,7 +394,6 @@ describe("fetchWithGuard", () => {
     await waitForMicrotaskTurn();
 
     expect(canceled).toBe(true);
-    expect(release).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -7,19 +7,6 @@ import type { VoiceMessageMetadata } from "./voice-message.js";
 
 const runFfprobeMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string>>());
 const runFfmpegMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>());
-const fetchWithSsrFGuardMock = vi.hoisted(() =>
-  vi.fn(
-    async (params: {
-      url: string;
-      init?: RequestInit;
-      policy?: { allowRfc2544BenchmarkRange?: boolean; allowIpv6UniqueLocalRange?: boolean };
-      auditContext?: string;
-    }) => ({
-      response: await globalThis.fetch(params.url, params.init),
-      release: async () => {},
-    }),
-  ),
-);
 
 vi.mock("openclaw/plugin-sdk/temp-path", async () => {
   return {
@@ -40,12 +27,6 @@ vi.mock("openclaw/plugin-sdk/media-runtime", async () => {
     },
     MEDIA_FFMPEG_MAX_AUDIO_DURATION_SECS: 1200,
     unlinkIfExists: vi.fn(async () => {}),
-  };
-});
-
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", async () => {
-  return {
-    fetchWithSsrFGuard: fetchWithSsrFGuardMock,
   };
 });
 
@@ -207,7 +188,6 @@ describe("sendDiscordVoiceMessage", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    fetchWithSsrFGuardMock.mockClear();
   });
 
   function createRest(post = vi.fn(async () => ({ id: "msg-1", channel_id: "channel-1" }))) {
@@ -281,33 +261,32 @@ describe("sendDiscordVoiceMessage", () => {
 
     expect(uploadUrlRequests).toBe(2);
     expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(4);
     expect(
-      fetchWithSsrFGuardMock.mock.calls.map(([params]) => ({
-        auditContext: params.auditContext,
-        allowRfc2544BenchmarkRange: params.policy?.allowRfc2544BenchmarkRange,
-        allowIpv6UniqueLocalRange: params.policy?.allowIpv6UniqueLocalRange,
+      fetchMock.mock.calls.map(([input, init]) => ({
+        url: input instanceof Request ? input.url : String(input),
+        method: input instanceof Request ? input.method : (init?.method ?? "GET"),
+        redirect: input instanceof Request ? input.redirect : init?.redirect,
       })),
     ).toEqual([
       {
-        auditContext: "discord.voice.upload-url",
-        allowRfc2544BenchmarkRange: true,
-        allowIpv6UniqueLocalRange: true,
+        url: "https://discord.test/api/v10/channels/channel-1/attachments",
+        method: "POST",
+        redirect: "error",
       },
       {
-        auditContext: "discord.voice.attachment-upload",
-        allowRfc2544BenchmarkRange: true,
-        allowIpv6UniqueLocalRange: true,
+        url: "https://cdn.test/upload-1",
+        method: "PUT",
+        redirect: "error",
       },
       {
-        auditContext: "discord.voice.upload-url",
-        allowRfc2544BenchmarkRange: true,
-        allowIpv6UniqueLocalRange: true,
+        url: "https://discord.test/api/v10/channels/channel-1/attachments",
+        method: "POST",
+        redirect: "error",
       },
       {
-        auditContext: "discord.voice.attachment-upload",
-        allowRfc2544BenchmarkRange: true,
-        allowIpv6UniqueLocalRange: true,
+        url: "https://cdn.test/upload-2",
+        method: "PUT",
+        redirect: "error",
       },
     ]);
     expect(post).toHaveBeenCalledWith("/channels/channel-1/messages", {

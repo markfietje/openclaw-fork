@@ -17,32 +17,6 @@ const loadOutboundMediaFromUrlMock = vi.hoisted(() =>
     fileName: "screenshot.png",
   })),
 );
-const fetchWithSsrFGuard = vi.fn(
-  async (params: { url: string; init?: RequestInit }) =>
-    ({
-      response: await fetch(params.url, params.init),
-      finalUrl: params.url,
-      release: async () => {},
-    }) as const,
-);
-
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", () => ({
-  fetchWithSsrFGuard: (...args: unknown[]) =>
-    fetchWithSsrFGuard(...(args as [params: { url: string; init?: RequestInit }])),
-}));
-
-vi.mock("openclaw/plugin-sdk/fetch-runtime", async () => {
-  const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/fetch-runtime")>(
-    "openclaw/plugin-sdk/fetch-runtime",
-  );
-  return {
-    ...actual,
-    withTrustedEnvProxyGuardedFetchMode: (params: Record<string, unknown>) => ({
-      ...params,
-      mode: "trusted_env_proxy",
-    }),
-  };
-});
 
 vi.mock("./runtime-api.js", async () => {
   const actual = await vi.importActual<typeof import("./runtime-api.js")>("./runtime-api.js");
@@ -165,7 +139,6 @@ describe("sendMessageSlack file upload with user IDs", () => {
     globalThis.fetch = vi.fn(
       async () => new Response("ok", { status: 200 }),
     ) as unknown as typeof fetch;
-    fetchWithSsrFGuard.mockClear();
     loadOutboundMediaFromUrlMock.mockClear();
     clearSlackDmChannelCache();
     clearSlackSendQueuesForTest();
@@ -379,11 +352,9 @@ describe("sendMessageSlack file upload with user IDs", () => {
     expect(fetchCalls).toHaveLength(1);
     const [fetchUrl, fetchInit] = fetchCalls[0] ?? [];
     expect(fetchUrl).toBe("https://uploads.slack.test/upload");
-    expectFields(requireRecord(fetchInit, "fetch init"), { method: "POST" });
-    expectOnlyCallFirstArg(fetchWithSsrFGuard, {
-      url: "https://uploads.slack.test/upload",
-      mode: "trusted_env_proxy",
-      auditContext: "slack-upload-file",
+    expectFields(requireRecord(fetchInit, "fetch init"), {
+      method: "POST",
+      redirect: "error",
     });
     expectCompletedUpload({
       client,

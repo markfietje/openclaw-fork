@@ -8,7 +8,6 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import type { SsrFPolicy } from "../infra/net/ssrf.js";
 import { logWarn } from "../logger.js";
 import { convertHeicToJpeg } from "./media-services.js";
@@ -68,7 +67,7 @@ export type InputImageLimits = {
   timeoutMs: number;
 };
 
-/** Supported input_image source variants before base64 decoding or guarded URL fetch. */
+/** Supported input_image source variants before base64 decoding or URL fetch. */
 export type InputImageSource =
   | {
       type: "base64";
@@ -127,9 +126,9 @@ export const DEFAULT_INPUT_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_INPUT_FILE_MAX_BYTES = 5 * 1024 * 1024;
 /** Default maximum model-visible characters emitted from input_file text. */
 export const DEFAULT_INPUT_FILE_MAX_CHARS = 60_000;
-/** Default redirect cap for guarded input source URL fetches. */
+/** Default redirect cap for input source URL fetches. */
 export const DEFAULT_INPUT_MAX_REDIRECTS = 3;
-/** Default timeout for guarded input source URL fetches. */
+/** Default timeout for input source URL fetches. */
 export const DEFAULT_INPUT_TIMEOUT_MS = 10_000;
 /** Default PDF page cap for input_file extraction. */
 export const DEFAULT_INPUT_PDF_MAX_PAGES = 4;
@@ -139,6 +138,12 @@ export const DEFAULT_INPUT_PDF_MAX_PIXELS = 4_000_000;
 export const DEFAULT_INPUT_PDF_MIN_TEXT_CHARS = 200;
 const NORMALIZED_INPUT_IMAGE_MIME = "image/jpeg";
 const HEIC_INPUT_IMAGE_MIMES = new Set(["image/heic", "image/heif"]);
+
+function unrefTimer(timeout: ReturnType<typeof setTimeout>): void {
+  if (typeof timeout === "object" && "unref" in timeout) {
+    timeout.unref();
+  }
+}
 
 function rejectOversizedBase64Payload(params: {
   data: string;
@@ -198,7 +203,7 @@ export function resolveInputFileLimits(config?: InputFileLimitsConfig): InputFil
   };
 }
 
-/** Fetches an input source URL through SSRF, redirect, timeout, and byte-limit guards. */
+/** Fetches an input source URL with native redirect, timeout, and byte-limit behavior. */
 export async function fetchWithGuard(params: {
   url: string;
   maxBytes: number;
@@ -207,44 +212,48 @@ export async function fetchWithGuard(params: {
   policy?: SsrFPolicy;
   auditContext?: string;
 }): Promise<InputFetchResult> {
-  const { response, release } = await fetchWithSsrFGuard({
-    url: params.url,
-    maxRedirects: params.maxRedirects,
-    timeoutMs: params.timeoutMs,
-    policy: params.policy,
-    auditContext: params.auditContext,
-    init: { headers: { "User-Agent": "OpenClaw-Gateway/1.0" } },
-  });
-
+  const controller = new AbortController();
+  const timeoutError = new Error(`Input source URL fetch timed out after ${params.timeoutMs}ms`);
+  const timeout = setTimeout(() => {
+    controller.abort(timeoutError);
+  }, params.timeoutMs);
+  unrefTimer(timeout);
+  let response: Response;
   try {
-    if (!response.ok) {
-      await discardIgnoredResponseBody(response);
-      throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
-    }
-
-    let contentLength: number | null;
-    try {
-      contentLength = parseMediaContentLength(response.headers.get("content-length"));
-    } catch (err) {
-      await discardIgnoredResponseBody(response);
-      throw err;
-    }
-    if (contentLength !== null && contentLength > params.maxBytes) {
-      await discardIgnoredResponseBody(response);
-      throw new Error(
-        `Content too large: ${contentLength} bytes (limit: ${params.maxBytes} bytes)`,
-      );
-    }
-
-    const buffer = await readResponseWithLimit(response, params.maxBytes);
-
-    const contentType = response.headers.get("content-type") || undefined;
-    const parsed = parseContentType(contentType);
-    const mimeType = parsed.mimeType ?? "application/octet-stream";
-    return { buffer, mimeType, contentType };
+    response = await fetch(params.url, {
+      headers: { "User-Agent": "OpenClaw-Gateway/1.0" },
+      signal: controller.signal,
+      redirect: params.maxRedirects === 0 ? "error" : "follow",
+    });
   } finally {
-    await release();
+    clearTimeout(timeout);
   }
+
+  if (!response.ok) {
+    await discardIgnoredResponseBody(response);
+    throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`);
+  }
+
+  let contentLength: number | null;
+  try {
+    contentLength = parseMediaContentLength(response.headers.get("content-length"));
+  } catch (err) {
+    await discardIgnoredResponseBody(response);
+    throw err;
+  }
+  if (contentLength !== null && contentLength > params.maxBytes) {
+    await discardIgnoredResponseBody(response);
+    throw new Error(
+      `Content too large: ${contentLength} bytes (limit: ${params.maxBytes} bytes)`,
+    );
+  }
+
+  const buffer = await readResponseWithLimit(response, params.maxBytes);
+
+  const contentType = response.headers.get("content-type") || undefined;
+  const parsed = parseContentType(contentType);
+  const mimeType = parsed.mimeType ?? "application/octet-stream";
+  return { buffer, mimeType, contentType };
 }
 
 async function discardIgnoredResponseBody(response: Response): Promise<void> {
@@ -332,7 +341,7 @@ async function resolveInputFileMime(params: {
   return sniffedMime;
 }
 
-/** Extracts and normalizes an input_image source from base64 or guarded URL input. */
+/** Extracts and normalizes an input_image source from base64 or URL input. */
 export async function extractImageContentFromSource(
   source: InputImageSource,
   limits: InputImageLimits,

@@ -6,7 +6,6 @@ import { ApiClient } from "./api-client.js";
 import { MediaApi } from "./media.js";
 import { TokenManager } from "./token.js";
 
-const fetchWithSsrFGuardMock = vi.hoisted(() => vi.fn());
 const readResponseWithLimitMock = vi.hoisted(() => vi.fn());
 
 vi.mock("openclaw/plugin-sdk/response-limit-runtime", async (importOriginal) => {
@@ -15,14 +14,6 @@ vi.mock("openclaw/plugin-sdk/response-limit-runtime", async (importOriginal) => 
   return {
     ...actual,
     readResponseWithLimit: readResponseWithLimitMock,
-  };
-});
-
-vi.mock("openclaw/plugin-sdk/ssrf-runtime", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/ssrf-runtime")>();
-  return {
-    ...actual,
-    fetchWithSsrFGuard: fetchWithSsrFGuardMock,
   };
 });
 
@@ -35,18 +26,13 @@ const UPLOAD_RESPONSE: UploadMediaResponse = {
 const MEDIA_BYTES = Buffer.from("downloaded-media");
 const MEDIA_BASE64 = MEDIA_BYTES.toString("base64");
 
-function mockGuardedResponse(
+function mockNativeResponse(
   body: BodyInit = MEDIA_BYTES,
   init?: ResponseInit,
-): {
-  release: ReturnType<typeof vi.fn>;
-} {
-  const release = vi.fn(async () => {});
-  fetchWithSsrFGuardMock.mockResolvedValueOnce({
-    response: new Response(body, init),
-    release,
-  });
-  return { release };
+): Response {
+  const response = new Response(body, init);
+  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(response);
+  return response;
 }
 
 function mockApiClient(): ApiClient {
@@ -61,25 +47,24 @@ function mockTokenManager(): TokenManager {
   return tokenManager;
 }
 
-function expectGuardedDownload(url: string): void {
-  expect(fetchWithSsrFGuardMock).toHaveBeenCalledWith({
+function expectNativeDownload(url: string): void {
+  expect(globalThis.fetch).toHaveBeenCalledWith(
     url,
-    maxRedirects: 0,
-    signal: expect.any(AbortSignal),
-  });
-  expect(fetchWithSsrFGuardMock).not.toHaveBeenCalledWith(
-    expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    expect.objectContaining({
+      redirect: "follow",
+      signal: expect.any(AbortSignal),
+    }),
   );
-  const signal = fetchWithSsrFGuardMock.mock.calls.at(-1)?.[0]?.signal;
+  const signal = vi.mocked(globalThis.fetch).mock.calls.at(-1)?.[1]?.signal;
   expect(signal).toBeInstanceOf(AbortSignal);
 }
 
 describe("MediaApi.uploadMedia direct URL uploads", () => {
   beforeEach(() => {
-    fetchWithSsrFGuardMock.mockReset();
+    vi.restoreAllMocks();
     readResponseWithLimitMock.mockReset();
     readResponseWithLimitMock.mockResolvedValue(MEDIA_BYTES);
-    mockGuardedResponse();
+    mockNativeResponse();
   });
 
   it.each([
@@ -87,7 +72,7 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
     { fileType: MediaFileType.VIDEO, url: "http://cdn.example.com/assets/video.mp4" },
     { fileType: MediaFileType.FILE, url: "http://cdn.example.com/assets/report.pdf" },
   ])(
-    "downloads public HTTP(S) $fileType URLs through the pinned SSRF guard",
+    "downloads public HTTP(S) $fileType URLs with native fetch redirects",
     async ({ fileType, url }) => {
       const client = mockApiClient();
       const tokenManager = mockTokenManager();
@@ -102,7 +87,7 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       );
 
       expect(result).toBe(UPLOAD_RESPONSE);
-      expectGuardedDownload(url);
+      expectNativeDownload(url);
       expect(readResponseWithLimitMock).toHaveBeenCalledWith(
         expect.any(Response),
         MAX_UPLOAD_SIZE,
@@ -126,9 +111,7 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
     },
   );
 
-  it("releases the pinned SSRF dispatcher after downloading media", async () => {
-    fetchWithSsrFGuardMock.mockReset();
-    const { release } = mockGuardedResponse();
+  it("uses native fetch redirect-follow behavior when downloading media", async () => {
     const client = mockApiClient();
     const tokenManager = mockTokenManager();
     const api = new MediaApi(client, tokenManager);
@@ -141,14 +124,14 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       { url: "https://cdn.example.com/assets/photo.png" },
     );
 
-    expect(release).toHaveBeenCalledTimes(1);
+    expectNativeDownload("https://cdn.example.com/assets/photo.png");
   });
 
-  it("bounds stalled guarded fetch setup before reading URL bodies", async () => {
+  it("bounds stalled native fetch setup before reading URL bodies", async () => {
     vi.useFakeTimers();
     try {
-      fetchWithSsrFGuardMock.mockReset();
-      fetchWithSsrFGuardMock.mockImplementationOnce(() => new Promise(() => {}));
+      vi.restoreAllMocks();
+      vi.spyOn(globalThis, "fetch").mockImplementationOnce(() => new Promise(() => {}));
       const client = mockApiClient();
       const tokenManager = mockTokenManager();
       const api = new MediaApi(client, tokenManager);
@@ -177,8 +160,7 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
   it("rejects URL bodies that keep trickling under the idle timeout", async () => {
     vi.useFakeTimers();
     try {
-      fetchWithSsrFGuardMock.mockReset();
-      const { release } = mockGuardedResponse();
+      mockNativeResponse();
       readResponseWithLimitMock.mockReset();
       readResponseWithLimitMock.mockImplementationOnce(() => new Promise<Buffer>(() => {}));
       const client = mockApiClient();
@@ -203,7 +185,6 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       );
       await vi.advanceTimersByTimeAsync(8 * 60_000);
       await rejection;
-      expect(release).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -285,7 +266,7 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       ),
     ).rejects.toThrow("Direct-upload media URL must be a valid URL");
 
-    expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(tokenManager["getAccessToken"]).not.toHaveBeenCalled();
     expect(client["request"]).not.toHaveBeenCalled();
   });
@@ -305,15 +286,16 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       ),
     ).rejects.toThrow("Direct-upload media URL must use HTTP or HTTPS");
 
-    expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
     expect(tokenManager["getAccessToken"]).not.toHaveBeenCalled();
     expect(client["request"]).not.toHaveBeenCalled();
   });
 
   it.each(["127.0.0.1", "169.254.169.254", "10.0.0.1", "192.168.1.1"])(
-    "does not upload direct URLs rejected by the SSRF guard: %s",
+    "does not upload direct URLs rejected by literal host validation: %s",
     async (host) => {
-      fetchWithSsrFGuardMock.mockReset();
+      vi.restoreAllMocks();
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected"));
       const client = mockApiClient();
       const tokenManager = mockTokenManager();
       const api = new MediaApi(client, tokenManager);
@@ -328,17 +310,15 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
         ),
       ).rejects.toThrow("Blocked hostname");
 
-      expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
       expect(tokenManager["getAccessToken"]).not.toHaveBeenCalled();
       expect(client["request"]).not.toHaveBeenCalled();
     },
   );
 
-  it("does not forward URLs when the guarded download fails", async () => {
-    fetchWithSsrFGuardMock.mockReset();
-    fetchWithSsrFGuardMock.mockRejectedValueOnce(
-      new Error("Blocked: resolves to private/internal/special-use IP address"),
-    );
+  it("does not forward URLs when the native download fails", async () => {
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("download failed"));
     const client = mockApiClient();
     const tokenManager = mockTokenManager();
     const api = new MediaApi(client, tokenManager);
@@ -351,14 +331,15 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
         { appId: "app-id", clientSecret: "client-secret" },
         { url: "https://attacker.example/latest/meta-data/" },
       ),
-    ).rejects.toThrow("resolves to private");
+    ).rejects.toThrow("download failed");
 
     expect(tokenManager["getAccessToken"]).not.toHaveBeenCalled();
     expect(client["request"]).not.toHaveBeenCalled();
   });
 
-  it("rejects literal RFC 2544 special-use URL hosts through the guarded download", async () => {
-    fetchWithSsrFGuardMock.mockReset();
+  it("rejects literal RFC 2544 special-use URL hosts before native download", async () => {
+    vi.restoreAllMocks();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected"));
     const client = mockApiClient();
     const tokenManager = mockTokenManager();
     const api = new MediaApi(client, tokenManager);
@@ -373,12 +354,12 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       ),
     ).rejects.toThrow("Blocked hostname");
 
-    expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(tokenManager["getAccessToken"]).not.toHaveBeenCalled();
     expect(client["request"]).not.toHaveBeenCalled();
   });
 
-  it("keeps public literal IP URLs on the default SSRF policy", async () => {
+  it("keeps public literal IP URLs on the native download path", async () => {
     const client = mockApiClient();
     const tokenManager = mockTokenManager();
     const api = new MediaApi(client, tokenManager);
@@ -391,7 +372,7 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       { url: "http://93.184.216.34/assets/photo.png" },
     );
 
-    expectGuardedDownload("http://93.184.216.34/assets/photo.png");
+    expectNativeDownload("http://93.184.216.34/assets/photo.png");
   });
 
   it("does not pass URL or fake-IP DNS policy to the QQ upload body", async () => {
@@ -407,7 +388,7 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
       { url: "https://cdn.example.com/assets/photo.png" },
     );
 
-    expectGuardedDownload("https://cdn.example.com/assets/photo.png");
+    expectNativeDownload("https://cdn.example.com/assets/photo.png");
     expect(client["request"]).toHaveBeenCalledWith(
       "token-1",
       "POST",
@@ -426,9 +407,9 @@ describe("MediaApi.uploadMedia direct URL uploads", () => {
     );
   });
 
-  it("rejects HTTP errors from guarded direct-upload downloads before calling the QQ API", async () => {
-    fetchWithSsrFGuardMock.mockReset();
-    mockGuardedResponse("not found", { status: 404 });
+  it("rejects HTTP errors from native direct-upload downloads before calling the QQ API", async () => {
+    vi.restoreAllMocks();
+    mockNativeResponse("not found", { status: 404 });
     const client = mockApiClient();
     const tokenManager = mockTokenManager();
     const api = new MediaApi(client, tokenManager);

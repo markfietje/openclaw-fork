@@ -31,12 +31,35 @@ describe("buildIMessageInboundReplayKey", () => {
     );
   });
 
-  it("falls back to a composite key when the GUID is absent", () => {
+  it("falls back to a bounded composite key when the GUID is absent", () => {
     const key = buildIMessageInboundReplayKey({
       accountId: "default",
       message: payload({ guid: undefined }),
     });
-    expect(key).toBe("default:c:chat:42:+15550001111:2026-05-30T05:23:00.000Z:hello");
+    // Hashed composite: account-scoped prefix + 32-hex digest, length-bounded
+    // regardless of message text length.
+    expect(key).toMatch(/^default:c:[0-9a-f]{32}$/);
+  });
+
+  it("keeps the composite key bounded for very long text", () => {
+    const key = buildIMessageInboundReplayKey({
+      accountId: "default",
+      message: payload({ guid: undefined, text: "x".repeat(20_000) }),
+    });
+    expect(key).toMatch(/^default:c:[0-9a-f]{32}$/);
+    expect((key ?? "").length).toBeLessThan(60);
+  });
+
+  it("derives distinct composite keys for distinct GUID-less rows", () => {
+    const a = buildIMessageInboundReplayKey({
+      accountId: "default",
+      message: payload({ guid: undefined, text: "hello" }),
+    });
+    const b = buildIMessageInboundReplayKey({
+      accountId: "default",
+      message: payload({ guid: undefined, text: "world" }),
+    });
+    expect(a).not.toBe(b);
   });
 
   it("returns null (fail open) when the message cannot be identified", () => {

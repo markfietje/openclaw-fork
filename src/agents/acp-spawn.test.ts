@@ -2102,6 +2102,7 @@ describe("spawnAcpDirect", () => {
   });
 
   it("uses the target agent's bound account for cross-agent ACP thread spawns", async () => {
+    enableMatrixAcpThreadBindings();
     const boundRoom = "!room:example.org";
     replaceSpawnConfig({
       ...hoisted.state.cfg,

@@ -893,8 +893,7 @@ describe("marketplace plugins", () => {
       expect(init.signal?.aborted).toBe(true);
       expect(result).toEqual({
         ok: false,
-        error:
-          `failed to download ${MARKETPLACE_ARCHIVE_URL}: ` + "download timed out after 1000ms",
+        error: `failed to download ${MARKETPLACE_ARCHIVE_URL}: download timed out after 1000ms`,
       });
       expect(reader.cancel).toHaveBeenCalledTimes(1);
       expect(reader.releaseLock).toHaveBeenCalledTimes(1);
@@ -933,8 +932,7 @@ describe("marketplace plugins", () => {
 
       expect(result).toEqual({
         ok: false,
-        error:
-          `failed to download ${MARKETPLACE_ARCHIVE_URL}: ` + "streaming response body unavailable",
+        error: `failed to download ${MARKETPLACE_ARCHIVE_URL}: streaming response body unavailable`,
       });
       expect(arrayBuffer).not.toHaveBeenCalled();
       expect(installPluginFromPathMock).not.toHaveBeenCalled();
@@ -1032,8 +1030,7 @@ describe("marketplace plugins", () => {
 
       expect(result).toEqual({
         ok: false,
-        error:
-          `failed to download ${MARKETPLACE_ARCHIVE_URL}: ` + "invalid content-length header: 1e9",
+        error: `failed to download ${MARKETPLACE_ARCHIVE_URL}: invalid content-length header: 1e9`,
       });
       expect(reader.read).not.toHaveBeenCalled();
       expect(installPluginFromPathMock).not.toHaveBeenCalled();

@@ -367,7 +367,7 @@ export function collectRuntimeHttpEgressBoundaryViolations(files, readFile = rea
   for (const file of files.map(normalizeRepoPath).filter(shouldScanRuntimeFile)) {
     let source;
     try {
-      source = String(readFile(file, "utf8"));
+      source = readFile(file, "utf8");
     } catch (error) {
       if (error && typeof error === "object" && error.code === "ENOENT") {
         continue;

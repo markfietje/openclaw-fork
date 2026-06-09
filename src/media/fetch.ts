@@ -300,32 +300,28 @@ async function fetchGuardedMediaResponse(
       typeof maxRedirects === "number" && Number.isFinite(maxRedirects)
         ? Math.max(0, Math.floor(maxRedirects))
         : 3;
-    try {
-      const result = await fetchUntrustedUrl({
-        url,
-        fetchImpl,
-        init: requestInit,
-        maxRedirects: redirectLimit,
-        timeoutMs,
-        lookupFn: attempt.lookupFn,
-        dispatcherPolicy: attempt.dispatcherPolicy,
-        operation: "media-fetch",
-        validateUrl: (parsedUrl) => {
-          assertMediaUrlAllowedByPolicy(parsedUrl.toString(), ssrfPolicy);
-        },
-        onResponse: async ({ url: responseUrl, init, response }) => {
-          await captureMediaFetchExchange({ url: responseUrl, init, response });
-        },
-      });
-      return {
-        response: result.response,
-        finalUrl: result.finalUrl,
-        release: result.release,
-        sourceUrl,
-      };
-    } catch (error) {
-      throw error;
-    }
+    const result = await fetchUntrustedUrl({
+      url,
+      fetchImpl,
+      init: requestInit,
+      maxRedirects: redirectLimit,
+      timeoutMs,
+      lookupFn: attempt.lookupFn,
+      dispatcherPolicy: attempt.dispatcherPolicy,
+      operation: "media-fetch",
+      validateUrl: (parsedUrl) => {
+        assertMediaUrlAllowedByPolicy(parsedUrl.toString(), ssrfPolicy);
+      },
+      onResponse: async ({ url: responseUrl, init, response }) => {
+        await captureMediaFetchExchange({ url: responseUrl, init, response });
+      },
+    });
+    return {
+      response: result.response,
+      finalUrl: result.finalUrl,
+      release: result.release,
+      sourceUrl,
+    };
   };
   try {
     let result!: GuardedMediaResponse;

@@ -721,11 +721,15 @@ export function buildGuardedModelFetch(
         dispatcherPolicy,
         maxRedirects: PROVIDER_TRANSPORT_MAX_REDIRECTS,
         operation: "provider-transport-fetch",
-        onResponse: async ({ url: responseUrl, init: requestWithTransport, response }) => {
+        onResponse: async ({
+          url: responseUrl,
+          init: requestWithTransport,
+          response: capturedResponse,
+        }) => {
           await captureProviderTransportHttpExchange({
             url: responseUrl,
             init: requestWithTransport,
-            response,
+            response: capturedResponse,
             model,
           });
         },

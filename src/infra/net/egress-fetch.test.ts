@@ -37,7 +37,8 @@ function pendingFetchThatRejectsOnAbort(): typeof fetch {
   return vi.fn((_url: RequestInfo | URL, init?: RequestInit) => {
     return new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => {
-        reject(init.signal?.reason ?? new Error("aborted"));
+        const reason = init.signal?.reason;
+        reject(reason instanceof Error ? reason : new Error("aborted"));
       });
     });
   }) as unknown as typeof fetch;

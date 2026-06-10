@@ -118,10 +118,7 @@ describe("resolveIMessageInboundDecision echo detection", () => {
         text: "<media:image>",
         messageId: "42",
       },
-      {
-        includePendingText: false,
-        skipIdShortCircuit: undefined,
-      },
+      undefined,
     );
   });
 

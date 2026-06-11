@@ -1,19 +1,20 @@
 // Shared MCP-channel Docker E2E harness helpers.
-// The mounted test harness imports packaged dist modules so bridge assertions run
-// against the OpenClaw npm tarball installed in the functional image.
+// Gateway connection setup loads the packaged protocol module lazily so Docker
+// assertions run against the OpenClaw npm tarball installed in the functional image.
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
-import { PROTOCOL_VERSION } from "../../dist/gateway/protocol/index.js";
-import { formatErrorMessage } from "../../dist/infra/errors.js";
-import { readStringValue } from "../../dist/normalization-core/string-coerce.js";
 import { createGatewayWsClient, type GatewayEventFrame } from "../lib/gateway-ws-client.ts";
 import { resolveGatewaySuccessPayload } from "./lib/gateway-frame-payload.mjs";
 import { readMcpChannelLimits } from "./mcp-channel-limits.ts";
 import { createMcpClientTempState, type McpClientTempState } from "./mcp-client-temp-state.ts";
 import { connectMcpWithTimeout } from "./mcp-connect-timeout.ts";
+
+type GatewayProtocolModule = {
+  PROTOCOL_VERSION: number;
+};
 
 export const ClaudeChannelNotificationSchema = z.object({
   method: z.literal("notifications/claude/channel"),
@@ -54,6 +55,7 @@ const MCP_CHANNEL_LIMITS = readMcpChannelLimits();
 const MCP_CONNECT_TIMEOUT_MS = MCP_CHANNEL_LIMITS.connectTimeoutMs;
 const GATEWAY_EVENT_RETAIN_LIMIT = MCP_CHANNEL_LIMITS.gatewayEventRetainLimit;
 const MCP_RAW_MESSAGE_RETAIN_LIMIT = MCP_CHANNEL_LIMITS.rawMessageRetainLimit;
+let gatewayProtocolModule: Promise<GatewayProtocolModule> | undefined;
 
 export function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -65,6 +67,52 @@ function pushBounded<T>(items: T[], item: T, limit: number): void {
   items.push(item);
   if (items.length > limit) {
     items.splice(0, items.length - limit);
+  }
+}
+
+async function loadGatewayProtocol(): Promise<GatewayProtocolModule> {
+  gatewayProtocolModule ??= import("../../dist/gateway/protocol/index.js");
+  return await gatewayProtocolModule;
+}
+
+function readStringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    let message = error.message || error.name || "Error";
+    let cause = error.cause;
+    const seen = new Set<unknown>([error]);
+    const seenMessages = new Set<string>([message]);
+    while (cause && !seen.has(cause)) {
+      seen.add(cause);
+      if (cause instanceof Error) {
+        const causeMessage = cause.message || cause.name;
+        if (causeMessage && !seenMessages.has(causeMessage)) {
+          message += ` | ${causeMessage}`;
+          seenMessages.add(causeMessage);
+        }
+        cause = cause.cause;
+        continue;
+      }
+      if (typeof cause === "string" && !seenMessages.has(cause)) {
+        message += ` | ${cause}`;
+      }
+      break;
+    }
+    return message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (typeof error === "number" || typeof error === "boolean" || typeof error === "bigint") {
+    return String(error);
+  }
+  try {
+    return JSON.stringify(error) ?? "";
+  } catch {
+    return Object.prototype.toString.call(error);
   }
 }
 
@@ -133,6 +181,7 @@ async function connectGatewayOnce(params: {
   url: string;
   token: string;
 }): Promise<GatewayRpcClient> {
+  const { PROTOCOL_VERSION } = await loadGatewayProtocol();
   const requestedScopes = ["operator.read", "operator.write", "operator.pairing", "operator.admin"];
   const events: Array<{ event: string; payload: Record<string, unknown> }> = [];
   const gatewayClient = createGatewayWsClient({

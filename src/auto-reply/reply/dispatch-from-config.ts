@@ -379,6 +379,20 @@ const resolveRoutedPolicyConversationType = (
   return undefined;
 };
 
+function resolveRoutedReplySessionKeys(ctx: FinalizedMsgContext): {
+  sessionKey?: string;
+  policySessionKey?: string;
+  policyConversationType?: "direct" | "group";
+} {
+  const commandTargetSessionKey = resolveCommandTurnTargetSessionKey(ctx);
+  const policySessionKey = commandTargetSessionKey ?? ctx.SessionKey;
+  return {
+    sessionKey: ctx.CommandSource === "native" ? policySessionKey : ctx.SessionKey,
+    policySessionKey,
+    policyConversationType: resolveRoutedPolicyConversationType(ctx),
+  };
+}
+
 const resolveSessionStoreLookup = (
   ctx: FinalizedMsgContext,
   cfg: OpenClawConfig,
@@ -506,6 +520,7 @@ function resolveRoutedFinalDeliveryMirrorOption(payload: ReplyPayload): { mirror
 /** Test-only hooks for overriding selected dispatch dependencies. */
 export const testing = {
   createReplyDispatchEvent,
+  resolveRoutedReplySessionKeys,
   resolveRoutedFinalDeliveryMirrorOption,
   shouldLetSlackRoutedThreadBypassBusyReplyOperation,
 };
@@ -1673,17 +1688,14 @@ export async function dispatchReplyFromConfig(
     // Outbound session.key must match the session key used by the agent
     // runtime that produced this payload, so agent_end and message delivery
     // hooks expose the same canonical key for native command redirects.
-    const agentRuntimeSessionKey =
-      ctx.CommandSource === "native"
-        ? (resolveCommandTurnTargetSessionKey(ctx) ?? ctx.SessionKey)
-        : ctx.SessionKey;
+    const routedSessionKeys = resolveRoutedReplySessionKeys(ctx);
     return await routeReplyRuntime.routeReply({
       payload,
       channel: routeReplyChannel,
       to: routeReplyTo,
-      sessionKey: agentRuntimeSessionKey,
-      policySessionKey: resolveCommandTurnTargetSessionKey(ctx) ?? ctx.SessionKey,
-      policyConversationType: resolveRoutedPolicyConversationType(ctx),
+      sessionKey: routedSessionKeys.sessionKey,
+      policySessionKey: routedSessionKeys.policySessionKey,
+      policyConversationType: routedSessionKeys.policyConversationType,
       accountId: routedReplyAccountId,
       requesterSenderId: ctx.SenderId,
       requesterSenderName: ctx.SenderName,

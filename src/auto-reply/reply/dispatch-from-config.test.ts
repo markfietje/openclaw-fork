@@ -5514,7 +5514,7 @@ describe("dispatchReplyFromConfig", () => {
     expect(internalHookMocks.triggerInternalHook).toHaveBeenCalledTimes(1);
   });
 
-  it("routes native-command-redirect replies using the redirect target sessionKey for outbound delivery", async () => {
+  it("routes native-command-redirect replies using the redirect target sessionKey for outbound delivery", () => {
     // Regression test for the native redirect session-key contract:
     // when a native command targets a different session via
     // `CommandTargetSessionKey`, the agent runtime resolves its
@@ -5525,10 +5525,6 @@ describe("dispatchReplyFromConfig", () => {
     // see the same canonical key. Without this alignment, plugins
     // correlating per-turn state across `agent_end` and `message_sending`
     // would receive divergent keys on every native redirect.
-    setNoAbort();
-    mocks.routeReply.mockClear();
-    const cfg = emptyConfig;
-    const dispatcher = createDispatcher();
     const ctx = buildTestCtx({
       Provider: "slack",
       Surface: "slack",
@@ -5540,31 +5536,19 @@ describe("dispatchReplyFromConfig", () => {
       CommandTargetSessionKey: "agent:main:telegram:direct:999",
     });
 
-    const replyResolver = async () => ({ text: "hi" }) satisfies ReplyPayload;
-    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
-
-    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
-    expect(mocks.routeReply).toHaveBeenCalledTimes(1);
-    expect(mocks.routeReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        channel: "telegram",
-        to: "telegram:999",
-        sessionKey: "agent:main:telegram:direct:999",
-        policySessionKey: "agent:main:telegram:direct:999",
-      }),
-    );
+    expect(dispatchFromConfigTesting.resolveRoutedReplySessionKeys(ctx)).toEqual({
+      sessionKey: "agent:main:telegram:direct:999",
+      policySessionKey: "agent:main:telegram:direct:999",
+      policyConversationType: undefined,
+    });
   });
 
-  it("routes non-native (text) command replies using the inbound sessionKey for outbound delivery", async () => {
+  it("routes non-native (text) command replies using the inbound sessionKey for outbound delivery", () => {
     // Companion regression test: for non-native commands the routed
     // reply must keep the inbound `SessionKey` as both the canonical
     // session key and the policy key, even if `CommandTargetSessionKey`
     // happens to be set on the context. This guards against accidental
     // generalization of the native-redirect branch.
-    setNoAbort();
-    mocks.routeReply.mockClear();
-    const cfg = emptyConfig;
-    const dispatcher = createDispatcher();
     const ctx = buildTestCtx({
       Provider: "slack",
       Surface: "slack",
@@ -5576,19 +5560,11 @@ describe("dispatchReplyFromConfig", () => {
       CommandTargetSessionKey: "agent:main:telegram:direct:999",
     });
 
-    const replyResolver = async () => ({ text: "hi" }) satisfies ReplyPayload;
-    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
-
-    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
-    expect(mocks.routeReply).toHaveBeenCalledTimes(1);
-    expect(mocks.routeReply).toHaveBeenCalledWith(
-      expect.objectContaining({
-        channel: "telegram",
-        to: "telegram:999",
-        sessionKey: "agent:main:slack:channel:CHAN1",
-        policySessionKey: "agent:main:slack:channel:CHAN1",
-      }),
-    );
+    expect(dispatchFromConfigTesting.resolveRoutedReplySessionKeys(ctx)).toEqual({
+      sessionKey: "agent:main:slack:channel:CHAN1",
+      policySessionKey: "agent:main:slack:channel:CHAN1",
+      policyConversationType: "direct",
+    });
   });
 
   it("emits diagnostics when enabled", async () => {

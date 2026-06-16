@@ -15,7 +15,7 @@ import { resolveWhatsAppAccount, type ResolvedWhatsAppAccount } from "./accounts
 import { getSelfIdentity, getSenderIdentity } from "./identity.js";
 import { requireWhatsAppInboundAdmission } from "./inbound/admission.js";
 import { resolveWhatsAppGroupConversationId } from "./inbound/group-conversation.js";
-import type { WebInboundMessage } from "./inbound/types.js";
+import type { AdmittedWebInboundMessage } from "./inbound/types.js";
 import { resolveWhatsAppRuntimeGroupPolicy } from "./runtime-group-policy.js";
 import { isSelfChatMode, normalizeE164 } from "./text-runtime.js";
 
@@ -171,7 +171,7 @@ export async function resolveWhatsAppIngressAccess(params: {
 
 export async function resolveWhatsAppCommandAuthorized(params: {
   cfg: OpenClawConfig;
-  msg: WebInboundMessage;
+  msg: AdmittedWebInboundMessage;
   policy?: ResolvedWhatsAppInboundPolicy;
 }): Promise<boolean> {
   const useAccessGroups = params.cfg.commands?.useAccessGroups !== false;

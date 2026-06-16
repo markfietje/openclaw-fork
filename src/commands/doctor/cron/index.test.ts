@@ -476,6 +476,125 @@ describe("maybeRepairLegacyCronStore", () => {
     expectNoteContaining("Cron store migrated to SQLite", "Doctor changes");
   });
 
+  it("skips legacy jobs that already exist in SQLite under a renamed schedule identity", async () => {
+    const storePath = await makeTempStorePath();
+    await writeCurrentCronStore(storePath, [
+      createCurrentCronJob({
+        id: "brief-today-morning",
+        name: "Brief today morning",
+        schedule: { kind: "cron", expr: "5 8 * * 1-5", tz: "Australia/Sydney" },
+      }),
+    ]);
+    await writeCronStore(storePath, [
+      createLegacyCronJob({
+        jobId: "daily-briefing-page-morning",
+        name: "Daily briefing page morning",
+        schedule: { kind: "cron", cron: "5 8 * * 1-5", tz: "Australia/Sydney" },
+      }),
+      createLegacyCronJob({
+        jobId: "legacy-only",
+        name: "Legacy only",
+        schedule: { kind: "cron", cron: "0 12 * * *", tz: "Australia/Sydney" },
+      }),
+    ]);
+
+    await maybeRepairLegacyCronStore({
+      cfg: createCronConfig(storePath),
+      options: {},
+      prompter: makePrompter(true),
+    });
+
+    const jobs = await readPersistedJobs(storePath);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((job) => job.id)).toEqual(["brief-today-morning", "legacy-only"]);
+    expect(jobs.map((job) => job.name)).toEqual(["Brief today morning", "Legacy only"]);
+    expectNoteContaining("1 legacy JSON cron job will be imported into SQLite", "Cron");
+    expectNoteContaining("Cron store migrated to SQLite", "Doctor changes");
+  });
+
+  it("removes SQLite duplicates imported from an archived legacy store when a replacement exists", async () => {
+    const storePath = await makeTempStorePath();
+    await writeCurrentCronStore(storePath, [
+      createCurrentCronJob({
+        id: "brief-today-morning",
+        name: "Brief today morning",
+        schedule: { kind: "cron", expr: "5 8 * * 1-5", tz: "Australia/Melbourne" },
+        createdAtMs: Date.parse("2026-06-15T03:31:50.417Z"),
+        updatedAtMs: Date.parse("2026-06-15T03:31:50.417Z"),
+      }),
+      createCurrentCronJob({
+        id: "daily-briefing-dashboard-morning",
+        name: "Daily briefing dashboard morning",
+        schedule: { kind: "cron", expr: "5 8 * * 1-5", tz: "Australia/Melbourne" },
+        createdAtMs: Date.parse("2026-06-10T01:07:54.331Z"),
+        updatedAtMs: Date.parse("2026-06-10T01:07:54.331Z"),
+      }),
+    ]);
+    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    await fs.writeFile(
+      `${storePath}.migrated`,
+      JSON.stringify(
+        {
+          version: 1,
+          jobs: [
+            createLegacyCronJob({
+              jobId: "daily-briefing-dashboard-morning",
+              name: "Daily briefing dashboard morning",
+              schedule: { kind: "cron", cron: "5 8 * * 1-5", tz: "Australia/Melbourne" },
+            }),
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    await maybeRepairLegacyCronStore({
+      cfg: createCronConfig(storePath),
+      options: {},
+      prompter: makePrompter(true),
+    });
+
+    const jobs = await readPersistedJobs(storePath);
+    expect(jobs).toHaveLength(1);
+    expect(requirePersistedJob(jobs, 0).id).toBe("brief-today-morning");
+    const quarantine = await loadCronQuarantineFile(resolveCronQuarantinePath(storePath));
+    expect(quarantine.jobs).toHaveLength(1);
+    expect(quarantine.jobs[0]?.reason).toBe("duplicate-legacy-schedule");
+    expect(quarantine.jobs[0]?.job?.id).toBe("daily-briefing-dashboard-morning");
+    expectNoteContaining("1 archived legacy cron duplicate will be removed from SQLite", "Cron");
+    expectNoteContaining("Removed 1 archived legacy cron duplicate from SQLite", "Doctor changes");
+  });
+
+  it("leaves same-schedule SQLite jobs untouched without a matching legacy archive", async () => {
+    const storePath = await makeTempStorePath();
+    await writeCurrentCronStore(storePath, [
+      createCurrentCronJob({
+        id: "first-current",
+        name: "First current",
+        schedule: { kind: "cron", expr: "5 8 * * 1-5", tz: "Australia/Melbourne" },
+      }),
+      createCurrentCronJob({
+        id: "second-current",
+        name: "Second current",
+        schedule: { kind: "cron", expr: "5 8 * * 1-5", tz: "Australia/Melbourne" },
+      }),
+    ]);
+    const prompter = makePrompter(true);
+
+    await maybeRepairLegacyCronStore({
+      cfg: createCronConfig(storePath),
+      options: {},
+      prompter,
+    });
+
+    const jobs = await readPersistedJobs(storePath);
+    expect(jobs.map((job) => job.id)).toEqual(["first-current", "second-current"]);
+    expect(prompter.confirm).not.toHaveBeenCalled();
+    expectNoNoteContaining("archived legacy cron duplicate", "Cron");
+  });
+
   it("backfills early SQLite rows from job_json before runtime relies on split columns", async () => {
     const storePath = await makeTempStorePath();
     insertEarlySQLiteCronRow(storePath, {

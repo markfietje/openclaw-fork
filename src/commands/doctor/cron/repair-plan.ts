@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "../../../../packages/normalization-core/src/string-coerce.js";
 import { normalizeCronJobInput } from "../../../cron/normalize.js";
 import type { CronJob } from "../../../cron/types.js";
+import { tryLegacyCronScheduleIdentity } from "./legacy-store-migration.js";
 
 export type CronLegacyIssueCounts = Partial<Record<string, number>>;
 export type CronLegacyIssueDetails = {
@@ -100,7 +101,74 @@ function cronJobMigrationKey(job: Record<string, unknown>): string | undefined {
   return normalizeOptionalString(job.id) ?? normalizeOptionalString(job.jobId);
 }
 
-/** Merge legacy JSON jobs into current jobs without duplicating matching ids/jobIds. */
+export type RemovedArchivedLegacyCronDuplicate = {
+  job: Record<string, unknown>;
+  sourceIndex: number;
+  scheduleIdentity: string;
+};
+
+/** Remove SQLite rows imported from archived legacy stores when a replacement row already exists. */
+export function removeArchivedLegacyCronScheduleDuplicates(params: {
+  currentJobs: Array<Record<string, unknown>>;
+  archivedLegacyJobs: Array<Record<string, unknown>>;
+}): { jobs: Array<Record<string, unknown>>; removedJobs: RemovedArchivedLegacyCronDuplicate[] } {
+  const archivedScheduleByKey = new Map<string, string>();
+  for (const legacyJob of params.archivedLegacyJobs) {
+    const key = cronJobMigrationKey(legacyJob);
+    const scheduleKey = tryLegacyCronScheduleIdentity(legacyJob);
+    if (key && scheduleKey) {
+      archivedScheduleByKey.set(key, scheduleKey);
+    }
+  }
+  if (archivedScheduleByKey.size === 0) {
+    return { jobs: params.currentJobs, removedJobs: [] };
+  }
+
+  const groups = new Map<
+    string,
+    Array<{ job: Record<string, unknown>; sourceIndex: number; fromArchive: boolean }>
+  >();
+  for (const [sourceIndex, job] of params.currentJobs.entries()) {
+    const scheduleKey = tryLegacyCronScheduleIdentity(job);
+    if (!scheduleKey) {
+      continue;
+    }
+    const key = cronJobMigrationKey(job);
+    const fromArchive = key ? archivedScheduleByKey.get(key) === scheduleKey : false;
+    const group = groups.get(scheduleKey) ?? [];
+    group.push({ job, sourceIndex, fromArchive });
+    groups.set(scheduleKey, group);
+  }
+
+  const removedByIndex = new Map<number, RemovedArchivedLegacyCronDuplicate>();
+  for (const [scheduleIdentity, group] of groups) {
+    if (group.length < 2 || !group.some((entry) => !entry.fromArchive)) {
+      continue;
+    }
+    for (const entry of group) {
+      if (entry.fromArchive) {
+        removedByIndex.set(entry.sourceIndex, {
+          job: structuredClone(entry.job),
+          sourceIndex: entry.sourceIndex,
+          scheduleIdentity,
+        });
+      }
+    }
+  }
+
+  if (removedByIndex.size === 0) {
+    return { jobs: params.currentJobs, removedJobs: [] };
+  }
+
+  return {
+    jobs: params.currentJobs.filter((_job, index) => !removedByIndex.has(index)),
+    removedJobs: [...removedByIndex.values()].toSorted(
+      (left, right) => left.sourceIndex - right.sourceIndex,
+    ),
+  };
+}
+
+/** Merge legacy JSON jobs into current jobs without duplicating already-migrated rows. */
 export function mergeLegacyCronJobs(params: {
   currentJobs: Array<Record<string, unknown>>;
   legacyJobs: Array<Record<string, unknown>>;
@@ -109,6 +177,11 @@ export function mergeLegacyCronJobs(params: {
   const currentKeys = new Set(
     params.currentJobs.map((job) => cronJobMigrationKey(job)).filter((key) => key !== undefined),
   );
+  const currentScheduleKeys = new Set(
+    params.currentJobs
+      .map((job) => tryLegacyCronScheduleIdentity(job))
+      .filter((key) => key !== undefined),
+  );
   let importedCount = 0;
 
   for (const legacyJob of params.legacyJobs) {
@@ -116,9 +189,15 @@ export function mergeLegacyCronJobs(params: {
     if (key && currentKeys.has(key)) {
       continue;
     }
+    const scheduleKey = tryLegacyCronScheduleIdentity(legacyJob);
+    if (scheduleKey && currentScheduleKeys.has(scheduleKey)) {
+      continue;
+    }
     if (key) {
       currentKeys.add(key);
     }
+    // Schedule identity only dedupes legacy rows against pre-existing SQLite jobs;
+    // same-schedule rows already present together in legacy JSON remain distinct.
     merged.push(legacyJob);
     importedCount += 1;
   }

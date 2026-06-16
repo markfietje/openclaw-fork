@@ -26,6 +26,7 @@ import {
 import {
   archiveLegacyCronStoreForMigration,
   legacyCronStoreFilesExist,
+  loadArchivedLegacyCronJobsForMigration,
   loadLegacyCronStoreForMigration,
 } from "./legacy-store-migration.js";
 import {
@@ -33,6 +34,8 @@ import {
   mergeLegacyCronJobs,
   mergeRuntimeEntryIntoConfigJob,
   needsSqliteProjectionBackfill,
+  removeArchivedLegacyCronScheduleDuplicates,
+  type RemovedArchivedLegacyCronDuplicate,
 } from "./repair-plan.js";
 import { normalizeStoredCronJobs } from "./store-migration.js";
 import { noteCronModelOverrides } from "./warnings.js";
@@ -63,6 +66,7 @@ type LegacyCronRepairState = {
   legacyRunLogDetected: boolean;
   legacyImportCount: number;
   sqliteProjectionBackfillCount: number;
+  archivedLegacyDuplicateRows: RemovedArchivedLegacyCronDuplicate[];
   rawJobs: Array<Record<string, unknown>>;
 };
 
@@ -79,7 +83,13 @@ async function loadLegacyCronRepairState(params: {
   const quarantinePath = resolveCronQuarantinePath(storePath);
   const legacyStoreDetected = await legacyCronStoreFilesExist(storePath);
   const legacyRunLogDetected = await legacyCronRunLogFilesExist(storePath);
-  if (params.onlyIfLegacyDetected && !legacyStoreDetected && !legacyRunLogDetected) {
+  const archivedLegacyJobs = await loadArchivedLegacyCronJobsForMigration(storePath);
+  if (
+    params.onlyIfLegacyDetected &&
+    !legacyStoreDetected &&
+    !legacyRunLogDetected &&
+    archivedLegacyJobs.length === 0
+  ) {
     return null;
   }
 
@@ -104,6 +114,23 @@ async function loadLegacyCronRepairState(params: {
       : 0;
   let rawJobs = currentJobs;
   let legacyImportCount = 0;
+  let archivedLegacyDuplicateRows: RemovedArchivedLegacyCronDuplicate[] = [];
+  if (archivedLegacyJobs.length > 0) {
+    const deduped = removeArchivedLegacyCronScheduleDuplicates({
+      currentJobs: rawJobs,
+      archivedLegacyJobs,
+    });
+    rawJobs = deduped.jobs;
+    archivedLegacyDuplicateRows = deduped.removedJobs;
+  }
+  if (
+    params.onlyIfLegacyDetected &&
+    !legacyStoreDetected &&
+    !legacyRunLogDetected &&
+    archivedLegacyDuplicateRows.length === 0
+  ) {
+    return null;
+  }
   if (legacyStoreDetected) {
     const legacyStore = (await loadLegacyCronStoreForMigration(storePath)).store;
     const merged = mergeLegacyCronJobs({
@@ -121,6 +148,7 @@ async function loadLegacyCronRepairState(params: {
     legacyRunLogDetected,
     legacyImportCount,
     sqliteProjectionBackfillCount,
+    archivedLegacyDuplicateRows,
     rawJobs,
   };
 }
@@ -146,6 +174,7 @@ async function applyLegacyCronStoreRepair(params: {
     state.legacyStoreDetected ||
     state.legacyRunLogDetected ||
     state.sqliteProjectionBackfillCount > 0 ||
+    state.archivedLegacyDuplicateRows.length > 0 ||
     normalized.mutated ||
     notifyMigration.changed ||
     dreamingMigration.changed;
@@ -155,15 +184,24 @@ async function applyLegacyCronStoreRepair(params: {
 
   if (changed) {
     try {
-      if (normalized.removedJobs.length > 0) {
+      const removedJobs = [
+        ...normalized.removedJobs.map((entry) => ({
+          sourceIndex: entry.sourceIndex,
+          reason: entry.reason,
+          job: entry.job,
+        })),
+        ...state.archivedLegacyDuplicateRows.map((entry) => ({
+          sourceIndex: entry.sourceIndex,
+          reason: "duplicate-legacy-schedule",
+          job: entry.job,
+          scheduleIdentity: entry.scheduleIdentity,
+        })),
+      ];
+      if (removedJobs.length > 0) {
         await saveCronQuarantineFile({
           storePath: state.storePath,
           nowMs: Date.now(),
-          entries: normalized.removedJobs.map((entry) => ({
-            sourceIndex: entry.sourceIndex,
-            reason: entry.reason,
-            job: entry.job,
-          })),
+          entries: removedJobs,
         });
       }
       await saveCronJobsStore(state.storePath, {
@@ -203,6 +241,11 @@ async function applyLegacyCronStoreRepair(params: {
     );
   } else if (changed) {
     changes.push(`Cron store normalized at ${shortenHomePath(state.storePath)}.`);
+  }
+  if (state.archivedLegacyDuplicateRows.length > 0) {
+    changes.push(
+      `Removed ${pluralize(state.archivedLegacyDuplicateRows.length, "archived legacy cron duplicate")} from SQLite.`,
+    );
   }
   if (dreamingMigration.rewrittenCount > 0) {
     changes.push(
@@ -278,6 +321,7 @@ export async function maybeRepairLegacyCronStore(params: {
     legacyRunLogDetected,
     legacyImportCount,
     sqliteProjectionBackfillCount,
+    archivedLegacyDuplicateRows,
     rawJobs,
   } = state;
   try {
@@ -352,6 +396,11 @@ export async function maybeRepairLegacyCronStore(params: {
   if (sqliteProjectionBackfillCount > 0) {
     previewLines.push(
       `- ${pluralize(sqliteProjectionBackfillCount, "SQLite cron row")} will be backfilled from stored config JSON into split columns`,
+    );
+  }
+  if (archivedLegacyDuplicateRows.length > 0) {
+    previewLines.push(
+      `- ${pluralize(archivedLegacyDuplicateRows.length, "archived legacy cron duplicate")} will be removed from SQLite`,
     );
   }
   if (notifyCount > 0) {

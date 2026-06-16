@@ -40,6 +40,48 @@ async function archiveLegacyCronFile(filePath: string): Promise<void> {
   await fs.rename(filePath, archivePath).catch(() => undefined);
 }
 
+function isLegacyCronStoreArchiveName(fileName: string, storeFileName: string): boolean {
+  const archiveName = `${storeFileName}${LEGACY_CRON_ARCHIVE_SUFFIX}`;
+  if (fileName === archiveName) {
+    return true;
+  }
+  if (!fileName.startsWith(`${archiveName}.`)) {
+    return false;
+  }
+  return /^\d+$/.test(fileName.slice(archiveName.length + 1));
+}
+
+function legacyCronStoreArchiveOrdinal(fileName: string, storeFileName: string): number {
+  const archiveName = `${storeFileName}${LEGACY_CRON_ARCHIVE_SUFFIX}`;
+  if (fileName === archiveName) {
+    return 1;
+  }
+  return Number(fileName.slice(archiveName.length + 1));
+}
+
+async function listArchivedLegacyCronStorePaths(storePath: string): Promise<string[]> {
+  const resolvedStorePath = path.resolve(storePath);
+  const dir = path.dirname(resolvedStorePath);
+  const storeFileName = path.basename(resolvedStorePath);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch (err) {
+    if ((err as { code?: unknown })?.code === "ENOENT") {
+      return [];
+    }
+    throw err;
+  }
+  return entries
+    .filter((entry) => isLegacyCronStoreArchiveName(entry, storeFileName))
+    .toSorted(
+      (left, right) =>
+        legacyCronStoreArchiveOrdinal(left, storeFileName) -
+        legacyCronStoreArchiveOrdinal(right, storeFileName),
+    )
+    .map((entry) => path.join(dir, entry));
+}
+
 function parseCronStateFile(raw: string): {
   version: 1;
   jobs: Record<string, CronConfigJobRuntimeEntry>;
@@ -117,11 +159,20 @@ function legacySchedulePayloadFromRecord(
   return undefined;
 }
 
-function tryLegacyCronScheduleIdentity(job: Record<string, unknown>): string | undefined {
+function legacySchedulePayloadFromString(
+  schedule: string,
+): { kind: "cron"; expr: string } | undefined {
+  const expr = normalizeOptionalString(schedule);
+  return expr ? { kind: "cron", expr } : undefined;
+}
+
+export function tryLegacyCronScheduleIdentity(job: Record<string, unknown>): string | undefined {
   const schedule =
-    job.schedule && typeof job.schedule === "object" && !Array.isArray(job.schedule)
-      ? legacySchedulePayloadFromRecord(job.schedule as Record<string, unknown>)
-      : legacySchedulePayloadFromRecord(job);
+    typeof job.schedule === "string"
+      ? legacySchedulePayloadFromString(job.schedule)
+      : job.schedule && typeof job.schedule === "object" && !Array.isArray(job.schedule)
+        ? legacySchedulePayloadFromRecord(job.schedule as Record<string, unknown>)
+        : legacySchedulePayloadFromRecord(job);
   if (!schedule) {
     return undefined;
   }
@@ -142,6 +193,20 @@ function getRawCronJobs(parsed: unknown): unknown[] {
 
 function cloneConfigJobs(jobs: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
   return jobs.map((job) => structuredClone(job));
+}
+
+async function loadLegacyCronJobsFromFile(
+  filePath: string,
+): Promise<Array<Record<string, unknown>>> {
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const parsed = parseJsonWithJson5Fallback(raw);
+    return getRawCronJobs(parsed)
+      .filter(isRecord)
+      .map((job) => structuredClone(job));
+  } catch {
+    return [];
+  }
 }
 
 async function loadStateFile(
@@ -230,6 +295,18 @@ export async function archiveLegacyCronStoreForMigration(storePath: string): Pro
     archiveLegacyCronFile(resolvedStorePath),
     archiveLegacyCronFile(resolveLegacyCronStatePath(resolvedStorePath)),
   ]);
+}
+
+/** Load archived legacy cron JSON jobs left behind by earlier migrations. */
+export async function loadArchivedLegacyCronJobsForMigration(
+  storePath: string,
+): Promise<Array<Record<string, unknown>>> {
+  const archivePaths = await listArchivedLegacyCronStorePaths(storePath);
+  const jobs: Array<Record<string, unknown>> = [];
+  for (const archivePath of archivePaths) {
+    jobs.push(...(await loadLegacyCronJobsFromFile(archivePath)));
+  }
+  return jobs;
 }
 
 /** Load legacy cron JSON/state files into the current loaded-store shape for migration. */

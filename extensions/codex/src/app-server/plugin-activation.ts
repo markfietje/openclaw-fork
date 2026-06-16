@@ -170,11 +170,16 @@ export async function refreshCodexPluginRuntimeState(params: {
     const request: CodexAppInventoryRequest = async (method, requestParams) =>
       (await params.request(method, requestParams)) as v2.AppsListResponse;
     try {
-      await params.appCache.refreshNow({
+      const snapshot = await params.appCache.refreshNow({
         key: params.appCacheKey,
         request,
         forceRefetch: true,
       });
+      if (snapshot.lastError) {
+        diagnostics.push({
+          message: `Codex app inventory refresh skipped: ${snapshot.lastError.message}`,
+        });
+      }
     } catch (error) {
       diagnostics.push({
         message: `Codex app inventory refresh skipped: ${

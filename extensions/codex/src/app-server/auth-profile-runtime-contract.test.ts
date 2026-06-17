@@ -21,6 +21,7 @@ let codexAppServerClientFactoryForTest: CodexAppServerClientFactory | undefined;
 type RunCodexAppServerAttemptOptions = NonNullable<
   Parameters<typeof runCodexAppServerAttemptImpl>[1]
 >;
+type CodexAppServerBindingInput = Parameters<typeof writeCodexAppServerBinding>[1];
 
 function setCodexAppServerClientFactoryForTest(factory: CodexAppServerClientFactory): void {
   codexAppServerClientFactoryForTest = factory;
@@ -66,9 +67,7 @@ const DISABLED_CODEX_WEB_SEARCH_THREAD_CONFIG_FINGERPRINT = JSON.stringify({
   web_search: "disabled",
 });
 
-function writeCodexAppServerBinding(
-  ...args: Parameters<typeof writeRawCodexAppServerBinding>
-) {
+function writeCodexAppServerBinding(...args: Parameters<typeof writeRawCodexAppServerBinding>) {
   const [sessionFile, binding, lookup] = args;
   return writeRawCodexAppServerBinding(
     sessionFile,
@@ -176,6 +175,73 @@ function createCodexAuthProfileHarness(params: { startMethod: "thread/start" | "
   };
 }
 
+async function resolveCurrentBindingDefaults(
+  tmpDir: string,
+): Promise<Partial<CodexAppServerBindingInput>> {
+  const sessionFile = path.join(tmpDir, `binding-metadata-${Date.now()}.jsonl`);
+  let notify: (notification: unknown) => Promise<void> = async () => undefined;
+  const requests: string[] = [];
+  setCodexAppServerClientFactoryForTest(
+    async () =>
+      ({
+        request: vi.fn(async (method: string) => {
+          requests.push(method);
+          if (method === "thread/start") {
+            return threadStartResult("thread-auth-metadata");
+          }
+          if (method === "turn/start") {
+            return turnStartResult("turn-auth-metadata");
+          }
+          throw new Error(`unexpected metadata method: ${method}`);
+        }),
+        addNotificationHandler: (handler: (notification: unknown) => Promise<void>) => {
+          notify = handler;
+          return () => undefined;
+        },
+        addRequestHandler: () => () => undefined,
+      }) as never,
+  );
+
+  const run = runCodexAppServerAttempt(createParams(sessionFile, tmpDir));
+  await vi.waitFor(() => expect(requests).toContain("turn/start"), { interval: 1 });
+  await notify({
+    method: "turn/completed",
+    params: {
+      threadId: "thread-auth-metadata",
+      turnId: "turn-auth-metadata",
+      turn: { id: "turn-auth-metadata", status: "completed" },
+    },
+  });
+  await run;
+
+  const binding = await readCodexAppServerBinding(sessionFile);
+  if (!binding) {
+    throw new Error("expected current Codex auth binding metadata");
+  }
+  return {
+    dynamicToolsFingerprint: binding.dynamicToolsFingerprint,
+    dynamicToolsContainDeferred: binding.dynamicToolsContainDeferred,
+    webSearchThreadConfigFingerprint: binding.webSearchThreadConfigFingerprint,
+    userMcpServersFingerprint: binding.userMcpServersFingerprint,
+    mcpServersFingerprint: binding.mcpServersFingerprint,
+    pluginAppsFingerprint: binding.pluginAppsFingerprint,
+    pluginAppsInputFingerprint: binding.pluginAppsInputFingerprint,
+    pluginAppPolicyContext: binding.pluginAppPolicyContext,
+    environmentSelectionFingerprint: binding.environmentSelectionFingerprint,
+  };
+}
+
+async function writeCurrentCodexAppServerBinding(
+  sessionFile: string,
+  tmpDir: string,
+  binding: CodexAppServerBindingInput,
+): Promise<void> {
+  await writeCodexAppServerBinding(sessionFile, {
+    ...(await resolveCurrentBindingDefaults(tmpDir)),
+    ...binding,
+  });
+}
+
 describe("Auth profile runtime contract - Codex app-server adapter", () => {
   let tmpDir: string;
 
@@ -213,14 +279,13 @@ describe("Auth profile runtime contract - Codex app-server adapter", () => {
   });
 
   it("reuses a bound OpenAI Codex auth profile when resume params omit authProfileId", async () => {
-    const harness = createCodexAuthProfileHarness({ startMethod: "thread/resume" });
     const sessionFile = path.join(tmpDir, "session.jsonl");
-    await writeCodexAppServerBinding(sessionFile, {
+    await writeCurrentCodexAppServerBinding(sessionFile, tmpDir, {
       threadId: "thread-auth-contract",
       cwd: tmpDir,
       authProfileId: AUTH_PROFILE_RUNTIME_CONTRACT.openAiCodexProfileId,
-      dynamicToolsFingerprint: "[]",
     });
+    const harness = createCodexAuthProfileHarness({ startMethod: "thread/resume" });
     // authProfileId is intentionally omitted to exercise the resume-bound profile path.
     const params = createParams(sessionFile, tmpDir);
 
@@ -238,14 +303,13 @@ describe("Auth profile runtime contract - Codex app-server adapter", () => {
   });
 
   it("prefers an explicit runtime auth profile over a stale persisted binding", async () => {
-    const harness = createCodexAuthProfileHarness({ startMethod: "thread/resume" });
     const sessionFile = path.join(tmpDir, "session.jsonl");
-    await writeCodexAppServerBinding(sessionFile, {
+    await writeCurrentCodexAppServerBinding(sessionFile, tmpDir, {
       threadId: "thread-auth-contract",
       cwd: tmpDir,
       authProfileId: "openai:stale",
-      dynamicToolsFingerprint: "[]",
     });
+    const harness = createCodexAuthProfileHarness({ startMethod: "thread/resume" });
     const params = createParams(sessionFile, tmpDir);
     params.authProfileId = AUTH_PROFILE_RUNTIME_CONTRACT.openAiCodexProfileId;
 

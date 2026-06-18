@@ -101,7 +101,7 @@ export function handleConnected(host: LifecycleHost) {
   applySettingsFromUrl(host as unknown as Parameters<typeof applySettingsFromUrl>[0]);
   host.controlUiBootstrapReady = loadControlUiBootstrapConfig(
     host as unknown as Parameters<typeof loadControlUiBootstrapConfig>[0],
-    { applyIdentity: false },
+    { applyIdentity: false, skipWithoutAuthCandidate: true },
   );
   syncRouteWithLocation(host as unknown as Parameters<typeof syncRouteWithLocation>[0], true);
   const hasPendingGatewaySwitch =

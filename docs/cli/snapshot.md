@@ -19,6 +19,20 @@ openclaw snapshot verify ./snapshots/<snapshot-id>
 openclaw snapshot restore ./snapshots/<snapshot-id> --target ./restore/openclaw.sqlite
 ```
 
+## Snapshot versus backup
+
+Use `openclaw snapshot` when you need a syncable artifact for one SQLite
+database. A snapshot repository stores verified snapshot directories containing
+`manifest.json` and `database.sqlite`, so a host, container, object storage
+sync, or backup system can copy those files instead of copying a hot SQLite
+database.
+
+Use [`openclaw backup`](/cli/backup) when you need a broader local recovery
+archive for OpenClaw state, config, auth profiles, credentials, sessions, and
+optional workspaces. Backup archives may contain SQLite-safe database copies,
+but their output and restore model are archive-level, not a per-database
+snapshot repository.
+
 ## What to sync
 
 Sync the snapshot directory created under the repository. A snapshot directory

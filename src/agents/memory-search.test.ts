@@ -1,5 +1,4 @@
 // Verifies memory-search config resolution across providers, sync, and batching.
-import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import {
@@ -223,25 +222,6 @@ describe("memory search config", () => {
     expect(resolved?.model).toBe("text-embedding-3-small");
     expect(resolved?.fallback).toBe("none");
     expect(resolved?.store.databasePath).toBe(resolveOpenClawAgentSqlitePath({ agentId: "main" }));
-  });
-
-  it("resolves a configured SQLite store path with normalized agent substitution", () => {
-    const cfg = asConfig({
-      agents: {
-        defaults: {
-          memorySearch: {
-            provider: "none",
-            store: {
-              path: "/tmp/memory/{agentId}.sqlite",
-            },
-          },
-        },
-      },
-    });
-
-    const resolved = resolveMemorySearchConfig(cfg, "Ops Team");
-
-    expect(resolved?.store.databasePath).toBe(path.resolve("/tmp/memory/ops-team.sqlite"));
   });
 
   it("normalizes legacy auto provider config to openai", () => {

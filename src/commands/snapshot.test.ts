@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/config.js";
+import { clearRuntimeConfigSnapshot } from "../config/config.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   snapshotCreateCommand,
@@ -171,25 +171,13 @@ describe("snapshot cli", () => {
     expect(runtime.errors).toEqual([]);
   });
 
-  it("creates a snapshot from configured memory-search SQLite outside OpenClaw state", async () => {
+  it("creates a snapshot from the named memory-search OpenClaw database", async () => {
     const runtime = createRuntimeCapture();
-    const memoryRoot = path.join(workspaceDir, "tmp-memory");
-    const memoryDbTemplate = path.join(memoryRoot, "{agentId}.sqlite");
-    const dbPath = path.join(memoryRoot, "main.sqlite");
+    const stateDir = path.join(workspaceDir, "state-root");
+    const dbPath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
     const repositoryPath = path.join(workspaceDir, "snapshots");
-    setRuntimeConfigSnapshot({
-      agents: {
-        defaults: {
-          memorySearch: {
-            provider: "none",
-            store: {
-              path: memoryDbTemplate,
-            },
-          },
-        },
-      },
-    });
-    await createSqliteDatabase(dbPath, "from-lobster-memory-search");
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    await createSqliteDatabase(dbPath, "from-memory-search");
 
     await expect(
       snapshotCreateCommand(
@@ -211,7 +199,7 @@ describe("snapshot cli", () => {
     expect(createReport.manifest?.database).toMatchObject({
       id: "agent:main:memory-search",
       kind: "agent-memory-search",
-      basename: "main.sqlite",
+      basename: "openclaw-agent.sqlite",
     });
     await expect(readSortedDir(createReport.snapshotPath ?? "")).resolves.toEqual(
       SNAPSHOT_ARTIFACT_FILES,

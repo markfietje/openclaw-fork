@@ -74,22 +74,6 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(false);
   });
 
-  it("accepts memorySearch SQLite store path", () => {
-    const res = validateConfigObject({
-      agents: {
-        defaults: {
-          memorySearch: {
-            store: {
-              path: "/tmp/memory/{agentId}.sqlite",
-            },
-          },
-        },
-      },
-    });
-
-    expect(res.ok).toBe(true);
-  });
-
   it("accepts memorySearch.qmd.extraCollections", () => {
     const res = validateConfigObject({
       agents: {

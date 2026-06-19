@@ -2,6 +2,16 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.6.19-alpha.2
+
+### Changes
+
+- Alpha nightly from current `main`, including unreleased agent, release, plugin, UI, mobile, and channel changes since 2026.6.9.
+
+### Fixes
+
+- Release validation includes refreshed config documentation metadata for the alpha package, and QQBot API calls now use the plugin SDK SSRF guard required by channel fetch policy.
+
 ## 2026.6.9
 
 ### Highlights

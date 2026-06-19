@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearRuntimeConfigSnapshot } from "../config/config.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
@@ -171,42 +171,6 @@ describe("snapshot cli", () => {
     expect(runtime.errors).toEqual([]);
   });
 
-  it("creates a snapshot from the named memory-search OpenClaw database", async () => {
-    const runtime = createRuntimeCapture();
-    const stateDir = path.join(workspaceDir, "state-root");
-    const dbPath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
-    const repositoryPath = path.join(workspaceDir, "snapshots");
-    process.env.OPENCLAW_STATE_DIR = stateDir;
-    await createSqliteDatabase(dbPath, "from-memory-search");
-
-    await expect(
-      snapshotCreateCommand(
-        {
-          target: "memory-search",
-          agent: "main",
-          repository: repositoryPath,
-          json: true,
-        },
-        runtime,
-      ),
-    ).resolves.toBe(0);
-
-    const createReport = JSON.parse(runtime.logs.shift() ?? "{}") as {
-      snapshotPath?: string;
-      manifest?: { database?: { id?: string; kind?: string; basename?: string } };
-    };
-    expect(createReport.snapshotPath).toBeTruthy();
-    expect(createReport.manifest?.database).toMatchObject({
-      id: "agent:main:memory-search",
-      kind: "agent-memory-search",
-      basename: "openclaw-agent.sqlite",
-    });
-    await expect(readSortedDir(createReport.snapshotPath ?? "")).resolves.toEqual(
-      SNAPSHOT_ARTIFACT_FILES,
-    );
-    expect(runtime.errors).toEqual([]);
-  });
-
   it("restores a copied snapshot artifact from a named OpenClaw database", async () => {
     const runtime = createRuntimeCapture();
     const stateDir = path.join(workspaceDir, "state-root");
@@ -304,6 +268,54 @@ describe("snapshot cli", () => {
     expect(runtime.errors).toEqual([
       "Choose only one snapshot source: --db, --target, or --agent.",
     ]);
+  });
+
+  it("snapshots a realpathed named global database path", async () => {
+    const runtime = createRuntimeCapture();
+    const stateDir = path.join(workspaceDir, "state-root");
+    const canonicalDbPath = path.join(stateDir, "state", "openclaw.sqlite");
+    const realDbPath = path.join(workspaceDir, "real-state", "openclaw.sqlite");
+    const repositoryPath = path.join(workspaceDir, "snapshots");
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    await createSqliteDatabase(realDbPath, "from-real-global");
+    await fs.mkdir(path.dirname(canonicalDbPath), { recursive: true });
+    const realRealpath = fs.realpath.bind(fs);
+    const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(canonicalDbPath)) {
+        return realDbPath;
+      }
+      return await realRealpath(candidate);
+    });
+
+    try {
+      await expect(
+        snapshotCreateCommand(
+          { target: "global", repository: repositoryPath, json: true },
+          runtime,
+        ),
+      ).resolves.toBe(0);
+    } finally {
+      realpathSpy.mockRestore();
+    }
+
+    const createReport = JSON.parse(runtime.logs.shift() ?? "{}") as {
+      snapshotPath?: string;
+      manifest?: { database?: { id?: string; basename?: string } };
+    };
+    expect(createReport.manifest?.database).toMatchObject({
+      id: "global",
+      basename: "openclaw.sqlite",
+    });
+    const artifactPath = path.join(createReport.snapshotPath ?? "", "database.sqlite");
+    const artifact = new DatabaseSync(artifactPath, { readOnly: true });
+    try {
+      expect(artifact.prepare("SELECT value FROM entries").all()).toEqual([
+        { value: "from-real-global" },
+      ]);
+    } finally {
+      artifact.close();
+    }
+    expect(runtime.errors).toEqual([]);
   });
 });
 

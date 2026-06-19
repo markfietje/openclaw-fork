@@ -13,7 +13,6 @@ Create, verify, list, and restore SQLite-safe snapshot artifacts.
 ```bash
 openclaw snapshot create --target global --repository ./snapshots
 openclaw snapshot create --agent main --repository ./snapshots
-openclaw snapshot create --target memory-search --agent main --repository ./snapshots
 openclaw snapshot create --db ~/.openclaw/state/openclaw.sqlite --repository ./snapshots
 openclaw snapshot list --repository ./snapshots
 openclaw snapshot verify ./snapshots/<snapshot-id>
@@ -59,20 +58,17 @@ host, container, object storage sync, or backup system.
 
 Use named targets when snapshotting OpenClaw-owned state:
 
-| Command                                                                           | Source                                                                     |
-| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `openclaw snapshot create --target global --repository <dir>`                     | Shared control-plane state database                                        |
-| `openclaw snapshot create --agent <id> --repository <dir>`                        | Per-agent database for the normalized agent id                             |
-| `openclaw snapshot create --target memory-search --agent <id> --repository <dir>` | Memory-search tables in the per-agent database for the normalized agent id |
+| Command                                                       | Source                                         |
+| ------------------------------------------------------------- | ---------------------------------------------- |
+| `openclaw snapshot create --target global --repository <dir>` | Shared control-plane state database            |
+| `openclaw snapshot create --agent <id> --repository <dir>`    | Per-agent database for the normalized agent id |
 
 `--db <path>` remains available for explicit SQLite files and advanced scripts.
-Choose only one source selector: `--db`, `--target`, or `--agent`, except that
-`--target memory-search` requires `--agent`.
+Choose only one source selector: `--db`, `--target`, or `--agent`.
 
 Hosted runtimes should ask OpenClaw to materialize the named target instead of
-copying private SQLite paths. The memory-search target resolves through
-OpenClaw's database-first ownership model, so hosts can sync only completed
-snapshot artifacts from the repository.
+copying private SQLite paths. Hosts can sync only completed snapshot artifacts
+from the repository.
 
 ## Restore workflow
 

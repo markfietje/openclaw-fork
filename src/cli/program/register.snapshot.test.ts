@@ -106,28 +106,6 @@ describe("registerSnapshotCommand", () => {
     );
   });
 
-  it("runs snapshot create for a named memory-search target", async () => {
-    await runCli([
-      "snapshot",
-      "create",
-      "--target",
-      "memory-search",
-      "--agent",
-      "main",
-      "--repository",
-      "/tmp/snapshots",
-    ]);
-
-    expect(mocks.snapshotCreateCommand).toHaveBeenCalledWith(
-      {
-        target: "memory-search",
-        agent: "main",
-        repository: "/tmp/snapshots",
-      },
-      mocks.runtime,
-    );
-  });
-
   it("runs snapshot list with forwarded options", async () => {
     await runCli(["snapshot", "list", "--repository", "/tmp/snapshots", "--json"]);
 

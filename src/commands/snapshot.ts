@@ -1,6 +1,5 @@
 // Core command handlers for SQLite snapshot artifacts.
-import { resolveMemorySearchConfig } from "../agents/memory-search.js";
-import { getRuntimeConfig } from "../config/config.js";
+import { promises as fs } from "node:fs";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { createLocalSqliteSnapshotProvider } from "../snapshot/local-repository.js";
@@ -67,7 +66,7 @@ export async function snapshotCreateCommand(
 ): Promise<number> {
   try {
     const repositoryPath = requireOption(options.repository, "--repository");
-    const source = resolveSnapshotCreateSource(options);
+    const source = await resolveSnapshotCreateSource(options);
     const provider = createLocalSqliteSnapshotProvider({ repositoryPath });
     const result = await provider.create({
       path: source.path,
@@ -138,7 +137,9 @@ export async function snapshotListCommand(
   }
 }
 
-function resolveSnapshotCreateSource(options: SnapshotCreateOptions): SnapshotCreateSource {
+async function resolveSnapshotCreateSource(
+  options: SnapshotCreateOptions,
+): Promise<SnapshotCreateSource> {
   if (!hasValue(options.db) && !hasValue(options.target) && !hasValue(options.agent)) {
     throw new Error(
       "Missing snapshot source. Provide one of --db <path>, --target global, or --agent <id>.",
@@ -158,36 +159,26 @@ function resolveSnapshotCreateSource(options: SnapshotCreateOptions): SnapshotCr
     const target = requireValue(options.target, "--target").toLowerCase();
     if (target === "global") {
       if (hasValue(options.agent)) {
-        throw new Error("--agent can only be combined with --target memory-search.");
+        throw new Error("--agent cannot be combined with --target global.");
       }
       return {
-        path: resolveOpenClawStateSqlitePath(),
+        path: await realpathIfExists(resolveOpenClawStateSqlitePath()),
         id: options.id ?? "global",
         kind: options.kind ?? "global-control-plane",
       };
     }
-    if (target === "memory-search") {
-      const agentId = normalizeAgentId(requireValue(options.agent, "--agent"));
-      const config = resolveMemorySearchConfig(getRuntimeConfig(), agentId);
-      if (config === null) {
-        throw new Error(`Memory search is disabled for agent "${agentId}".`);
-      }
-      return {
-        path: config.store.databasePath,
-        id: options.id ?? `agent:${agentId}:memory-search`,
-        kind: options.kind ?? "agent-memory-search",
-      };
-    }
-    throw new Error(
-      `Unsupported snapshot target "${target}". Supported targets: global, memory-search.`,
-    );
+    throw new Error(`Unsupported snapshot target "${target}". Supported targets: global.`);
   }
   const agentId = normalizeAgentId(requireValue(options.agent, "--agent"));
   return {
-    path: resolveOpenClawAgentSqlitePath({ agentId }),
+    path: await realpathIfExists(resolveOpenClawAgentSqlitePath({ agentId })),
     id: options.id ?? `agent:${agentId}`,
     kind: options.kind ?? "agent-data-plane",
   };
+}
+
+async function realpathIfExists(databasePath: string): Promise<string> {
+  return await fs.realpath(databasePath).catch(() => databasePath);
 }
 
 function writeCreateReport(

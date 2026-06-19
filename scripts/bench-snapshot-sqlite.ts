@@ -1,4 +1,5 @@
 // Snapshot stress benchmark exercises SQLite snapshots during concurrent writes.
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -159,10 +160,16 @@ const WRITER_WORKER_SOURCE = `
     const db = new DatabaseSync(workerData.databasePath);
     let stopped = false;
     let batchesCommitted = 0;
+    let startBatch = 0;
     try {
       db.exec("PRAGMA journal_mode = WAL;");
       db.exec("PRAGMA busy_timeout = 30000;");
       db.exec(STRESS_TABLE_SQL);
+      const nextBatchRow = db
+        .prepare("SELECT COALESCE(MAX(batch), -1) + 1 AS nextBatch FROM snapshot_stress_entries")
+        .get();
+      startBatch = Number(nextBatchRow.nextBatch);
+      batchesCommitted = startBatch;
       const insert = db.prepare(
         "INSERT INTO snapshot_stress_entries (batch, ordinal, payload) VALUES (?, ?, ?)",
       );
@@ -195,9 +202,9 @@ const WRITER_WORKER_SOURCE = `
         }
       }
       parentPort.postMessage({
-        batchesCommitted,
+        batchesCommitted: batchesCommitted - startBatch,
         kind: "result",
-        rowsCommitted: batchesCommitted * workerData.rowsPerBatch,
+        rowsCommitted: (batchesCommitted - startBatch) * workerData.rowsPerBatch,
       });
     } catch (error) {
       parentPort.postMessage({
@@ -549,6 +556,11 @@ async function runStress(options: SnapshotStressOptions): Promise<SnapshotStress
       await import("../src/snapshot/local-repository.js");
     const provider = createLocalSqliteSnapshotProvider({ repositoryPath: repository });
     const metrics: IterationMetric[] = [];
+    const runScratchDir = path.join(stateDir, "snapshot-stress-runs", randomUUID());
+    const syncedDir = path.join(runScratchDir, "synced");
+    const restoredDir = path.join(runScratchDir, "restored");
+    fs.mkdirSync(syncedDir, { recursive: true });
+    fs.mkdirSync(restoredDir, { recursive: true });
 
     const worker = new Worker(WRITER_WORKER_SOURCE, {
       eval: true,
@@ -584,9 +596,9 @@ async function runStress(options: SnapshotStressOptions): Promise<SnapshotStress
             path: target.path,
           });
           const snapshotMs = nowMs() - snapshotStarted;
-          const copiedSnapshotPath = path.join(stateDir, "synced", `snapshot-${iteration}`);
+          const copiedSnapshotPath = path.join(syncedDir, `snapshot-${iteration}`);
           fs.cpSync(snapshot.ref.path, copiedSnapshotPath, { recursive: true });
-          const restorePath = path.join(stateDir, "restored", `restore-${iteration}.sqlite`);
+          const restorePath = path.join(restoredDir, `restore-${iteration}.sqlite`);
           const restoreStarted = nowMs();
           debug(`restore ${iteration} start`);
           await provider.restore({ path: copiedSnapshotPath }, restorePath);

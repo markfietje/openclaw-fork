@@ -317,6 +317,58 @@ describe("snapshot cli", () => {
     }
     expect(runtime.errors).toEqual([]);
   });
+
+  it("snapshots a realpathed explicit database path", async () => {
+    const runtime = createRuntimeCapture();
+    const linkDbPath = path.join(workspaceDir, "link", "source.sqlite");
+    const realDbPath = path.join(workspaceDir, "real", "source.sqlite");
+    const repositoryPath = path.join(workspaceDir, "snapshots");
+    await createSqliteDatabase(realDbPath, "from-real-explicit");
+    await fs.mkdir(path.dirname(linkDbPath), { recursive: true });
+    const realRealpath = fs.realpath.bind(fs);
+    const realpathSpy = vi.spyOn(fs, "realpath").mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(linkDbPath)) {
+        return realDbPath;
+      }
+      return await realRealpath(candidate);
+    });
+
+    try {
+      await expect(
+        snapshotCreateCommand(
+          {
+            db: linkDbPath,
+            id: "explicit-db",
+            kind: "manual",
+            repository: repositoryPath,
+            json: true,
+          },
+          runtime,
+        ),
+      ).resolves.toBe(0);
+    } finally {
+      realpathSpy.mockRestore();
+    }
+
+    const createReport = JSON.parse(runtime.logs.shift() ?? "{}") as {
+      snapshotPath?: string;
+      manifest?: { database?: { id?: string; basename?: string } };
+    };
+    expect(createReport.manifest?.database).toMatchObject({
+      id: "explicit-db",
+      basename: "source.sqlite",
+    });
+    const artifactPath = path.join(createReport.snapshotPath ?? "", "database.sqlite");
+    const artifact = new DatabaseSync(artifactPath, { readOnly: true });
+    try {
+      expect(artifact.prepare("SELECT value FROM entries").all()).toEqual([
+        { value: "from-real-explicit" },
+      ]);
+    } finally {
+      artifact.close();
+    }
+    expect(runtime.errors).toEqual([]);
+  });
 });
 
 async function createSqliteDatabase(dbPath: string, value: string): Promise<void> {

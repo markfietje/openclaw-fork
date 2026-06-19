@@ -150,7 +150,7 @@ async function resolveSnapshotCreateSource(
   }
   if (hasValue(options.db)) {
     return {
-      path: requireValue(options.db, "--db"),
+      path: await realpathIfExists(requireValue(options.db, "--db")),
       ...(options.id ? { id: options.id } : {}),
       ...(options.kind ? { kind: options.kind } : {}),
     };

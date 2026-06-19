@@ -1,6 +1,7 @@
 /**
  * Resolves memory-search source, sync, and ranking configuration.
  */
+import path from "node:path";
 import {
   findNormalizedProviderValue,
   normalizeProviderId,
@@ -22,6 +23,7 @@ import {
 } from "../memory-host-sdk/multimodal.js";
 import { getEmbeddingProvider } from "../plugins/embedding-provider-runtime.js";
 import { getMemoryEmbeddingProvider } from "../plugins/memory-embedding-providers.js";
+import { normalizeAgentId } from "../routing/session-key.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { clampInt, clampNumber } from "../utils.js";
 import { resolveAgentConfig } from "./agent-scope.js";
@@ -307,7 +309,10 @@ function mergeConfig(
   };
   const store = {
     driver: overrides?.store?.driver ?? defaults?.store?.driver ?? "sqlite",
-    databasePath: resolveOpenClawAgentSqlitePath({ agentId, env: process.env }),
+    databasePath: resolveMemorySearchDatabasePath({
+      configuredPath: overrides?.store?.path ?? defaults?.store?.path,
+      agentId,
+    }),
     fts,
     vector,
   };
@@ -437,6 +442,17 @@ function mergeConfig(
           : undefined,
     },
   };
+}
+
+function resolveMemorySearchDatabasePath(params: {
+  configuredPath?: string;
+  agentId: string;
+}): string {
+  const template = params.configuredPath?.trim();
+  if (!template) {
+    return resolveOpenClawAgentSqlitePath({ agentId: params.agentId, env: process.env });
+  }
+  return path.resolve(template.replaceAll("{agentId}", normalizeAgentId(params.agentId)));
 }
 
 function resolveSyncConfig(

@@ -1,4 +1,6 @@
 // Core command handlers for SQLite snapshot artifacts.
+import { resolveMemorySearchConfig } from "../agents/memory-search.js";
+import { getRuntimeConfig } from "../config/config.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { type RuntimeEnv, writeRuntimeJson } from "../runtime.js";
 import { createLocalSqliteSnapshotProvider } from "../snapshot/local-repository.js";
@@ -137,17 +139,12 @@ export async function snapshotListCommand(
 }
 
 function resolveSnapshotCreateSource(options: SnapshotCreateOptions): SnapshotCreateSource {
-  const selectors = [
-    hasValue(options.db),
-    hasValue(options.target),
-    hasValue(options.agent),
-  ].filter(Boolean).length;
-  if (selectors === 0) {
+  if (!hasValue(options.db) && !hasValue(options.target) && !hasValue(options.agent)) {
     throw new Error(
       "Missing snapshot source. Provide one of --db <path>, --target global, or --agent <id>.",
     );
   }
-  if (selectors > 1) {
+  if (hasValue(options.db) && (hasValue(options.target) || hasValue(options.agent))) {
     throw new Error("Choose only one snapshot source: --db, --target, or --agent.");
   }
   if (hasValue(options.db)) {
@@ -159,14 +156,31 @@ function resolveSnapshotCreateSource(options: SnapshotCreateOptions): SnapshotCr
   }
   if (hasValue(options.target)) {
     const target = requireValue(options.target, "--target").toLowerCase();
-    if (target !== "global") {
-      throw new Error(`Unsupported snapshot target "${target}". Supported targets: global.`);
+    if (target === "global") {
+      if (hasValue(options.agent)) {
+        throw new Error("--agent can only be combined with --target memory-search.");
+      }
+      return {
+        path: resolveOpenClawStateSqlitePath(),
+        id: options.id ?? "global",
+        kind: options.kind ?? "global-control-plane",
+      };
     }
-    return {
-      path: resolveOpenClawStateSqlitePath(),
-      id: options.id ?? "global",
-      kind: options.kind ?? "global-control-plane",
-    };
+    if (target === "memory-search") {
+      const agentId = normalizeAgentId(requireValue(options.agent, "--agent"));
+      const config = resolveMemorySearchConfig(getRuntimeConfig(), agentId);
+      if (config === null) {
+        throw new Error(`Memory search is disabled for agent "${agentId}".`);
+      }
+      return {
+        path: config.store.databasePath,
+        id: options.id ?? `agent:${agentId}:memory-search`,
+        kind: options.kind ?? "agent-memory-search",
+      };
+    }
+    throw new Error(
+      `Unsupported snapshot target "${target}". Supported targets: global, memory-search.`,
+    );
   }
   const agentId = normalizeAgentId(requireValue(options.agent, "--agent"));
   return {

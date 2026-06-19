@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/config.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
   snapshotCreateCommand,
@@ -23,6 +24,7 @@ describe("snapshot cli", () => {
   });
 
   afterEach(async () => {
+    clearRuntimeConfigSnapshot();
     if (previousOpenClawStateDir === undefined) {
       delete process.env.OPENCLAW_STATE_DIR;
     } else {
@@ -166,6 +168,54 @@ describe("snapshot cli", () => {
       id: "agent:ops-team",
       kind: "agent-data-plane",
     });
+    expect(runtime.errors).toEqual([]);
+  });
+
+  it("creates a snapshot from configured memory-search SQLite outside OpenClaw state", async () => {
+    const runtime = createRuntimeCapture();
+    const memoryRoot = path.join(workspaceDir, "tmp-memory");
+    const memoryDbTemplate = path.join(memoryRoot, "{agentId}.sqlite");
+    const dbPath = path.join(memoryRoot, "main.sqlite");
+    const repositoryPath = path.join(workspaceDir, "snapshots");
+    setRuntimeConfigSnapshot({
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "none",
+            store: {
+              path: memoryDbTemplate,
+            },
+          },
+        },
+      },
+    });
+    await createSqliteDatabase(dbPath, "from-lobster-memory-search");
+
+    await expect(
+      snapshotCreateCommand(
+        {
+          target: "memory-search",
+          agent: "main",
+          repository: repositoryPath,
+          json: true,
+        },
+        runtime,
+      ),
+    ).resolves.toBe(0);
+
+    const createReport = JSON.parse(runtime.logs.shift() ?? "{}") as {
+      snapshotPath?: string;
+      manifest?: { database?: { id?: string; kind?: string; basename?: string } };
+    };
+    expect(createReport.snapshotPath).toBeTruthy();
+    expect(createReport.manifest?.database).toMatchObject({
+      id: "agent:main:memory-search",
+      kind: "agent-memory-search",
+      basename: "main.sqlite",
+    });
+    await expect(readSortedDir(createReport.snapshotPath ?? "")).resolves.toEqual(
+      SNAPSHOT_ARTIFACT_FILES,
+    );
     expect(runtime.errors).toEqual([]);
   });
 

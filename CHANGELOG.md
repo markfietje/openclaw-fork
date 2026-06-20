@@ -2,6 +2,16 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.6.20-alpha.1
+
+### Changes
+
+- Alpha nightly from current `main`, including unreleased agent, release, plugin, UI, mobile, and channel changes since 2026.6.9.
+
+### Fixes
+
+- Release validation includes refreshed config documentation and plugin SDK metadata for the alpha package, and alpha packaging includes refreshed plugin version and shrinkwrap evidence for 2026.6.20-alpha.1.
+
 ## 2026.6.9
 
 ### Highlights

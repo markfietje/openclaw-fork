@@ -14,7 +14,7 @@ function applyOrigin(existing: SessionEntry | undefined, ctx: Partial<MsgContext
     sessionKey,
     existing,
   });
-  return { ...(existing ?? {}), ...(patch ?? {}) } as SessionEntry;
+  return { ...existing, ...patch } as SessionEntry;
 }
 
 const slackTurn = {

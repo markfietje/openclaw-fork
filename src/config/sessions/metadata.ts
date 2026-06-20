@@ -25,9 +25,9 @@ const mergeOrigin = (
   // that omits them (Telegram DMs carry no nativeChannelId/threadId/accountId) does not keep
   // reactions, native threading, and status reads pointed at the previous channel.
   const channelChanged =
-    !!existing &&
-    ((!!next?.provider && next.provider !== existing.provider) ||
-      (!!next?.surface && next.surface !== existing.surface));
+    existing != null &&
+    ((next?.provider != null && next.provider !== existing.provider) ||
+      (next?.surface != null && next.surface !== existing.surface));
   if (channelChanged) {
     delete merged.nativeChannelId;
     delete merged.nativeDirectUserId;

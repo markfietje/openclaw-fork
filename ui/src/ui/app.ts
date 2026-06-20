@@ -1023,6 +1023,7 @@ export class OpenClawApp extends LitElement {
       hash: "",
     };
     const routeState = appRouter.getState();
+    const previousRouteId = this.routeId;
     const activeMatch = routeState.matches[0];
     const revalidate = routeState.status === "success" && activeMatch?.routeId === next;
     const browserLocation = typeof window === "undefined" ? null : window.location;
@@ -1030,6 +1031,8 @@ export class OpenClawApp extends LitElement {
       (browserLocation?.pathname ?? routeState.resolvedLocation?.pathname) === location.pathname &&
       (browserLocation?.search ?? routeState.resolvedLocation?.search) === location.search &&
       (browserLocation?.hash ?? routeState.resolvedLocation?.hash) === location.hash;
+    this.routeId = next;
+    this.requestUpdate();
     void appRouter
       .navigate(
         next,
@@ -1040,7 +1043,16 @@ export class OpenClawApp extends LitElement {
         },
         location,
       )
-      .catch(() => undefined);
+      .then(
+        () => {
+          this.routeId = next;
+          this.requestUpdate();
+        },
+        () => {
+          this.routeId = previousRouteId;
+          this.requestUpdate();
+        },
+      );
     if (next !== "chat") {
       this.setChatMobileControlsOpen(false);
     }

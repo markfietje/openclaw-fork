@@ -268,7 +268,13 @@ function chatRunWatchdogStatusIsDone(status: string): boolean {
 function chatRunWatchdogResultIsTerminal(
   result: ChatRunWatchdogWaitResult | null | undefined,
 ): boolean {
+  if (!result) {
+    return false;
+  }
   const status = chatRunWatchdogStatus(result);
+  if (!status) {
+    return false;
+  }
   if (status === "pending") {
     return false;
   }

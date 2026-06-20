@@ -2384,6 +2384,45 @@ describe("chat run watchdog", () => {
     }
   });
 
+  it("keeps waiting when the watchdog receives an empty wait result", async () => {
+    vi.useFakeTimers();
+    try {
+      const { resetChatRunWatchdog, scheduleChatRunWatchdog } = await import("../app-chat.ts");
+      const request = vi.fn(async (method: string) => {
+        if (method === "agent.wait") {
+          return {};
+        }
+        throw new Error(`unexpected method: ${method}`);
+      });
+      const host = createWatchdogHost(request);
+
+      scheduleChatRunWatchdog(host as never);
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(host.chatRunId).toBe("run-1");
+      expect(host.chatQueue).toHaveLength(1);
+      expect(request).toHaveBeenCalledWith("agent.wait", {
+        runId: "run-1",
+        timeoutMs: 50,
+      });
+      expect(request).not.toHaveBeenCalledWith(
+        "chat.send",
+        expect.objectContaining({ message: "continue" }),
+      );
+      expect(request).not.toHaveBeenCalledWith(
+        "chat.history",
+        expect.objectContaining({ sessionKey: "main" }),
+      );
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(request).toHaveBeenCalledTimes(2);
+
+      resetChatRunWatchdog(host as never);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps retry-grace timeout snapshots active without flushing queued chat", async () => {
     vi.useFakeTimers();
     try {

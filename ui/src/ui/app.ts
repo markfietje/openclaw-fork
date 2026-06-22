@@ -6,6 +6,10 @@ import { createRouterOutletSnapshot } from "../app/router-outlet.ts";
 import { i18n, I18nController, isSupportedLocale, t } from "../i18n/index.ts";
 import type { ActivityEntry, ActivityStatus } from "../pages/activity/data.ts";
 import {
+  loadToolsEffective as loadToolsEffectiveInternal,
+  refreshVisibleToolsEffectiveForCurrentSession as refreshVisibleToolsEffectiveForCurrentSessionInternal,
+} from "../pages/agents/data.ts";
+import {
   handleAbortChat as handleAbortChatInternal,
   handleChatDraftChange as handleChatDraftChangeInternal,
   handleChatInputHistoryKey as handleChatInputHistoryKeyInternal,
@@ -88,10 +92,6 @@ import {
 import type { ChatRunUiStatus } from "./chat/run-lifecycle.ts";
 import type { ChatMessageCache } from "./chat/session-message-cache.ts";
 import type { ChatSideResult } from "./chat/side-result.ts";
-import {
-  loadToolsEffective as loadToolsEffectiveInternal,
-  refreshVisibleToolsEffectiveForCurrentSession as refreshVisibleToolsEffectiveForCurrentSessionInternal,
-} from "./controllers/agents.ts";
 import { loadAssistantIdentity as loadAssistantIdentityInternal } from "./controllers/assistant-identity.ts";
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type {

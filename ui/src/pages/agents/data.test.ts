@@ -1,7 +1,7 @@
 // Control UI tests cover agents behavior.
 import { describe, expect, it, vi } from "vitest";
-import { loadAgents, loadToolsCatalog, loadToolsEffective, saveAgentsConfig } from "./agents.ts";
-import type { AgentsConfigSaveState, AgentsState } from "./agents.ts";
+import { loadAgents, loadToolsCatalog, loadToolsEffective, saveAgentsConfig } from "./data.ts";
+import type { AgentsConfigSaveState, AgentsState } from "./data.ts";
 
 type TestRequest = (method: string, payload?: unknown) => Promise<unknown>;
 

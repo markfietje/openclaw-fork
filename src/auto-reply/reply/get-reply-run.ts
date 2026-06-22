@@ -1502,6 +1502,9 @@ export async function runPreparedReply(
       skillsSnapshot,
       provider,
       model,
+      ...(opts?.isHeartbeat === true && opts.heartbeatFallbacksOverride !== undefined
+        ? { modelFallbacksOverride: opts.heartbeatFallbacksOverride }
+        : {}),
       hasSessionModelOverride: runHasSessionModelOverride,
       modelOverrideSource: runModelOverrideSource,
       hasAutoFallbackProvenance: runHasAutoFallbackProvenance || undefined,

@@ -20,10 +20,11 @@ Docs: https://docs.openclaw.ai
 
 - **Fast-mode and policy correctness:** fallback cutoffs and reset notices are bounded, repeated progress events remain visible, Codex service-tier state is normalized, and trusted policies are not lost when hook registries are composed. (#85104, #94545) Thanks @alexph-dev, @vincentkoc, and @jesse-merhi.
 - **Model and delivery edge cases:** Zai and GLM failover paths use the right runtime metadata, while stale channel-origin state no longer leaks across session changes. (#94461, #93241, #95328) Thanks @Pandah97, @chrysb, @0xghost42, @zhengli0922, @ZengWen-DT, @jalehman, and @gorkem2020.
+- **Provider plugin onboarding:** setup refreshes provider plugin registry metadata after installing setup-selected provider plugins, so auth continuation uses the newly installed provider instead of stale registry state. (#95792) Thanks @snowzlmbot.
 
 ### Complete contribution record
 
-This audited record covers the complete v2026.6.9..HEAD history: 11 merged PRs. The generation manifest also supplies direct commits as editorial input; the grouped notes above prioritize user impact.
+This audited record covers the complete v2026.6.9..HEAD history: 12 merged PRs. The generation manifest also supplies direct commits as editorial input; the grouped notes above prioritize user impact.
 
 #### Pull requests
 
@@ -38,6 +39,7 @@ This audited record covers the complete v2026.6.9..HEAD history: 11 merged PRs. 
 - **PR #94136** fix(zai): expose GLM-5.2 reasoning levels [AI-assisted]. Thanks @BorClaw.
 - **PR #85104** feat: fast talks auto mode. Related #85087. Thanks @alexph-dev.
 - **PR #94545** fix: keep trusted policies with hook registry. Thanks @jesse-merhi.
+- **PR #95792** fix(onboard): refresh provider plugin registry after setup installs. Related #95765. Thanks @snowzlmbot.
 
 ## 2026.6.9
 

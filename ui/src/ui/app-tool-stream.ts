@@ -5,7 +5,7 @@ import {
   DEFAULT_MAIN_KEY,
   normalizeAgentId,
   parseAgentSessionKey,
-} from "../lib/session-key.ts";
+} from "../lib/sessions/session-key.ts";
 import { normalizeLowercaseStringOrEmpty } from "../lib/string-coerce.ts";
 // Control UI module implements app tool stream behavior.
 import { updateActivityFromToolEvent, type ActivityEntry } from "../pages/activity/data.ts";

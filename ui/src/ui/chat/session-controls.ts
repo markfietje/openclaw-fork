@@ -13,13 +13,6 @@ import {
   formatQuotaReset,
 } from "../../lib/provider-quota-summary.ts";
 import { isCronSessionKey, resolveSessionDisplayName } from "../../lib/session-display.ts";
-import {
-  buildAgentMainSessionKey,
-  isSessionKeyTiedToAgent,
-  isSubagentSessionKey,
-  normalizeAgentId,
-  parseAgentSessionKey,
-} from "../../lib/session-key.ts";
 import { sessionModelMatchesDefaults } from "../../lib/session-model-defaults.ts";
 import {
   getVisibleSessionRows,
@@ -27,6 +20,13 @@ import {
   scopedAgentParamsForSession,
   type SessionCapability,
 } from "../../lib/sessions/index.ts";
+import {
+  buildAgentMainSessionKey,
+  isSessionKeyTiedToAgent,
+  isSubagentSessionKey,
+  normalizeAgentId,
+  parseAgentSessionKey,
+} from "../../lib/sessions/session-key.ts";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,

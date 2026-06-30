@@ -1133,7 +1133,8 @@ describe("diagnostics-otel service", () => {
       await flushDiagnosticEvents();
 
       const line = parseSingleStdoutDiagnosticLogLine(capture.writes);
-      expect(line.body).toBe("log");
+      expect(line.body).toBe("[message redacted]");
+      expect(line.attributes?.["openclaw.log.body_redacted"]).toBe(true);
       expect(logExporterCtor).not.toHaveBeenCalled();
       expect(traceExporterCtor).not.toHaveBeenCalled();
       expect(metricExporterCtor).not.toHaveBeenCalled();
@@ -1683,7 +1684,8 @@ describe("diagnostics-otel service", () => {
         severityText?: string;
       };
       const record = parseSingleStdoutDiagnosticLogLine(stdout.writes);
-      expect(emitCall.body).toBe("log");
+      expect(emitCall.body).toBe("[message redacted]");
+      expect(emitCall.attributes?.["openclaw.log.body_redacted"]).toBe(true);
       expect(record.body).toBe(emitCall.body);
       expect(record.severityText).toBe(emitCall.severityText);
       expect(record.attributes).toEqual(emitCall.attributes);
@@ -1693,13 +1695,21 @@ describe("diagnostics-otel service", () => {
     }
   });
 
-  test("omits log message bodies from OTLP logs unless broad content capture is enabled", async () => {
+  test("marks withheld OTLP log message bodies as redacted unless broad content capture is enabled", async () => {
+    const cappedAttributes = Object.fromEntries(
+      Array.from({ length: 80 }, (_, index) => [`field_${index}`, index]),
+    );
     const emitCall = await emitAndCaptureLog({
       level: "INFO",
       message: "model replied OTEL-QA-OK",
+      attributes: {
+        "log.body_redacted": false,
+        ...cappedAttributes,
+      },
     });
 
-    expect(emitCall?.body).toBe("log");
+    expect(emitCall?.body).toBe("[message redacted]");
+    expect(emitCall?.attributes?.["openclaw.log.body_redacted"]).toBe(true);
   });
 
   test("keeps granular content capture from enabling OTLP log bodies", async () => {
@@ -1711,7 +1721,8 @@ describe("diagnostics-otel service", () => {
       { captureContent: { enabled: true, inputMessages: true } },
     );
 
-    expect(emitCall?.body).toBe("log");
+    expect(emitCall?.body).toBe("[message redacted]");
+    expect(emitCall?.attributes?.["openclaw.log.body_redacted"]).toBe(true);
   });
 
   test("redacts sensitive data from log messages before export when broad content capture is enabled", async () => {
@@ -1719,6 +1730,9 @@ describe("diagnostics-otel service", () => {
       {
         level: "INFO",
         message: "Using API key sk-1234567890abcdef1234567890abcdef",
+        attributes: {
+          "log.body_redacted": true,
+        },
       },
       { captureContent: true },
     );
@@ -1726,6 +1740,7 @@ describe("diagnostics-otel service", () => {
     expect(emitCall?.body).not.toContain("sk-1234567890abcdef1234567890abcdef");
     expect(emitCall?.body).toContain("sk-123");
     expect(emitCall?.body).toContain("…");
+    expect(Object.hasOwn(emitCall?.attributes ?? {}, "openclaw.log.body_redacted")).toBe(false);
   });
 
   test("redacts sensitive data from log attributes before export", async () => {
@@ -1779,7 +1794,8 @@ describe("diagnostics-otel service", () => {
       { trustedTraceContext: true },
     );
 
-    expect(emitCall?.body).toBe("log");
+    expect(emitCall?.body).toBe("[message redacted]");
+    expect(emitCall?.attributes?.["openclaw.log.body_redacted"]).toBe(true);
     expect(telemetryState.tracer.setSpanContext).toHaveBeenCalledTimes(1);
     const emitContext = emitCall?.context as { spanContext?: Record<string, unknown> } | undefined;
     const emitSpanContext = emitContext?.spanContext;

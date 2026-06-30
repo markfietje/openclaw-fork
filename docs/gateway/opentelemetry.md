@@ -139,8 +139,10 @@ response text, tool inputs, tool outputs, skill file paths, or session keys.
 OTLP log records keep severity, logger, code location, trusted trace context,
 and sanitized attributes by default, but the raw log message body is exported
 only when `diagnostics.otel.captureContent` is set to boolean `true`. Granular
-`captureContent.*` subkeys do not enable log bodies. Labels that look like
-scoped agent session keys are replaced with `unknown`.
+`captureContent.*` subkeys do not enable log bodies. When a log body is withheld,
+the exported body is `[message redacted]` and `openclaw.log.body_redacted` is
+`true`. Labels that look like scoped agent session keys are replaced with
+`unknown`.
 Talk metrics export only bounded event metadata such as mode, transport,
 provider, and event type. They do not include transcripts, audio payloads,
 session ids, turn ids, call ids, room ids, or handoff tokens.

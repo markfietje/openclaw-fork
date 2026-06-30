@@ -71,11 +71,13 @@ const SECURITY_TARGET_NAME_VALUE_RE = /^[A-Za-z0-9@/_.:-]{1,256}$/u;
 const MAX_OTEL_CONTENT_ATTRIBUTE_CHARS = 128 * 1024;
 const MAX_OTEL_CONTENT_ARRAY_ITEMS = 200;
 const MAX_OTEL_LOG_BODY_CHARS = 4 * 1024;
+const REDACTED_OTEL_LOG_BODY = "[message redacted]";
 const MAX_OTEL_LOG_ATTRIBUTE_COUNT = 64;
 const MAX_OTEL_LOG_ATTRIBUTE_VALUE_CHARS = 4 * 1024;
 const LOG_RECORD_EXPORT_FAILURE_REPORT_INTERVAL_MS = 60_000;
 const OTEL_LOG_RAW_ATTRIBUTE_KEY_RE = /^[A-Za-z0-9_.:-]{1,64}$/u;
 const OTEL_LOG_ATTRIBUTE_KEY_RE = /^[A-Za-z0-9_.:-]{1,96}$/u;
+const OTEL_LOG_BODY_REDACTED_ATTRIBUTE = "openclaw.log.body_redacted";
 const BLOCKED_OTEL_LOG_ATTRIBUTE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const PRELOADED_OTEL_SDK_ENV = "OPENCLAW_OTEL_PRELOADED";
 const OTEL_EXPORTER_OTLP_ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT";
@@ -1140,7 +1142,11 @@ function assignOtelLogEventAttributes(
     if (!OTEL_LOG_RAW_ATTRIBUTE_KEY_RE.test(key)) {
       continue;
     }
-    assignOtelLogAttribute(attributes, `openclaw.${key}`, eventAttributes[rawKey]);
+    const attributeKey = `openclaw.${key}`;
+    if (attributeKey === OTEL_LOG_BODY_REDACTED_ATTRIBUTE) {
+      continue;
+    }
+    assignOtelLogAttribute(attributes, attributeKey, eventAttributes[rawKey]);
   }
 }
 
@@ -1961,11 +1967,15 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         ): BuiltOtelLogRecord => {
           const logLevelName = evt.level || "INFO";
           const severityNumber = logSeverityMap[logLevelName] ?? (9 as SeverityNumber);
-          const body = shouldCaptureOtelLogBody(contentCapturePolicy)
+          const captureLogBody = shouldCaptureOtelLogBody(contentCapturePolicy);
+          const body = captureLogBody
             ? normalizeOtelLogString(evt.message || "log", MAX_OTEL_LOG_BODY_CHARS)
-            : "log";
+            : REDACTED_OTEL_LOG_BODY;
           const attributes = Object.create(null) as Record<string, string | number | boolean>;
           assignOtelLogAttribute(attributes, "openclaw.log.level", logLevelName);
+          if (!captureLogBody) {
+            attributes[OTEL_LOG_BODY_REDACTED_ATTRIBUTE] = true;
+          }
           if (evt.loggerName) {
             assignOtelLogAttribute(attributes, "openclaw.logger", evt.loggerName);
           }

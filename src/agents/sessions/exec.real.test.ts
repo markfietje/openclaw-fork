@@ -43,7 +43,9 @@ async function waitForGone(pid: number, timeoutMs: number): Promise<boolean> {
     if (!isProcessAlive(pid)) {
       return true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 25);
+    });
   }
   return !isProcessAlive(pid);
 }
@@ -54,7 +56,9 @@ async function waitForFile(path: string, timeoutMs: number): Promise<void> {
     if (existsSync(path)) {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 25);
+    });
   }
   throw new Error(`timed out waiting for ${path}`);
 }

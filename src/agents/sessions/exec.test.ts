@@ -183,7 +183,7 @@ describe("execCommand", () => {
     child.stdout.emit("data", Buffer.from("x".repeat(16 * 1024 * 1024 + 1)));
     wait.resolve(0);
     let resolved = false;
-    resultPromise.then(() => {
+    void resultPromise.then(() => {
       resolved = true;
     });
     await Promise.resolve();

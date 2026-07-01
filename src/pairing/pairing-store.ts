@@ -364,9 +364,10 @@ async function readAllowFromState(params: {
     cacheNamespace: PAIRING_ALLOW_FROM_CACHE_NAMESPACE,
     filePath: params.filePath,
     normalizeStore: (store) => normalizeAllowFromList(store, pairingAdapter),
-    // Mutation pre-reads must prove the locked store is still readable; otherwise
-    // a warm cache could let an unreadable allowFrom file be atomically replaced.
+    // Mutation pre-reads must prove the locked store is readable and normalizable;
+    // otherwise forgiving enforcement reads could let it be atomically replaced.
     cachePolicy: "refresh",
+    normalizationFailure: "throw",
   });
   const normalized = normalizeAllowFromInput(params.entry, pairingAdapter);
   return { current: entries, normalized: normalized || null };

@@ -661,6 +661,28 @@ describe("pairing store", () => {
     });
   });
 
+  it("refuses to clobber the allowFrom store when mutation normalization fails", async () => {
+    await withTempStateDir(async (stateDir, env) => {
+      const allowFromPath = resolveAllowFromFilePath(stateDir, "telegram", "yy");
+      fsSync.mkdirSync(path.dirname(allowFromPath), { recursive: true });
+      fsSync.writeFileSync(allowFromPath, '{"version":1,"allowFrom":["1001",42]}\n', "utf8");
+      clearPairingAllowFromReadCacheForTest();
+      expect(await readChannelAllowFromStore("telegram", env, "yy")).toEqual([]);
+      const originalBytes = fsSync.readFileSync(allowFromPath, "utf8");
+
+      await expect(
+        addChannelAllowFromStoreEntry({
+          channel: "telegram",
+          accountId: "yy",
+          entry: "1003",
+          env,
+        }),
+      ).rejects.toThrow();
+
+      expect(fsSync.readFileSync(allowFromPath, "utf8")).toBe(originalBytes);
+    });
+  });
+
   it("reads allowFrom variants with account-scoped isolation", async () => {
     await withTempStateDir(async (stateDir, env) => {
       for (const { setup, accountId, expected, expectedLegacy } of [

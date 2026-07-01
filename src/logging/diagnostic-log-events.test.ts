@@ -65,6 +65,10 @@ describe("diagnostic log events", () => {
     expect(event.type).toBe("log.record");
     expect(event.level).toBe("INFO");
     expect(event.message).toBe("hello diagnostic logs");
+    expect(event.event).toBe("diagnostic.log");
+    expect(event.category).toBe("diagnostic");
+    expect(event.outcome).toBe("unknown");
+    expect(event.reason).toBe("none");
     expect(event.attributes).toStrictEqual({
       subsystem: "diagnostic",
       runId: "run-1",
@@ -141,6 +145,38 @@ describe("diagnostic log events", () => {
     expect(Object.hasOwn(event.attributes ?? {}, "nested")).toBe(false);
     expect(Object.hasOwn(event.attributes ?? {}, "bad key")).toBe(false);
     expect(Object.hasOwn(event, "argsJson")).toBe(false);
+  });
+
+  it("keeps diagnostic log semantics separate from generic attributes", async () => {
+    const received: Array<Extract<DiagnosticEventPayload, { type: "log.record" }>> = [];
+    const unsubscribe = onInternalDiagnosticEvent((evt) => {
+      if (evt.type === "log.record") {
+        received.push(evt);
+      }
+    });
+
+    const logger = getChildLogger({ subsystem: "gateway/auth" });
+    logger.warn(
+      {
+        logEvent: "auth.refresh",
+        logCategory: "gateway.auth",
+        logOutcome: "failure",
+        logReason: "token_expired",
+        "log.event": "spoofed",
+      },
+      "auth refresh failed",
+    );
+    await flushDiagnosticEvents();
+    unsubscribe();
+
+    expect(received).toHaveLength(1);
+    const [event] = received;
+    expect(event.event).toBe("auth.refresh");
+    expect(event.category).toBe("gateway.auth");
+    expect(event.outcome).toBe("failure");
+    expect(event.reason).toBe("token_expired");
+    expect(Object.hasOwn(event.attributes ?? {}, "logEvent")).toBe(false);
+    expect(Object.hasOwn(event.attributes ?? {}, "log.event")).toBe(false);
   });
 
   it("drops sensitive, blocked, and excess log attribute keys without copying large objects", async () => {

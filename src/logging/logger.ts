@@ -83,6 +83,20 @@ const MAX_DIAGNOSTIC_LOG_NAME_CHARS = 120;
 const MAX_FILE_LOG_MESSAGE_CHARS = 4 * 1024;
 const MAX_FILE_LOG_CONTEXT_VALUE_CHARS = 512;
 const DIAGNOSTIC_LOG_ATTRIBUTE_KEY_RE = /^[A-Za-z0-9_.:-]{1,64}$/u;
+const DIAGNOSTIC_LOG_SEMANTIC_VALUE_RE = /^[A-Za-z0-9_.:-]{1,120}$/u;
+const DIAGNOSTIC_LOG_SEMANTIC_SOURCE_KEYS = new Set([
+  "eventName",
+  "logEvent",
+  "logCategory",
+  "logOutcome",
+  "logReason",
+  "otel.event.name",
+  "signal.type",
+  "log.event",
+  "log.category",
+  "log.outcome",
+  "log.reason",
+]);
 const defaultHostnameResolver: HostnameResolver = () => os.hostname();
 let hostnameResolver: HostnameResolver = defaultHostnameResolver;
 let cachedHostname: string | null = null;
@@ -106,6 +120,22 @@ function normalizeDiagnosticLogName(value: string | undefined): string | undefin
   }
   const sanitized = sanitizeDiagnosticLogText(value.trim(), MAX_DIAGNOSTIC_LOG_NAME_CHARS);
   return DIAGNOSTIC_LOG_ATTRIBUTE_KEY_RE.test(sanitized) ? sanitized : undefined;
+}
+
+function normalizeDiagnosticLogSemanticValue(value: unknown, fallback: string): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = sanitizeDiagnosticLogText(value.trim(), MAX_DIAGNOSTIC_LOG_NAME_CHARS)
+    .replace(/[/:]+/gu, ".")
+    .replace(/\s+/gu, "-")
+    .replace(/\.+/gu, ".")
+    .replace(/^\.|\.$/gu, "");
+  return DIAGNOSTIC_LOG_SEMANTIC_VALUE_RE.test(normalized) ? normalized : fallback;
+}
+
+function diagnosticLogEventFromCategory(category: string): string {
+  return category === "unknown" ? "log.record" : `${category}.log`;
 }
 
 function assignDiagnosticLogAttribute(
@@ -159,6 +189,9 @@ function addDiagnosticLogAttributesFrom(
       break;
     }
     if (!Object.hasOwn(source, key) || key === "trace") {
+      continue;
+    }
+    if (DIAGNOSTIC_LOG_SEMANTIC_SOURCE_KEYS.has(key.trim())) {
       continue;
     }
     assignDiagnosticLogAttribute(attributes, state, key, source[key]);
@@ -454,12 +487,46 @@ function buildDiagnosticLogRecord(logObj: TsLogRecord) {
   const loggerParents = meta?.parentNames
     ?.map(normalizeDiagnosticLogName)
     .filter((name): name is string => Boolean(name));
+  const semanticSources = [structuredBindings, bindings] as const;
+  const firstSemanticSourceValue = (keys: readonly string[]) => {
+    for (const source of semanticSources) {
+      if (!source) {
+        continue;
+      }
+      for (const key of keys) {
+        if (Object.hasOwn(source, key)) {
+          return source[key];
+        }
+      }
+    }
+    return undefined;
+  };
+  const category = normalizeDiagnosticLogSemanticValue(
+    firstSemanticSourceValue(["logCategory"]) ?? bindings?.subsystem,
+    "unknown",
+  );
+  const event = normalizeDiagnosticLogSemanticValue(
+    firstSemanticSourceValue(["logEvent"]),
+    diagnosticLogEventFromCategory(category),
+  );
+  const outcome = normalizeDiagnosticLogSemanticValue(
+    firstSemanticSourceValue(["logOutcome"]),
+    "unknown",
+  );
+  const reason = normalizeDiagnosticLogSemanticValue(
+    firstSemanticSourceValue(["logReason"]),
+    "none",
+  );
 
   return {
     event: {
       type: "log.record" as const,
       level: meta?.logLevelName ?? "INFO",
       message,
+      event,
+      category,
+      outcome,
+      reason,
       ...(loggerName ? { loggerName } : {}),
       ...(loggerParents?.length ? { loggerParents } : {}),
       ...(Object.keys(attributes).length > 0 ? { attributes } : {}),

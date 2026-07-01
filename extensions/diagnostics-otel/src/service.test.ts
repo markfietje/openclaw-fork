@@ -382,6 +382,7 @@ type StdoutDiagnosticLogLine = {
   "service.name"?: string;
   severityText?: string;
   severityNumber?: number;
+  eventName?: string;
   body?: unknown;
   attributes?: Record<string, unknown>;
   trace_id?: string;
@@ -437,6 +438,7 @@ async function emitAndCaptureLog(
     attributes?: Record<string, unknown>;
     body?: string;
     context?: unknown;
+    eventName?: string;
   };
   await service.stop?.(ctx);
   return emitCall;
@@ -1050,13 +1052,17 @@ describe("diagnostics-otel service", () => {
       attributes?: Record<string, unknown>;
       body?: string;
       context?: unknown;
+      eventName?: string;
       severityNumber?: number;
       severityText?: string;
     };
     expect(emitCall.body).toBe("openclaw.security.event");
+    expect(emitCall.eventName).toBe("openclaw.security.tool.execution.blocked");
     expect(emitCall.severityText).toBe("WARN");
     expect(emitCall.severityNumber).toBe(13);
     expect(emitCall.attributes).toMatchObject({
+      "otel.event.name": "openclaw.security.tool.execution.blocked",
+      "openclaw.signal.type": "security.event",
       "openclaw.security.event_id": "security-event-1",
       "openclaw.security.category": "tool",
       "openclaw.security.action": "tool.execution.blocked",
@@ -1178,9 +1184,12 @@ describe("diagnostics-otel service", () => {
       expect(logEmit).not.toHaveBeenCalled();
       const record = parseSingleStdoutDiagnosticLogLine(stdout.writes);
       expect(record.body).toBe("openclaw.security.event");
+      expect(record.eventName).toBe("openclaw.security.tool.execution.blocked");
       expect(record.severityText).toBe("WARN");
       expect(record.severityNumber).toBe(13);
       expect(record.attributes).toMatchObject({
+        "otel.event.name": "openclaw.security.tool.execution.blocked",
+        "openclaw.signal.type": "security.event",
         "openclaw.security.event_id": "security-event-stdout",
         "openclaw.security.category": "tool",
         "openclaw.security.action": "tool.execution.blocked",
@@ -1614,9 +1623,16 @@ describe("diagnostics-otel service", () => {
       expect(record["service.name"]).toBe("rovoclaw-openclaw");
       expect(record.severityText).toBe("WARN");
       expect(record.severityNumber).toBe(13);
+      expect(record.eventName).toBe("openclaw.log.record");
       expect(String(record.body)).not.toContain("sk-1234567890abcdef1234567890abcdef");
       expect(String(record.body)).toContain("sk-123");
       expect(record.attributes).toMatchObject({
+        "otel.event.name": "openclaw.log.record",
+        "openclaw.log.event": "log.record",
+        "openclaw.log.category": "unknown",
+        "openclaw.log.outcome": "unknown",
+        "openclaw.log.reason": "none",
+        "openclaw.signal.type": "log.record",
         "openclaw.log.level": "WARN",
         "openclaw.subsystem": "diagnostic",
       });
@@ -1702,14 +1718,41 @@ describe("diagnostics-otel service", () => {
     const emitCall = await emitAndCaptureLog({
       level: "INFO",
       message: "model replied OTEL-QA-OK",
+      event: "diagnostic.export",
+      category: "diagnostic",
+      outcome: "success",
+      reason: "configured",
       attributes: {
+        "otel.event.name": "openclaw.spoofed",
+        "signal.type": "security.event",
+        "log.event": "spoofed.event",
+        "log.category": "spoofed",
+        "log.outcome": "failure",
+        "log.reason": "spoofed",
         "log.body_redacted": false,
         ...cappedAttributes,
       },
     });
 
+    expect(emitCall?.eventName).toBe("openclaw.diagnostic.export");
     expect(emitCall?.body).toBe("[message redacted]");
+    expect(emitCall?.attributes).toMatchObject({
+      "otel.event.name": "openclaw.diagnostic.export",
+      "openclaw.log.event": "diagnostic.export",
+      "openclaw.log.category": "diagnostic",
+      "openclaw.log.outcome": "success",
+      "openclaw.log.reason": "configured",
+      "openclaw.signal.type": "log.record",
+    });
     expect(emitCall?.attributes?.["openclaw.log.body_redacted"]).toBe(true);
+    expect(Object.hasOwn(emitCall?.attributes ?? {}, "openclaw.signal.type")).toBe(true);
+    expect(Object.hasOwn(emitCall?.attributes ?? {}, "openclaw.log.event")).toBe(true);
+    expect(Object.hasOwn(emitCall?.attributes ?? {}, "openclaw.log.category")).toBe(true);
+    expect(Object.hasOwn(emitCall?.attributes ?? {}, "openclaw.log.outcome")).toBe(true);
+    expect(Object.hasOwn(emitCall?.attributes ?? {}, "openclaw.log.reason")).toBe(true);
+    expect(Object.hasOwn(emitCall?.attributes ?? {}, "openclaw.otel.event.name")).toBe(false);
+    expect(emitCall?.attributes?.["openclaw.signal.type"]).not.toBe("security.event");
+    expect(emitCall?.attributes?.["openclaw.log.event"]).not.toBe("spoofed.event");
   });
 
   test("keeps granular content capture from enabling OTLP log bodies", async () => {

@@ -698,6 +698,10 @@ export type DiagnosticLogRecordEvent = DiagnosticBaseEvent & {
   type: "log.record";
   level: string;
   message: string;
+  event?: string;
+  category?: string;
+  outcome?: string;
+  reason?: string;
   loggerName?: string;
   loggerParents?: string[];
   attributes?: Record<string, string | number | boolean>;

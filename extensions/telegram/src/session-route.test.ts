@@ -1,8 +1,155 @@
 // Telegram tests cover session route plugin behavior.
-import { describe, expect, it } from "vitest";
+import {
+  registerSessionBindingAdapter,
+  testing as conversationBindingTesting,
+  type SessionBindingAdapter,
+} from "openclaw/plugin-sdk/conversation-runtime";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { telegramPlugin } from "./channel.js";
 
 describe("telegram session route", () => {
+  beforeEach(() => {
+    conversationBindingTesting.resetSessionBindingAdaptersForTests();
+  });
+
+  afterEach(() => {
+    conversationBindingTesting.resetSessionBindingAdaptersForTests();
+  });
+
+  it("re-resolves topic service identities from current channel config", async () => {
+    const resolve = async (agentId: string) =>
+      await telegramPlugin.messaging?.resolveCurrentConversationRoute?.({
+        cfg: {
+          agents: {
+            list: [{ id: "main", default: true }, { id: "service" }, { id: "replacement" }],
+          },
+          channels: {
+            telegram: {
+              groups: {
+                "-100": { topics: { "9": { agentId } } },
+              },
+            },
+          },
+        },
+        accountId: "default",
+        target: "-100",
+        chatType: "group",
+        threadId: 9,
+        senderId: "12345",
+      });
+
+    expect(await resolve("service")).toMatchObject({
+      agentId: "service",
+      accountId: "default",
+      channel: "telegram",
+      sessionKey: "agent:service:telegram:group:-100:topic:9",
+      matchedBy: "config.agent",
+    });
+    expect(await resolve("replacement")).toMatchObject({
+      agentId: "replacement",
+      sessionKey: "agent:replacement:telegram:group:-100:topic:9",
+      matchedBy: "config.agent",
+    });
+  });
+
+  it("re-resolves parent and runtime topic bindings without touching leases", async () => {
+    const parentRoute = await telegramPlugin.messaging?.resolveCurrentConversationRoute?.({
+      cfg: {
+        agents: { list: [{ id: "main", default: true }, { id: "service" }] },
+        bindings: [
+          {
+            agentId: "service",
+            match: {
+              channel: "telegram",
+              accountId: "default",
+              peer: { kind: "group", id: "-100" },
+            },
+          },
+        ],
+      },
+      accountId: "default",
+      target: "-100",
+      chatType: "group",
+      threadId: 9,
+    });
+    expect(parentRoute).toMatchObject({
+      agentId: "service",
+      sessionKey: "agent:service:telegram:group:-100:topic:9",
+      matchedBy: "binding.peer.parent",
+    });
+
+    const touch = vi.fn<NonNullable<SessionBindingAdapter["touch"]>>();
+    registerSessionBindingAdapter({
+      channel: "telegram",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation: () => ({
+        bindingId: "binding-1",
+        targetSessionKey: "agent:service:telegram:group:-100:topic:9",
+        targetKind: "session",
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "-100:topic:9",
+        },
+        status: "active",
+        boundAt: 1,
+      }),
+      touch,
+    });
+    const runtimeRoute = await telegramPlugin.messaging?.resolveCurrentConversationRoute?.({
+      cfg: { agents: { list: [{ id: "main", default: true }, { id: "service" }] } },
+      accountId: "default",
+      target: "-100",
+      chatType: "group",
+      threadId: 9,
+    });
+    expect(runtimeRoute).toMatchObject({
+      agentId: "service",
+      sessionKey: "agent:service:telegram:group:-100:topic:9",
+      matchedBy: "binding.channel",
+    });
+    expect(touch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for plugin-owned runtime topic targets", async () => {
+    const touch = vi.fn<NonNullable<SessionBindingAdapter["touch"]>>();
+    registerSessionBindingAdapter({
+      channel: "telegram",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation: () => ({
+        bindingId: "binding-plugin",
+        targetSessionKey: "plugin-binding:service:abc123",
+        targetKind: "session",
+        conversation: {
+          channel: "telegram",
+          accountId: "default",
+          conversationId: "-100:topic:9",
+        },
+        status: "active",
+        boundAt: 1,
+        metadata: {
+          pluginBindingOwner: "plugin",
+          pluginId: "service",
+          pluginRoot: "/tmp/service",
+        },
+      }),
+      touch,
+    });
+
+    expect(
+      telegramPlugin.messaging?.resolveCurrentConversationRoute?.({
+        cfg: {},
+        accountId: "default",
+        target: "-100",
+        chatType: "group",
+        threadId: 9,
+      }),
+    ).toBeNull();
+    expect(touch).not.toHaveBeenCalled();
+  });
+
   it("scopes direct topic session suffixes by chat id", async () => {
     const route = await telegramPlugin.messaging?.resolveOutboundSessionRoute?.({
       cfg: {},

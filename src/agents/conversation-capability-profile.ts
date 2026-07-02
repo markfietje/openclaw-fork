@@ -38,6 +38,8 @@ import { resolveWorkspaceRoot } from "./workspace-dir.js";
 
 export type ConversationCapabilityProfileParams = {
   config?: OpenClawConfig;
+  /** Canonical admission decision already resolved by the owning ingress. */
+  conversationIdentity?: ConversationIdentityDecision;
   sessionKey?: string;
   /** Live conversation key when a sandbox/policy key is used for tool filtering. */
   runSessionKey?: string;
@@ -51,6 +53,8 @@ export type ConversationCapabilityProfileParams = {
   agentAccountId?: string | null;
   messageProvider?: string | null;
   messageChannel?: string | null;
+  /** Admitted source provider for group and sender policy when delivery uses another channel. */
+  policyMessageProvider?: string | null;
   chatType?: string;
   messageTo?: string | null;
   messageThreadId?: string | number | null;
@@ -182,9 +186,10 @@ export function resolveConversationCapabilityProfile(
   params: ConversationCapabilityProfileParams,
 ): ResolvedConversationCapabilityProfile {
   const messageProvider = params.messageProvider;
-  // Provider sub-surfaces can narrow tools, but channel-level group/sender policy
-  // continues to use the canonical transport identity.
-  const accessPolicyMessageProvider = params.messageChannel ?? messageProvider;
+  // Provider sub-surfaces can narrow tools, but group/sender policy follows the
+  // admitted source even when replies are delivered through another channel.
+  const accessPolicyMessageProvider =
+    params.policyMessageProvider ?? params.messageChannel ?? messageProvider;
   const effective = resolveEffectiveToolPolicy({
     config: params.config,
     sessionKey: params.sessionKey,
@@ -257,17 +262,19 @@ export function resolveConversationCapabilityProfile(
     inheritedToolPolicy,
     params.runtimeToolAllowlist ? { allow: params.runtimeToolAllowlist } : undefined,
   ];
-  const identity = resolveConversationIdentityMode({
-    config: params.config,
-    agentId: effective.agentId,
-    routeMatchedBy: params.routeMatchedBy,
-    chatType: params.chatType,
-    groupId: params.groupId,
-    groupChannel: params.groupChannel,
-    groupSpace: params.groupSpace,
-    senderIsOwner: params.senderIsOwner,
-    isInternal: params.isInternal,
-  });
+  const identity =
+    params.conversationIdentity ??
+    resolveConversationIdentityMode({
+      config: params.config,
+      agentId: effective.agentId,
+      routeMatchedBy: params.routeMatchedBy,
+      chatType: params.chatType,
+      groupId: params.groupId,
+      groupChannel: params.groupChannel,
+      groupSpace: params.groupSpace,
+      senderIsOwner: params.senderIsOwner,
+      isInternal: params.isInternal,
+    });
 
   return {
     agentId: effective.agentId,

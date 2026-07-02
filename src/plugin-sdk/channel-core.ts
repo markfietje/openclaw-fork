@@ -8,6 +8,7 @@ export type {
   OpenClawPluginApi,
   PluginCommandContext,
   PluginRuntime,
+  ChannelCurrentConversationRouteParams,
   ChannelOutboundSessionRouteParams,
 } from "./core.js";
 

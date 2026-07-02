@@ -16,6 +16,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { MessagePresentation } from "../../interactive/payload.js";
 import type { OutboundMediaAccess } from "../../media/load-options.js";
 import type { PollInput } from "../../polls.js";
+import type { AgentRouteMatch } from "../../routing/resolve-route.js";
 import type { ChatType } from "../chat-type.js";
 import type { InboundEventKind } from "../inbound-event/kind.js";
 import type { ChannelId } from "./channel-id.types.js";
@@ -396,6 +397,16 @@ export type ChannelOutboundSessionRoute = {
   threadId?: string | number;
 };
 
+export type ChannelCurrentConversationRoute = {
+  agentId: string;
+  accountId: string;
+  channel: string;
+  sessionKey: string;
+  matchedBy: AgentRouteMatch;
+  /** Channel-owned current owner proof, including persisted pairing approval. */
+  senderIsOwner?: boolean;
+};
+
 export type ChannelThreadingAdapter = {
   matchesToolContextTarget?: (params: {
     target: string;
@@ -651,6 +662,21 @@ export type ChannelMessagingAdapter = {
     replyToId?: string | null;
     threadId?: string | number | null;
   }) => ChannelOutboundSessionRoute | Promise<ChannelOutboundSessionRoute | null> | null;
+  /**
+   * Side-effect-free current route resolution for persisted channel sessions.
+   * Callers use this to revalidate plugin-owned topic and binding rules before
+   * allowing a stored session to start new work.
+   */
+  resolveCurrentConversationRoute?: (params: {
+    cfg: OpenClawConfig;
+    accountId?: string | null;
+    target: string;
+    /** Native conversation id when the delivery target addresses a member instead. */
+    conversationId?: string | null;
+    chatType: ChatType;
+    threadId?: string | number | null;
+    senderId?: string | null;
+  }) => ChannelCurrentConversationRoute | Promise<ChannelCurrentConversationRoute | null> | null;
 };
 
 export type ChannelAgentPromptAdapter = {

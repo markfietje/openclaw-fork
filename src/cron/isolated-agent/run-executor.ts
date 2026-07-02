@@ -23,6 +23,7 @@ import {
   resolveCronChannelOutputPolicy,
   resolveCurrentChannelTarget,
 } from "./channel-output-policy.js";
+import type { CronConversationIdentityContext } from "./conversation-identity.js";
 import { resolveCronPayloadOutcome } from "./helpers.js";
 import {
   ensureSelectedAgentHarnessPlugin,
@@ -208,6 +209,7 @@ export function createCronPromptExecutor(params: {
   agentDir: string;
   agentSessionKey: string;
   runSessionKey: string;
+  conversationIdentity: CronConversationIdentityContext;
   workspaceDir: string;
   lane?: string;
   resolvedVerboseLevel: VerboseLevel;
@@ -385,6 +387,12 @@ export function createCronPromptExecutor(params: {
             cliSessionBinding: guardedCliSessionBinding,
             skillsSnapshot: params.skillsSnapshot,
             messageChannel,
+            messageProvider: params.conversationIdentity.messageProvider ?? messageChannel,
+            policyMessageProvider: params.conversationIdentity.messageProvider,
+            agentAccountId:
+              params.conversationIdentity.agentAccountId ?? params.resolvedDelivery.accountId,
+            senderId: params.conversationIdentity.senderId,
+            senderIsOwner: params.conversationIdentity.senderIsOwner,
             sourceReplyDeliveryMode,
             requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
             toolsAllow: resolveCliRuntimeToolsAllow(
@@ -432,12 +440,23 @@ export function createCronPromptExecutor(params: {
           agentId: params.agentId,
           trigger: "cron",
           jobId: params.job.id,
+          conversationIdentity: params.conversationIdentity.decision,
           cleanupBundleMcpOnRunEnd: params.job.sessionTarget === "isolated",
           allowGatewaySubagentBinding: true,
           messageChannel,
-          agentAccountId: params.resolvedDelivery.accountId,
+          messageProvider: params.conversationIdentity.messageProvider ?? messageChannel,
+          policyMessageProvider: params.conversationIdentity.messageProvider,
+          chatType: params.conversationIdentity.chatType,
+          routeMatchedBy: params.conversationIdentity.routeMatchedBy,
+          agentAccountId:
+            params.conversationIdentity.agentAccountId ?? params.resolvedDelivery.accountId,
           messageTo: params.resolvedDelivery.to,
           messageThreadId: params.resolvedDelivery.threadId,
+          groupId: params.conversationIdentity.groupId,
+          groupChannel: params.conversationIdentity.groupChannel,
+          groupSpace: params.conversationIdentity.groupSpace,
+          senderId: params.conversationIdentity.senderId,
+          senderIsOwner: params.conversationIdentity.senderIsOwner,
           currentChannelId,
           sessionFile,
           agentDir: params.agentDir,
@@ -538,6 +557,7 @@ export async function executeCronRun(params: {
   agentDir: string;
   agentSessionKey: string;
   runSessionKey: string;
+  conversationIdentity: CronConversationIdentityContext;
   workspaceDir: string;
   lane?: string;
   resolvedDelivery: {
@@ -602,6 +622,7 @@ export async function executeCronRun(params: {
     agentDir: params.agentDir,
     agentSessionKey: params.agentSessionKey,
     runSessionKey: params.runSessionKey,
+    conversationIdentity: params.conversationIdentity,
     workspaceDir: params.workspaceDir,
     lane: params.lane,
     resolvedVerboseLevel,

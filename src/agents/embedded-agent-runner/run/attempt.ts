@@ -1248,6 +1248,7 @@ export async function runEmbeddedAttempt(
           });
     const runtimeCapabilityProfile = resolveConversationCapabilityProfile({
       config: toolSearchRuntimeConfig,
+      conversationIdentity: params.conversationIdentity,
       sessionKey: sandboxSessionKey,
       runSessionKey:
         params.sessionKey && params.sessionKey !== sandboxSessionKey
@@ -1260,6 +1261,7 @@ export async function runEmbeddedAttempt(
       agentAccountId: params.agentAccountId,
       messageProvider: resolveAttemptToolPolicyMessageProvider(params),
       messageChannel: params.messageChannel,
+      policyMessageProvider: params.policyMessageProvider,
       chatType: params.chatType,
       messageTo: params.messageTo,
       messageThreadId: params.messageThreadId,
@@ -1837,6 +1839,7 @@ export async function runEmbeddedAttempt(
       senderE164: params.senderE164,
       sandboxToolPolicy: sandbox?.tools,
       toolsAllow: params.toolsAllow,
+      conversationCapabilityProfile: runtimeCapabilityProfile,
     });
     const toolSearchRunPlan = buildToolSearchRunPlan({
       visibleTools: effectiveTools,

@@ -562,6 +562,7 @@ type AfterTurnRuntimeContextAttempt = Pick<
   | "sandboxSessionKey"
   | "messageChannel"
   | "messageProvider"
+  | "policyMessageProvider"
   | "agentAccountId"
   | "currentChannelId"
   | "currentThreadTs"
@@ -599,6 +600,7 @@ export function buildAfterTurnRuntimeContext(params: {
       sessionKey: params.attempt.sessionKey,
       messageChannel: params.attempt.messageChannel,
       messageProvider: params.attempt.messageProvider,
+      policyMessageProvider: params.attempt.policyMessageProvider,
       agentAccountId: params.attempt.agentAccountId,
       currentChannelId: params.attempt.currentChannelId,
       currentThreadTs: params.attempt.currentThreadTs,

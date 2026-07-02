@@ -104,7 +104,7 @@ import {
 import { createLoopRateLimiter } from "./loop-rate-limiter.js";
 import { stageIMessageAttachments } from "./media-staging.js";
 import { parseIMessageNotification } from "./parse-notification.js";
-import { createPollCommentFolder } from "./poll-comment.js";
+import { applyAdmittedIMessagePollComment, createPollCommentFolder } from "./poll-comment.js";
 import { renderIMessagePollBody } from "./poll-render.js";
 import { enqueueIMessageReactionSystemEvent } from "./reaction-system-event.js";
 import { advanceIMessageRecoveryCursor, loadIMessageRecoveryCursor } from "./recovery-cursor.js";
@@ -892,25 +892,6 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       return;
     }
 
-    // Remember native polls so a caption reply that lands WITH the poll is
-    // recognized and folded. The poll balloon (rendered with options + a vote
-    // cue) is still delivered; only the near-simultaneous comment is dropped so
-    // the agent votes without also answering it as a standalone question. A
-    // deliberate later inline reply to the poll falls outside the window and is
-    // delivered normally.
-    const pollFoldAtMs = message.created_at ? Date.parse(message.created_at) : Number.NaN;
-    if (message.poll) {
-      pollCommentFolder.rememberPoll(message.guid, pollFoldAtMs, message.sender);
-    } else if (
-      message.reply_to_guid != null &&
-      pollCommentFolder.isPollComment(message.reply_to_guid, pollFoldAtMs, message.sender)
-    ) {
-      logVerbose(
-        "imessage: folding poll comment (inline reply sent with a poll) into the poll; not delivering standalone",
-      );
-      return;
-    }
-
     const {
       messageText,
       bodyText,
@@ -968,6 +949,22 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     const senderForKey = (message.sender ?? "").trim();
     const conversationKey = chatId != null ? `group:${chatId}` : `dm:${senderForKey}`;
     const rateLimitKey = `${accountInfo.accountId}:${conversationKey}`;
+
+    // Poll folding is conversation state. Apply it only after identity and
+    // sender policy admit the event, or a denied poll could consume a later
+    // allowed participant's caption.
+    if (
+      applyAdmittedIMessagePollComment({
+        folder: pollCommentFolder,
+        decisionKind: decision.kind,
+        message,
+      })
+    ) {
+      logVerbose(
+        "imessage: folding poll comment (inline reply sent with a poll) into the poll; not delivering standalone",
+      );
+      return;
+    }
 
     if (decision.kind === "drop") {
       // Record echo/reflection drops so the rate limiter can detect sustained loops.

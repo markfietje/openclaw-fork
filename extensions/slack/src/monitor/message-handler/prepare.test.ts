@@ -2620,6 +2620,7 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
       });
       const slackCtx = createThreadSlackCtx({
         cfg: {
+          agents: { list: [{ id: "personal", default: true }, { id: "review" }] },
           channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
         } as OpenClawConfig,
         replies,

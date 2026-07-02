@@ -18,6 +18,7 @@ describe("buildEmbeddedCompactionRuntimeContext", () => {
       sessionKey: "agent:main:thread:1",
       messageChannel: "slack",
       messageProvider: "slack",
+      policyMessageProvider: "matrix",
       chatType: "channel",
       agentAccountId: "acct-1",
       currentChannelId: "C123",
@@ -40,6 +41,7 @@ describe("buildEmbeddedCompactionRuntimeContext", () => {
     expect(result.sessionKey).toBe("agent:main:thread:1");
     expect(result.messageChannel).toBe("slack");
     expect(result.messageProvider).toBe("slack");
+    expect(result.policyMessageProvider).toBe("matrix");
     expect(result.chatType).toBe("channel");
     expect(result.agentAccountId).toBe("acct-1");
     expect(result.currentChannelId).toBe("C123");
@@ -60,6 +62,7 @@ describe("buildEmbeddedCompactionRuntimeContext", () => {
       sessionKey: null,
       messageChannel: null,
       messageProvider: null,
+      policyMessageProvider: null,
       chatType: null,
       agentAccountId: null,
       currentChannelId: null,
@@ -75,6 +78,7 @@ describe("buildEmbeddedCompactionRuntimeContext", () => {
     expect(result.sessionKey).toBeUndefined();
     expect(result.messageChannel).toBeUndefined();
     expect(result.messageProvider).toBeUndefined();
+    expect(result.policyMessageProvider).toBeUndefined();
     expect(result.chatType).toBeUndefined();
     expect(result.agentAccountId).toBeUndefined();
     expect(result.currentChannelId).toBeUndefined();

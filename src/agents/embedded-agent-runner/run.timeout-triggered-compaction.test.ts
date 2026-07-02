@@ -238,8 +238,9 @@ describe("timeout-triggered compaction", () => {
 
     await runEmbeddedAgent({
       ...overflowBaseRunParams,
-      messageChannel: "slack",
+      messageChannel: "telegram",
       messageProvider: "slack",
+      policyMessageProvider: "slack",
       agentAccountId: "acct-1",
       currentChannelId: "channel-1",
       currentThreadTs: "thread-1",
@@ -249,8 +250,9 @@ describe("timeout-triggered compaction", () => {
 
     expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
     const compactParams = compactCallAt(0);
-    expect(compactParams.runtimeContext?.messageChannel).toBe("slack");
+    expect(compactParams.runtimeContext?.messageChannel).toBe("telegram");
     expect(compactParams.runtimeContext?.messageProvider).toBe("slack");
+    expect(compactParams.runtimeContext?.policyMessageProvider).toBe("slack");
     expect(compactParams.runtimeContext?.agentAccountId).toBe("acct-1");
     expect(compactParams.runtimeContext?.currentChannelId).toBe("channel-1");
     expect(compactParams.runtimeContext?.currentThreadTs).toBe("thread-1");

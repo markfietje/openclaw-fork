@@ -658,6 +658,7 @@ function buildCompactionContextEngineRuntimeContext(params: {
       sessionKey: params.params.sessionKey,
       messageChannel: params.params.messageChannel,
       messageProvider: params.params.messageProvider,
+      policyMessageProvider: params.params.policyMessageProvider,
       agentAccountId: params.params.agentAccountId,
       currentChannelId: params.params.currentChannelId,
       currentThreadTs: params.params.currentThreadTs,

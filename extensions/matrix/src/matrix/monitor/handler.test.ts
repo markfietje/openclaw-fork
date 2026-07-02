@@ -2639,13 +2639,27 @@ describe("matrix monitor handler live allowlist reload", () => {
   });
 });
 
+function createAdmittedMatrixDedupeHarness(
+  options: Parameters<typeof createMatrixHandlerTestHarness>[0] = {},
+) {
+  return createMatrixHandlerTestHarness({
+    cfg: {
+      agents: {
+        list: [{ id: "main", default: true }, { id: "ops" }],
+      },
+      channels: { matrix: { dm: { allowFrom: ["*"] } } },
+    },
+    ...options,
+  });
+}
+
 describe("matrix monitor handler durable inbound dedupe", () => {
   it("does not treat wildcard command ownership as personal DM identity", async () => {
     const dispatchReplyFromConfig = vi.fn(async () => ({
       queuedFinal: true,
       counts: { final: 1, block: 0, tool: 0 },
     }));
-    const { handler, recordInboundSession } = createMatrixHandlerTestHarness({
+    const { handler, recordInboundSession } = createAdmittedMatrixDedupeHarness({
       cfg: {
         agents: { list: [{ id: "personal", default: true }] },
         commands: { ownerAllowFrom: ["*"] },
@@ -2676,13 +2690,13 @@ describe("matrix monitor handler durable inbound dedupe", () => {
     expect(dispatchReplyFromConfig).not.toHaveBeenCalled();
   });
 
-  it("releases an identity-denied shared event instead of committing dedupe state", async () => {
+  it("leaves dedupe untouched for an identity-denied shared event", async () => {
     const inboundDeduper = {
       claimEvent: vi.fn(() => true),
       commitEvent: vi.fn(async () => undefined),
       releaseEvent: vi.fn(),
     };
-    const { handler, recordInboundSession } = createMatrixHandlerTestHarness({
+    const { handler, recordInboundSession } = createAdmittedMatrixDedupeHarness({
       cfg: { agents: { list: [{ id: "personal", default: true }] } },
       inboundDeduper,
       isDirectMessage: false,
@@ -2705,11 +2719,114 @@ describe("matrix monitor handler durable inbound dedupe", () => {
     );
 
     expect(recordInboundSession).not.toHaveBeenCalled();
+    expect(inboundDeduper.claimEvent).not.toHaveBeenCalled();
     expect(inboundDeduper.commitEvent).not.toHaveBeenCalled();
-    expect(inboundDeduper.releaseEvent).toHaveBeenCalledWith({
-      roomId: "!room:example.org",
-      eventId: "$identity-denied-release",
+    expect(inboundDeduper.releaseEvent).not.toHaveBeenCalled();
+  });
+
+  it("admits the same shared event after a service binding is added", async () => {
+    const inboundDeduper = {
+      claimEvent: vi.fn(() => true),
+      commitEvent: vi.fn(async () => undefined),
+      releaseEvent: vi.fn(),
+    };
+    const resolveAgentRoute = vi
+      .fn()
+      .mockReturnValueOnce({
+        agentId: "personal",
+        channel: "matrix",
+        accountId: "ops",
+        sessionKey: "agent:personal:matrix:channel:!room:example.org",
+        mainSessionKey: "agent:personal:main",
+        matchedBy: "default",
+      })
+      .mockReturnValue({
+        agentId: "service",
+        channel: "matrix",
+        accountId: "ops",
+        sessionKey: "agent:service:matrix:channel:!room:example.org",
+        mainSessionKey: "agent:service:main",
+        matchedBy: "binding.account",
+      });
+    const dispatchReplyFromConfig = vi.fn(async () => ({
+      queuedFinal: true,
+      counts: { final: 1, block: 0, tool: 0 },
+    }));
+    const { handler, recordInboundSession } = createAdmittedMatrixDedupeHarness({
+      cfg: {
+        agents: {
+          list: [{ id: "personal", default: true }, { id: "service" }],
+        },
+      },
+      inboundDeduper,
+      isDirectMessage: false,
+      roomsConfig: { "!room:example.org": { requireMention: false } },
+      resolveAgentRoute,
+      dispatchReplyFromConfig,
     });
+    const event = createMatrixTextMessageEvent({
+      eventId: "$identity-rebound",
+      body: "hello",
+    });
+
+    await handler("!room:example.org", event);
+    expect(inboundDeduper.claimEvent).not.toHaveBeenCalled();
+    expect(recordInboundSession).not.toHaveBeenCalled();
+
+    await handler("!room:example.org", event);
+
+    expect(inboundDeduper.claimEvent).toHaveBeenCalledTimes(1);
+    expect(recordInboundSession).toHaveBeenCalledTimes(1);
+    expect(dispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+    expect(inboundDeduper.commitEvent).toHaveBeenCalledWith({
+      roomId: "!room:example.org",
+      eventId: "$identity-rebound",
+    });
+    expect(inboundDeduper.releaseEvent).not.toHaveBeenCalled();
+  });
+
+  it("leaves dedupe untouched when sender policy denies an admitted service route", async () => {
+    const inboundDeduper = {
+      claimEvent: vi.fn(() => true),
+      commitEvent: vi.fn(async () => undefined),
+      releaseEvent: vi.fn(),
+    };
+    const { handler, recordInboundSession } = createAdmittedMatrixDedupeHarness({
+      cfg: {
+        agents: {
+          list: [{ id: "personal", default: true }, { id: "service" }],
+        },
+        channels: { matrix: { groupAllowFrom: ["@owner:example.org"] } },
+      },
+      inboundDeduper,
+      isDirectMessage: false,
+      groupPolicy: "allowlist",
+      groupAllowFrom: ["@owner:example.org"],
+      groupAllowFromResolvedEntries: [{ input: "@owner:example.org", id: "@owner:example.org" }],
+      roomsConfig: { "*": { requireMention: false } },
+      resolveAgentRoute: () => ({
+        agentId: "service",
+        channel: "matrix",
+        accountId: "ops",
+        sessionKey: "agent:service:matrix:channel:!room:example.org",
+        mainSessionKey: "agent:service:main",
+        matchedBy: "binding.account",
+      }),
+    });
+
+    await handler(
+      "!room:example.org",
+      createMatrixTextMessageEvent({
+        eventId: "$sender-denied",
+        sender: "@guest:example.org",
+        body: "hello",
+      }),
+    );
+
+    expect(inboundDeduper.claimEvent).not.toHaveBeenCalled();
+    expect(inboundDeduper.commitEvent).not.toHaveBeenCalled();
+    expect(inboundDeduper.releaseEvent).not.toHaveBeenCalled();
+    expect(recordInboundSession).not.toHaveBeenCalled();
   });
 
   it("skips replayed inbound events before session recording", async () => {
@@ -2718,7 +2835,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
       commitEvent: vi.fn(async () => undefined),
       releaseEvent: vi.fn(),
     };
-    const { handler, recordInboundSession } = createMatrixHandlerTestHarness({
+    const { handler, recordInboundSession } = createAdmittedMatrixDedupeHarness({
       inboundDeduper,
       dispatchReplyFromConfig: vi.fn(async () => ({
         queuedFinal: true,
@@ -2767,7 +2884,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
         counts: { final: 1, block: 0, tool: 0 },
       };
     });
-    const { handler } = createMatrixHandlerTestHarness({
+    const { handler } = createAdmittedMatrixDedupeHarness({
       inboundDeduper,
       recordInboundSession,
       dispatchReplyFromConfig,
@@ -2825,7 +2942,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
         routeSessionKey: turn.routeSessionKey,
       }),
     );
-    const { handler, recordInboundSession } = createMatrixHandlerTestHarness({
+    const { handler, recordInboundSession } = createAdmittedMatrixDedupeHarness({
       accountAllowBots: true,
       configuredBotUserIds: new Set(["@ops:example.org"]),
       inboundDeduper,
@@ -2862,7 +2979,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
     const runtime = {
       error: vi.fn(),
     };
-    const { handler } = createMatrixHandlerTestHarness({
+    const { handler } = createAdmittedMatrixDedupeHarness({
       inboundDeduper,
       runtime: runtime as never,
       recordInboundSession: vi.fn(async () => {
@@ -2899,7 +3016,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
     const runtime = {
       error: vi.fn(),
     };
-    const { handler } = createMatrixHandlerTestHarness({
+    const { handler } = createAdmittedMatrixDedupeHarness({
       inboundDeduper,
       runtime: runtime as never,
       dispatchReplyFromConfig: vi.fn(async () => ({
@@ -2946,7 +3063,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
       const runtime = {
         error: vi.fn(),
       };
-      const { handler } = createMatrixHandlerTestHarness({
+      const { handler } = createAdmittedMatrixDedupeHarness({
         inboundDeduper,
         runtime: runtime as never,
         dispatchReplyFromConfig: vi.fn(async () => ({
@@ -2996,7 +3113,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
     const runtime = {
       error: vi.fn(),
     };
-    const { handler } = createMatrixHandlerTestHarness({
+    const { handler } = createAdmittedMatrixDedupeHarness({
       inboundDeduper,
       runtime: runtime as never,
       dispatchReplyFromConfig: vi.fn(async () => ({
@@ -3039,7 +3156,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
         commitEvent: vi.fn(async () => undefined),
         releaseEvent: vi.fn(),
       };
-      const { handler } = createMatrixHandlerTestHarness({
+      const { handler } = createAdmittedMatrixDedupeHarness({
         inboundDeduper,
         dispatchReplyFromConfig: vi.fn(async () => ({
           queuedFinal: false,
@@ -3092,7 +3209,7 @@ describe("matrix monitor handler durable inbound dedupe", () => {
         callOrder.push("release");
       }),
     };
-    const { handler } = createMatrixHandlerTestHarness({
+    const { handler } = createAdmittedMatrixDedupeHarness({
       inboundDeduper,
       recordInboundSession: vi.fn(async () => {
         callOrder.push("record");

@@ -98,6 +98,8 @@ This fires ~5–6 times per month instead of 0–1 times per month. OpenClaw use
   <Accordion title="Main session vs isolated vs custom">
     **Main session** jobs enqueue a system event into a cron-owned run lane and optionally wake the heartbeat (`--wake now` or `--wake next-heartbeat`). They can use the target main session's last delivery context for replies, but they do not append routine cron turns to the human chat lane and do not extend daily/idle reset freshness for the target session. **Isolated** jobs run a dedicated agent turn with a fresh session. **Custom sessions** (`session:xxx`) persist context across runs, enabling workflows like daily standups that build on previous summaries.
 
+    Before each persistent scheduled turn, OpenClaw revalidates the target agent and any channel-backed session against the current binding, audience, and stable sender-owner policy. If the agent was removed, the route was rebound, or a personal direct sender is no longer an owner, the turn is skipped before workspace, session, or model state changes. Opaque custom sessions and isolated jobs still require a currently configured target agent.
+
     Main-session cron events are self-contained system-event reminders. They do
     not automatically include the default heartbeat prompt's "Read
     HEARTBEAT.md" instruction. If a recurring reminder should consult

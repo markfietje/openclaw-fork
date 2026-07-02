@@ -84,6 +84,8 @@ export const callGatewayMock = createMock();
 export const ensureRuntimePluginsLoadedMock = createMock();
 export const listWebSearchProvidersMock = createMock();
 export const resolveWebSearchProviderIdMock = createMock();
+export const resolveCronConversationIdentityContextMock = createMock();
+export const loadSessionStoreMock = createMock();
 
 const resolveBootstrapWarningSignaturesSeenMock = createMock();
 const resolveCronStyleNowMock = createMock();
@@ -91,7 +93,7 @@ export const resolveCronAgentLaneMock = createMock();
 const resolveAgentTimeoutMsMock = createMock();
 export const deriveSessionTotalTokensMock = createMock();
 const hasNonzeroUsageMock = createMock();
-const ensureAgentWorkspaceMock = createMock();
+export const ensureAgentWorkspaceMock = createMock();
 const normalizeThinkLevelMock = createMock();
 const normalizeVerboseLevelMock = createMock();
 export const isThinkingLevelSupportedMock = createMock();
@@ -155,6 +157,14 @@ vi.mock("./run-external-content.runtime.js", () => ({
 
 vi.mock("./run-context.runtime.js", () => ({
   lookupContextTokens: lookupContextTokensMock,
+}));
+
+vi.mock("../../config/sessions/store-load.js", () => ({
+  loadSessionStore: loadSessionStoreMock,
+}));
+
+vi.mock("./conversation-identity.js", () => ({
+  resolveCronConversationIdentityContext: resolveCronConversationIdentityContextMock,
 }));
 
 vi.mock("./run-model-catalog.runtime.js", () => ({
@@ -690,6 +700,12 @@ export function resetRunCronIsolatedAgentTurnHarness(): void {
   listWebSearchProvidersMock.mockReturnValue([{ id: "duckduckgo" }]);
   resolveWebSearchProviderIdMock.mockReset();
   resolveWebSearchProviderIdMock.mockReturnValue("duckduckgo");
+  loadSessionStoreMock.mockReset();
+  loadSessionStoreMock.mockReturnValue({});
+  resolveCronConversationIdentityContextMock.mockReset();
+  resolveCronConversationIdentityContextMock.mockReturnValue({
+    decision: { mode: "personal", allowed: true, reason: "internal" },
+  });
 }
 
 export function clearFastTestEnv(): string | undefined {

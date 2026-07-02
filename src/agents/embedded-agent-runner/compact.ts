@@ -801,6 +801,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
 
     const sessionLabel = params.sessionKey ?? params.sessionId;
     const resolvedMessageProvider = params.messageChannel ?? params.messageProvider;
+    const policyMessageProvider = params.policyMessageProvider ?? resolvedMessageProvider;
     const contextInjectionMode = resolveContextInjectionMode(params.config, effectiveSkillAgentId);
     const { contextFiles } =
       contextInjectionMode === "never"
@@ -887,6 +888,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
       agentDir,
       agentAccountId: params.agentAccountId,
       messageProvider: resolvedMessageProvider,
+      policyMessageProvider,
       chatType: params.chatType,
       groupId: params.groupId,
       groupChannel: params.groupChannel,
@@ -1368,7 +1370,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
             runtimePlan,
             sessionKey: sandboxSessionKey,
             sandboxToolPolicy: sandbox?.tools,
-            messageProvider: resolvedMessageProvider,
+            messageProvider: policyMessageProvider,
             agentAccountId: params.agentAccountId,
             groupId: params.groupId,
             groupChannel: params.groupChannel,

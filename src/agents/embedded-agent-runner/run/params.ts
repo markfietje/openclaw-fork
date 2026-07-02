@@ -16,6 +16,7 @@ import type { ImageContent } from "../../../llm/types.js";
 import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js";
 import type { PluginHookChannelContext } from "../../../plugins/hook-types.js";
 import type { CommandQueueEnqueueFn } from "../../../process/command-queue.types.js";
+import type { ConversationIdentityDecision } from "../../../routing/conversation-identity.js";
 import type { AgentRouteMatch } from "../../../routing/resolve-route.js";
 import type { InputProvenance } from "../../../sessions/input-provenance.js";
 import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
@@ -66,9 +67,13 @@ export type RunEmbeddedAgentParams = {
   /** Session-like key for sandbox and tool-policy resolution. Defaults to sessionKey. */
   sandboxSessionKey?: string;
   agentId?: string;
+  /** Canonical admission decision carried from the owning ingress. */
+  conversationIdentity?: ConversationIdentityDecision;
   routeMatchedBy?: AgentRouteMatch;
   messageChannel?: string;
   messageProvider?: string;
+  /** Admitted source provider used for group and sender tool policy. */
+  policyMessageProvider?: string;
   chatType?: ChatType;
   agentAccountId?: string;
   /** What initiated this agent run: "user", "heartbeat", "cron", "memory", "overflow", or "manual". */

@@ -3,12 +3,14 @@ import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 import {
   buildChannelOutboundSessionRoute,
   buildThreadAwareOutboundSessionRoute,
+  type ChannelCurrentConversationRouteParams,
   type ChannelOutboundSessionRouteParams,
 } from "openclaw/plugin-sdk/channel-core";
-import { parseThreadSessionSuffix } from "openclaw/plugin-sdk/routing";
+import { parseThreadSessionSuffix, resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { resolveMatrixAccountConfig } from "./matrix/account-config.js";
 import { resolveDefaultMatrixAccountId } from "./matrix/accounts.js";
+import { resolveMatrixInboundRoute } from "./matrix/monitor/route.js";
 import { resolveMatrixStoredSessionMeta } from "./matrix/session-store-metadata.js";
 import { resolveMatrixTargetIdentity } from "./matrix/target-ids.js";
 
@@ -119,4 +121,30 @@ export function resolveMatrixOutboundSessionRoute(params: ChannelOutboundSession
     canRecoverCurrentThread: ({ route }) =>
       route.peer.kind !== "direct" || (params.cfg.session?.dmScope ?? "main") !== "main",
   });
+}
+
+export function resolveMatrixCurrentConversationRoute(
+  params: ChannelCurrentConversationRouteParams,
+) {
+  const target = resolveMatrixTargetIdentity(params.conversationId ?? params.target);
+  if (!target || target.kind !== "room") {
+    return null;
+  }
+  const isDirectMessage = params.chatType === "direct";
+  const sender = isDirectMessage ? resolveMatrixTargetIdentity(params.senderId ?? "") : undefined;
+  if (isDirectMessage && sender?.kind !== "user") {
+    return null;
+  }
+  const accountId = resolveEffectiveMatrixAccountId(params);
+  const { route } = resolveMatrixInboundRoute({
+    cfg: params.cfg,
+    accountId,
+    roomId: target.id,
+    senderId: sender?.id ?? params.senderId ?? "",
+    isDirectMessage,
+    dmSessionScope: resolveMatrixDmSessionScope({ cfg: params.cfg, accountId }),
+    threadId: params.threadId == null ? undefined : String(params.threadId),
+    resolveAgentRoute,
+  });
+  return route;
 }

@@ -90,3 +90,25 @@ export function createPollCommentFolder(options?: { windowMs?: number }) {
 }
 
 export type PollCommentFolder = ReturnType<typeof createPollCommentFolder>;
+
+export function applyAdmittedIMessagePollComment(params: {
+  folder: PollCommentFolder;
+  decisionKind: "drop" | "pairing" | "reaction" | "dispatch";
+  message: {
+    guid?: string | null;
+    created_at?: string | null;
+    sender?: string | null;
+    reply_to_guid?: string | null;
+    poll?: unknown;
+  };
+}): boolean {
+  if (params.decisionKind !== "dispatch") {
+    return false;
+  }
+  const atMs = params.message.created_at ? Date.parse(params.message.created_at) : Number.NaN;
+  if (params.message.poll) {
+    params.folder.rememberPoll(params.message.guid, atMs, params.message.sender);
+    return false;
+  }
+  return params.folder.isPollComment(params.message.reply_to_guid, atMs, params.message.sender);
+}

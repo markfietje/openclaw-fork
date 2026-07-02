@@ -2840,6 +2840,8 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         config: createCliBackendConfig(),
         currentInboundEventKind: "room_event",
         messageChannel: "telegram",
+        messageProvider: "slack",
+        policyMessageProvider: "slack",
         currentChannelId: "telegram:-100123:topic:42",
         currentThreadTs: "42",
         currentMessageId: "reply-message-1",
@@ -2863,6 +2865,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       expect(context.mcpDeliveryCapture).toBe(true);
       expect(resolveMcpLoopbackScopedTools).toHaveBeenCalledWith(
         expect.objectContaining({
+          messageProvider: "slack",
           requireExplicitMessageTarget: true,
         }),
       );

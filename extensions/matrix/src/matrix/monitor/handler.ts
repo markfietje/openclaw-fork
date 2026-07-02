@@ -643,6 +643,16 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         await inboundDeduper.commitEvent({ roomId, eventId });
         claimedInboundEvent = false;
       };
+      const claimInboundEventAfterAdmission = () => {
+        if (claimedInboundEvent || !inboundDeduper || !eventId) {
+          return true;
+        }
+        claimedInboundEvent = inboundDeduper.claimEvent({ roomId, eventId });
+        if (!claimedInboundEvent) {
+          logVerboseMessage(`matrix: skip duplicate inbound event room=${roomId} id=${eventId}`);
+        }
+        return claimedInboundEvent;
+      };
       const readIngressPrefix = async () => {
         const selfUserId = await client.getUserId();
         if (senderId === selfUserId) {
@@ -686,14 +696,6 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         if (hasBundledMatrixReplacementRelation(event)) {
           return undefined;
         }
-        if (eventId && inboundDeduper) {
-          claimedInboundEvent = inboundDeduper.claimEvent({ roomId, eventId });
-          if (!claimedInboundEvent) {
-            logVerboseMessage(`matrix: skip duplicate inbound event room=${roomId} id=${eventId}`);
-            return undefined;
-          }
-        }
-
         const isDirectMessage = await directTracker.isDirectMessage({
           roomId,
           senderId,
@@ -782,12 +784,11 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
           logVerboseMessage(
             `matrix: drop identity-unadmitted sender=${senderId} room=${roomId} reason=${identityDecision.reason}`,
           );
-          // Identity denial is not a processed event: discard speculative history
-          // and let the outer finally release the claim for a later bound replay.
+          // Identity denial is not a processed event. Leave dedupe untouched so
+          // the same event can be replayed after an explicit binding is added.
           discardReservedHistorySlot();
           return undefined;
         }
-
         const roomInfoForConfig =
           isRoom && needsRoomAliasesForConfig
             ? await getRoomInfo(roomId, { includeAliases: true })
@@ -912,6 +913,10 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
           const senderReason = messageIngress.senderAccess.reasonCode;
           if (ingressDecision.decision !== "allow") {
             if (ingressDecision.admission === "pairing-required") {
+              if (!claimInboundEventAfterAdmission()) {
+                discardReservedHistorySlot();
+                return undefined;
+              }
               const senderName = await getSenderName();
               const { code, created } = await core.channel.pairing.upsertPairingRequest({
                 channel: "matrix",
@@ -971,6 +976,10 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
             `matrix: blocked sender ${senderId} (ingress=${ingressDecision.reasonCode}, ${roomMatchMeta})`,
           );
           await commitInboundEventIfClaimedAndDiscardReserved();
+          return undefined;
+        }
+        if (!claimInboundEventAfterAdmission()) {
+          discardReservedHistorySlot();
           return undefined;
         }
         if (isRoom) {

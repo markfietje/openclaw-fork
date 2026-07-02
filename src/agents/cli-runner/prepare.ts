@@ -415,6 +415,7 @@ export async function prepareCliRunContext(
     : params.sourceReplyDeliveryMode;
   const hasBindingMessageToolPolicy =
     bindingSourceReplyDeliveryMode !== undefined ||
+    params.policyMessageProvider !== undefined ||
     (hasCliSessionBindingFacts
       ? bindingFacts.requireExplicitMessageTarget !== undefined ||
         bindingRequireExplicitMessageTarget
@@ -424,6 +425,7 @@ export async function prepareCliRunContext(
         JSON.stringify({
           sourceReplyDeliveryMode: bindingSourceReplyDeliveryMode,
           requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
+          policyMessageProvider: params.policyMessageProvider,
         }),
       )
     : undefined;
@@ -650,7 +652,8 @@ export async function prepareCliRunContext(
         ? prepareDeps.resolveMcpLoopbackScopedTools({
             cfg: params.config ?? getRuntimeConfig(),
             sessionKey: params.sessionKey ?? "",
-            messageProvider: params.messageChannel ?? params.messageProvider,
+            messageProvider:
+              params.policyMessageProvider ?? params.messageChannel ?? params.messageProvider,
             currentChannelId: params.currentChannelId,
             // CLI binding hashes must use session-stable prompt facts. Per-sender
             // and per-message scope stays in the runtime MCP env/list-call path.

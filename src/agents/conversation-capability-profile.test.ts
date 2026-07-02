@@ -109,6 +109,32 @@ describe("resolveConversationCapabilityProfile", () => {
     },
   );
 
+  it("keeps admitted source policy when delivery uses another channel", () => {
+    const profile = resolveConversationCapabilityProfile({
+      config: {
+        agents: identityConfig.agents,
+        tools: {
+          toolsBySender: {
+            "channel:slack:member-1": { deny: ["exec"] },
+            "channel:telegram:member-1": { deny: ["web_search"] },
+          },
+        },
+      },
+      sessionKey: "agent:team-ops:slack:channel:C123",
+      agentId: "team-ops",
+      routeMatchedBy: "binding.peer",
+      messageProvider: "slack",
+      messageChannel: "telegram",
+      policyMessageProvider: "slack",
+      chatType: "channel",
+      senderId: "member-1",
+    });
+
+    expect(profile.policy.senderPolicy).toEqual({ deny: ["exec"] });
+    expect(profile.policy.explicitToolDenylist).toContain("exec");
+    expect(profile.policy.explicitToolDenylist).not.toContain("web_search");
+  });
+
   it.each([
     {
       name: "an unbound shared audience",
@@ -252,6 +278,23 @@ describe("resolveConversationCapabilityProfile", () => {
         chatType: "channel",
       }),
     ).toEqual({ mode: "personal", allowed: true, reason: "internal" });
+  });
+
+  it("carries the owning ingress decision without reclassifying a scheduled turn", () => {
+    const decision = {
+      mode: "organization",
+      allowed: true,
+      reason: "bound_service_agent",
+    } as const;
+    const profile = resolveConversationCapabilityProfile({
+      config: identityConfig,
+      conversationIdentity: decision,
+      agentId: "team-ops",
+      isInternal: true,
+      workspaceDir: "/tmp/openclaw-scheduled-profile",
+    });
+
+    expect(profile.conversation.identity).toBe(decision);
   });
 
   it("rejects trusted internal turns targeting a removed agent", () => {

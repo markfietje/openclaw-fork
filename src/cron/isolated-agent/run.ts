@@ -15,6 +15,8 @@ import {
   selectApplicableRuntimeConfig,
 } from "../../config/config.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
+import { resolveStorePath } from "../../config/sessions/paths.js";
+import { loadSessionStore } from "../../config/sessions/store-load.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -67,6 +69,10 @@ import type {
   CronRunTelemetry,
 } from "../types.js";
 import { resolveCronChannelOutputPolicy } from "./channel-output-policy.js";
+import {
+  resolveCronConversationIdentityContext,
+  type CronConversationIdentityContext,
+} from "./conversation-identity.js";
 import {
   isHeartbeatOnlyResponse,
   resolveCronPayloadOutcome,
@@ -519,6 +525,7 @@ type WithRunSession = (
 type PreparedCronRunContext = {
   input: RunCronAgentTurnParams;
   cfgWithAgentDefaults: OpenClawConfig;
+  conversationIdentity: CronConversationIdentityContext;
   agentId: string;
   agentCfg: AgentDefaultsConfig;
   agentDir: string;
@@ -603,6 +610,35 @@ async function prepareCronRunContext(params: {
     ...runtimeCfg,
     agents: Object.assign({}, runtimeCfg.agents, { defaults: agentCfg }),
   };
+  const baseSessionKey = (input.sessionKey?.trim() || `cron:${input.job.id}`).trim();
+  const agentSessionKey = resolveCronAgentSessionKey({
+    sessionKey: baseSessionKey,
+    agentId,
+    mainKey: input.cfg.session?.mainKey,
+    cfg: input.cfg,
+  });
+  const identityStorePath = resolveStorePath(runtimeCfg.session?.store, { agentId });
+  const conversationIdentity = await resolveCronConversationIdentityContext({
+    cfg: runtimeCfg,
+    agentId,
+    sessionKey: agentSessionKey,
+    sessionTarget: input.job.sessionTarget,
+    sessionEntry: loadSessionStore(identityStorePath)[agentSessionKey],
+  });
+  if (!conversationIdentity.decision.allowed) {
+    const error = `cron conversation identity denied: ${conversationIdentity.decision.reason}`;
+    return {
+      ok: false,
+      result: {
+        status: "skipped",
+        error,
+        sessionKey: agentSessionKey,
+        diagnostics: createCronRunDiagnosticsFromError("cron-preflight", error, {
+          severity: "warn",
+        }),
+      },
+    };
+  }
   let catalog: Awaited<ReturnType<CronModelCatalogRuntime["loadModelCatalog"]>> | undefined;
   const loadCatalog = async () => {
     if (!catalog) {
@@ -615,13 +651,6 @@ async function prepareCronRunContext(params: {
     return catalog;
   };
 
-  const baseSessionKey = (input.sessionKey?.trim() || `cron:${input.job.id}`).trim();
-  const agentSessionKey = resolveCronAgentSessionKey({
-    sessionKey: baseSessionKey,
-    agentId,
-    mainKey: input.cfg.session?.mainKey,
-    cfg: input.cfg,
-  });
   const payloadHookExternalContentSource =
     input.job.payload.kind === "agentTurn" ? input.job.payload.externalContentSource : undefined;
   const hookExternalContentSource =
@@ -967,6 +996,7 @@ async function prepareCronRunContext(params: {
     context: {
       input,
       cfgWithAgentDefaults,
+      conversationIdentity,
       agentId,
       agentCfg,
       agentDir,
@@ -1530,6 +1560,7 @@ export async function runCronIsolatedAgentTurn(params: {
         accountId: prepared.context.resolvedDelivery.accountId,
         threadId: prepared.context.resolvedDelivery.threadId,
       },
+      conversationIdentity: prepared.context.conversationIdentity,
       resolvedDeliveryOk: prepared.context.resolvedDelivery.ok,
       deliveryRequested: prepared.context.deliveryRequested,
       sourceDelivery: prepared.context.sourceDelivery,

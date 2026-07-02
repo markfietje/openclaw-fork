@@ -114,6 +114,8 @@ export type RunCliAgentParams = {
   skillsSnapshot?: SkillSnapshot;
   messageChannel?: string;
   messageProvider?: string;
+  /** Admitted source provider used for loopback tool policy. */
+  policyMessageProvider?: string;
   currentChannelId?: string;
   chatId?: string;
   channelContext?: PluginHookChannelContext;

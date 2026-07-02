@@ -4,7 +4,7 @@
 // message the agent answers in prose. A deliberate later reply, or a different
 // sender's reply, must NOT be folded.
 import { describe, expect, it } from "vitest";
-import { createPollCommentFolder } from "./poll-comment.js";
+import { applyAdmittedIMessagePollComment, createPollCommentFolder } from "./poll-comment.js";
 
 const POLL_GUID = "75A8F623-947D-4611-A23D-4DDD6D17BC0F";
 const T0 = 1_000_000; // arbitrary base timestamp (ms)
@@ -72,5 +72,34 @@ describe("createPollCommentFolder", () => {
     expect(folder.isPollComment(POLL_GUID, T0, "+15551110000")).toBe(false);
     folder.rememberPoll(POLL_GUID, T0, "+15551110000");
     expect(folder.isPollComment(POLL_GUID, T0, "+15551110000")).toBe(true);
+  });
+
+  it("does not let a denied poll poison a later admitted comment", () => {
+    const folder = createPollCommentFolder();
+    const createdAt = new Date(T0).toISOString();
+
+    expect(
+      applyAdmittedIMessagePollComment({
+        folder,
+        decisionKind: "drop",
+        message: {
+          guid: POLL_GUID,
+          created_at: createdAt,
+          sender: "+15551110000",
+          poll: {},
+        },
+      }),
+    ).toBe(false);
+    expect(
+      applyAdmittedIMessagePollComment({
+        folder,
+        decisionKind: "dispatch",
+        message: {
+          created_at: createdAt,
+          sender: "+15551110000",
+          reply_to_guid: POLL_GUID,
+        },
+      }),
+    ).toBe(false);
   });
 });

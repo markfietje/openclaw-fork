@@ -71,7 +71,10 @@ import {
 } from "./matrix/thread-bindings-shared.js";
 import { matrixResolverAdapter } from "./resolver.js";
 import { collectRuntimeConfigAssignments, secretTargetRegistryEntries } from "./secret-contract.js";
-import { resolveMatrixOutboundSessionRoute } from "./session-route.js";
+import {
+  resolveMatrixCurrentConversationRoute,
+  resolveMatrixOutboundSessionRoute,
+} from "./session-route.js";
 import {
   namedAccountPromotionKeys,
   resolveSingleAccountPromotionTarget,
@@ -477,6 +480,7 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
         resolveDeliveryTarget: ({ conversationId, parentConversationId }) =>
           resolveMatrixDeliveryTarget({ conversationId, parentConversationId }),
         resolveOutboundSessionRoute: (params) => resolveMatrixOutboundSessionRoute(params),
+        resolveCurrentConversationRoute: (params) => resolveMatrixCurrentConversationRoute(params),
         targetResolver: {
           looksLikeId: (raw) => {
             const trimmed = raw.trim();

@@ -1,6 +1,7 @@
 // Matrix tests cover route plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../../channel.js";
+import { resolveMatrixCurrentConversationRoute } from "../../session-route.js";
 import {
   testing as sessionBindingTesting,
   createTestRegistry,
@@ -200,6 +201,67 @@ describe("resolveMatrixInboundRoute", () => {
     expect(route.sessionKey).toBe("agent:bound:session-1");
     expect(route.lastRoutePolicy).toBe("session");
     expect(touch).not.toHaveBeenCalled();
+  });
+
+  it("revalidates current Matrix DMs with the stable sender and room parent", () => {
+    const cfg = {
+      ...baseCfg,
+      bindings: [
+        matrixBinding("room-agent", dmRoomPeer()),
+        matrixBinding("sender-agent", senderPeer()),
+      ],
+    } satisfies OpenClawConfig;
+
+    const route = resolveMatrixCurrentConversationRoute({
+      cfg,
+      accountId: "ops",
+      target: "room:@alice:example.org",
+      conversationId: "!dm:example.org",
+      chatType: "direct",
+      senderId: "matrix:@alice:example.org",
+    });
+
+    expect(route).toMatchObject({
+      agentId: "sender-agent",
+      accountId: "ops",
+      channel: "matrix",
+      sessionKey: "agent:sender-agent:main",
+      matchedBy: "binding.peer",
+    });
+  });
+
+  it("revalidates per-room Matrix DMs without collapsing to the user session", () => {
+    const cfg = {
+      ...baseCfg,
+      channels: {
+        matrix: {
+          accounts: { ops: { dm: { sessionScope: "per-room" } } },
+        },
+      },
+      bindings: [matrixBinding("sender-agent", senderPeer())],
+    } satisfies OpenClawConfig;
+
+    const route = resolveMatrixCurrentConversationRoute({
+      cfg,
+      accountId: "ops",
+      target: "room:!dm:example.org",
+      chatType: "direct",
+      senderId: "@alice:example.org",
+    });
+
+    expect(route?.sessionKey).toBe("agent:sender-agent:matrix:channel:!dm:example.org");
+    expect(route?.matchedBy).toBe("binding.peer");
+  });
+
+  it("rejects a persisted Matrix DM without a stable native sender", () => {
+    expect(
+      resolveMatrixCurrentConversationRoute({
+        cfg: baseCfg,
+        accountId: "ops",
+        target: "room:!dm:example.org",
+        chatType: "direct",
+      }),
+    ).toBeNull();
   });
 });
 

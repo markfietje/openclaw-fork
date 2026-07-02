@@ -55,12 +55,14 @@ import {
 import type { TelegramBotInfo } from "./bot-info.js";
 import { buildTelegramGroupPeerId } from "./bot/helpers.js";
 import { telegramMessageActions as telegramMessageActionsImpl } from "./channel-actions.js";
+import { resolveTelegramConversationRoute } from "./conversation-route.js";
 import {
   listTelegramDirectoryGroupsFromConfig,
   listTelegramDirectoryPeersFromConfig,
 } from "./directory-config.js";
 import { buildTelegramExecApprovalPendingPayload } from "./exec-approval-forwarding.js";
 import { shouldSuppressLocalTelegramExecApprovalPrompt } from "./exec-approvals.js";
+import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
 import {
   resolveTelegramGroupRequireMention,
   resolveTelegramGroupToolPolicy,
@@ -586,6 +588,45 @@ function resolveTelegramOutboundSessionRoute(params: {
   };
 }
 
+function resolveTelegramCurrentConversationRoute(params: {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  target: string;
+  chatType: "direct" | "group" | "channel";
+  threadId?: string | number | null;
+  senderId?: string | null;
+}) {
+  const parsed = parseTelegramTarget(params.target);
+  const chatId = parsed.chatId.trim();
+  if (!chatId) {
+    return null;
+  }
+  const isGroup = params.chatType !== "direct";
+  if (parsed.chatType !== "unknown" && (parsed.chatType === "group") !== isGroup) {
+    return null;
+  }
+
+  const topicThreadId = parsed.messageThreadId ?? parseTelegramThreadId(params.threadId);
+  const account = resolveTelegramAccount({
+    cfg: params.cfg,
+    accountId: params.accountId ?? undefined,
+  });
+  const { topicConfig } = resolveTelegramScopedGroupConfig(account.config, chatId, topicThreadId);
+  const current = resolveTelegramConversationRoute({
+    cfg: params.cfg,
+    accountId: account.accountId,
+    chatId,
+    isGroup,
+    resolvedThreadId: isGroup ? topicThreadId : undefined,
+    replyThreadId: topicThreadId,
+    senderId: params.senderId,
+    topicAgentId: topicConfig?.agentId,
+  });
+  // Plugin-owned targets are not agent sessions, so they cannot authorize a
+  // scheduled agent turn through a historical channel session.
+  return current.bindingMode.kind === "plugin-owned-runtime" ? null : current.route;
+}
+
 function buildTelegramCanonicalTopicThreadId(params: { chatId: string; topicId: number }): string {
   // Core session routing sees one canonical thread id. Telegram topic ids are
   // chat-scoped, so direct-topic sessions include the chat id to avoid collisions.
@@ -827,6 +868,7 @@ export const telegramPlugin = createChatChannelPlugin({
         return withoutProvider;
       },
       resolveOutboundSessionRoute: (params) => resolveTelegramOutboundSessionRoute(params),
+      resolveCurrentConversationRoute: (params) => resolveTelegramCurrentConversationRoute(params),
       targetResolver: {
         looksLikeId: looksLikeTelegramTargetId,
         hint: "<chatId>",

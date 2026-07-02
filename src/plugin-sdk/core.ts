@@ -176,6 +176,7 @@ export type { PollInput } from "../polls.js";
 export { isSecretRef } from "../config/types.secrets.js";
 export type { GatewayRequestHandlerOptions } from "../gateway/server-methods/types.js";
 export type {
+  ChannelCurrentConversationRoute,
   ChannelOutboundSessionRoute,
   ChannelMessagingAdapter,
 } from "../channels/plugins/types.core.js";
@@ -300,6 +301,11 @@ export { resolveThreadSessionKeys } from "../routing/session-key.js";
 /** Params passed to a channel adapter when resolving outbound session routing. */
 export type ChannelOutboundSessionRouteParams = Parameters<
   NonNullable<ChannelMessagingAdapter["resolveOutboundSessionRoute"]>
+>[0];
+
+/** Params passed when revalidating a persisted channel conversation route. */
+export type ChannelCurrentConversationRouteParams = Parameters<
+  NonNullable<ChannelMessagingAdapter["resolveCurrentConversationRoute"]>
 >[0];
 
 let cachedSdkChatChannelMeta:

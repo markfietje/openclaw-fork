@@ -746,6 +746,11 @@ outbound host generic and use the messaging adapter surface for provider rules:
   directory miss.
 - `messaging.resolveOutboundSessionRoute(...)` owns provider-specific session
   route construction once a target is resolved.
+- `messaging.resolveCurrentConversationRoute(...)` revalidates persisted
+  channel sessions when current topic or binding rules can change the selected
+  agent. It may carry exact channel-owned sender ownership (for example, a
+  current pairing approval), but wildcard/open access is never owner proof. It
+  must not renew leases or mutate conversation state.
 
 Recommended split:
 

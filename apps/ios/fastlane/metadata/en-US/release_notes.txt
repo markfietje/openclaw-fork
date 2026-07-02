@@ -1,3 +1,3 @@
 Maintenance update for the current OpenClaw beta release.
 
-- Refreshed iOS 26 visual styling, Talk controls, Gateway recovery, localization, and App Store screenshots.
+- Modernized iOS 26 visual styling, simplified Talk controls, improved Gateway onboarding and recovery, expanded localization, and refreshed App Store screenshots.

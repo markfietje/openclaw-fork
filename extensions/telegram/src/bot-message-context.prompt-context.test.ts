@@ -1,30 +1,6 @@
-import {
-  buildInboundUserContextPrefix,
-  buildReplyPromptEnvelopeBase,
-} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it } from "vitest";
 import { buildTelegramMessageContextForTest } from "./bot-message-context.test-harness.js";
 import type { TelegramPromptContextEntry } from "./bot-message-context.types.js";
-
-type RoomEventPromptContext = Parameters<typeof buildInboundUserContextPrefix>[0] &
-  Parameters<typeof buildReplyPromptEnvelopeBase>[0]["ctx"];
-
-function renderRoomEventPromptText(ctx: RoomEventPromptContext): string {
-  const inboundUserContext = buildInboundUserContextPrefix(ctx);
-  return (
-    buildReplyPromptEnvelopeBase({
-      ctx,
-      sessionCtx: ctx,
-      baseBody: ctx.BodyForAgent ?? ctx.Body ?? ctx.RawBody ?? "",
-      hasUserBody: true,
-      inboundUserContext,
-      isBareSessionReset: false,
-      startupAction: "new",
-      inboundEventKind: "room_event",
-      sourceReplyDeliveryMode: "message_tool_only",
-    }).currentInboundContext?.text ?? ""
-  );
-}
 
 const telegramChatWindowContext: TelegramPromptContextEntry = {
   label: "Conversation context",
@@ -230,7 +206,7 @@ describe("buildTelegramMessageContext prompt context", () => {
     );
   });
 
-  it("omits transcript-owned ambient rows from steady-state room-event prompt text", async () => {
+  it("omits transcript-owned ambient rows from steady-state room-event context", async () => {
     const ctx = await buildTelegramMessageContextForTest({
       message: {
         message_id: 12,
@@ -278,11 +254,13 @@ describe("buildTelegramMessageContext prompt context", () => {
     if (!ctx) {
       throw new Error("Expected room-event context");
     }
-    const promptText = renderRoomEventPromptText(ctx.ctxPayload as RoomEventPromptContext);
-    expect(promptText).toContain("[OpenClaw room event]");
-    expect(promptText).toContain("Current event:\n#12 Pat: current ambient");
-    expect(promptText).not.toContain("persisted ambient");
-    expect(promptText).not.toContain("Chat history since last reply");
+    expect(ctx.ctxPayload).toMatchObject({
+      BodyForAgent: "current ambient",
+      InboundEventKind: "room_event",
+      MessageSid: "12",
+      SenderName: "Pat",
+    });
     expect(ctx.ctxPayload.InboundHistory).toBeUndefined();
+    expect(ctx.ctxPayload.UntrustedStructuredContext).toBeUndefined();
   });
 });

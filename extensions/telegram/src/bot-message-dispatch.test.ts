@@ -5,10 +5,6 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import {
-  buildInboundUserContextPrefix,
-  buildReplyPromptEnvelopeBase,
-} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAutoTopicLabelConfig as resolveAutoTopicLabelConfigRuntime } from "./auto-topic-label-config.js";
@@ -30,8 +26,6 @@ import type { TelegramRuntime } from "./runtime.types.js";
 type DispatchReplyWithBufferedBlockDispatcherArgs = Parameters<
   TelegramBotDeps["dispatchReplyWithBufferedBlockDispatcher"]
 >[0];
-type RoomEventPromptContext = Parameters<typeof buildInboundUserContextPrefix>[0] &
-  Parameters<typeof buildReplyPromptEnvelopeBase>[0]["ctx"];
 
 const createTelegramDraftStream = vi.hoisted(() => vi.fn());
 const dispatchReplyWithBufferedBlockDispatcher = vi.hoisted(() =>
@@ -427,23 +421,6 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(calls.length).toBeGreaterThan(0);
     const preview = calls[calls.length - 1][0] as { text?: string };
     expect(preview.text).toBe(barText);
-  }
-
-  function renderRoomEventPromptText(ctx: RoomEventPromptContext): string {
-    const inboundUserContext = buildInboundUserContextPrefix(ctx);
-    return (
-      buildReplyPromptEnvelopeBase({
-        ctx,
-        sessionCtx: ctx,
-        baseBody: ctx.BodyForAgent ?? ctx.Body ?? ctx.RawBody ?? "",
-        hasUserBody: true,
-        inboundUserContext,
-        isBareSessionReset: false,
-        startupAction: "new",
-        inboundEventKind: "room_event",
-        sourceReplyDeliveryMode: "message_tool_only",
-      }).currentInboundContext?.text ?? ""
-    );
   }
 
   function createContext(overrides?: Partial<TelegramMessageContext>): TelegramMessageContext {
@@ -1211,7 +1188,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     ]);
   });
 
-  it("omits transcript-owned ambient rows from recovered room-event prompt text", async () => {
+  it("omits transcript-owned ambient rows from recovered room-event context", async () => {
     const oldHistoryKey = "-1003774691294:topic:1";
     const recoveredHistoryKey = "-1003774691294:topic:3731";
     const groupHistories = new Map([
@@ -1277,12 +1254,14 @@ describe("dispatchTelegramMessage draft streaming", () => {
     const dispatchParams = mockCallArg(
       dispatchReplyWithBufferedBlockDispatcher,
     ) as DispatchReplyWithBufferedBlockDispatcherArgs;
-    const promptText = renderRoomEventPromptText(dispatchParams.ctx as RoomEventPromptContext);
-    expect(promptText).toContain("[OpenClaw room event]");
-    expect(promptText).toContain("Current event:\n#27787 Cara: ambient current");
-    expect(promptText).not.toContain("persisted recovered ambient");
-    expect(promptText).not.toContain("Chat history since last reply");
+    expect(dispatchParams.ctx).toMatchObject({
+      BodyForAgent: "ambient current",
+      InboundEventKind: "room_event",
+      MessageSid: "27787",
+      SenderName: "Cara",
+    });
     expect(dispatchParams.ctx.InboundHistory).toBeUndefined();
+    expect(dispatchParams.ctx.UntrustedStructuredContext).toBeUndefined();
   });
 
   it("moves recovered user-request history out of the original topic", async () => {

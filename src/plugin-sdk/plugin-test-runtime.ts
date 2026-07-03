@@ -1,8 +1,6 @@
 // Focused public test helpers for plugin runtime, registry, and setup fixtures.
 
 export { setDefaultChannelPluginRegistryForTests } from "../commands/channel-test-registry.js";
-export { buildInboundUserContextPrefix } from "../auto-reply/reply/inbound-meta.js";
-export { buildReplyPromptEnvelopeBase } from "../auto-reply/reply/prompt-prelude.js";
 export {
   createEmptyPluginRegistry,
   createPluginRegistry,

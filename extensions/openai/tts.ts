@@ -1,6 +1,7 @@
 // Openai plugin module implements tts behavior.
 import {
   assertOkOrThrowProviderError,
+  normalizeBaseUrl,
   resolveProviderRequestHeaders,
 } from "openclaw/plugin-sdk/provider-http";
 import {
@@ -38,11 +39,7 @@ export const OPENAI_TTS_VOICES = [
 type OpenAiTtsVoice = (typeof OPENAI_TTS_VOICES)[number];
 
 export function normalizeOpenAITtsBaseUrl(baseUrl?: string): string {
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) {
-    return DEFAULT_OPENAI_BASE_URL;
-  }
-  return trimmed.replace(/\/+$/, "");
+  return normalizeBaseUrl(baseUrl, DEFAULT_OPENAI_BASE_URL);
 }
 
 function isCustomOpenAIEndpoint(baseUrl?: string): boolean {

@@ -4,6 +4,7 @@
  */
 import {
   assertOkOrThrowProviderError,
+  normalizeBaseUrl,
   readProviderJsonResponse,
 } from "openclaw/plugin-sdk/provider-http";
 import type { SearchConfigRecord } from "openclaw/plugin-sdk/provider-web-search";
@@ -102,7 +103,7 @@ function resolveBraveBaseUrl(braveConfig: { baseUrl?: unknown } | undefined): st
     braveConfig?.baseUrl,
     "plugins.entries.brave.config.webSearch.baseUrl",
   );
-  return configured?.replace(/\/+$/u, "") || DEFAULT_BRAVE_BASE_URL;
+  return normalizeBaseUrl(configured, DEFAULT_BRAVE_BASE_URL);
 }
 
 function buildBraveEndpointUrl(params: { baseUrl: string; endpointPath: string }): URL {

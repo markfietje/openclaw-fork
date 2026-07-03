@@ -275,6 +275,8 @@ vi.mock("openclaw/plugin-sdk/provider-http", () => ({
   fetchProviderOperationResponse: providerHttpMocks.fetchProviderOperationResponseMock,
   fetchWithTimeout: providerHttpMocks.fetchWithTimeoutMock,
   fetchWithTimeoutGuarded: providerHttpMocks.fetchWithTimeoutGuardedMock,
+  normalizeBaseUrl: (baseUrl?: string, fallback?: string) =>
+    (baseUrl?.trim() || fallback?.trim())?.replace(/\/+$/, ""),
   pollProviderOperationJson: providerHttpMocks.pollProviderOperationJsonMock,
   postJsonRequest: providerHttpMocks.postJsonRequestMock,
   postMultipartRequest: providerHttpMocks.postMultipartRequestMock,

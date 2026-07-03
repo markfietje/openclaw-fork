@@ -4,7 +4,10 @@
  */
 import { isProviderApiKeyConfigured } from "openclaw/plugin-sdk/provider-auth";
 import { resolveApiKeyForProvider } from "openclaw/plugin-sdk/provider-auth-runtime";
-import { resolveProviderHttpRequestConfig } from "openclaw/plugin-sdk/provider-http";
+import {
+  normalizeBaseUrl,
+  resolveProviderHttpRequestConfig,
+} from "openclaw/plugin-sdk/provider-http";
 import {
   DASHSCOPE_WAN_VIDEO_CAPABILITIES,
   DASHSCOPE_WAN_VIDEO_MODELS,
@@ -23,10 +26,6 @@ const DEFAULT_ALIBABA_VIDEO_MODEL = DEFAULT_DASHSCOPE_WAN_VIDEO_MODEL;
 
 function resolveAlibabaVideoBaseUrl(req: VideoGenerationRequest): string {
   return req.cfg?.models?.providers?.alibaba?.baseUrl?.trim() || DEFAULT_ALIBABA_VIDEO_BASE_URL;
-}
-
-function resolveDashscopeAigcApiBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/u, "");
 }
 
 /** Build the Alibaba/DashScope video generation provider descriptor. */
@@ -70,13 +69,14 @@ export function buildAlibabaVideoGenerationProvider(): VideoGenerationProvider {
         });
 
       const model = req.model?.trim() || DEFAULT_ALIBABA_VIDEO_MODEL;
+      const apiBaseUrl = normalizeBaseUrl(baseUrl, DEFAULT_ALIBABA_VIDEO_BASE_URL);
       return await runDashscopeVideoGenerationTask({
         providerLabel: "Alibaba Wan",
         model,
         req,
-        url: `${resolveDashscopeAigcApiBaseUrl(baseUrl)}/api/v1/services/aigc/video-generation/video-synthesis`,
+        url: `${apiBaseUrl}/api/v1/services/aigc/video-generation/video-synthesis`,
         headers,
-        baseUrl: resolveDashscopeAigcApiBaseUrl(baseUrl),
+        baseUrl: apiBaseUrl,
         timeoutMs: req.timeoutMs,
         fetchFn,
         allowPrivateNetwork,

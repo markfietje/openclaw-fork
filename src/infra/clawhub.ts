@@ -13,6 +13,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
+import { appendUrlPath } from "../shared/url.js";
 import { sha256Base64, sha256Hex as digestSha256Hex } from "./crypto-digest.js";
 import { parseStrictPositiveInteger } from "./parse-finite-number.js";
 import { isAtLeast, parseSemver } from "./runtime-guard.js";
@@ -677,10 +678,7 @@ function buildUrl(params: Pick<ClawHubRequestParams, "baseUrl" | "path" | "searc
   if (!params.path) {
     throw new Error("ClawHub request path is required");
   }
-  const url = new URL(`${normalizeBaseUrl(params.baseUrl)}/`);
-  const basePath = url.pathname.replace(/\/+$/, "");
-  const requestPath = params.path.startsWith("/") ? params.path : `/${params.path}`;
-  url.pathname = `${basePath}${requestPath}`;
+  const url = appendUrlPath(normalizeBaseUrl(params.baseUrl), params.path);
   for (const [key, value] of Object.entries(params.search ?? {})) {
     if (!value) {
       continue;

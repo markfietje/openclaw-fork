@@ -3,6 +3,7 @@ import { transcodeAudioBufferToOpus } from "openclaw/plugin-sdk/media-runtime";
 import { resolveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
 import {
   assertOkOrThrowProviderError,
+  normalizeBaseUrl,
   readProviderJsonResponse,
 } from "openclaw/plugin-sdk/provider-http";
 import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/secret-input";
@@ -59,7 +60,7 @@ type XiaomiTtsOverrides = {
 };
 
 function normalizeXiaomiTtsBaseUrl(baseUrl?: string): string {
-  return (baseUrl?.trim() || DEFAULT_XIAOMI_TTS_BASE_URL).replace(/\/+$/, "");
+  return normalizeBaseUrl(baseUrl, DEFAULT_XIAOMI_TTS_BASE_URL);
 }
 
 function normalizeXiaomiTtsFormat(value: unknown): XiaomiTtsFormat | undefined {

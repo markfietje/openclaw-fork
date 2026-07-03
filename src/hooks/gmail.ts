@@ -13,6 +13,7 @@ import {
   isWindowsBatchCommand,
   resolveTrustedWindowsCmdExe,
 } from "../process/windows-command.js";
+import { appendUrlPath } from "../shared/url.js";
 
 export const DEFAULT_GMAIL_LABEL = "INBOX";
 export const DEFAULT_GMAIL_TOPIC = "gog-gmail-watch";
@@ -104,7 +105,7 @@ export function buildDefaultHookUrl(
 ): string {
   const basePath = normalizeHooksPath(hooksPath);
   const baseUrl = `http://127.0.0.1:${port}`;
-  return joinUrl(baseUrl, `${basePath}/gmail`);
+  return appendUrlPath(baseUrl, `${basePath}/gmail`).toString();
 }
 
 export function resolveGmailHookRuntimeConfig(
@@ -300,12 +301,4 @@ export function parseTopicPath(topic: string): { projectId: string; topicName: s
     return null;
   }
   return { projectId: match[1] ?? "", topicName: match[2] ?? "" };
-}
-
-function joinUrl(base: string, pathLocal: string): string {
-  const url = new URL(base);
-  const basePath = url.pathname.replace(/\/+$/, "");
-  const extra = pathLocal.startsWith("/") ? pathLocal : `/${pathLocal}`;
-  url.pathname = `${basePath}${extra}`;
-  return url.toString();
 }

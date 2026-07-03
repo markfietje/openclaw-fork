@@ -8,6 +8,7 @@ import {
   createProviderOperationDeadline,
   createProviderOperationTimeoutResolver,
   fetchProviderDownloadResponse,
+  normalizeBaseUrl,
   pollProviderOperationJson,
   postJsonRequest,
   readProviderJsonResponse,
@@ -72,15 +73,11 @@ function resolveTogetherVideoBaseUrl(req: VideoGenerationRequest): string {
   const configuredBaseUrl = normalizeOptionalString(req.cfg?.models?.providers?.together?.baseUrl);
   if (
     !configuredBaseUrl ||
-    stripTrailingSlash(configuredBaseUrl) === stripTrailingSlash(TOGETHER_BASE_URL)
+    normalizeBaseUrl(configuredBaseUrl) === normalizeBaseUrl(TOGETHER_BASE_URL)
   ) {
     return TOGETHER_VIDEO_BASE_URL;
   }
   return configuredBaseUrl;
-}
-
-function stripTrailingSlash(value: string): string {
-  return value.replace(/\/+$/u, "");
 }
 
 function extractTogetherVideoUrl(payload: TogetherVideoResponse): string | undefined {

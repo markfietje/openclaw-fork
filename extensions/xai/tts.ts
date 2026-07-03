@@ -1,5 +1,9 @@
 // Xai plugin module implements tts behavior.
-import { assertOkOrThrowProviderError, postJsonRequest } from "openclaw/plugin-sdk/provider-http";
+import {
+  assertOkOrThrowProviderError,
+  normalizeBaseUrl,
+  postJsonRequest,
+} from "openclaw/plugin-sdk/provider-http";
 import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
 import { trimToUndefined } from "openclaw/plugin-sdk/speech";
 import { XAI_BASE_URL } from "./api.js";
@@ -12,11 +16,7 @@ export const XAI_TTS_VOICES = ["eve", "ara", "rex", "sal", "leo", "una"] as cons
 type XaiTtsVoice = (typeof XAI_TTS_VOICES)[number];
 
 export function normalizeXaiTtsBaseUrl(baseUrl?: string): string {
-  const trimmed = baseUrl?.trim();
-  if (!trimmed) {
-    return XAI_BASE_URL;
-  }
-  return trimmed.replace(/\/+$/, "");
+  return normalizeBaseUrl(baseUrl, XAI_BASE_URL);
 }
 
 export function isValidXaiTtsVoice(voice: string, baseUrl?: string): voice is XaiTtsVoice {

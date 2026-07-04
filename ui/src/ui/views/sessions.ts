@@ -1,6 +1,6 @@
 // Control UI view renders sessions screen content.
 import { html, nothing } from "lit";
-import { pathForRoute } from "../../app-routes.ts";
+import { pathForRoute } from "../../app-route-paths.ts";
 import { t } from "../../i18n/index.ts";
 import { formatRelativeTimestamp, parseSessionKeyParts } from "../format.ts";
 import { icons } from "../icons.ts";

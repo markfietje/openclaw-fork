@@ -1433,6 +1433,8 @@ export const hi: TranslationMap = {
       loadMoreSessions: "और सत्र लोड करें",
       model: "चैट मॉडल",
       thinkingLevel: "चैट सोच स्तर",
+      reasoningFaster: "तेज़",
+      reasoningSmarter: "अधिक बुद्धिमान",
     },
     toolCards: {
       toolError: "टूल त्रुटि",

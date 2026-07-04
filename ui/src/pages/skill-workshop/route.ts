@@ -1,10 +1,11 @@
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsAppHost } from "../../app/app-host.ts";
 import { definePage } from "../../router/index.ts";
+import type { AppViewState } from "../../ui/app-view-state.ts";
 import { loadSkillWorkshopProposals } from "../../ui/controllers/skill-workshop.ts";
 
 type SkillWorkshopLoadContext = { app: SettingsAppHost };
-type SkillWorkshopRenderContext = RouteRenderContext;
+type SkillWorkshopRenderContext = RouteRenderContext<AppViewState>;
 
 const skillWorkshopStateKeys = new WeakMap<object, string>();
 

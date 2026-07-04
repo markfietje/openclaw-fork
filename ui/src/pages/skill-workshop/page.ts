@@ -1,6 +1,6 @@
 // Skill Workshop page owns its Control UI render glue.
 import { html } from "lit";
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { AppNavigate } from "../../app-route-context.ts";
 import { t } from "../../i18n/index.ts";
 import { createChatSessionsLoadOverrides } from "../../ui/app-chat.ts";
 import type { AppViewState } from "../../ui/app-view-state.ts";
@@ -103,7 +103,7 @@ async function sendSkillWorkshopRevisionRequest(
   instructions: string,
   proposal: { key: string; slug: string; origin?: { agentId?: string; sessionKey?: string } },
   proposalAgentId: string,
-  navigate: RouteRenderContext["navigate"],
+  navigate: AppNavigate,
 ): Promise<void> {
   if (!state.client || !state.connected) {
     throw new Error("Gateway is not connected.");
@@ -192,10 +192,7 @@ function renderSkillWorkshopHeaderControls(state: AppViewState) {
   `;
 }
 
-export function renderSkillWorkshopPage(
-  state: AppViewState,
-  navigate: RouteRenderContext["navigate"],
-) {
+export function renderSkillWorkshopPage(state: AppViewState, navigate: AppNavigate) {
   const pageClass =
     state.skillWorkshopMode === "today"
       ? "content--skill-workshop content--skill-workshop-today"

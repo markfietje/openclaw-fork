@@ -1453,6 +1453,8 @@ export const nl: TranslationMap = {
       loadMoreSessions: "Meer sessies laden",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "Sneller",
+      reasoningSmarter: "Slimmer",
     },
     toolCards: {
       toolError: "Toolfout",

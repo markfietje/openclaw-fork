@@ -21,22 +21,22 @@ export type RouteMatchStatus = "pending" | "success" | "error" | "notFound" | "r
 
 export type RouteMatchFetching = false | "loader";
 
-export type RouteNotFound = {
+export type RouteNotFound = Error & {
   type: "notFound";
   data?: unknown;
 };
 
-export type RouteRedirect = {
+export type RouteRedirect = Error & {
   type: "redirect";
   location: RouteLocation;
 };
 
 export function notFound(data?: unknown): RouteNotFound {
-  return { type: "notFound", data };
+  return Object.assign(new Error("Route not found"), { type: "notFound" as const, data });
 }
 
 export function redirect(location: RouteLocation): RouteRedirect {
-  return { type: "redirect", location };
+  return Object.assign(new Error("Route redirect"), { type: "redirect" as const, location });
 }
 
 export type RouteHookOptions = {

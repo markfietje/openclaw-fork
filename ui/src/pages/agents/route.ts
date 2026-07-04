@@ -262,9 +262,11 @@ export const page = definePage({
               if (!path) {
                 return;
               }
-              profile
-                ? updateConfigFormValue(state, [...path, "profile"], profile)
-                : removeConfigFormValue(state, [...path, "profile"]);
+              if (profile) {
+                updateConfigFormValue(state, [...path, "profile"], profile);
+              } else {
+                removeConfigFormValue(state, [...path, "profile"]);
+              }
               if (clearAllow) {
                 removeConfigFormValue(state, [...path, "allow"]);
               }
@@ -274,12 +276,16 @@ export const page = definePage({
               if (!path) {
                 return;
               }
-              alsoAllow.length
-                ? updateConfigFormValue(state, [...path, "alsoAllow"], alsoAllow)
-                : removeConfigFormValue(state, [...path, "alsoAllow"]);
-              deny.length
-                ? updateConfigFormValue(state, [...path, "deny"], deny)
-                : removeConfigFormValue(state, [...path, "deny"]);
+              if (alsoAllow.length) {
+                updateConfigFormValue(state, [...path, "alsoAllow"], alsoAllow);
+              } else {
+                removeConfigFormValue(state, [...path, "alsoAllow"]);
+              }
+              if (deny.length) {
+                updateConfigFormValue(state, [...path, "deny"], deny);
+              } else {
+                removeConfigFormValue(state, [...path, "deny"]);
+              }
             },
             onConfigReload: () => void loadConfig(state, { discardPendingChanges: true }),
             onConfigSave: () => void saveAgentsConfig(state),
@@ -312,7 +318,11 @@ export const page = definePage({
                 : (state.agentSkillsReport?.skills?.map((skill) => skill.name).filter(Boolean) ??
                   []);
               const next = new Set(base);
-              enabled ? next.add(skillName.trim()) : next.delete(skillName.trim());
+              if (enabled) {
+                next.add(skillName.trim());
+              } else {
+                next.delete(skillName.trim());
+              }
               updateConfigFormValue(state, ["agents", "list", index, "skills"], [...next]);
             },
             onAgentSkillsClear: (id) => {
@@ -378,9 +388,11 @@ export const page = definePage({
                     ? (entry.existing as { primary: string }).primary.trim()
                     : "";
               if (normalized.length === 0) {
-                currentPrimary || primary
-                  ? updateConfigFormValue(state, entry.path, currentPrimary || primary)
-                  : removeConfigFormValue(state, entry.path);
+                if (currentPrimary || primary) {
+                  updateConfigFormValue(state, entry.path, currentPrimary || primary);
+                } else {
+                  removeConfigFormValue(state, entry.path);
+                }
               } else if (currentPrimary || primary) {
                 updateConfigFormValue(state, entry.path, {
                   primary: currentPrimary || primary,

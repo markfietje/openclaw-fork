@@ -1,6 +1,6 @@
 // Control UI module implements app chat behavior.
 import { isNonTerminalAgentRunStatus } from "../../../src/shared/agent-run-status.js";
-import { normalizeBasePath } from "../app-routes.ts";
+import { normalizeBasePath } from "../app-route-paths.ts";
 import { setLastActiveSessionKey } from "./app-last-active-session.ts";
 import { scheduleChatScroll, resetChatScroll } from "./app-scroll.ts";
 import { resetToolStream } from "./app-tool-stream.ts";

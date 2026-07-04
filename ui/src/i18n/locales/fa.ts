@@ -1449,6 +1449,8 @@ export const fa: TranslationMap = {
       loadMoreSessions: "بارگذاری نشست‌های بیشتر",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "سریع‌تر",
+      reasoningSmarter: "هوشمندتر",
     },
     toolCards: {
       toolError: "خطای ابزار",

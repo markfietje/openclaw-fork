@@ -5,7 +5,8 @@ import {
   SETTINGS_NAVIGATION_ROUTES,
   titleForRoute,
 } from "../app-navigation.ts";
-import { pathForRoute, type RouteId } from "../app-routes.ts";
+import type { RouteId } from "../app-route-id.ts";
+import { pathForRoute } from "../app-route-paths.ts";
 import { t } from "../i18n/index.ts";
 import type { AppViewState } from "../ui/app-view-state.ts";
 import { icons } from "../ui/icons.ts";

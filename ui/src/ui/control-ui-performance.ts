@@ -1,9 +1,10 @@
-import { getVisibleRouteId, type RouteId } from "../app-routes.ts";
+import type { RouteId } from "../app-route-id.ts";
 // Control UI module implements control ui performance behavior.
 import type { EventLogEntry } from "./app-events.ts";
 import type { GatewayConnectTiming, GatewayRequestTiming } from "./gateway.ts";
 
 type ControlUiPerformanceHost = {
+  activeRouteId?: RouteId | null;
   isConnected?: boolean;
   eventLog?: unknown[];
   eventLogBuffer?: unknown[];
@@ -117,7 +118,7 @@ export function recordControlUiPerformanceEvent(
           )
         : host.eventLogBuffer;
     host.eventLogBuffer = [entry, ...existingBuffer].slice(0, EVENT_LOG_LIMIT);
-    if (getVisibleRouteId() === "debug" || getVisibleRouteId() === "overview") {
+    if (host.activeRouteId === "debug" || host.activeRouteId === "overview") {
       host.eventLog = host.eventLogBuffer;
     }
   }
@@ -176,7 +177,7 @@ export function isCurrentControlUiRefresh(
   host: ControlUiPerformanceHost,
   run: ControlUiRefreshRun,
 ): boolean {
-  return host.controlUiRefreshSeq === run.seq && getVisibleRouteId() === run.routeId;
+  return host.controlUiRefreshSeq === run.seq && host.activeRouteId === run.routeId;
 }
 
 export function finishControlUiRefresh(
@@ -334,7 +335,7 @@ function recordResponsivenessEntry(
     host,
     `control-ui.${entryType}`,
     {
-      routeId: getVisibleRouteId(),
+      routeId: host.activeRouteId ?? null,
       name: entry.name,
       startTimeMs: roundedControlUiDurationMs(entry.startTime),
       durationMs,

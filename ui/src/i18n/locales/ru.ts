@@ -1458,6 +1458,8 @@ export const ru: TranslationMap = {
       loadMoreSessions: "Загрузить еще сеансы",
       model: "Модель чата",
       thinkingLevel: "Уровень мышления чата",
+      reasoningFaster: "Быстрее",
+      reasoningSmarter: "Умнее",
     },
     toolCards: {
       toolError: "Ошибка инструмента",

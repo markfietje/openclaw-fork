@@ -1,14 +1,15 @@
 import { html } from "lit";
 import { titleForRoute, subtitleForRoute } from "../../app-navigation.ts";
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsAppHost, SettingsHost } from "../../app/app-host.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { definePage } from "../../router/index.ts";
 import { startLogsPolling, stopLogsPolling } from "../../ui/app-polling.ts";
 import { scheduleLogsScroll } from "../../ui/app-scroll.ts";
+import type { AppViewState } from "../../ui/app-view-state.ts";
 import { loadLogs } from "../../ui/controllers/logs.ts";
 
-type LogsRenderContext = RouteRenderContext;
+type LogsRenderContext = RouteRenderContext<AppViewState>;
 type LogsLoadContext = { host: SettingsHost; app: SettingsAppHost };
 
 export const page = definePage({

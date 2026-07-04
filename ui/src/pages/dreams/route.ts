@@ -39,7 +39,7 @@ function resolveDreamingNextCycle(
   const nextRunAtMs = Object.values(status?.phases ?? {})
     .filter((phase) => phase.enabled && typeof phase.nextRunAtMs === "number")
     .map((phase) => phase.nextRunAtMs as number)
-    .sort((a, b) => a - b)[0];
+    .toSorted((a, b) => a - b)[0];
   return nextRunAtMs === undefined ? null : formatDreamNextCycle(nextRunAtMs);
 }
 

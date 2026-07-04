@@ -1,4 +1,4 @@
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsAppHost } from "../../app/app-host.ts";
 import { hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { definePage } from "../../router/index.ts";
@@ -19,7 +19,7 @@ import {
 import { captureSessionToWorkboard, getWorkboardState } from "../../ui/controllers/workboard.ts";
 import { isPluginEnabledInConfigSnapshot } from "../../ui/plugin-activation.ts";
 
-type SessionsRenderContext = RouteRenderContext;
+type SessionsRenderContext = RouteRenderContext<AppViewState>;
 type SessionsLoadContext = { app: SettingsAppHost };
 
 function runTask<Args extends unknown[]>(
@@ -124,8 +124,8 @@ export const page = definePage({
             state.sessionsSortDir = direction;
             state.sessionsPage = 0;
           },
-          onPageChange: (page) => {
-            state.sessionsPage = page;
+          onPageChange: (nextPage) => {
+            state.sessionsPage = nextPage;
           },
           onPageSizeChange: (pageSize) => {
             state.sessionsPageSize = pageSize;

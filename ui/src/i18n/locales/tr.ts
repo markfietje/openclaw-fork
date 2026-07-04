@@ -1453,6 +1453,8 @@ export const tr: TranslationMap = {
       loadMoreSessions: "Daha fazla oturum yükle",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "Daha hızlı",
+      reasoningSmarter: "Daha akıllı",
     },
     toolCards: {
       toolError: "Araç hatası",

@@ -1,3 +1,6 @@
+import type { AppNavigate, RouteRenderContext } from "./app-route-context.ts";
+import type { RouteId } from "./app-route-id.ts";
+import { normalizePath, pathForRoute, routeIdFromPath } from "./app-route-paths.ts";
 import type { SettingsAppHost, SettingsHost } from "./app/app-host.ts";
 import type { RouterOutletSnapshotStore } from "./app/router-outlet.ts";
 import { page as activityPage } from "./pages/activity/route.ts";
@@ -18,7 +21,7 @@ import { page as skillsPage } from "./pages/skills/route.ts";
 import { page as usagePage } from "./pages/usage/route.ts";
 import { page as workboardPage } from "./pages/workboard/route.ts";
 // Application route catalog consumed by the generic router.
-import { createRouter, normalizeRouteBasePath, normalizeRoutePath } from "./router/index.ts";
+import { createRouter } from "./router/index.ts";
 import type { PageDefinition } from "./router/index.ts";
 import type { RouteLocation, RouterHistory } from "./router/index.ts";
 import type { AppViewState } from "./ui/app-view-state.ts";
@@ -40,20 +43,10 @@ type ApplicationHost = SettingsHost & {
 
 export type ApplicationContext = {
   routeLoadContext: RouteLoadContext;
-  routeSnapshot: RouterOutletSnapshotStore<RouteId, AppRouteModule, unknown>;
+  routeSnapshot: RouterOutletSnapshotStore<RouteId, AppRouteModule>;
   navigate: AppNavigate;
   notifyStateChange: (state: AppViewState, changed: ReadonlyMap<PropertyKey, unknown>) => void;
   dispose: () => void;
-};
-
-export type AppNavigate = (
-  routeId: RouteId,
-  options?: { history?: "push" | "replace" | "none" },
-) => void;
-
-export type RouteRenderContext = {
-  state: AppViewState;
-  navigate: AppNavigate;
 };
 
 export function routeLoadContext(host: SettingsHost): RouteLoadContext {
@@ -61,8 +54,11 @@ export function routeLoadContext(host: SettingsHost): RouteLoadContext {
 }
 
 export type AppRouteModule = {
-  render: (context: RouteRenderContext, data: unknown) => unknown;
-  onStateChange?: (context: RouteRenderContext, changed: ReadonlyMap<PropertyKey, unknown>) => void;
+  render: (context: RouteRenderContext<AppViewState>, data: unknown) => unknown;
+  onStateChange?: (
+    context: RouteRenderContext<AppViewState>,
+    changed: ReadonlyMap<PropertyKey, unknown>,
+  ) => void;
   shell?: "chat" | "page";
   header?: boolean;
   contentClass?: string;
@@ -88,8 +84,6 @@ export const APP_ROUTE_TREE = [
   logsPage,
 ] as const;
 
-export type RouteId = (typeof APP_ROUTE_TREE)[number]["id"];
-
 const appRoutes = APP_ROUTE_TREE as readonly PageDefinition<
   RouteId,
   RouteLoadContext,
@@ -102,7 +96,7 @@ export const appRouter = createRouter<RouteId, RouteLoadContext, AppRouteModule>
 
 export function createApplicationContext(
   host: SettingsHost,
-  routeSnapshot: RouterOutletSnapshotStore<RouteId, AppRouteModule, unknown>,
+  routeSnapshot: RouterOutletSnapshotStore<RouteId, AppRouteModule>,
 ): ApplicationContext {
   const applicationHost = host as ApplicationHost;
   const loadContext = routeLoadContext(host);
@@ -114,7 +108,7 @@ export function createApplicationContext(
   const stopRouteSync = routeSnapshot.subscribe(syncVisibleRoute);
   const navigate: AppNavigate = (next, options) => {
     const location = {
-      pathname: appRouter.pathForRoute(next, host.basePath),
+      pathname: pathForRoute(next, host.basePath),
       search:
         next === "chat" && applicationHost.sessionKey
           ? `?session=${encodeURIComponent(applicationHost.sessionKey)}`
@@ -156,25 +150,6 @@ export function createApplicationContext(
   };
 }
 
-export function normalizeBasePath(basePath: string): string {
-  return normalizeRouteBasePath(basePath);
-}
-
-export function normalizePath(path: string): string {
-  return normalizeRoutePath(path);
-}
-
-export function pathForRoute(routeId: RouteId, basePath = ""): string {
-  return appRouter.pathForRoute(routeId, basePath);
-}
-
-export function routeIdFromPath(pathname: string, basePath = ""): RouteId | null {
-  return (
-    appRouter.routeIdFromPath(pathname, basePath) ??
-    (normalizePath(pathname) === normalizePath(basePath) ? "chat" : null)
-  );
-}
-
 export function getVisibleRouteId(): RouteId | null {
   const state = appRouter.getState();
   return state.pendingMatches[0]?.routeId ?? state.matches[0]?.routeId ?? null;
@@ -197,7 +172,7 @@ export function startAppRouter(
     }
     const fallback = {
       ...location,
-      pathname: appRouter.pathForRoute("chat", basePath),
+      pathname: pathForRoute("chat", basePath),
     };
     history.replace(fallback);
     return fallback;
@@ -216,21 +191,4 @@ export function startAppRouter(
       }),
   };
   return appRouter.start(appHistory, basePath, context);
-}
-
-export function inferBasePathFromPathname(pathname: string): string {
-  const normalizedPath = normalizePath(pathname);
-  const normalized = normalizedPath.toLowerCase().endsWith("/index.html")
-    ? normalizePath(normalizedPath.slice(0, -"/index.html".length))
-    : normalizedPath;
-  if (normalized === "/") {
-    return "";
-  }
-  const segments = normalized.split("/").filter(Boolean);
-  for (let index = 0; index < segments.length; index += 1) {
-    if (routeIdFromPath(`/${segments.slice(index).join("/")}`)) {
-      return index ? `/${segments.slice(0, index).join("/")}` : "";
-    }
-  }
-  return normalized;
 }

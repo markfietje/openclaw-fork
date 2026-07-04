@@ -1,5 +1,5 @@
 import { guard } from "lit/directives/guard.js";
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { AppNavigate, RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsAppHost, SettingsHost } from "../../app/app-host.ts";
 import { i18n, t } from "../../i18n/index.ts";
 import { definePage } from "../../router/index.ts";
@@ -30,9 +30,9 @@ import { chatSessionLoaderDeps } from "./loader-deps.ts";
 import { createSessionWorkspaceProps } from "./session-workspace.ts";
 
 type ChatLoadContext = { host: SettingsHost; app: SettingsAppHost };
-type ChatRenderContext = RouteRenderContext;
+type ChatRenderContext = RouteRenderContext<AppViewState>;
 
-function renderGuardedChatControls(state: AppViewState, navigate: RouteRenderContext["navigate"]) {
+function renderGuardedChatControls(state: AppViewState, navigate: AppNavigate) {
   return guard(
     [
       state.sessionKey,
@@ -144,7 +144,7 @@ export const page = definePage({
         onChatScroll: (event) => state.handleChatScroll(event),
         getDraft: () => state.chatMessage,
         onDraftChange: (next) => state.handleChatDraftChange(next),
-        onRequestUpdate: (state as AppViewState & { requestUpdate?: () => void }).requestUpdate,
+        onRequestUpdate: () => state.requestUpdate?.(),
         onHistoryKeydown: (input) => state.handleChatInputHistoryKey(input),
         onSlashIntent: () => refreshChatCommands(state).finally(() => state.requestUpdate?.()),
         showNewMessages: state.chatNewMessagesBelow && !state.chatManualRefreshInFlight,

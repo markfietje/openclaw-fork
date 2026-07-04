@@ -133,7 +133,7 @@ export function createRouter<
     const backgroundReload =
       sameMatch && revalidating && previous?.status === "success" && previous.module !== undefined
         ? true
-        : Boolean(cachedReady && !cachedFresh && loading.shouldReloadInBackground(route));
+        : cachedReady && !cachedFresh && loading.shouldReloadInBackground(route);
 
     if (history && navigationOptions.history && navigationOptions.history !== "none") {
       history[navigationOptions.history](location);
@@ -378,7 +378,7 @@ export function createRouter<
     location: RouteLocation,
     context: TLoadContext,
     revalidate = false,
-    history: RouterNavigationOptions["history"] = "none",
+    navigationHistory: RouterNavigationOptions["history"] = "none",
   ): Promise<void> => {
     const normalized = normalizeLocation(location);
     const matched = compiled.routeIdFromPath(normalized.pathname, basePath);
@@ -418,11 +418,13 @@ export function createRouter<
       });
       currentRun = null;
       if (lifecycleError !== undefined) {
-        throw lifecycleError;
+        throw lifecycleError instanceof Error
+          ? lifecycleError
+          : new Error("Route lifecycle hook failed", { cause: lifecycleError });
       }
       return;
     }
-    await navigate(matched, context, { history, revalidate }, normalized);
+    await navigate(matched, context, { history: navigationHistory, revalidate }, normalized);
   };
 
   const preloadAtLocation = (

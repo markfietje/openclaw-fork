@@ -1410,6 +1410,8 @@ export const zh_CN: TranslationMap = {
       loadMoreSessions: "加载更多会话",
       model: "聊天模型",
       thinkingLevel: "聊天思考级别",
+      reasoningFaster: "更快",
+      reasoningSmarter: "更智能",
     },
     toolCards: {
       toolError: "工具错误",

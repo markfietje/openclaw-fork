@@ -1451,6 +1451,8 @@ export const uk: TranslationMap = {
       loadMoreSessions: "Завантажити більше сеансів",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "Швидше",
+      reasoningSmarter: "Розумніше",
     },
     toolCards: {
       toolError: "Помилка інструмента",

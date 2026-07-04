@@ -5,7 +5,7 @@ import {
   type ControlUiBootstrapConfig,
   type ControlUiEmbedSandboxMode,
 } from "../../../../src/gateway/control-ui-contract.js";
-import { normalizeBasePath } from "../../app-routes.ts";
+import { normalizeBasePath } from "../../app-route-paths.ts";
 import { normalizeAssistantIdentity } from "../assistant-identity.ts";
 import { resolveControlUiAuthCandidates } from "../control-ui-auth.ts";
 import { setUiTimeFormatPreference } from "../format.ts";

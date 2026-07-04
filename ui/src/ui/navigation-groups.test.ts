@@ -6,7 +6,7 @@ import {
   isSettingsNavigationRoute,
   isRouteInSidebarSection,
 } from "../app-navigation.ts";
-import { routeIdFromPath } from "../app-routes.ts";
+import { routeIdFromPath } from "../app-route-paths.ts";
 
 describe("SIDEBAR_SECTIONS", () => {
   it("collapses detailed settings slices into one sidebar entry", () => {

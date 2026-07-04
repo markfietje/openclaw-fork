@@ -1438,6 +1438,8 @@ export const ko: TranslationMap = {
       loadMoreSessions: "세션 더 불러오기",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "더 빠르게",
+      reasoningSmarter: "더 정교하게",
     },
     toolCards: {
       toolError: "도구 오류",

@@ -5,7 +5,8 @@ import {
   navigationIconForRoute,
   titleForRoute,
 } from "../app-navigation.ts";
-import { pathForRoute, type RouteId } from "../app-routes.ts";
+import type { RouteId } from "../app-route-id.ts";
+import { pathForRoute } from "../app-route-paths.ts";
 import { hasOperatorAdminAccess } from "../app/operator-access.ts";
 import { t } from "../i18n/index.ts";
 import {

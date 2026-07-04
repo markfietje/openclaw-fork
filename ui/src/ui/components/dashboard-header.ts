@@ -2,7 +2,8 @@
 import { LitElement, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import { titleForRoute } from "../../app-navigation.ts";
-import { pathForRoute, type RouteId } from "../../app-routes.ts";
+import type { RouteId } from "../../app-route-id.ts";
+import { pathForRoute } from "../../app-route-paths.ts";
 
 export class DashboardHeader extends LitElement {
   override createRenderRoot() {

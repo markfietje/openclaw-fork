@@ -1,13 +1,14 @@
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsHost } from "../../app/app-host.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { definePage } from "../../router/index.ts";
+import type { AppViewState } from "../../ui/app-view-state.ts";
 import { loadChannels } from "../../ui/controllers/channels.ts";
 import { updateConfigFormValue } from "../../ui/controllers/config.ts";
 import { loadChannelsPage } from "../loaders.ts";
 
 type ChannelsLoadContext = { host: SettingsHost };
-type ChannelsRenderContext = RouteRenderContext;
+type ChannelsRenderContext = RouteRenderContext<AppViewState>;
 
 export const page = definePage({
   id: "channels",

@@ -2,12 +2,8 @@
 import { LitElement } from "lit";
 import { state } from "lit/decorators.js";
 import { CONTROL_UI_TERMINAL_ENABLED_ATTRIBUTE } from "../../../src/gateway/control-ui-contract.js";
-import {
-  appRouter,
-  createApplicationContext,
-  type ApplicationContext,
-  type RouteId,
-} from "../app-routes.ts";
+import type { RouteId } from "../app-route-id.ts";
+import { appRouter, createApplicationContext, type ApplicationContext } from "../app-routes.ts";
 import { createRouterOutletSnapshot } from "../app/router-outlet.ts";
 import { i18n, I18nController, isSupportedLocale, t } from "../i18n/index.ts";
 import { loadCron as loadCronPage, loadOverview as loadOverviewPage } from "../pages/loaders.ts";
@@ -115,7 +111,7 @@ import {
   type ExecApprovalRequest,
 } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
-import { type SkillWorkshopState } from "./controllers/skill-workshop.ts";
+import type { SkillWorkshopState } from "./controllers/skill-workshop.ts";
 import type {
   ClawHubSearchResult,
   ClawHubSkillSecurityVerdict,

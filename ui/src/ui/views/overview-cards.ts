@@ -2,7 +2,7 @@
 import { asDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { html, nothing, type TemplateResult } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
-import type { RouteId } from "../../app-routes.ts";
+import type { RouteId } from "../../app-route-id.ts";
 import { t } from "../../i18n/index.ts";
 import { isCronJobActiveFailure } from "../cron-status.ts";
 import { formatCost, formatTokens, formatRelativeTimestamp } from "../format.ts";

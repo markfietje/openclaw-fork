@@ -1,6 +1,6 @@
 import { html } from "lit";
 import { titleForRoute, subtitleForRoute } from "../../app-navigation.ts";
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { AppNavigate, RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsAppHost, SettingsHost } from "../../app/app-host.ts";
 import { definePage } from "../../router/index.ts";
 import { DEFAULT_CRON_FORM } from "../../ui/app-defaults.ts";
@@ -36,7 +36,7 @@ import {
 } from "../../ui/views/cron-quick-create.ts";
 import { loadCronPage } from "../loaders.ts";
 type CronLoadContext = { host: SettingsHost; app: SettingsAppHost };
-type CronRenderContext = RouteRenderContext;
+type CronRenderContext = RouteRenderContext<AppViewState>;
 type CronModule = typeof import("../../ui/views/cron.ts");
 
 const THINKING_SUGGESTIONS = ["off", "minimal", "low", "medium", "high"];
@@ -63,11 +63,7 @@ function runTask<Args extends unknown[]>(
   };
 }
 
-function renderCronPage(
-  state: AppViewState,
-  module: CronModule,
-  navigate: RouteRenderContext["navigate"],
-) {
+function renderCronPage(state: AppViewState, module: CronModule, navigate: AppNavigate) {
   const configValue =
     state.configForm ?? (state.configSnapshot?.config as Record<string, unknown> | null);
   const agentSuggestions = sortLocaleStrings(

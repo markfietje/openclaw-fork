@@ -1,7 +1,8 @@
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsAppHost, SettingsHost } from "../../app/app-host.ts";
 import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import { definePage } from "../../router/index.ts";
+import type { AppViewState } from "../../ui/app-view-state.ts";
 import { switchChatSession } from "../../ui/chat-session-switch.ts";
 import { loadAgents } from "../../ui/controllers/agents.ts";
 import { loadConfig } from "../../ui/controllers/config.ts";
@@ -13,7 +14,7 @@ import {
 } from "../../ui/controllers/workboard.ts";
 import { isPluginEnabledInConfigSnapshot } from "../../ui/plugin-activation.ts";
 
-type WorkboardRenderContext = RouteRenderContext;
+type WorkboardRenderContext = RouteRenderContext<AppViewState>;
 type WorkboardLoadContext = { host: SettingsHost; app: SettingsAppHost };
 
 export const page = definePage({

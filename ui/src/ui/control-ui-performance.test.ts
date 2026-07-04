@@ -10,11 +10,6 @@ import {
 
 const originalPerformanceObserver = globalThis.PerformanceObserver;
 
-vi.mock("../app-routes.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../app-routes.ts")>();
-  return { ...actual, getVisibleRouteId: () => "chat" };
-});
-
 type ObserverCallback = ConstructorParameters<typeof PerformanceObserver>[0];
 
 function installPerformanceObserverMock(options: {
@@ -54,7 +49,7 @@ function installPerformanceObserverMock(options: {
 
 function createHost() {
   return {
-    routeId: "chat" as const,
+    activeRouteId: "chat" as const,
     eventLog: [] as EventLogEntry[],
     eventLogBuffer: [] as EventLogEntry[],
   };

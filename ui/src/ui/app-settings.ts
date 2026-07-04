@@ -1,4 +1,4 @@
-import { inferBasePathFromPathname, normalizeBasePath } from "../app-routes.ts";
+import { inferBasePathFromPathname, normalizeBasePath } from "../app-route-paths.ts";
 // Control UI module implements app settings behavior.
 import type { SettingsHost } from "../app/app-host.ts";
 import { syncCustomThemeStyleTag } from "./custom-theme.ts";

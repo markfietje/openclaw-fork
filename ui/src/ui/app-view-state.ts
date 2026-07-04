@@ -1,4 +1,4 @@
-import type { RouteId } from "../app-routes.ts";
+import type { RouteId } from "../app-route-id.ts";
 // Control UI module implements app view state behavior.
 import type { ActivityEntry, ActivityStatus } from "./activity-model.ts";
 import type { ChatAbortOptions, ChatSendOptions } from "./app-chat.ts";

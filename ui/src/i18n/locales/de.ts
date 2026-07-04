@@ -1458,6 +1458,8 @@ export const de: TranslationMap = {
       loadMoreSessions: "Weitere Sitzungen laden",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "Schneller",
+      reasoningSmarter: "Intelligenter",
     },
     toolCards: {
       toolError: "Tool-Fehler",

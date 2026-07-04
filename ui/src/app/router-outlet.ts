@@ -153,15 +153,9 @@ function renderError<TRouteId extends string, TLoadContext, TModule, TData>(
   `;
 }
 
-export function renderRouterOutlet<
-  TRouteId extends string,
-  TLoadContext,
-  TModule,
-  TContext,
-  TData = unknown,
->(
+export function renderRouterOutlet<TRouteId extends string, TLoadContext, TModule, TData = unknown>(
   router: Router<TRouteId, TLoadContext, TModule, TData>,
-  context: TContext,
+  context: unknown,
   selection: RouterOutletSelection<TRouteId, TModule, TData>,
   options: RouterOutletOptions<TLoadContext> = {},
 ): unknown {
@@ -190,7 +184,7 @@ export function renderRouterOutlet<
         : nothing;
   }
   const routeModule = renderedMatch.module;
-  if (!isRenderableModule<TContext, TData>(routeModule)) {
+  if (!isRenderableModule<unknown, TData>(routeModule)) {
     return renderedMatch.error
       ? renderError<TRouteId, TLoadContext, TModule, TData>(
           router,

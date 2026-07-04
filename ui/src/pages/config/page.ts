@@ -1,5 +1,5 @@
 import { html } from "lit";
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { AppNavigate } from "../../app-route-context.ts";
 import { renderSettingsWorkspace } from "../../components/settings-workspace.ts";
 import { t } from "../../i18n/index.ts";
 import type { AppViewState } from "../../ui/app-view-state.ts";
@@ -38,7 +38,7 @@ export type ConfigPageId =
 type ConfigRenderContext = {
   state: AppViewState;
   pageId: ConfigPageId;
-  navigate: RouteRenderContext["navigate"];
+  navigate: AppNavigate;
 };
 
 const COMMUNICATION_SECTION_KEYS = [
@@ -456,21 +456,34 @@ function renderConfigPage({ state, navigate, pageId }: ConfigRenderContext) {
     activeSection: pageId === "mcp" ? "mcp" : activeSelection.activeSection,
     activeSubsection: pageId === "mcp" ? null : activeSelection.activeSubsection,
     onFormModeChange: (mode) => {
-      if (pageId === "config") state.configFormMode = mode;
-      else if (pageId === "communications") state.communicationsFormMode = mode;
-      else if (pageId === "appearance") state.appearanceFormMode = mode;
-      else if (pageId === "automation") state.automationFormMode = mode;
-      else if (pageId === "infrastructure" || pageId === "mcp") state.infrastructureFormMode = mode;
-      else state.aiAgentsFormMode = mode;
+      if (pageId === "config") {
+        state.configFormMode = mode;
+      } else if (pageId === "communications") {
+        state.communicationsFormMode = mode;
+      } else if (pageId === "appearance") {
+        state.appearanceFormMode = mode;
+      } else if (pageId === "automation") {
+        state.automationFormMode = mode;
+      } else if (pageId === "infrastructure" || pageId === "mcp") {
+        state.infrastructureFormMode = mode;
+      } else {
+        state.aiAgentsFormMode = mode;
+      }
     },
     onSearchChange: (query) => {
-      if (pageId === "config") state.configSearchQuery = query;
-      else if (pageId === "communications") state.communicationsSearchQuery = query;
-      else if (pageId === "appearance") state.appearanceSearchQuery = query;
-      else if (pageId === "automation") state.automationSearchQuery = query;
-      else if (pageId === "infrastructure" || pageId === "mcp")
+      if (pageId === "config") {
+        state.configSearchQuery = query;
+      } else if (pageId === "communications") {
+        state.communicationsSearchQuery = query;
+      } else if (pageId === "appearance") {
+        state.appearanceSearchQuery = query;
+      } else if (pageId === "automation") {
+        state.automationSearchQuery = query;
+      } else if (pageId === "infrastructure" || pageId === "mcp") {
         state.infrastructureSearchQuery = query;
-      else state.aiAgentsSearchQuery = query;
+      } else {
+        state.aiAgentsSearchQuery = query;
+      }
     },
     onSectionChange: (section) => {
       if (pageId === "config") {
@@ -494,13 +507,19 @@ function renderConfigPage({ state, navigate, pageId }: ConfigRenderContext) {
       }
     },
     onSubsectionChange: (section) => {
-      if (pageId === "config") state.configActiveSubsection = section;
-      else if (pageId === "communications") state.communicationsActiveSubsection = section;
-      else if (pageId === "appearance") state.appearanceActiveSubsection = section;
-      else if (pageId === "automation") state.automationActiveSubsection = section;
-      else if (pageId === "infrastructure" || pageId === "mcp")
+      if (pageId === "config") {
+        state.configActiveSubsection = section;
+      } else if (pageId === "communications") {
+        state.communicationsActiveSubsection = section;
+      } else if (pageId === "appearance") {
+        state.appearanceActiveSubsection = section;
+      } else if (pageId === "automation") {
+        state.automationActiveSubsection = section;
+      } else if (pageId === "infrastructure" || pageId === "mcp") {
         state.infrastructureActiveSubsection = section;
-      else state.aiAgentsActiveSubsection = section;
+      } else {
+        state.aiAgentsActiveSubsection = section;
+      }
     },
     includeSections:
       pageId === "communications"
@@ -690,7 +709,7 @@ function renderConfigPage({ state, navigate, pageId }: ConfigRenderContext) {
 export function renderConfigRoute(
   state: AppViewState,
   pageId: ConfigPageId,
-  navigate: RouteRenderContext["navigate"],
+  navigate: AppNavigate,
 ) {
   return renderConfigPage({ state, pageId, navigate });
 }

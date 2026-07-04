@@ -1439,6 +1439,8 @@ export const vi: TranslationMap = {
       loadMoreSessions: "Tải thêm phiên",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "Nhanh hơn",
+      reasoningSmarter: "Thông minh hơn",
     },
     toolCards: {
       toolError: "Lỗi công cụ",

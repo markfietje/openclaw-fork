@@ -26,7 +26,7 @@ type PersistedUiSettings = Omit<UiSettings, "token" | "sessionKey" | "lastActive
   sessionsByGateway?: Record<string, ScopedSessionSelection>;
 };
 
-import { inferBasePathFromPathname, normalizeBasePath } from "../app-routes.ts";
+import { inferBasePathFromPathname, normalizeBasePath } from "../app-route-paths.ts";
 import { isSupportedLocale } from "../i18n/index.ts";
 import { getSafeLocalStorage, getSafeSessionStorage } from "../local-storage.ts";
 import { parseImportedCustomTheme, type ImportedCustomTheme } from "./custom-theme.ts";

@@ -2,14 +2,14 @@
 import { html, nothing } from "lit";
 import { styleMap } from "lit/directives/style-map.js";
 import { SIDEBAR_SECTIONS, subtitleForRoute, titleForRoute } from "../app-navigation.ts";
+import type { AppNavigate } from "../app-route-context.ts";
+import type { RouteId } from "../app-route-id.ts";
+import { pathForRoute } from "../app-route-paths.ts";
 import {
   appRouter,
-  pathForRoute,
   resolveAppNotFound,
-  type AppNavigate,
   type ApplicationContext,
   type AppRouteModule,
-  type RouteId,
 } from "../app-routes.ts";
 import {
   renderRouterOutlet,
@@ -455,7 +455,7 @@ function renderConnectedApp(
     navigate: (routeId: RouteId) => void;
   },
   application: ApplicationContext,
-  routeView: RouterOutletSelection<RouteId, AppRouteModule, unknown>,
+  routeView: RouterOutletSelection<RouteId, AppRouteModule>,
 ) {
   const { state, navigate } = context;
   const updatableState = state as AppViewState & { requestUpdate?: () => void };

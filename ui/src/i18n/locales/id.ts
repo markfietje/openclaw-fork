@@ -1447,6 +1447,8 @@ export const id: TranslationMap = {
       loadMoreSessions: "Muat sesi lainnya",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "Lebih cepat",
+      reasoningSmarter: "Lebih cerdas",
     },
     toolCards: {
       toolError: "Kesalahan tool",

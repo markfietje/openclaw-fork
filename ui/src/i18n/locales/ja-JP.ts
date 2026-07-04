@@ -1453,6 +1453,8 @@ export const ja_JP: TranslationMap = {
       loadMoreSessions: "さらにセッションを読み込む",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "高速",
+      reasoningSmarter: "高精度",
     },
     toolCards: {
       toolError: "ツールエラー",

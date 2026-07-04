@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { APP_ROUTE_PATHS } from "./app-route-id.ts";
 import {
+  APP_ROUTE_TREE,
   appRouter,
   createApplicationContext,
   startAppRouter,
@@ -10,6 +12,12 @@ import type { RouteLocation, RouterHistory } from "./router/index.ts";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+it("keeps route definitions aligned with the leaf path contract", () => {
+  expect(Object.fromEntries(APP_ROUTE_TREE.map((route) => [route.id, route.path]))).toEqual(
+    APP_ROUTE_PATHS,
+  );
 });
 
 describe("startAppRouter", () => {

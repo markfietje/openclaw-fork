@@ -1431,6 +1431,8 @@ export const ar: TranslationMap = {
       loadMoreSessions: "تحميل المزيد من الجلسات",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "أسرع",
+      reasoningSmarter: "أذكى",
     },
     toolCards: {
       toolError: "خطأ في الأداة",

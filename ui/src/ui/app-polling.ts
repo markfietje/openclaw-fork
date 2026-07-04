@@ -1,5 +1,5 @@
 // Control UI module implements app polling behavior.
-import { getVisibleRouteId } from "../app-routes.ts";
+import type { RouteId } from "../app-route-id.ts";
 import type { DebugState } from "./controllers/debug.ts";
 import { loadDebug } from "./controllers/debug.ts";
 import type { LogsState } from "./controllers/logs.ts";
@@ -8,6 +8,7 @@ import type { NodesState } from "./controllers/nodes.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 
 type PollingHost = {
+  activeRouteId: RouteId | null;
   nodesPollInterval: number | null;
   logsPollInterval: number | null;
   debugPollInterval: number | null;
@@ -20,7 +21,7 @@ export function startNodesPolling(host: PollingHost) {
     return;
   }
   host.nodesPollInterval = window.setInterval(() => {
-    if (getVisibleRouteId() !== "nodes") {
+    if (host.activeRouteId !== "nodes") {
       return;
     }
     void loadNodes(host as unknown as NodesState, { quiet: true });
@@ -40,7 +41,7 @@ export function startLogsPolling(host: PollingHost) {
     return;
   }
   host.logsPollInterval = window.setInterval(() => {
-    if (getVisibleRouteId() !== "logs") {
+    if (host.activeRouteId !== "logs") {
       return;
     }
     void loadLogs(host as unknown as LogsState, { quiet: true });
@@ -60,7 +61,7 @@ export function startDebugPolling(host: PollingHost) {
     return;
   }
   host.debugPollInterval = window.setInterval(() => {
-    if (getVisibleRouteId() !== "debug") {
+    if (host.activeRouteId !== "debug") {
       return;
     }
     void loadDebug(host as unknown as DebugState);

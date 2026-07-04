@@ -1456,6 +1456,8 @@ export const es: TranslationMap = {
       loadMoreSessions: "Cargar más sesiones",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "Más rápido",
+      reasoningSmarter: "Más inteligente",
     },
     toolCards: {
       toolError: "Error de herramienta",

@@ -1,14 +1,15 @@
 import { html } from "lit";
 import { titleForRoute, subtitleForRoute } from "../../app-navigation.ts";
-import type { RouteRenderContext } from "../../app-routes.ts";
+import type { RouteRenderContext } from "../../app-route-context.ts";
 import type { SettingsHost } from "../../app/app-host.ts";
 import { definePage } from "../../router/index.ts";
 import { warnQueryToken } from "../../ui/app-settings.ts";
+import type { AppViewState } from "../../ui/app-view-state.ts";
 import { switchChatSession } from "../../ui/chat-session-switch.ts";
 import { renderOverview } from "../../ui/views/overview.ts";
 import { loadOverview } from "../loaders.ts";
 
-type OverviewRenderContext = RouteRenderContext;
+type OverviewRenderContext = RouteRenderContext<AppViewState>;
 type OverviewLoadContext = { host: SettingsHost };
 
 export const page = definePage({

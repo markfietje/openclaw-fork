@@ -1412,6 +1412,8 @@ export const zh_TW: TranslationMap = {
       loadMoreSessions: "載入更多工作階段",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "更快",
+      reasoningSmarter: "更智慧",
     },
     toolCards: {
       toolError: "工具錯誤",

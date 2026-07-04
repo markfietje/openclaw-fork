@@ -1,6 +1,6 @@
 // Control UI tests cover navigation behavior.
 import { describe, expect, it, vi } from "vitest";
-import { appRouter, getVisibleRouteId } from "../app-routes.ts";
+import { getVisibleRouteId } from "../app-routes.ts";
 import { mountApp as mountTestApp, registerAppMountHooks } from "./test-helpers/app-mount.ts";
 
 registerAppMountHooks();

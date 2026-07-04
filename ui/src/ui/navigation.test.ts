@@ -7,14 +7,14 @@ import {
   subtitleForRoute,
   titleForRoute,
 } from "../app-navigation.ts";
+import type { RouteId } from "../app-route-id.ts";
 import {
   inferBasePathFromPathname,
   normalizeBasePath,
   normalizePath,
   pathForRoute,
   routeIdFromPath,
-  type RouteId,
-} from "../app-routes.ts";
+} from "../app-route-paths.ts";
 
 /** All route identifiers derived from visible groups plus routed settings slices. */
 const ALL_ROUTES: RouteId[] = Array.from(
@@ -198,6 +198,12 @@ describe("routeIdFromPath", () => {
   it("handles base paths", () => {
     expect(routeIdFromPath("/ui/chat", "/ui")).toBe("chat");
     expect(routeIdFromPath("/apps/openclaw/sessions", "/apps/openclaw")).toBe("sessions");
+    expect(routeIdFromPath("/ui/index.html", "/ui")).toBe("chat");
+  });
+
+  it("rejects paths outside the configured base path", () => {
+    expect(routeIdFromPath("/", "/ui")).toBeNull();
+    expect(routeIdFromPath("/index.html", "/ui")).toBeNull();
   });
 
   it("returns null for unknown path", () => {

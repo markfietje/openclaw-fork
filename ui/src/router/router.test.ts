@@ -28,7 +28,9 @@ describe("router revalidation", () => {
       path: "/page",
       component: () => component,
       loader: (context: string, options: RouteHookOptions) =>
-        new Promise<string>((resolve) => calls.push({ context, options, resolve })),
+        new Promise<string>((resolve) => {
+          calls.push({ context, options, resolve });
+        }),
     });
     const router = createRouter({ routes: [page] });
 
@@ -57,7 +59,9 @@ describe("router revalidation", () => {
       path: "/page",
       component: async () => ({ render: () => undefined }),
       loader: (context: string, options: RouteHookOptions) =>
-        new Promise<string>((resolve) => calls.push({ context, options, resolve })),
+        new Promise<string>((resolve) => {
+          calls.push({ context, options, resolve });
+        }),
     });
     const other = definePage({
       id: "other",

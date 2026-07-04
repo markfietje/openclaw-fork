@@ -1415,6 +1415,8 @@ export const th: TranslationMap = {
       loadMoreSessions: "โหลดเซสชันเพิ่มเติม",
       model: "Chat model",
       thinkingLevel: "Chat thinking level",
+      reasoningFaster: "เร็วขึ้น",
+      reasoningSmarter: "ฉลาดขึ้น",
     },
     toolCards: {
       toolError: "ข้อผิดพลาดของเครื่องมือ",

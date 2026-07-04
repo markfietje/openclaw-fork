@@ -75,10 +75,11 @@ export const page = definePage({
           },
           onFilterChange: (next) => (state.skillsFilter = next),
           onStatusFilterChange: (next) => (state.skillsStatusFilter = next),
-          onRefresh: async () => {
-            await loadAgents(state);
-            reconcileSkillsAgentId(state, state.agentsList);
-            await loadSkills(state, { clearMessages: true });
+          onRefresh: () => {
+            void loadAgents(state).then(async () => {
+              reconcileSkillsAgentId(state, state.agentsList);
+              await loadSkills(state, { clearMessages: true });
+            });
           },
           onToggle: (key, enabled) => void updateSkillEnabled(state, key, enabled),
           onEdit: (key, value) => updateSkillEdit(state, key, value),

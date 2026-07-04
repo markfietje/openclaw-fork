@@ -559,6 +559,7 @@ export function buildChannelInboundEventContext(
     ...params.extra,
     InputProvenance: resolveChannelInputProvenance(params),
     RequestAuthorized: resolveAccessFactsRequestAuthorized(params.access),
+    TextCommandsAllowed: params.access?.commands?.allowTextCommands,
     CommandAuthorized: resolveAccessFactsCommandAuthorized(params.access) === true,
     CommandTurn: commandTurn,
   };

@@ -1288,6 +1288,7 @@ describe("slack prepareSlackMessage inbound contract", () => {
 
     assertPrepared(prepared);
     expect(prepared.ctxPayload.RequestAuthorized).toBe(true);
+    expect(prepared.ctxPayload.TextCommandsAllowed).toBe(false);
     expect(prepared.ctxPayload.CommandAuthorized).toBe(false);
     expect(prepared.ctxPayload.CommandBody).toBe("");
     expect(prepared.ctxPayload.BodyForCommands).toBe("");

@@ -1383,6 +1383,7 @@ export async function prepareSlackMessage(params: {
       },
       commands: {
         authorized: commandAuthorized,
+        allowTextCommands,
       },
     },
     media: toInboundMediaFacts(effectiveMedia),

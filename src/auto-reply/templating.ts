@@ -288,6 +288,8 @@ export type MsgContext = {
   MentionSource?: MentionSource;
   /** Trusted request-level authority. False is a hard deny; absent preserves legacy behavior. */
   RequestAuthorized?: boolean;
+  /** Trusted per-turn text-command policy. False disables command and directive parsing. */
+  TextCommandsAllowed?: boolean;
   CommandAuthorized?: boolean;
   CommandTurn?: CommandTurnContext;
   CommandSource?: "text" | "native";

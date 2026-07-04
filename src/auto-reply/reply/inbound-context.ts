@@ -136,6 +136,10 @@ export function finalizeInboundContext<T extends Record<string, unknown>>(
   // False is a hard deny for every command authorization path.
   normalized.RequestAuthorized =
     typeof normalized.RequestAuthorized === "boolean" ? normalized.RequestAuthorized : undefined;
+  normalized.TextCommandsAllowed =
+    typeof normalized.TextCommandsAllowed === "boolean"
+      ? normalized.TextCommandsAllowed
+      : undefined;
   normalized.CommandAuthorized =
     normalized.RequestAuthorized === false ? false : normalized.CommandAuthorized === true;
   normalized.CommandTurn = resolveCommandTurnContext(normalized);

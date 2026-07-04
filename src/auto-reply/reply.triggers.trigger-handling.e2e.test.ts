@@ -501,6 +501,43 @@ describe("trigger handling", () => {
     });
   });
 
+  it("keeps command-looking text as agent input when the turn disables text commands", async () => {
+    await withTempHome(async (home) => {
+      const cfg = makeCfg(home);
+      cfg.commands = { text: true, allowFrom: { "*": ["*"] } };
+      cfg.agents!.defaults!.model = { primary: "test/default-model" };
+      const runEmbeddedAgentMock = mockRunEmbeddedAgentOk();
+      runEmbeddedAgentMock.mockClear();
+      const body = "/model openai/gpt-4.1-mini";
+
+      const res = await getReplyFromConfig(
+        {
+          Body: body,
+          BodyForAgent: body,
+          BodyForCommands: "",
+          CommandBody: "",
+          RawBody: body,
+          From: "+1002",
+          To: "+2000",
+          Provider: "whatsapp",
+          Surface: "whatsapp",
+          ChatType: "direct",
+          TextCommandsAllowed: false,
+          CommandAuthorized: false,
+        },
+        {},
+        cfg,
+      );
+
+      expect(maybeReplyText(res)).toBe("ok");
+      expect(runEmbeddedAgentMock).toHaveBeenCalledOnce();
+      const call = firstMockCallArg(runEmbeddedAgentMock, "embedded OpenClaw agent");
+      expect(call.prompt).toContain(body);
+      expect(call.provider).toBe("test");
+      expect(call.model).toBe("default-model");
+    });
+  });
+
   it("resolves heartbeat model selection from overrides", async () => {
     await withTempHome(async (home) => {
       const modelCases = [

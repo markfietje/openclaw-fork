@@ -233,6 +233,7 @@ describe("buildChannelInboundEventContext", () => {
     );
 
     expect(ctx.CommandAuthorized).toBe(false);
+    expect(ctx.TextCommandsAllowed).toBe(true);
   });
 
   it("maps trusted request authority and hard-denies command metadata", () => {

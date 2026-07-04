@@ -2575,6 +2575,25 @@ describe("diagnostics-otel service", () => {
     await service.stop?.(ctx);
   });
 
+  test("does not synthesize absent aggregate input usage as zero", async () => {
+    const service = createDiagnosticsOtelService();
+    const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { traces: true });
+    await service.start(ctx);
+
+    emitDiagnosticEvent({
+      type: "model.usage",
+      provider: "openai",
+      model: "gpt-5.4",
+      usage: { output: 5 },
+    });
+    await flushDiagnosticEvents();
+
+    const attributes = startedSpanOptions("openclaw.model.usage")?.attributes;
+    expect(attributes?.["gen_ai.usage.output_tokens"]).toBe(5);
+    expect(attributes).not.toHaveProperty("gen_ai.usage.input_tokens");
+    await service.stop?.(ctx);
+  });
+
   test("exports GenAI client operation duration histogram without diagnostic identifiers", async () => {
     const service = createDiagnosticsOtelService();
     const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { metrics: true });

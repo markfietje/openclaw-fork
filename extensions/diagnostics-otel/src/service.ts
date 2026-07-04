@@ -624,14 +624,17 @@ function modelCallPromptTokens(usage: {
   cacheRead?: number;
   cacheWrite?: number;
 }): number | undefined {
-  if (typeof usage.promptTokens === "number" && Number.isFinite(usage.promptTokens)) {
-    return usage.promptTokens;
+  const promptTokens = nonNegativeFiniteNumber(usage.promptTokens);
+  if (promptTokens !== undefined) {
+    return promptTokens;
   }
-  const input = usage.input ?? 0;
-  const cacheRead = usage.cacheRead ?? 0;
-  const cacheWrite = usage.cacheWrite ?? 0;
-  const total = input + cacheRead + cacheWrite;
-  return total > 0 ? total : undefined;
+  const input = nonNegativeFiniteNumber(usage.input);
+  const cacheRead = nonNegativeFiniteNumber(usage.cacheRead);
+  const cacheWrite = nonNegativeFiniteNumber(usage.cacheWrite);
+  if (input === undefined && cacheRead === undefined && cacheWrite === undefined) {
+    return undefined;
+  }
+  return (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
 }
 
 function assignModelCallPromptStatsAttrs(
@@ -2730,9 +2733,7 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         if (!tracesEnabled) {
           return;
         }
-        const genAiInputTokens =
-          usage.promptTokens ??
-          (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+        const genAiInputTokens = modelCallPromptTokens(usage);
         const spanAttrs: Record<string, string | number> = {
           ...attrs,
           "openclaw.tokens.input": usage.input ?? 0,

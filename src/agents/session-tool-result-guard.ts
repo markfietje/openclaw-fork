@@ -606,6 +606,8 @@ export function installSessionToolResultGuard(
     suppressNextUserMessagePersistence?: boolean;
     suppressTranscriptOnlyAssistantPersistence?: boolean;
     suppressAssistantErrorPersistence?: boolean;
+    /** Persist locally without broadcasting transcript updates to live session consumers. */
+    suppressTranscriptUpdates?: boolean;
     onUserMessagePersisted?: (
       message: Extract<AgentMessage, { role: "user" }>,
     ) => void | Promise<void>;
@@ -872,7 +874,7 @@ export function installSessionToolResultGuard(
       invalidateSerializedPrefixCache:
         callerInvalidatesCache || transformedMessage !== nextMessage || finalWrite.changed,
     });
-    if (sessionFile) {
+    if (sessionFile && opts?.suppressTranscriptUpdates !== true) {
       emitSessionTranscriptUpdate({
         sessionFile,
         sessionKey: opts?.sessionKey,

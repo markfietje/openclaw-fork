@@ -2334,6 +2334,7 @@ export async function runEmbeddedAttempt(
         suppressTranscriptOnlyAssistantPersistence:
           params.suppressTranscriptOnlyAssistantPersistence,
         suppressAssistantErrorPersistence: params.suppressAssistantErrorPersistence,
+        suppressTranscriptUpdates: isRoomObservation,
         onMessagePersisted: () => {
           sessionLockController.refreshAfterOwnedSessionWrite();
         },

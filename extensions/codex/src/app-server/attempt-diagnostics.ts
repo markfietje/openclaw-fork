@@ -5,14 +5,19 @@
 import { createHash } from "node:crypto";
 import {
   emitTrustedDiagnosticEventWithPrivateData,
+  type DiagnosticEventPayload,
   type DiagnosticModelCallContent,
 } from "openclaw/plugin-sdk/diagnostic-runtime";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type {
   CodexAppServerRuntimeOptions,
   resolveCodexPluginsPolicy,
 } from "./config.js";
 
 type TrustedDiagnosticEventInput = Parameters<typeof emitTrustedDiagnosticEventWithPrivateData>[0];
+type CodexModelCallUsage = NonNullable<
+  Extract<DiagnosticEventPayload, { type: "model.call.completed" }>["usage"]
+>;
 
 /** Reads a tool schema field in either app-server or OpenClaw naming. */
 export function readCodexDiagnosticToolParameters(tool: {
@@ -107,6 +112,25 @@ type CodexModelCallDiagnosticTool = {
   parameters?: unknown;
 };
 
+function codexModelCallTerminalFields(lastAssistant: unknown) {
+  if (!isRecord(lastAssistant)) {
+    return {};
+  }
+  const content = Array.isArray(lastAssistant.content) ? lastAssistant.content : undefined;
+  return {
+    ...(typeof lastAssistant.stopReason === "string"
+      ? { stopReason: lastAssistant.stopReason }
+      : {}),
+    ...(content ? { outputContentBlocks: content.length } : {}),
+    ...(content
+      ? {
+          outputToolCalls: content.filter((block) => isRecord(block) && block.type === "toolCall")
+            .length,
+        }
+      : {}),
+  };
+}
+
 /**
  * Creates lifecycle emitters for trusted model-call diagnostics with optional
  * private payload capture.
@@ -157,7 +181,11 @@ export function createCodexModelCallDiagnosticEmitter(params: {
         privateData(buildContent()),
       );
     },
-    emitCompleted(result: { assistantTexts?: unknown; lastAssistant?: unknown }): void {
+    emitCompleted(result: {
+      assistantTexts?: unknown;
+      attemptUsage?: CodexModelCallUsage;
+      lastAssistant?: unknown;
+    }): void {
       if (!started || terminalEmitted) {
         return;
       }
@@ -168,6 +196,8 @@ export function createCodexModelCallDiagnosticEmitter(params: {
           ...params.baseFields,
           durationMs: Math.max(0, now() - startedAt),
           ...requestPayloadBytesField(),
+          ...(result.attemptUsage ? { usage: result.attemptUsage } : {}),
+          ...codexModelCallTerminalFields(result.lastAssistant),
         } as TrustedDiagnosticEventInput,
         privateData({
           ...buildContent(),

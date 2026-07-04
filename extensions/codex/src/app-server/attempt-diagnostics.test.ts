@@ -1,6 +1,16 @@
 // Codex tests cover attempt diagnostics plugin behavior.
-import { describe, expect, it } from "vitest";
-import { buildCodexPluginThreadConfigEligibilityLogData } from "./attempt-diagnostics.js";
+import { describe, expect, it, vi } from "vitest";
+
+const emitTrustedDiagnosticEventWithPrivateData = vi.hoisted(() => vi.fn());
+
+vi.mock("openclaw/plugin-sdk/diagnostic-runtime", () => ({
+  emitTrustedDiagnosticEventWithPrivateData,
+}));
+
+import {
+  buildCodexPluginThreadConfigEligibilityLogData,
+  createCodexModelCallDiagnosticEmitter,
+} from "./attempt-diagnostics.js";
 import { resolveCodexPluginsPolicy } from "./config.js";
 import { buildCodexPluginAppCacheKey } from "./plugin-app-cache-key.js";
 
@@ -86,5 +96,61 @@ describe("Codex app-server attempt diagnostics", () => {
     expect(serialized).not.toContain("header-secret");
     expect(serialized).not.toContain("env-secret");
     expect(serialized).not.toContain("/tmp/codex-home");
+  });
+
+  it("emits normalized usage and terminal output facts", () => {
+    emitTrustedDiagnosticEventWithPrivateData.mockClear();
+    const emitter = createCodexModelCallDiagnosticEmitter({
+      baseFields: {
+        runId: "run-1",
+        callId: "call-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+        contextTokenBudget: 100,
+      },
+      capture: {},
+      tools: [],
+      buildInputMessages: () => [],
+      buildSystemPrompt: () => undefined,
+      now: () => 10,
+    });
+
+    emitter.emitStarted();
+    emitter.emitCompleted({
+      attemptUsage: {
+        input: 80,
+        output: 0,
+        cacheRead: 19,
+        cacheWrite: 0,
+        total: 99,
+      },
+      lastAssistant: {
+        role: "assistant",
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "" },
+          { type: "toolCall", id: "secret-call-id", name: "read", arguments: {} },
+        ],
+      },
+    });
+
+    expect(emitTrustedDiagnosticEventWithPrivateData).toHaveBeenCalledTimes(2);
+    const completedEvent = emitTrustedDiagnosticEventWithPrivateData.mock.calls[1]?.[0];
+    expect(completedEvent).toEqual(
+      expect.objectContaining({
+        type: "model.call.completed",
+        stopReason: "toolUse",
+        outputContentBlocks: 2,
+        outputToolCalls: 1,
+        usage: {
+          input: 80,
+          output: 0,
+          cacheRead: 19,
+          cacheWrite: 0,
+          total: 99,
+        },
+      }),
+    );
+    expect(JSON.stringify(completedEvent)).not.toContain("secret-call-id");
   });
 });

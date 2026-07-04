@@ -32,7 +32,7 @@ import { loadPresence } from "../ui/controllers/presence.ts";
 import { loadSessions } from "../ui/controllers/sessions.ts";
 import { loadSkills, reconcileSkillsAgentId } from "../ui/controllers/skills.ts";
 import { loadUsage } from "../ui/controllers/usage.ts";
-import { resolveCronJobLastRunStatus } from "../ui/cron-status.ts";
+import { isCronJobActiveFailure } from "../ui/cron-status.ts";
 import { isMonitoredAuthProvider } from "../ui/model-auth-helpers.ts";
 import { normalizeAgentId, parseAgentSessionKey } from "../ui/session-key.ts";
 
@@ -308,7 +308,7 @@ function buildAttentionItems(host: SettingsAppHost) {
   }
 
   const cronJobs = host.cronJobs ?? [];
-  const failedCron = cronJobs.filter((j) => resolveCronJobLastRunStatus(j) === "error");
+  const failedCron = cronJobs.filter(isCronJobActiveFailure);
   if (failedCron.length > 0) {
     items.push({
       severity: "error",

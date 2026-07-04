@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingsHost } from "../app/app-host.ts";
 import { loadChannels } from "../ui/controllers/channels.ts";
 import { loadCronJobsPage, loadCronRuns, loadCronStatus } from "../ui/controllers/cron.ts";
-import { loadCron, loadCronPage } from "./loaders.ts";
+import { loadCron, loadCronPage, loadOverview } from "./loaders.ts";
 
 vi.mock("../ui/controllers/channels.ts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/controllers/channels.ts")>()),
@@ -35,5 +35,32 @@ describe("cron page loading", () => {
     expect(loadChannels).toHaveBeenCalledTimes(2);
     expect(loadCronRuns).toHaveBeenCalledTimes(2);
     expect(loadCronStatus).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("overview attention", () => {
+  it("ignores historical failures from disabled cron jobs", async () => {
+    const host = {
+      client: null,
+      connected: false,
+      lastError: null,
+      hello: null,
+      skillsReport: null,
+      cronJobs: [
+        {
+          id: "retired",
+          name: "Retired job",
+          enabled: false,
+          state: { lastRunStatus: "error" },
+        },
+      ],
+      attentionItems: [],
+      overviewLogLines: [],
+      overviewLogCursor: 0,
+    } as unknown as SettingsHost;
+
+    await loadOverview(host);
+
+    expect((host as unknown as { attentionItems: unknown[] }).attentionItems).toEqual([]);
   });
 });

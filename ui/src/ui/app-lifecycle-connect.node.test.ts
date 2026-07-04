@@ -6,17 +6,26 @@ const {
   applySettingsFromUrlMock,
   connectGatewayMock,
   loadBootstrapMock,
+  appRouterStartMock,
   restoreComposerMock,
-  scheduleChatScrollMock,
-  startNodesPollingMock,
 } = vi.hoisted(() => ({
-    applySettingsFromUrlMock: vi.fn(),
-    connectGatewayMock: vi.fn(),
-    loadBootstrapMock: vi.fn(),
-    restoreComposerMock: vi.fn<(...args: unknown[]) => boolean>(() => false),
-    scheduleChatScrollMock: vi.fn(),
-    startNodesPollingMock: vi.fn(),
-  }));
+  applySettingsFromUrlMock: vi.fn(),
+  connectGatewayMock: vi.fn(),
+  loadBootstrapMock: vi.fn(),
+  appRouterStartMock: vi.fn(),
+  restoreComposerMock: vi.fn<(...args: unknown[]) => boolean>(() => false),
+}));
+
+vi.mock("../app-routes.ts", () => ({
+  startAppRouter: appRouterStartMock,
+  appRouter: {
+    subscribe: vi.fn(() => vi.fn()),
+    subscribeSelector: vi.fn(() => vi.fn()),
+    getState: vi.fn(() => ({ matches: [] })),
+    start: appRouterStartMock,
+    stop: vi.fn(),
+  },
+}));
 
 vi.mock("./app-gateway.ts", () => ({
   connectGateway: connectGatewayMock,
@@ -36,13 +45,12 @@ vi.mock("./app-settings.ts", () => ({
   attachThemeListener: vi.fn(),
   detachThemeListener: vi.fn(),
   inferBasePath: vi.fn(() => "/"),
-  syncTabWithLocation: vi.fn(),
+  syncSessionWithLocation: vi.fn(),
   syncThemeWithSettings: vi.fn(),
 }));
 
 vi.mock("./app-polling.ts", () => ({
   startLogsPolling: vi.fn(),
-  startNodesPolling: startNodesPollingMock,
   stopLogsPolling: vi.fn(),
   stopNodesPolling: vi.fn(),
   startDebugPolling: vi.fn(),
@@ -51,12 +59,9 @@ vi.mock("./app-polling.ts", () => ({
 
 vi.mock("./app-scroll.ts", () => ({
   observeTopbar: vi.fn(),
-  scheduleChatScroll: scheduleChatScrollMock,
-  scheduleLogsScroll: vi.fn(),
 }));
 
-let handleConnected: typeof import("./app-lifecycle.ts").handleConnected;
-let handleUpdated: typeof import("./app-lifecycle.ts").handleUpdated;
+import { handleConnected } from "./app-lifecycle.ts";
 
 function createDeferred() {
   let resolve: (() => void) | undefined;
@@ -75,7 +80,6 @@ function createHost() {
     client: null,
     connectGeneration: 0,
     connected: false,
-    tab: "chat",
     assistantName: "OpenClaw",
     assistantAvatar: null,
     assistantAgentId: null,
@@ -98,25 +102,32 @@ function createHost() {
     logsAutoFollow: false,
     logsAtBottom: true,
     logsEntries: [],
-    popStateHandler: vi.fn(),
     topbarObserver: null,
   };
 }
 
+function createApplication(host: unknown) {
+  return {
+    routeLoadContext: host,
+    navigate: vi.fn(),
+    preload: vi.fn(),
+    notifyStateChange: vi.fn(),
+    dispose: vi.fn(),
+  };
+}
+
 describe("handleConnected", () => {
-  beforeEach(async () => {
-    vi.resetModules();
+  beforeEach(() => {
     applySettingsFromUrlMock.mockReset();
     connectGatewayMock.mockReset();
     loadBootstrapMock.mockReset();
+    appRouterStartMock.mockReset();
     restoreComposerMock.mockReset();
     restoreComposerMock.mockReturnValue(false);
-    startNodesPollingMock.mockReset();
-    scheduleChatScrollMock.mockReset();
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
+      location: { pathname: "/chat", search: "", hash: "" },
     });
-    ({ handleConnected, handleUpdated } = await import("./app-lifecycle.ts"));
   });
 
   it("starts the first gateway connect without waiting for bootstrap", async () => {
@@ -125,7 +136,7 @@ describe("handleConnected", () => {
     connectGatewayMock.mockReset();
     const host = createHost();
 
-    handleConnected(host as never);
+    handleConnected(host as never, createApplication(host));
     expect(connectGatewayMock).toHaveBeenCalledTimes(1);
 
     bootstrap.resolve();
@@ -139,7 +150,7 @@ describe("handleConnected", () => {
     connectGatewayMock.mockReset();
     const host = createHost();
 
-    handleConnected(host as never);
+    handleConnected(host as never, createApplication(host));
     expect(connectGatewayMock).toHaveBeenCalledTimes(1);
 
     host.connectGeneration += 1;
@@ -154,14 +165,17 @@ describe("handleConnected", () => {
     loadBootstrapMock.mockReturnValueOnce(bootstrap);
     const host = createHost();
 
-    handleConnected(host as never);
+    handleConnected(host as never, createApplication(host));
 
     expect(applySettingsFromUrlMock).toHaveBeenCalledTimes(1);
     expect(loadBootstrapMock).toHaveBeenCalledTimes(1);
     expect(applySettingsFromUrlMock.mock.invocationCallOrder[0]).toBeLessThan(
       loadBootstrapMock.mock.invocationCallOrder[0],
     );
-    expect(loadBootstrapMock).toHaveBeenCalledWith(host, { applyIdentity: false });
+    expect(loadBootstrapMock).toHaveBeenCalledWith(host, {
+      applyIdentity: false,
+      skipWithoutAuthCandidate: true,
+    });
     expect(
       (host as typeof host & { controlUiBootstrapReady?: Promise<void> }).controlUiBootstrapReady,
     ).toBe(bootstrap);
@@ -177,7 +191,7 @@ describe("handleConnected", () => {
     });
     const host = createHost();
 
-    handleConnected(host as never);
+    handleConnected(host as never, createApplication(host));
 
     expect(restoreComposerMock).toHaveBeenCalledWith(host, { preserveCurrent: true });
     expect(restoreComposerMock.mock.invocationCallOrder[0]).toBeLessThan(
@@ -197,35 +211,31 @@ describe("handleConnected", () => {
     });
     const host = createHost();
 
-    handleConnected(host as never);
+    handleConnected(host as never, createApplication(host));
 
     expect(restoreComposerMock).not.toHaveBeenCalled();
     expect(host.chatComposerProvisionalRestore).toBeNull();
     expect(connectGatewayMock).toHaveBeenCalledWith(host);
   });
 
-  it("starts Nodes polling only when the Nodes tab is active on connect", () => {
+  it("starts the router from the current location on connect", () => {
     loadBootstrapMock.mockResolvedValue(undefined);
     const chatHost = createHost();
 
-    handleConnected(chatHost as never);
-    expect(startNodesPollingMock).not.toHaveBeenCalled();
-
-    const nodesHost = createHost();
-    nodesHost.tab = "nodes";
-    handleConnected(nodesHost as never);
-    expect(startNodesPollingMock).toHaveBeenCalledWith(nodesHost);
-  });
-
-  it("keeps realtime Talk turns pinned in the chat flow", () => {
-    const host = createHost();
-    host.chatStream = null;
-
-    handleUpdated(
-      host as unknown as Parameters<typeof handleUpdated>[0],
-      new Map<PropertyKey, unknown>([["realtimeTalkConversation", []]]),
+    handleConnected(chatHost as never, createApplication(chatHost));
+    expect(appRouterStartMock).toHaveBeenCalledWith(
+      expect.anything(),
+      chatHost.basePath,
+      chatHost,
+      expect.any(Function),
     );
 
-    expect(scheduleChatScrollMock).toHaveBeenCalledWith(host, true);
+    const nodesHost = createHost();
+    handleConnected(nodesHost as never, createApplication(nodesHost));
+    expect(appRouterStartMock).toHaveBeenCalledTimes(2);
+
+    const logsHost = createHost();
+    handleConnected(logsHost as never, createApplication(logsHost));
+    expect(appRouterStartMock).toHaveBeenCalledTimes(3);
   });
 });

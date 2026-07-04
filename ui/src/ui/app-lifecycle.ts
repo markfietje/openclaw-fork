@@ -1,24 +1,14 @@
+import { appRouter, type ApplicationContext, startAppRouter } from "../app-routes.ts";
+import { createBrowserHistory } from "../app/browser.ts";
 // Control UI module implements app lifecycle behavior.
 import { connectGateway } from "./app-gateway.ts";
-import {
-  startLogsPolling,
-  startNodesPolling,
-  stopLogsPolling,
-  stopNodesPolling,
-  startDebugPolling,
-  stopDebugPolling,
-} from "./app-polling.ts";
-import {
-  observeTopbar,
-  scheduleActivityScroll,
-  scheduleChatScroll,
-  scheduleLogsScroll,
-} from "./app-scroll.ts";
+import { stopLogsPolling, stopNodesPolling, stopDebugPolling } from "./app-polling.ts";
+import { observeTopbar } from "./app-scroll.ts";
 import {
   applySettingsFromUrl,
   detachThemeListener,
   inferBasePath,
-  syncTabWithLocation,
+  syncSessionWithLocation,
   syncThemeWithSettings,
 } from "./app-settings.ts";
 import { persistChatComposerState, restoreChatComposerState } from "./chat/composer-persistence.ts";
@@ -26,7 +16,6 @@ import { startControlUiResponsivenessObserver } from "./control-ui-performance.t
 import { loadControlUiBootstrapConfig } from "./controllers/control-ui-bootstrap.ts";
 import { closeDevicePairSetup } from "./controllers/devices.ts";
 import { stopWorkboardLifecycleRefresh, stopWorkboardPolling } from "./controllers/workboard.ts";
-import type { Tab } from "./navigation.ts";
 import type { ChatQueueItem } from "./ui-types.ts";
 
 const CHAT_COMPOSER_DRAFT_PERSIST_DELAY_MS = 200;
@@ -42,7 +31,6 @@ type LifecycleHost = {
   client?: { stop: () => void } | null;
   connectGeneration: number;
   connected?: boolean;
-  tab: Tab;
   assistantName: string;
   assistantAvatar: string | null;
   assistantAvatarSource?: string | null;
@@ -89,22 +77,21 @@ type LifecycleHost = {
   logsScrollFrame?: number | null;
   activityScrollFrame?: number | null;
   sessionsChangedReloadTimer?: number | ReturnType<typeof globalThis.setTimeout> | null;
-  controlUiTabPaintSeq?: number;
   controlUiResponsivenessObserver?: { disconnect: () => void } | null;
   controlUiBootstrapReady?: Promise<void> | null;
-  popStateHandler: () => void;
   topbarObserver: ResizeObserver | null;
+  requestUpdate?: () => void;
 };
 
-export function handleConnected(host: LifecycleHost) {
+export function handleConnected(host: LifecycleHost, application: ApplicationContext) {
   const connectGeneration = ++host.connectGeneration;
   host.basePath = inferBasePath();
+  const history = createBrowserHistory();
   applySettingsFromUrl(host as unknown as Parameters<typeof applySettingsFromUrl>[0]);
   host.controlUiBootstrapReady = loadControlUiBootstrapConfig(
     host as unknown as Parameters<typeof loadControlUiBootstrapConfig>[0],
-    { applyIdentity: false },
+    { applyIdentity: false, skipWithoutAuthCandidate: true },
   );
-  syncTabWithLocation(host as unknown as Parameters<typeof syncTabWithLocation>[0], true);
   const hasPendingGatewaySwitch =
     typeof host.pendingGatewayUrl === "string" && host.pendingGatewayUrl.trim();
   if (!hasPendingGatewaySwitch && restoreChatComposerState(host, { preserveCurrent: true })) {
@@ -117,19 +104,14 @@ export function handleConnected(host: LifecycleHost) {
     host.chatComposerProvisionalRestore = null;
   }
   syncThemeWithSettings(host as unknown as Parameters<typeof syncThemeWithSettings>[0]);
-  window.addEventListener("popstate", host.popStateHandler);
   if (host.connectGeneration === connectGeneration) {
     connectGateway(host as unknown as Parameters<typeof connectGateway>[0]);
   }
-  if (host.tab === "nodes") {
-    startNodesPolling(host as unknown as Parameters<typeof startNodesPolling>[0]);
-  }
-  if (host.tab === "logs") {
-    startLogsPolling(host as unknown as Parameters<typeof startLogsPolling>[0]);
-  }
-  if (host.tab === "debug") {
-    startDebugPolling(host as unknown as Parameters<typeof startDebugPolling>[0]);
-  }
+  void Promise.resolve(
+    startAppRouter(history, host.basePath, application.routeLoadContext, () =>
+      syncSessionWithLocation(host as unknown as Parameters<typeof syncSessionWithLocation>[0]),
+    ),
+  ).catch(() => undefined);
   host.controlUiResponsivenessObserver ??= startControlUiResponsivenessObserver(
     host as unknown as Parameters<typeof startControlUiResponsivenessObserver>[0],
   );
@@ -195,11 +177,15 @@ function scheduleChatComposerDraftPersistence(host: LifecycleHost) {
   }, CHAT_COMPOSER_DRAFT_PERSIST_DELAY_MS);
 }
 
+function clearPendingSessionsChangedReload(host: LifecycleHost) {
+  clearHostGlobalTimeout(host.sessionsChangedReloadTimer);
+  host.sessionsChangedReloadTimer = null;
+}
+
 export function handleDisconnected(host: LifecycleHost) {
   host.connectGeneration += 1;
-  host.controlUiTabPaintSeq = (host.controlUiTabPaintSeq ?? 0) + 1;
+  appRouter.stop();
   flushPendingChatComposerPersistence(host);
-  window.removeEventListener("popstate", host.popStateHandler);
   stopNodesPolling(host as unknown as Parameters<typeof stopNodesPolling>[0]);
   stopLogsPolling(host as unknown as Parameters<typeof stopLogsPolling>[0]);
   stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
@@ -213,8 +199,7 @@ export function handleDisconnected(host: LifecycleHost) {
   host.activityScrollFrame = null;
   clearHostTimeout(host.chatScrollTimeout);
   host.chatScrollTimeout = null;
-  clearHostGlobalTimeout(host.sessionsChangedReloadTimer);
-  host.sessionsChangedReloadTimer = null;
+  clearPendingSessionsChangedReload(host);
   host.realtimeTalkSession?.stop();
   host.realtimeTalkSession = null;
   host.realtimeTalkActive = false;
@@ -233,7 +218,14 @@ export function handleDisconnected(host: LifecycleHost) {
   host.controlUiResponsivenessObserver = null;
 }
 
-export function handleUpdated(host: LifecycleHost, changed: Map<PropertyKey, unknown>) {
+export function handleUpdated(
+  host: LifecycleHost,
+  changed: Map<PropertyKey, unknown>,
+  application: ApplicationContext,
+) {
+  if (changed.has("connected") && host.connected) {
+    void appRouter.revalidate(application.routeLoadContext).catch(() => undefined);
+  }
   if (changed.has("chatQueue")) {
     clearPendingChatComposerPersistence(host);
     persistChatComposerState(host);
@@ -245,52 +237,8 @@ export function handleUpdated(host: LifecycleHost, changed: Map<PropertyKey, unk
   } else if (changed.has("chatMessage")) {
     scheduleChatComposerDraftPersistence(host);
   }
-  if (host.tab === "chat" && host.chatManualRefreshInFlight) {
-    return;
-  }
-  if (
-    host.tab === "chat" &&
-    (changed.has("chatMessages") ||
-      changed.has("chatToolMessages") ||
-      changed.has("chatStream") ||
-      changed.has("chatLoading") ||
-      changed.has("realtimeTalkConversation") ||
-      changed.has("tab"))
-  ) {
-    const forcedByTab = changed.has("tab");
-    const forcedByLoad =
-      changed.has("chatLoading") && changed.get("chatLoading") === true && !host.chatLoading;
-    // Detect streaming start: chatStream changed from null/undefined to a string value
-    const previousStream = changed.get("chatStream") as string | null | undefined;
-    const streamJustStarted =
-      changed.has("chatStream") &&
-      (previousStream === null || previousStream === undefined) &&
-      typeof host.chatStream === "string";
-    scheduleChatScroll(
-      host as unknown as Parameters<typeof scheduleChatScroll>[0],
-      forcedByTab || forcedByLoad || streamJustStarted || !host.chatHasAutoScrolled,
-    );
-  }
-  if (
-    host.tab === "logs" &&
-    (changed.has("logsEntries") || changed.has("logsAutoFollow") || changed.has("tab"))
-  ) {
-    if (host.logsAutoFollow && host.logsAtBottom) {
-      scheduleLogsScroll(
-        host as unknown as Parameters<typeof scheduleLogsScroll>[0],
-        changed.has("tab") || changed.has("logsAutoFollow"),
-      );
-    }
-  }
-  if (
-    host.tab === "activity" &&
-    (changed.has("activityEntries") || changed.has("activityAutoFollow") || changed.has("tab"))
-  ) {
-    if (host.activityAutoFollow && host.activityAtBottom) {
-      scheduleActivityScroll(
-        host as unknown as Parameters<typeof scheduleActivityScroll>[0],
-        changed.has("tab") || changed.has("activityAutoFollow"),
-      );
-    }
-  }
+  application.notifyStateChange(
+    host as unknown as Parameters<ApplicationContext["notifyStateChange"]>[0],
+    changed,
+  );
 }

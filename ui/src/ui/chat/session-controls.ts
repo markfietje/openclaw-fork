@@ -1,6 +1,7 @@
 // Control UI chat module implements session controls behavior.
 import { html } from "lit";
 import { repeat } from "lit/directives/repeat.js";
+import { pathForRoute, type RouteId } from "../../app-routes.ts";
 import { t } from "../../i18n/index.ts";
 import {
   createChatSessionsLoadOverrides,
@@ -18,7 +19,6 @@ import { loadSessions } from "../controllers/sessions.ts";
 import { formatDateTimeMs } from "../format.ts";
 import { icons } from "../icons.ts";
 import { isMonitoredAuthProvider } from "../model-auth-helpers.ts";
-import { pathForTab } from "../navigation.ts";
 import { collectQuotaWindowsFromAuthStatus, formatQuotaReset } from "../provider-quota-summary.ts";
 import { pushUniqueTrimmedSelectOption } from "../select-options.ts";
 import { isCronSessionKey, resolveSessionDisplayName } from "../session-display.ts";
@@ -813,7 +813,7 @@ function renderChatSessionPickerPopover(
   `;
 }
 
-export function renderChatQuotaPill(state: AppViewState) {
+export function renderChatQuotaPill(state: AppViewState, onNavigate?: (routeId: RouteId) => void) {
   const windows = collectQuotaWindowsFromAuthStatus(
     state.modelAuthStatusResult,
     isMonitoredAuthProvider,
@@ -838,7 +838,7 @@ export function renderChatQuotaPill(state: AppViewState) {
   return html`
     <a
       class="chat-controls__quota chat-controls__quota--${severity}"
-      href=${pathForTab("usage", state.basePath)}
+      href=${pathForRoute("usage", state.basePath)}
       title=${title}
       aria-label=${`Provider usage: ${title}`}
       data-chat-provider-usage="true"
@@ -854,7 +854,7 @@ export function renderChatQuotaPill(state: AppViewState) {
           return;
         }
         event.preventDefault();
-        state.setTab("usage");
+        onNavigate?.("usage");
       }}
     >
       <span class="chat-controls__quota-label">${t("tabs.usage")}</span>

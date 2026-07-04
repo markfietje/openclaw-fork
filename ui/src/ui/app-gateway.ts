@@ -4,6 +4,8 @@ import {
   GATEWAY_EVENT_UPDATE_AVAILABLE,
   type GatewayUpdateAvailableEventPayload,
 } from "../../../src/gateway/events.js";
+import { appRouter, getVisibleRouteId, routeLoadContext, type RouteId } from "../app-routes.ts";
+import type { SettingsHost } from "../app/app-host.ts";
 import {
   clearPendingQueueItemsForRun,
   createChatSessionsLoadOverrides,
@@ -12,6 +14,7 @@ import {
   markQueuedChatSendsWaitingForReconnect,
   recordChatSendServerTiming,
   recordFirstAssistantChatTiming,
+  refreshChat,
   refreshChatAvatar,
   scopedAgentListParamsForRefreshTarget,
   retryReconnectableQueuedChatSends,
@@ -19,13 +22,8 @@ import {
   scopedAgentParamsForSession,
 } from "./app-chat.ts";
 import type { EventLogEntry } from "./app-events.ts";
-import {
-  applySettings,
-  loadCron,
-  refreshActiveTab,
-  setLastActiveSessionKey,
-  syncUrlWithSessionKey,
-} from "./app-settings.ts";
+import { scheduleChatScroll } from "./app-scroll.ts";
+import { applySettings, setLastActiveSessionKey, syncUrlWithSessionKey } from "./app-settings.ts";
 import {
   handleAgentEvent,
   handleSessionOperationEvent,
@@ -65,6 +63,7 @@ import {
   pruneExecApprovalQueue,
 } from "./controllers/exec-approval.ts";
 import { loadHealthState, type HealthState } from "./controllers/health.ts";
+import { loadModelAuthStatusState } from "./controllers/model-auth-status.ts";
 import {
   loadModelAuthStatusState,
   type ModelAuthStatusState,
@@ -82,7 +81,6 @@ import {
   type GatewayHelloOk,
 } from "./gateway.ts";
 import { GatewayBrowserClient } from "./gateway.ts";
-import type { Tab } from "./navigation.ts";
 import {
   areUiSessionKeysEquivalent,
   buildAgentMainSessionKey,
@@ -118,7 +116,6 @@ type GatewayHost = DevicesState & {
   onboarding?: boolean;
   eventLogBuffer: EventLogEntry[];
   eventLog: EventLogEntry[];
-  tab: Tab;
   presenceEntries: PresenceEntry[];
   presenceError: string | null;
   presenceStatus: StatusSummary | null;
@@ -241,7 +238,7 @@ function clearSessionsChangedReloadTimer(host: GatewayHost) {
 }
 
 function shouldRunDeferredSessionsReload(host: GatewayHost): boolean {
-  return host.connected && Boolean(host.client) && host.tab !== "chat";
+  return host.connected && Boolean(host.client) && getVisibleRouteId() !== "chat";
 }
 
 function scheduleSessionsChangedReload(host: GatewayHost) {
@@ -648,7 +645,7 @@ function fallbackUnconfiguredSessionSelection(host: GatewayHost): boolean {
 }
 
 function canRefreshActiveTabBeforeAgents(host: GatewayHost): boolean {
-  if (host.tab !== "chat") {
+  if (getVisibleRouteId() !== "chat") {
     return false;
   }
   if (isUiGlobalSessionKey(host.sessionKey)) {
@@ -725,9 +722,7 @@ async function loadAgentsThenRefreshActiveTab(host: GatewayHost) {
   const refreshBeforeAgents = canRefreshActiveTabBeforeAgents(host);
   const agentsListBeforeStartup = host.agentsList;
   const initialRefresh = refreshBeforeAgents
-    ? refreshActiveTab(host as unknown as Parameters<typeof refreshActiveTab>[0], {
-        chatStartup: true,
-      }).catch((err: unknown) => {
+    ? refreshStartupChat(host).catch((err: unknown) => {
         initialRefreshError = normalizeStartupRefreshError(err);
       })
     : Promise.resolve();
@@ -747,12 +742,29 @@ async function loadAgentsThenRefreshActiveTab(host: GatewayHost) {
     agentsError = normalizeStartupRefreshError(err);
   }
   if (refreshAfterAgents) {
-    await refreshActiveTab(host as unknown as Parameters<typeof refreshActiveTab>[0]);
+    await appRouter.revalidate(routeLoadContext(host as unknown as SettingsHost));
   } else if (initialRefreshError) {
     throw initialRefreshError;
   }
   if (agentsError) {
     throw agentsError;
+  }
+}
+
+async function refreshStartupChat(host: GatewayHost) {
+  try {
+    await refreshChat(host as unknown as Parameters<typeof refreshChat>[0], {
+      awaitHistory: true,
+      startup: true,
+    });
+    scheduleChatScroll(
+      host as unknown as Parameters<typeof scheduleChatScroll>[0],
+      !(host as { chatHasAutoScrolled?: boolean }).chatHasAutoScrolled,
+    );
+  } finally {
+    void loadModelAuthStatusState(
+      host as unknown as Parameters<typeof loadModelAuthStatusState>[0],
+    ).catch(() => undefined);
   }
 }
 
@@ -906,7 +918,7 @@ export function connectGateway(host: GatewayHost, options?: ConnectGatewayOption
           { applyIdentity: false },
         );
         void loadAssistantIdentity(host as unknown as AssistantIdentityState);
-        if (host.tab !== "chat") {
+        if (getVisibleRouteId() !== "chat") {
           void refreshChatAvatar(host as unknown as Parameters<typeof refreshChatAvatar>[0]);
         }
         void loadHealthState(host as unknown as HealthState);
@@ -1289,7 +1301,7 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
     { ts: Date.now(), event: evt.event, payload: evt.payload },
     ...host.eventLogBuffer,
   ].slice(0, 250);
-  if (host.tab === "debug" || host.tab === "overview") {
+  if (getVisibleRouteId() === "debug" || getVisibleRouteId() === "overview") {
     host.eventLog = host.eventLogBuffer;
   }
 
@@ -1397,8 +1409,8 @@ function handleGatewayEventUnsafe(host: GatewayHost, evt: GatewayEventFrame) {
     return;
   }
 
-  if (evt.event === "cron" && host.tab === "cron") {
-    void loadCron(host as unknown as Parameters<typeof loadCron>[0]);
+  if (evt.event === "cron" && getVisibleRouteId() === "cron") {
+    void appRouter.revalidate(routeLoadContext(host as unknown as SettingsHost), "cron");
   }
 
   if (evt.event === "device.pair.requested" || evt.event === "device.pair.resolved") {

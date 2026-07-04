@@ -1,14 +1,15 @@
 // Control UI component implements the dashboard header element.
 import { LitElement, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
-import { pathForTab, titleForTab, type Tab } from "../navigation.js";
+import { titleForRoute } from "../../app-navigation.ts";
+import { pathForRoute, type RouteId } from "../../app-routes.ts";
 
 export class DashboardHeader extends LitElement {
   override createRenderRoot() {
     return this;
   }
 
-  @property() tab: Tab = "overview";
+  @property() routeId?: RouteId;
   @property() basePath = "";
   @property() agentLabel = "";
 
@@ -30,17 +31,15 @@ export class DashboardHeader extends LitElement {
   };
 
   override render() {
-    const label = titleForTab(this.tab);
-    const rawAgentLabel = this.agentLabel.trim();
-    // Skip the agent crumb when it repeats the brand crumb ("OpenClaw › OpenClaw › …").
-    const agentLabel = rawAgentLabel.toLowerCase() === "openclaw" ? "" : rawAgentLabel;
+    const label = this.routeId ? titleForRoute(this.routeId) : "";
+    const agentLabel = this.agentLabel.trim();
 
     return html`
       <div class="dashboard-header">
         <div class="dashboard-header__breadcrumb">
           <a
             class="dashboard-header__breadcrumb-link"
-            href=${pathForTab("overview", this.basePath)}
+            href=${pathForRoute("overview", this.basePath)}
             @click=${this.handleOverviewClick}
           >
             OpenClaw

@@ -9,6 +9,13 @@ const flushChatQueueForEventMock = vi.fn();
 const handleChatEventMock = vi.fn((_state?: any) => "idle");
 const handleSessionOperationEventMock = vi.fn();
 const recordFirstAssistantChatTimingMock = vi.fn();
+const currentRoute = vi.hoisted(() => ({ id: "overview" }));
+
+vi.mock("../app-routes.ts", () => ({
+  appRouter: { revalidate: vi.fn() },
+  getVisibleRouteId: () => currentRoute.id,
+  routeLoadContext: (host: unknown) => host,
+}));
 
 vi.mock("./app-chat.ts", () => ({
   CHAT_SESSIONS_ACTIVE_MINUTES: 10,
@@ -45,8 +52,6 @@ vi.mock("./app-chat.ts", () => ({
 }));
 vi.mock("./app-settings.ts", () => ({
   applySettings: vi.fn(),
-  loadCron: vi.fn(),
-  refreshActiveTab: vi.fn(),
   setLastActiveSessionKey: vi.fn(),
 }));
 vi.mock("./app-tool-stream.ts", () => ({
@@ -99,6 +104,7 @@ const { addExecApproval } = await vi.importActual<typeof import("./controllers/e
 );
 
 afterAll(() => {
+  vi.doUnmock("../app-routes.ts");
   vi.doUnmock("./app-chat.ts");
   vi.doUnmock("./app-settings.ts");
   vi.doUnmock("./app-tool-stream.ts");
@@ -139,7 +145,6 @@ function createHost() {
     lastErrorCode: null,
     eventLogBuffer: [],
     eventLog: [],
-    tab: "overview",
     presenceEntries: [],
     presenceError: null,
     presenceStatus: null,
@@ -446,7 +451,7 @@ describe("handleGatewayEvent sessions.changed", () => {
       payload: { sessionKey: "agent:main:main", reason: "cleanup" },
       seq: 1,
     });
-    host.tab = "chat";
+    currentRoute.id = "chat";
     vi.advanceTimersByTime(5_000);
 
     expect(loadSessionsMock).not.toHaveBeenCalled();

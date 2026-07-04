@@ -18,13 +18,13 @@ import yaml from "highlight.js/lib/languages/yaml";
 import MarkdownIt from "markdown-it";
 import markdownItTaskLists from "markdown-it-task-lists";
 import { stripUnsupportedCitationControlMarkers } from "../../../src/shared/text/citation-control-markers.js";
+import { inferBasePathFromPathname, normalizeBasePath, routeIdFromPath } from "../app-routes.ts";
 import { i18n, t } from "../i18n/index.ts";
 import {
   blockArtCodeBlockCopyPayloadEncoding,
   encodeBlockArtCodeBlockCopyPayload,
 } from "./chat/code-block-copy-payload.ts";
 import { truncateText } from "./format.ts";
-import { inferBasePathFromPathname, normalizeBasePath, tabFromPath } from "./navigation.ts";
 import { normalizeLowercaseStringOrEmpty } from "./string-coerce.ts";
 
 const allowedTags = [
@@ -381,7 +381,7 @@ function isHostLocalFileHref(href: string): boolean {
 }
 
 function isControlUiRoutePath(pathname: string): boolean {
-  if (tabFromPath(pathname) !== null) {
+  if (routeIdFromPath(pathname) !== null) {
     return true;
   }
   const basePath = currentControlUiBasePath();
@@ -391,7 +391,7 @@ function isControlUiRoutePath(pathname: string): boolean {
   if (pathname !== basePath && !pathname.startsWith(`${basePath}/`)) {
     return false;
   }
-  return tabFromPath(pathname, basePath) !== null;
+  return routeIdFromPath(pathname, basePath) !== null;
 }
 
 function currentControlUiBasePath(): string {

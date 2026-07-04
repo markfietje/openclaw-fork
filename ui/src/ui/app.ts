@@ -1,7 +1,10 @@
 // Control UI module implements app behavior.
 import { LitElement } from "lit";
 import { state } from "lit/decorators.js";
+import { appRouter, createApplicationContext, type ApplicationContext } from "../app-routes.ts";
+import { createRouterOutletSnapshot } from "../app/router-outlet.ts";
 import { i18n, I18nController, isSupportedLocale, t } from "../i18n/index.ts";
+import { loadCron as loadCronPage, loadOverview as loadOverviewPage } from "../pages/loaders.ts";
 import type { ActivityEntry, ActivityStatus } from "./activity-model.ts";
 import {
   handleChannelConfigReload as handleChannelConfigReloadInternal,
@@ -43,11 +46,7 @@ import {
 } from "./app-lifecycle.ts";
 import { initNativeBridge } from "./app-native-bridge.ts";
 import { createChatSession as createChatSessionInternal } from "./app-render.helpers.ts";
-import {
-  loadSkillWorkshopMode,
-  loadSkillWorkshopUseCurrentChatForRevisions,
-  renderApp,
-} from "./app-render.ts";
+import { renderApp } from "./app-render.ts";
 import {
   exportLogs as exportLogsInternal,
   handleActivityScroll as handleActivityScrollInternal,
@@ -60,12 +59,8 @@ import {
 import {
   applySettings as applySettingsInternal,
   applyLocalUserIdentity as applyLocalUserIdentityInternal,
-  loadCron as loadCronInternal,
-  loadOverview as loadOverviewInternal,
-  setTab as setTabInternal,
   setTheme as setThemeInternal,
   setThemeMode as setThemeModeInternal,
-  onPopState as onPopStateInternal,
 } from "./app-settings.ts";
 import {
   resetToolStream as resetToolStreamInternal,
@@ -114,10 +109,7 @@ import {
   type ExecApprovalRequest,
 } from "./controllers/exec-approval.ts";
 import type { ExecApprovalsFile, ExecApprovalsSnapshot } from "./controllers/exec-approvals.ts";
-import {
-  loadSkillWorkshopProposals,
-  type SkillWorkshopState,
-} from "./controllers/skill-workshop.ts";
+import { type SkillWorkshopState } from "./controllers/skill-workshop.ts";
 import type {
   ClawHubSearchResult,
   ClawHubSkillSecurityVerdict,
@@ -133,10 +125,17 @@ import {
   restoreNativeTitleTooltip,
 } from "./dom-tooltips.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
-import type { Tab } from "./navigation.ts";
 import { resolveAgentIdFromSessionKey } from "./session-key.ts";
 import type { SidebarContent } from "./sidebar-content.ts";
-import { loadLocalUserIdentity, loadSettings, type UiSettings } from "./storage.ts";
+import {
+  loadLocalUserIdentity,
+  loadSettings,
+  loadSkillWorkshopMode,
+  loadSkillWorkshopUseCurrentChatForRevisions,
+  saveSkillWorkshopMode,
+  saveSkillWorkshopUseCurrentChatForRevisions,
+  type UiSettings,
+} from "./storage.ts";
 import { VALID_THEME_NAMES, type ResolvedTheme, type ThemeMode, type ThemeName } from "./theme.ts";
 import type {
   AgentsListResult,
@@ -209,8 +208,14 @@ function resolveOnboardingMode(): boolean {
 
 export class OpenClawApp extends LitElement {
   readonly i18nController = new I18nController(this);
+  applicationContext: ApplicationContext = createApplicationContext(
+    this as unknown as Parameters<typeof createApplicationContext>[0],
+    createRouterOutletSnapshot(appRouter),
+  );
+  private applicationContextDisposed = false;
   clientInstanceId = generateUUID();
   connectGeneration = 0;
+
   @state() settings: UiSettings = loadSettings();
   constructor() {
     super();
@@ -221,7 +226,6 @@ export class OpenClawApp extends LitElement {
   @state() password = "";
   @state() loginShowGatewayToken = false;
   @state() loginShowGatewayPassword = false;
-  @state() tab: Tab = "chat";
   @state() onboarding = resolveOnboardingMode();
   @state() connected = false;
   @state() theme: ThemeName = this.settings.theme ?? "claw";
@@ -750,8 +754,6 @@ export class OpenClawApp extends LitElement {
   refreshSessionsAfterChat = new Map<string, import("./ui-types.js").ChatSessionRefreshTarget>();
   chatSideResultTerminalRuns = new Set<string>();
   basePath = "";
-  popStateHandler = () =>
-    onPopStateInternal(this as unknown as Parameters<typeof onPopStateInternal>[0]);
   topbarObserver: ResizeObserver | null = null;
   private globalKeydownHandler = (e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "k") {
@@ -873,7 +875,17 @@ export class OpenClawApp extends LitElement {
     this.addEventListener("pointerout", this.nativeTitleTooltipPointerOutHandler);
     this.addEventListener("focusin", this.nativeTitleTooltipFocusInHandler);
     this.addEventListener("focusout", this.nativeTitleTooltipFocusOutHandler);
-    handleConnected(this as unknown as Parameters<typeof handleConnected>[0]);
+    if (this.applicationContextDisposed) {
+      this.applicationContext = createApplicationContext(
+        this as unknown as Parameters<typeof createApplicationContext>[0],
+        createRouterOutletSnapshot(appRouter),
+      );
+      this.applicationContextDisposed = false;
+    }
+    handleConnected(
+      this as unknown as Parameters<typeof handleConnected>[0],
+      this.applicationContext,
+    );
     this.nativeBridgeCleanup = initNativeBridge(this);
     void this.initWebPushState();
   }
@@ -907,22 +919,18 @@ export class OpenClawApp extends LitElement {
     }
     this.chatMobileControlsTrigger = null;
     handleDisconnected(this as unknown as Parameters<typeof handleDisconnected>[0]);
+    this.applicationContext.dispose();
+    this.applicationContextDisposed = true;
     super.disconnectedCallback();
   }
 
   protected override updated(changed: Map<PropertyKey, unknown>) {
-    handleUpdated(this as unknown as Parameters<typeof handleUpdated>[0], changed);
+    handleUpdated(
+      this as unknown as Parameters<typeof handleUpdated>[0],
+      changed,
+      this.applicationContext,
+    );
     refreshActiveFloatingTooltip(this);
-    // Some render callbacks assign tab directly while preparing nested panel state.
-    if (changed.has("tab") && this.tab !== "chat" && this.chatMobileControlsOpen) {
-      this.setChatMobileControlsOpen(false);
-    }
-    if (
-      this.tab === "skillWorkshop" &&
-      (changed.has("sessionKey") || changed.has("assistantAgentId"))
-    ) {
-      void loadSkillWorkshopProposals(this, { force: true });
-    }
     if (!changed.has("sessionKey") || this.agentsPanel !== "tools") {
       return;
     }
@@ -1012,14 +1020,6 @@ export class OpenClawApp extends LitElement {
       this as unknown as Parameters<typeof applyLocalUserIdentityInternal>[0],
       next,
     );
-  }
-
-  setTab(next: Tab) {
-    setTabInternal(this as unknown as Parameters<typeof setTabInternal>[0], next);
-    if (next !== "chat") {
-      this.setChatMobileControlsOpen(false);
-    }
-    this.navDrawerOpen = false;
   }
 
   setChatMobileControlsOpen(
@@ -1144,6 +1144,22 @@ export class OpenClawApp extends LitElement {
     this.requestUpdate();
   }
 
+  setSkillWorkshopMode(mode: SkillWorkshopState["skillWorkshopMode"]) {
+    if (this.skillWorkshopMode === mode) {
+      return;
+    }
+    this.skillWorkshopMode = mode;
+    saveSkillWorkshopMode(mode);
+  }
+
+  setSkillWorkshopUseCurrentChatForRevisions(enabled: boolean) {
+    if (this.skillWorkshopUseCurrentChatForRevisions === enabled) {
+      return;
+    }
+    this.skillWorkshopUseCurrentChatForRevisions = enabled;
+    saveSkillWorkshopUseCurrentChatForRevisions(enabled);
+  }
+
   announceSessionSwitch(sessionKey: string, label: string) {
     const id = ++this.sessionSwitchNoticeSeq;
     if (this.sessionSwitchNoticeTimer !== null) {
@@ -1178,11 +1194,11 @@ export class OpenClawApp extends LitElement {
   }
 
   async loadOverview(opts?: { refresh?: boolean }) {
-    await loadOverviewInternal(this as unknown as Parameters<typeof loadOverviewInternal>[0], opts);
+    await loadOverviewPage(this as unknown as Parameters<typeof loadOverviewPage>[0], opts);
   }
 
   async loadCron() {
-    await loadCronInternal(this as unknown as Parameters<typeof loadCronInternal>[0]);
+    await loadCronPage(this as unknown as Parameters<typeof loadCronPage>[0]);
   }
 
   async handleAbortChat(opts?: Parameters<typeof handleAbortChatInternal>[1]) {
@@ -1678,7 +1694,7 @@ export class OpenClawApp extends LitElement {
   }
 
   override render() {
-    return renderApp(this as unknown as AppViewState);
+    return renderApp(this as unknown as AppViewState, this.applicationContext);
   }
 }
 

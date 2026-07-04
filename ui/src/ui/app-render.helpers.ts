@@ -1,37 +1,34 @@
 // Control UI module implements app render behavior.
 import { html, nothing } from "lit";
+import {
+  isSettingsNavigationRoute,
+  navigationIconForRoute,
+  titleForRoute,
+} from "../app-navigation.ts";
+import { appRouter, pathForRoute, routeLoadContext, type RouteId } from "../app-routes.ts";
+import type { SettingsHost } from "../app/app-host.ts";
 import { t } from "../i18n/index.ts";
 import {
   createChatSessionsLoadOverrides,
-  flushChatQueueAfterIdleSessionReconciliation,
   refreshChat,
-  refreshChatAvatar,
   scopedAgentParamsForSession,
   scopedAgentListParamsForSession,
 } from "./app-chat.ts";
-import { syncUrlWithSessionKey } from "./app-settings.ts";
 import type { AppViewState } from "./app-view-state.ts";
-import { persistChatComposerState, restoreChatComposerState } from "./chat/composer-persistence.ts";
-import { reconcileChatRunLifecycle } from "./chat/run-lifecycle.ts";
+import {
+  resetChatStateForSessionSwitch,
+  switchChatSession,
+  switchChatSessionAndWait,
+} from "./chat-session-switch.ts";
 import {
   renderChatSessionSelect as renderChatSessionSelectBase,
   renderChatModelSelect,
   renderChatQuotaPill,
-  resetChatSessionPickerState,
   resolveSessionOptionGroups,
 } from "./chat/session-controls.ts";
-import { cacheChatMessages, readChatMessagesFromCache } from "./chat/session-message-cache.ts";
-import { refreshSlashCommands } from "./chat/slash-commands.ts";
 import { resolveControlUiAuthToken } from "./control-ui-auth.ts";
-import { loadChatHistory } from "./controllers/chat.ts";
-import type { ChatState } from "./controllers/chat.ts";
-import {
-  createSessionAndRefresh,
-  loadSessions,
-  syncSelectedSessionMessageSubscription,
-} from "./controllers/sessions.ts";
+import { createSessionAndRefresh } from "./controllers/sessions.ts";
 import { icons } from "./icons.ts";
-import { iconForTab, isSettingsTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
 import { isCronSessionKey, parseSessionKey, resolveSessionDisplayName } from "./session-display.ts";
 import {
   isSessionKeyTiedToAgent,
@@ -43,21 +40,13 @@ import { normalizeChatAutoScrollMode, type ChatAutoScrollMode } from "./storage.
 import { normalizeLowercaseStringOrEmpty, normalizeOptionalString } from "./string-coerce.ts";
 import type { ThemeMode } from "./theme.ts";
 import type { SessionsListResult } from "./types.ts";
-import type { ChatQueueItem } from "./ui-types.ts";
 
 export { isCronSessionKey, parseSessionKey, resolveSessionDisplayName, resolveSessionOptionGroups };
+export { switchChatSession, switchChatSessionAndWait };
 
 type SessionDefaultsSnapshot = {
   mainSessionKey?: string;
   mainKey?: string;
-};
-
-type SessionSwitchHost = AppViewState & {
-  chatStreamStartedAt: number | null;
-  chatSideResultTerminalRuns: Set<string>;
-  resetChatInputHistoryNavigation(): void;
-  resetToolStream(): void;
-  resetChatScroll(): void;
 };
 
 type ChatRefreshHost = AppViewState & {
@@ -122,91 +111,6 @@ function resolveSidebarChatSessionKey(state: AppViewState): string {
   return "main";
 }
 
-function saveChatQueueForSession(state: AppViewState, sessionKey: string) {
-  const queueBySession = (state.chatQueueBySession ??= {});
-  if (state.chatQueue.length > 0) {
-    queueBySession[sessionKey] = [...state.chatQueue];
-    state.chatQueueBySession = { ...queueBySession };
-    return;
-  }
-  if (Object.hasOwn(queueBySession, sessionKey)) {
-    delete queueBySession[sessionKey];
-    state.chatQueueBySession = { ...queueBySession };
-  }
-}
-
-function restoreChatQueueForSession(state: AppViewState, sessionKey: string): ChatQueueItem[] {
-  return [...(state.chatQueueBySession?.[sessionKey] ?? [])];
-}
-
-function chatMessageCacheForState(state: AppViewState) {
-  return (state.chatMessagesBySession ??= new Map());
-}
-
-function saveChatMessagesForSession(state: AppViewState, sessionKey: string) {
-  cacheChatMessages(chatMessageCacheForState(state), state, { sessionKey }, state.chatMessages);
-}
-
-function restoreChatMessagesForSession(state: AppViewState, sessionKey: string): unknown[] {
-  return readChatMessagesFromCache(chatMessageCacheForState(state), state, { sessionKey });
-}
-
-function resetChatStateForSessionSwitch(state: AppViewState, sessionKey: string) {
-  const host = state as unknown as SessionSwitchHost;
-  const previousSessionKey = state.sessionKey;
-  persistChatComposerState(state, previousSessionKey);
-  saveChatQueueForSession(state, previousSessionKey);
-  saveChatMessagesForSession(state, previousSessionKey);
-  state.sessionKey = sessionKey;
-  if (previousSessionKey !== sessionKey) {
-    resetChatSessionPickerState(state);
-  }
-  const chatSessionState = state as unknown as {
-    currentSessionId?: string | null;
-    reconnectResumeSessionId?: string | null;
-  };
-  chatSessionState.currentSessionId = null;
-  chatSessionState.reconnectResumeSessionId = null;
-  state.chatMessage = "";
-  state.chatAttachments = [];
-  state.chatReplyTarget = null;
-  state.chatMessages = restoreChatMessagesForSession(state, sessionKey);
-  state.chatToolMessages = [];
-  state.activityEntries = [];
-  state.activityExpandedIds = new Set();
-  state.activityAtBottom = true;
-  state.chatStreamSegments = [];
-  state.chatThinkingLevel = null;
-  state.chatVerboseLevel = null;
-  state.chatStream = null;
-  state.chatSideResult = null;
-  state.lastError = null;
-  state.chatError = null;
-  state.chatAvatarUrl = null;
-  state.chatAvatarSource = null;
-  state.chatAvatarStatus = null;
-  state.chatAvatarReason = null;
-  state.realtimeTalkTranscript = null;
-  state.resetRealtimeTalkConversation?.();
-  state.chatQueue = restoreChatQueueForSession(state, sessionKey);
-  restoreChatComposerState(state);
-  host.resetChatInputHistoryNavigation();
-  host.chatStreamStartedAt = null;
-  reconcileChatRunLifecycle(state as unknown as Parameters<typeof reconcileChatRunLifecycle>[0], {
-    clearLocalRun: true,
-    clearChatStream: true,
-    clearToolStream: true,
-    clearSideResultTerminalRuns: true,
-    clearRunStatus: true,
-  });
-  host.resetChatScroll();
-  state.applySettings({
-    ...state.settings,
-    sessionKey,
-    lastActiveSessionKey: sessionKey,
-  });
-}
-
 function canSwitchToNewChatSession(state: AppViewState): boolean {
   return (
     !state.chatLoading &&
@@ -224,14 +128,70 @@ const NEW_CHAT_SESSIONS_LOADING_MESSAGE =
 const NEW_CHAT_CREATE_FAILED_MESSAGE =
   "New Chat could not create a new session. Try again in a moment.";
 
-export function renderTab(state: AppViewState, tab: Tab, opts?: { collapsed?: boolean }) {
-  const href = pathForTab(tab, state.basePath);
-  const isActive = tab === "config" ? isSettingsTab(state.tab) : state.tab === tab;
+const ROUTE_PRELOAD_DELAY_MS = 50;
+const routePreloadTimers = new WeakMap<EventTarget, ReturnType<typeof setTimeout>>();
+
+export function renderRouteNavItem(
+  state: AppViewState,
+  routeId: RouteId,
+  opts?: {
+    activeRouteId?: RouteId;
+    collapsed?: boolean;
+    onNavigate?: (routeId: RouteId) => void;
+    preloadRoute?: (routeId: RouteId) => Promise<void>;
+  },
+) {
+  const href = pathForRoute(routeId, state.basePath);
+  const activeRouteId = opts?.activeRouteId;
+  const isActive =
+    routeId === "config"
+      ? activeRouteId !== undefined && isSettingsNavigationRoute(activeRouteId)
+      : activeRouteId === routeId;
   const collapsed = opts?.collapsed ?? state.settings.navCollapsed;
+  const preload = (event: Event, immediate = false) => {
+    if (isActive) {
+      return;
+    }
+    const target = event.currentTarget;
+    if (!target) {
+      return;
+    }
+    const start = () => {
+      routePreloadTimers.delete(target);
+      void (
+        opts?.preloadRoute ??
+        ((nextRouteId: RouteId) =>
+          appRouter.preloadRoute(nextRouteId, routeLoadContext(state as unknown as SettingsHost)))
+      )(routeId).catch(() => undefined);
+    };
+    if (immediate) {
+      start();
+      return;
+    }
+    if (!routePreloadTimers.has(target)) {
+      routePreloadTimers.set(target, globalThis.setTimeout(start, ROUTE_PRELOAD_DELAY_MS));
+    }
+  };
+  const cancelPreload = (event: Event) => {
+    const target = event.currentTarget;
+    if (!target) {
+      return;
+    }
+    const timer = routePreloadTimers.get(target);
+    if (timer !== undefined) {
+      globalThis.clearTimeout(timer);
+      routePreloadTimers.delete(target);
+    }
+  };
   return html`
     <a
       href=${href}
       class="nav-item ${isActive ? "nav-item--active" : ""}"
+      @focus=${preload}
+      @blur=${cancelPreload}
+      @pointerenter=${preload}
+      @pointerleave=${cancelPreload}
+      @touchstart=${(event: TouchEvent) => preload(event, true)}
       @click=${(event: MouseEvent) => {
         if (
           event.defaultPrevented ||
@@ -244,21 +204,23 @@ export function renderTab(state: AppViewState, tab: Tab, opts?: { collapsed?: bo
           return;
         }
         event.preventDefault();
-        if (tab === "chat") {
+        if (routeId === "chat") {
           if (!state.sessionKey) {
             const mainSessionKey = resolveSidebarChatSessionKey(state);
             resetChatStateForSessionSwitch(state, mainSessionKey);
           }
-          if (state.tab !== "chat") {
+          if (activeRouteId !== undefined && activeRouteId !== "chat") {
             void state.loadAssistantIdentity();
           }
         }
-        state.setTab(tab);
+        opts?.onNavigate?.(routeId);
       }}
-      title=${titleForTab(tab)}
+      title=${titleForRoute(routeId)}
     >
-      <span class="nav-item__icon" aria-hidden="true">${icons[iconForTab(tab)]}</span>
-      ${!collapsed ? html`<span class="nav-item__text">${titleForTab(tab)}</span>` : nothing}
+      <span class="nav-item__icon" aria-hidden="true"
+        >${icons[navigationIconForRoute(routeId)]}</span
+      >
+      ${!collapsed ? html`<span class="nav-item__text">${titleForRoute(routeId)}</span>` : nothing}
     </a>
   `;
 }
@@ -359,7 +321,7 @@ function renderChatAutoScrollToggle(state: AppViewState, options: { labelled?: b
   `;
 }
 
-export function renderChatControls(state: AppViewState) {
+export function renderChatControls(state: AppViewState, onNavigate?: (routeId: RouteId) => void) {
   const hideCron = state.sessionsHideCron ?? true;
   const hiddenCronCount = hideCron ? countHiddenCronSessions(state, state.sessionsResult) : 0;
   const disableThinkingToggle = state.onboarding;
@@ -418,7 +380,7 @@ export function renderChatControls(state: AppViewState) {
     >
       ${renderChatModelSelect(state)}
     </div>
-    ${renderChatQuotaPill(state)}
+    ${renderChatQuotaPill(state, onNavigate)}
     <div class="chat-settings-popover-wrapper">
       <button
         class="chat-settings-chip ${settingsOpen ? "chat-settings-chip--open" : ""}"
@@ -691,68 +653,6 @@ export function renderChatMobileToggle(state: AppViewState) {
   `;
 }
 
-function switchChatSessionInternal(
-  state: AppViewState,
-  nextSessionKey: string,
-  opts?: { awaitInitialLoad?: boolean },
-): Promise<void> | undefined {
-  const previousSessionKey = state.sessionKey;
-  const previousSessionsResult = state.sessionsResult;
-  const nextSessionRow =
-    state.sessionsResult?.sessions.find((row) => row.key === nextSessionKey) ??
-    state.chatSessionPickerResult?.sessions.find((row) => row.key === nextSessionKey);
-  const nextSessionLabel = resolveSessionDisplayName(nextSessionKey, nextSessionRow);
-  resetChatStateForSessionSwitch(state, nextSessionKey);
-  if (previousSessionKey !== nextSessionKey) {
-    state.announceSessionSwitch?.(nextSessionKey, nextSessionLabel);
-  }
-  void state.loadAssistantIdentity();
-  void refreshChatAvatar(state);
-  void refreshSlashCommands({
-    client: state.client,
-    agentId: parseAgentSessionKey(nextSessionKey)?.agentId,
-  });
-  syncUrlWithSessionKey(
-    state as unknown as Parameters<typeof syncUrlWithSessionKey>[0],
-    nextSessionKey,
-    true,
-  );
-  const subscriptionSync = syncSelectedSessionMessageSubscription(
-    state as unknown as AppViewState & { chatSessionMessageSubscriptionKey?: string | null },
-  );
-  const historyLoad = loadChatHistory(state as unknown as ChatState);
-  const sessionsRefresh = refreshSessionOptions(state);
-  flushChatQueueAfterIdleSessionReconciliation(
-    state as unknown as Parameters<typeof flushChatQueueAfterIdleSessionReconciliation>[0],
-    nextSessionKey,
-    historyLoad,
-    sessionsRefresh,
-    previousSessionsResult,
-  );
-  if (opts?.awaitInitialLoad) {
-    void sessionsRefresh;
-    return Promise.allSettled([subscriptionSync, historyLoad]).then(() => undefined);
-  }
-  void subscriptionSync;
-  void historyLoad;
-  void sessionsRefresh;
-  return undefined;
-}
-
-export function switchChatSession(state: AppViewState, nextSessionKey: string): void {
-  void switchChatSessionInternal(state, nextSessionKey);
-}
-
-export function switchChatSessionAndWait(
-  state: AppViewState,
-  nextSessionKey: string,
-): Promise<void> {
-  return (
-    switchChatSessionInternal(state, nextSessionKey, { awaitInitialLoad: true }) ??
-    Promise.resolve()
-  );
-}
-
 export function dismissRealtimeTalkError(state: AppViewState) {
   if (state.realtimeTalkStatus !== "error") {
     return;
@@ -842,13 +742,6 @@ export async function createChatSession(
   state.chatMessage = preservedDraft;
   state.chatAttachments = preservedAttachments;
   return true;
-}
-
-async function refreshSessionOptions(state: AppViewState) {
-  await loadSessions(state as unknown as Parameters<typeof loadSessions>[0], {
-    ...createChatSessionsLoadOverrides(state),
-    ...scopedAgentListParamsForSession(state, state.sessionKey),
-  });
 }
 
 /** Count cron sessions hidden by the active agent-scoped chat filter. */

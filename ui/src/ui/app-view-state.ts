@@ -24,7 +24,6 @@ import type {
 } from "./controllers/skills.ts";
 import type { EmbedSandboxMode } from "./embed-sandbox.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
-import type { Tab } from "./navigation.ts";
 import type { SidebarContent } from "./sidebar-content.ts";
 import type { UiSettings } from "./storage.ts";
 import type { ThemeTransitionContext } from "./theme-transition.ts";
@@ -63,7 +62,6 @@ export type AppViewState = {
   password: string;
   loginShowGatewayToken: boolean;
   loginShowGatewayPassword: boolean;
-  tab: Tab;
   onboarding: boolean;
   basePath: string;
   connected: boolean;
@@ -449,6 +447,25 @@ export type AppViewState = {
     skillCardContentKeys: Record<string, string>;
     skillCardLoadingKey: string | null;
     skillCardErrors: Record<string, string>;
+    skillWorkshopLoading: boolean;
+    skillWorkshopAgentId: string | null;
+    skillWorkshopLoaded: boolean;
+    skillWorkshopError: string | null;
+    skillWorkshopInspectingKey: string | null;
+    skillWorkshopProposals: SkillWorkshopState["skillWorkshopProposals"];
+    skillWorkshopSelectedKey: string | null;
+    skillWorkshopActionBusy: SkillWorkshopState["skillWorkshopActionBusy"];
+    skillWorkshopActionNotice: SkillWorkshopState["skillWorkshopActionNotice"];
+    skillWorkshopActionNoticeTimer: ReturnType<typeof globalThis.setTimeout> | number | null;
+    skillWorkshopRevisionKey: string | null;
+    skillWorkshopRevisionDraft: string;
+    skillWorkshopStatusFilter: SkillWorkshopState["skillWorkshopStatusFilter"];
+    skillWorkshopQuery: string;
+    skillWorkshopFilePreviewKey: string | null;
+    skillWorkshopFilePreviewQuery: string;
+    skillWorkshopQueueWidth: number;
+    skillWorkshopMode: SkillWorkshopState["skillWorkshopMode"];
+    skillWorkshopUseCurrentChatForRevisions: boolean;
     healthLoading: boolean;
     healthResult: HealthSummary | null;
     healthError: string | null;
@@ -490,7 +507,6 @@ export type AppViewState = {
     client: GatewayBrowserClient | null;
     refreshSessionsAfterChat: Map<string, import("./ui-types.js").ChatSessionRefreshTarget>;
     connect: () => void;
-    setTab: (tab: Tab) => void;
     setChatMobileControlsOpen: (
       open: boolean,
       options?: { trigger?: HTMLElement | null; restoreFocus?: boolean },
@@ -503,6 +519,8 @@ export type AppViewState = {
     clearCustomTheme: () => void;
     setBorderRadius: (value: number) => void;
     setTextScale: (value: number) => void;
+    setSkillWorkshopMode: (mode: SkillWorkshopState["skillWorkshopMode"]) => void;
+    setSkillWorkshopUseCurrentChatForRevisions: (enabled: boolean) => void;
     applySettings: (next: UiSettings) => void;
     applyLocalUserIdentity?: (next: { name?: string | null; avatar?: string | null }) => void;
     loadOverview: (opts?: { refresh?: boolean }) => Promise<void>;

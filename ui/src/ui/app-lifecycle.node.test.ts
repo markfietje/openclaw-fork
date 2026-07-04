@@ -12,7 +12,7 @@ function createHost() {
     client: { stop: vi.fn() },
     connectGeneration: 0,
     connected: true,
-    tab: "chat",
+    routeId: "chat",
     assistantName: "OpenClaw",
     assistantAvatar: null,
     assistantAgentId: null,
@@ -31,7 +31,7 @@ function createHost() {
     logsAtBottom: true,
     logsEntries: [],
     sessionsChangedReloadTimer: null as number | ReturnType<typeof globalThis.setTimeout> | null,
-    popStateHandler: vi.fn(),
+    sessionLocationSubscription: vi.fn(),
     topbarObserver: { disconnect: vi.fn() } as unknown as ResizeObserver,
   };
 }
@@ -44,16 +44,22 @@ function createComposerPersistHost(): ComposerPersistHost {
   return createHost() as ComposerPersistHost;
 }
 
+function createApplication(host: unknown) {
+  return {
+    routeLoadContext: host,
+    navigate: vi.fn(),
+    preload: vi.fn(),
+    notifyStateChange: vi.fn(),
+    dispose: vi.fn(),
+  };
+}
+
 describe("handleDisconnected", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
   it("stops and clears gateway client on teardown", () => {
-    vi.stubGlobal("window", {
-      removeEventListener: vi.fn(),
-    });
-    const removeSpy = vi.spyOn(window, "removeEventListener").mockImplementation(() => undefined);
     const host = createHost();
     const disconnectSpy = (
       host.topbarObserver as unknown as { disconnect: ReturnType<typeof vi.fn> }
@@ -61,14 +67,11 @@ describe("handleDisconnected", () => {
 
     handleDisconnected(host as unknown as Parameters<typeof handleDisconnected>[0]);
 
-    expect(removeSpy).toHaveBeenCalledWith("popstate", host.popStateHandler);
     expect(host.connectGeneration).toBe(1);
     expect(host.client).toBeNull();
     expect(host.connected).toBe(false);
     expect(disconnectSpy).toHaveBeenCalledTimes(1);
     expect(host.topbarObserver).toBeNull();
-    removeSpy.mockRestore();
-    vi.unstubAllGlobals();
   });
 
   it("clears pending session reload timers on teardown", () => {
@@ -151,6 +154,7 @@ describe("handleUpdated", () => {
     handleUpdated(
       host as unknown as Parameters<typeof handleUpdated>[0],
       new Map<PropertyKey, unknown>([["chatMessage", ""]]),
+      createApplication(host),
     );
 
     expect(loadChatComposerSnapshot(host, "main")).toBeNull();
@@ -177,6 +181,7 @@ describe("handleUpdated", () => {
     handleUpdated(
       host as unknown as Parameters<typeof handleUpdated>[0],
       new Map<PropertyKey, unknown>([["chatMessage", ""]]),
+      createApplication(host),
     );
     handleDisconnected(host as unknown as Parameters<typeof handleDisconnected>[0]);
 
@@ -200,11 +205,13 @@ describe("handleUpdated", () => {
     handleUpdated(
       host as unknown as Parameters<typeof handleUpdated>[0],
       new Map<PropertyKey, unknown>([["chatMessage", ""]]),
+      createApplication(host),
     );
     host.chatQueue = [{ id: "queued-1", text: "next prompt", createdAt: 1 }];
     handleUpdated(
       host as unknown as Parameters<typeof handleUpdated>[0],
       new Map<PropertyKey, unknown>([["chatQueue", []]]),
+      createApplication(host),
     );
 
     expect(host.chatComposerPersistTimer).toBeNull();
@@ -223,6 +230,7 @@ describe("handleUpdated", () => {
     handleUpdated(
       host as unknown as Parameters<typeof handleUpdated>[0],
       new Map<PropertyKey, unknown>([["chatMessage", ""]]),
+      createApplication(host),
     );
     host.sessionKey = "agent:main:new-session";
     host.chatMessage = "draft restored into new chat";
@@ -232,6 +240,7 @@ describe("handleUpdated", () => {
         ["sessionKey", "main"],
         ["chatMessage", ""],
       ]),
+      createApplication(host),
     );
 
     expect(host.chatComposerPersistTimer).toBeNull();
@@ -254,11 +263,13 @@ describe("handleUpdated", () => {
     handleUpdated(
       host as unknown as Parameters<typeof handleUpdated>[0],
       new Map<PropertyKey, unknown>([["chatMessage", ""]]),
+      createApplication(host),
     );
     host.sessionKey = "agent:main:other";
     handleUpdated(
       host as unknown as Parameters<typeof handleUpdated>[0],
       new Map<PropertyKey, unknown>([["sessionKey", "main"]]),
+      createApplication(host),
     );
 
     expect(host.chatComposerPersistTimer).toBeNull();
@@ -288,6 +299,7 @@ describe("handleUpdated", () => {
         ["chatMessage", ""],
         ["chatQueue", []],
       ]),
+      createApplication(host),
     );
 
     expect(loadChatComposerSnapshot(host, "main")).toEqual({

@@ -1,3 +1,4 @@
+import { normalizeBasePath } from "../app-routes.ts";
 // Control UI module implements app chat behavior.
 import { isNonTerminalAgentRunStatus } from "../../../src/shared/agent-run-status.js";
 import { setLastActiveSessionKey } from "./app-last-active-session.ts";
@@ -64,7 +65,6 @@ import {
   type SessionsState,
 } from "./controllers/sessions.ts";
 import { GatewayRequestError, type GatewayBrowserClient, type GatewayHelloOk } from "./gateway.ts";
-import { normalizeBasePath } from "./navigation.ts";
 import {
   areUiSessionKeysEquivalent,
   DEFAULT_AGENT_ID,
@@ -2087,7 +2087,7 @@ function clearCachedChatMessagesForSession(host: ChatHost, sessionKey: string) {
   clearChatMessagesFromCache(host.chatMessagesBySession, host, { sessionKey });
 }
 
-async function clearChatHistory(host: ChatHost) {
+export async function clearChatHistory(host: ChatHost) {
   if (!host.client || !host.connected) {
     return;
   }

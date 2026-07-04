@@ -1,22 +1,20 @@
+import { getVisibleRouteId, type RouteId } from "../app-routes.ts";
 // Control UI module implements control ui performance behavior.
 import type { EventLogEntry } from "./app-events.ts";
 import type { GatewayConnectTiming, GatewayRequestTiming } from "./gateway.ts";
-import type { Tab } from "./navigation.ts";
 
 type ControlUiPerformanceHost = {
-  tab: Tab;
   isConnected?: boolean;
   eventLog?: unknown[];
   eventLogBuffer?: unknown[];
   requestUpdate?: () => void;
   updateComplete?: Promise<unknown>;
   controlUiRefreshSeq?: number;
-  controlUiTabPaintSeq?: number;
 };
 
 export type ControlUiRefreshRun = {
   seq: number;
-  tab: Tab;
+  routeId: RouteId;
   startedAtMs: number;
 };
 
@@ -28,7 +26,6 @@ const VERY_SLOW_RENDER_MS = 50;
 const RESPONSIVENESS_ENTRY_MS = 50;
 const RESPONSIVENESS_EVENT_LOG_LIMIT = 50;
 const RENDER_EVENT_LOG_LIMIT = 50;
-
 type ControlUiResponsivenessObserver = {
   disconnect: () => void;
 };
@@ -58,6 +55,21 @@ export function controlUiNowMs(): number {
 
 export function roundedControlUiDurationMs(durationMs: number): number {
   return Math.max(0, Math.round(durationMs));
+}
+
+export function measureControlUiRender<T>(
+  host: ControlUiPerformanceHost,
+  surface: string,
+  payload: Record<string, unknown>,
+  render: () => T,
+): T {
+  const startedAtMs = controlUiNowMs();
+  const result = render();
+  recordControlUiRenderTiming(host, surface, {
+    ...payload,
+    durationMs: roundedControlUiDurationMs(controlUiNowMs() - startedAtMs),
+  });
+  return result;
 }
 
 function runAfterMicrotask(callback: () => void): void {
@@ -105,7 +117,7 @@ export function recordControlUiPerformanceEvent(
           )
         : host.eventLogBuffer;
     host.eventLogBuffer = [entry, ...existingBuffer].slice(0, EVENT_LOG_LIMIT);
-    if (host.tab === "debug" || host.tab === "overview") {
+    if (getVisibleRouteId() === "debug" || getVisibleRouteId() === "overview") {
       host.eventLog = host.eventLogBuffer;
     }
   }
@@ -135,32 +147,6 @@ function keepLatestBufferedEventsForType(
   });
 }
 
-export function scheduleControlUiTabVisibleTiming(
-  host: ControlUiPerformanceHost,
-  previousTab: Tab,
-  tab: Tab,
-) {
-  const seq = (host.controlUiTabPaintSeq ?? 0) + 1;
-  host.controlUiTabPaintSeq = seq;
-  const startedAtMs = controlUiNowMs();
-  host.requestUpdate?.();
-
-  const record = () => {
-    if (host.isConnected === false || host.controlUiTabPaintSeq !== seq || host.tab !== tab) {
-      return;
-    }
-    recordControlUiPerformanceEvent(host, "control-ui.tab.visible", {
-      previousTab,
-      tab,
-      durationMs: roundedControlUiDurationMs(controlUiNowMs() - startedAtMs),
-    });
-  };
-
-  void Promise.resolve(host.updateComplete)
-    .catch(() => undefined)
-    .then(() => runAfterPaint(record));
-}
-
 export function scheduleControlUiAfterPaint(
   host: Pick<ControlUiPerformanceHost, "updateComplete">,
   callback: () => void,
@@ -172,15 +158,15 @@ export function scheduleControlUiAfterPaint(
 
 export function beginControlUiRefresh(
   host: ControlUiPerformanceHost,
-  tab: Tab,
+  routeId: RouteId,
 ): ControlUiRefreshRun {
   const seq = (host.controlUiRefreshSeq ?? 0) + 1;
   host.controlUiRefreshSeq = seq;
-  const run = { seq, tab, startedAtMs: controlUiNowMs() };
+  const run = { seq, routeId, startedAtMs: controlUiNowMs() };
   recordControlUiPerformanceEvent(
     host,
     "control-ui.refresh",
-    { tab, phase: "start" },
+    { routeId, phase: "start" },
     { console: false },
   );
   return run;
@@ -190,7 +176,7 @@ export function isCurrentControlUiRefresh(
   host: ControlUiPerformanceHost,
   run: ControlUiRefreshRun,
 ): boolean {
-  return host.controlUiRefreshSeq === run.seq && host.tab === run.tab;
+  return host.controlUiRefreshSeq === run.seq && getVisibleRouteId() === run.routeId;
 }
 
 export function finishControlUiRefresh(
@@ -205,7 +191,7 @@ export function finishControlUiRefresh(
     host,
     "control-ui.refresh",
     {
-      tab: run.tab,
+      routeId: run.routeId,
       phase: "end",
       status,
       durationMs: roundedControlUiDurationMs(controlUiNowMs() - run.startedAtMs),
@@ -348,7 +334,7 @@ function recordResponsivenessEntry(
     host,
     `control-ui.${entryType}`,
     {
-      tab: host.tab,
+      routeId: getVisibleRouteId(),
       name: entry.name,
       startTimeMs: roundedControlUiDurationMs(entry.startTime),
       durationMs,

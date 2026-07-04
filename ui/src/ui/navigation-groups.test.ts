@@ -1,23 +1,25 @@
 // Control UI tests cover navigation groups behavior.
 import { describe, expect, it } from "vitest";
 import {
-  SETTINGS_TABS,
-  TAB_GROUPS,
-  isSettingsTab,
-  isTabInGroup,
-  tabFromPath,
-} from "./navigation.ts";
+  SETTINGS_NAVIGATION_ROUTES,
+  SIDEBAR_SECTIONS,
+  isSettingsNavigationRoute,
+  isRouteInSidebarSection,
+} from "../app-navigation.ts";
+import { routeIdFromPath } from "../app-routes.ts";
 
-describe("TAB_GROUPS", () => {
+describe("SIDEBAR_SECTIONS", () => {
   it("collapses detailed settings slices into one sidebar entry", () => {
-    const settings = TAB_GROUPS.find((group) => group.label === "settings");
-    expect(settings?.tabs).toEqual(["config"]);
-    expect(SETTINGS_TABS.every((tab) => isSettingsTab(tab))).toBe(true);
+    const settings = SIDEBAR_SECTIONS.find((group) => group.label === "settings");
+    expect(settings?.routes).toEqual(["config"]);
+    expect(SETTINGS_NAVIGATION_ROUTES.every((routeId) => isSettingsNavigationRoute(routeId))).toBe(
+      true,
+    );
   });
 
   it("keeps channel management out of the primary control sidebar", () => {
-    const control = TAB_GROUPS.find((group) => group.label === "control");
-    expect(control?.tabs).toEqual([
+    const control = SIDEBAR_SECTIONS.find((group) => group.label === "control");
+    expect(control?.routes).toEqual([
       "overview",
       "activity",
       "workboard",
@@ -26,28 +28,28 @@ describe("TAB_GROUPS", () => {
       "usage",
       "cron",
     ]);
-    expect(SETTINGS_TABS).toContain("channels");
+    expect(SETTINGS_NAVIGATION_ROUTES).toContain("channels");
   });
 
   it("keeps the settings group active for nested settings routes", () => {
-    const settings = TAB_GROUPS.find((group) => group.label === "settings");
+    const settings = SIDEBAR_SECTIONS.find((group) => group.label === "settings");
     if (!settings) {
       throw new Error("Expected settings group");
     }
 
-    expect(isTabInGroup(settings, "appearance")).toBe(true);
-    expect(isTabInGroup(settings, "channels")).toBe(true);
-    expect(isTabInGroup(settings, "debug")).toBe(true);
-    expect(isTabInGroup(settings, "chat")).toBe(false);
+    expect(isRouteInSidebarSection(settings, "appearance")).toBe(true);
+    expect(isRouteInSidebarSection(settings, "channels")).toBe(true);
+    expect(isRouteInSidebarSection(settings, "debug")).toBe(true);
+    expect(isRouteInSidebarSection(settings, "chat")).toBe(false);
   });
 
   it("routes every published settings slice", () => {
-    expect(tabFromPath("/communications")).toBe("communications");
-    expect(tabFromPath("/appearance")).toBe("appearance");
-    expect(tabFromPath("/automation")).toBe("automation");
-    expect(tabFromPath("/infrastructure")).toBe("infrastructure");
-    expect(tabFromPath("/ai-agents")).toBe("aiAgents");
-    expect(tabFromPath("/config")).toBe("config");
-    expect(tabFromPath("/channels")).toBe("channels");
+    expect(routeIdFromPath("/communications")).toBe("communications");
+    expect(routeIdFromPath("/appearance")).toBe("appearance");
+    expect(routeIdFromPath("/automation")).toBe("automation");
+    expect(routeIdFromPath("/infrastructure")).toBe("infrastructure");
+    expect(routeIdFromPath("/ai-agents")).toBe("ai-agents");
+    expect(routeIdFromPath("/config")).toBe("config");
+    expect(routeIdFromPath("/channels")).toBe("channels");
   });
 });

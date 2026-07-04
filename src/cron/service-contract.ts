@@ -9,6 +9,7 @@ import type {
   CronRunResult,
   CronStatusSummary,
   CronUpdateInput,
+  CronUpdatePrecondition,
   CronUpdateResult,
   CronWakeMode,
 } from "./service/state.js";
@@ -31,6 +32,11 @@ export interface CronServiceContract {
   listPage(opts?: CronListPageOptions): Promise<CronListPageResult>;
   add(input: CronAddInput): Promise<CronAddResult>;
   update(id: string, patch: CronUpdateInput): Promise<CronUpdateResult>;
+  updateWithPrecondition(
+    id: string,
+    patch: CronUpdateInput,
+    precondition: CronUpdatePrecondition,
+  ): Promise<CronUpdateResult>;
   remove(id: string): Promise<CronRemoveResult>;
   run(id: string, mode?: CronRunMode, opts?: CronServiceRunOptions): Promise<CronServiceRunResult>;
   enqueueRun(id: string, mode?: CronRunMode): Promise<CronServiceRunResult>;

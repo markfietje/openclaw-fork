@@ -1,5 +1,8 @@
 /** Public cron service operations for lifecycle, CRUD, listing, and manual runs. */
-import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import {
+  normalizeLowercaseStringOrEmpty,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { DEFAULT_AGENT_ID } from "../../routing/session-key.js";
@@ -45,7 +48,7 @@ import type {
 } from "./list-page-types.js";
 import { locked } from "./locked.js";
 import { normalizeOptionalAgentId } from "./normalize.js";
-import type { CronServiceState, CronWakeMode } from "./state.js";
+import type { CronServiceState, CronUpdatePrecondition, CronWakeMode } from "./state.js";
 import { ensureLoaded, persist, warnIfDisabled } from "./store.js";
 import { CRON_TASK_RUNNING_PROGRESS_SUMMARY } from "./task-ledger.js";
 import {
@@ -210,6 +213,32 @@ async function ensureLoadedForRead(state: CronServiceState) {
   const changed = recomputeNextRunsForMaintenance(state);
   if (changed) {
     await persist(state);
+  }
+}
+
+async function persistOrReloadOnFailure(
+  state: CronServiceState,
+  opts?: Parameters<typeof persist>[1],
+) {
+  try {
+    await persist(state, { ...opts, requireQuarantineFlush: true });
+  } catch (error) {
+    state.store = null;
+    state.storeLoadedAtMs = null;
+    try {
+      await ensureLoaded(state, { forceReload: true, skipRecompute: true });
+    } catch (reloadError) {
+      state.store = null;
+      state.storeLoadedAtMs = null;
+      state.deps.log.warn(
+        {
+          storePath: state.deps.storePath,
+          error: reloadError instanceof Error ? reloadError.message : String(reloadError),
+        },
+        "cron: failed to reload durable store after persistence failure",
+      );
+    }
+    throw error;
   }
 }
 
@@ -478,12 +507,20 @@ export async function add(state: CronServiceState, input: CronJobCreate) {
   return await locked(state, async () => {
     warnIfDisabled(state, "add");
     await ensureLoaded(state, { skipRecompute: true });
-    const job = createJob(state, input);
+    const normalizedId = normalizeOptionalString(input.id);
+    if (input.id !== undefined && normalizedId === undefined) {
+      throw new Error("cron job id must not be blank");
+    }
+    if (normalizedId && state.store?.jobs.some((job) => job.id === normalizedId)) {
+      throw new Error(`cron job already exists: ${normalizedId}`);
+    }
+    const normalizedInput = normalizedId === undefined ? input : { ...input, id: normalizedId };
+    const job = createJob(state, normalizedInput);
     state.store?.jobs.push(job);
 
     recomputeNextRunsForMaintenance(state);
 
-    await persist(state);
+    await persistOrReloadOnFailure(state);
     armTimer(state);
 
     state.deps.log.info(
@@ -508,88 +545,111 @@ export async function add(state: CronServiceState, input: CronJobCreate) {
   });
 }
 
+async function updateLoadedJob(params: {
+  state: CronServiceState;
+  id: string;
+  patch: CronJobPatch;
+  precondition?: CronUpdatePrecondition;
+}) {
+  const { state, id, patch, precondition } = params;
+  warnIfDisabled(state, "update");
+  await ensureLoaded(state, { skipRecompute: true });
+  const job = findJobOrThrow(state, id);
+  const now = state.deps.nowMs();
+  precondition?.(structuredClone(job), now);
+  const nextJob = structuredClone(job);
+  applyJobPatch(nextJob, patch, {
+    defaultAgentId: state.deps.defaultAgentId,
+    scheduleValidationNowMs: now,
+  });
+  if (nextJob.schedule.kind === "every") {
+    const anchor = nextJob.schedule.anchorMs;
+    if (typeof anchor !== "number" || !Number.isFinite(anchor)) {
+      // Inherit the previous cadence anchor only for an unchanged-interval
+      // re-save (UIs resubmit the schedule without the internal anchorMs).
+      // Without this an idempotent edit re-phases the job to now, shifting
+      // every future fire time and skipping an already-due slot. A genuine
+      // interval change still anchors to the edit time so the new cadence
+      // starts now, matching the prior update semantics.
+      const previousAnchorMs =
+        job.schedule.kind === "every" &&
+        job.schedule.everyMs === nextJob.schedule.everyMs &&
+        typeof job.schedule.anchorMs === "number" &&
+        Number.isFinite(job.schedule.anchorMs)
+          ? job.schedule.anchorMs
+          : undefined;
+      const fallbackAnchorMs =
+        previousAnchorMs ??
+        (patch.schedule?.kind === "every"
+          ? now
+          : typeof nextJob.createdAtMs === "number" && Number.isFinite(nextJob.createdAtMs)
+            ? nextJob.createdAtMs
+            : now);
+      nextJob.schedule = {
+        ...nextJob.schedule,
+        anchorMs: Math.max(0, Math.floor(fallbackAnchorMs)),
+      };
+    }
+  }
+  // Only advance a recurring job's next run when the schedule/enabled inputs
+  // actually changed. An idempotent re-save (same schedule, or re-enabling an
+  // already-enabled job) must preserve a still-due slot, matching the
+  // add/remove maintenance recompute; otherwise the pending run is dropped.
+  const schedulingInputsChanged =
+    (patch.schedule !== undefined || patch.enabled !== undefined) &&
+    !cronSchedulingInputsEqual(job, nextJob);
+  const scheduleChanged = patch.schedule !== undefined;
+
+  if (scheduleChanged && nextJob.schedule.kind === "cron" && !isJobEnabled(nextJob)) {
+    computeJobNextRunAtMs({ ...nextJob, enabled: true }, now);
+  }
+
+  nextJob.updatedAtMs = now;
+  if (schedulingInputsChanged) {
+    if (isJobEnabled(nextJob)) {
+      nextJob.state.nextRunAtMs = computeJobNextRunAtMs(nextJob, now);
+    } else {
+      nextJob.state.nextRunAtMs = undefined;
+      nextJob.state.runningAtMs = undefined;
+    }
+  } else if (isJobEnabled(nextJob) && !hasScheduledNextRunAtMs(nextJob.state.nextRunAtMs)) {
+    nextJob.state.nextRunAtMs = computeJobNextRunAtMs(nextJob, now);
+  }
+
+  if (state.store) {
+    const index = state.store.jobs.findIndex((entry) => entry.id === id);
+    if (index >= 0) {
+      state.store.jobs[index] = nextJob;
+    }
+  }
+
+  await persistOrReloadOnFailure(state);
+  armTimer(state);
+  emit(state, {
+    jobId: id,
+    action: "updated",
+    job: nextJob,
+    nextRunAtMs: nextJob.state.nextRunAtMs,
+  });
+  return nextJob;
+}
+
 /** Updates a cron job patch in-place, recomputes affected schedule state, and persists it. */
 export async function update(state: CronServiceState, id: string, patch: CronJobPatch) {
   return await locked(state, async () => {
-    warnIfDisabled(state, "update");
-    await ensureLoaded(state, { skipRecompute: true });
-    const job = findJobOrThrow(state, id);
-    const now = state.deps.nowMs();
-    const nextJob = structuredClone(job);
-    applyJobPatch(nextJob, patch, {
-      defaultAgentId: state.deps.defaultAgentId,
-      scheduleValidationNowMs: now,
-    });
-    if (nextJob.schedule.kind === "every") {
-      const anchor = nextJob.schedule.anchorMs;
-      if (typeof anchor !== "number" || !Number.isFinite(anchor)) {
-        // Inherit the previous cadence anchor only for an unchanged-interval
-        // re-save (UIs resubmit the schedule without the internal anchorMs).
-        // Without this an idempotent edit re-phases the job to now, shifting
-        // every future fire time and skipping an already-due slot. A genuine
-        // interval change still anchors to the edit time so the new cadence
-        // starts now, matching the prior update semantics.
-        const previousAnchorMs =
-          job.schedule.kind === "every" &&
-          job.schedule.everyMs === nextJob.schedule.everyMs &&
-          typeof job.schedule.anchorMs === "number" &&
-          Number.isFinite(job.schedule.anchorMs)
-            ? job.schedule.anchorMs
-            : undefined;
-        const fallbackAnchorMs =
-          previousAnchorMs ??
-          (patch.schedule?.kind === "every"
-            ? now
-            : typeof nextJob.createdAtMs === "number" && Number.isFinite(nextJob.createdAtMs)
-              ? nextJob.createdAtMs
-              : now);
-        nextJob.schedule = {
-          ...nextJob.schedule,
-          anchorMs: Math.max(0, Math.floor(fallbackAnchorMs)),
-        };
-      }
-    }
-    // Only advance a recurring job's next run when the schedule/enabled inputs
-    // actually changed. An idempotent re-save (same schedule, or re-enabling an
-    // already-enabled job) must preserve a still-due slot, matching the
-    // add/remove maintenance recompute; otherwise the pending run is dropped.
-    const schedulingInputsChanged =
-      (patch.schedule !== undefined || patch.enabled !== undefined) &&
-      !cronSchedulingInputsEqual(job, nextJob);
-    const scheduleChanged = patch.schedule !== undefined;
+    return await updateLoadedJob({ state, id, patch });
+  });
+}
 
-    if (scheduleChanged && nextJob.schedule.kind === "cron" && !isJobEnabled(nextJob)) {
-      computeJobNextRunAtMs({ ...nextJob, enabled: true }, now);
-    }
-
-    nextJob.updatedAtMs = now;
-    if (schedulingInputsChanged) {
-      if (isJobEnabled(nextJob)) {
-        nextJob.state.nextRunAtMs = computeJobNextRunAtMs(nextJob, now);
-      } else {
-        nextJob.state.nextRunAtMs = undefined;
-        nextJob.state.runningAtMs = undefined;
-      }
-    } else if (isJobEnabled(nextJob) && !hasScheduledNextRunAtMs(nextJob.state.nextRunAtMs)) {
-      nextJob.state.nextRunAtMs = computeJobNextRunAtMs(nextJob, now);
-    }
-
-    if (state.store) {
-      const index = state.store.jobs.findIndex((entry) => entry.id === id);
-      if (index >= 0) {
-        state.store.jobs[index] = nextJob;
-      }
-    }
-
-    await persist(state);
-    armTimer(state);
-    emit(state, {
-      jobId: id,
-      action: "updated",
-      job: nextJob,
-      nextRunAtMs: nextJob.state.nextRunAtMs,
-    });
-    return nextJob;
+/** Updates a cron job only after a store-locked caller precondition passes. */
+export async function updateWithPrecondition(
+  state: CronServiceState,
+  id: string,
+  patch: CronJobPatch,
+  precondition: CronUpdatePrecondition,
+) {
+  return await locked(state, async () => {
+    return await updateLoadedJob({ state, id, patch, precondition });
   });
 }
 
@@ -608,7 +668,7 @@ export async function remove(state: CronServiceState, id: string) {
 
     recomputeNextRunsForMaintenance(state);
 
-    await persist(state);
+    await persistOrReloadOnFailure(state);
     armTimer(state);
     if (removed) {
       emit(state, { jobId: id, action: "removed", job: removedJob });

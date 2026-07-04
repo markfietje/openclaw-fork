@@ -2035,6 +2035,7 @@ describe("runCli exit behavior", () => {
     ["agents list", ["node", "openclaw", "agents", "list"]],
     ["models list", ["node", "openclaw", "models", "list"]],
     ["models status without live probe", ["node", "openclaw", "models", "status"]],
+    ["routines list", ["node", "openclaw", "routines", "list"]],
     ["skills check", ["node", "openclaw", "skills", "check"]],
     ["skills info", ["node", "openclaw", "skills", "info", "weather"]],
     ["skills list", ["node", "openclaw", "skills", "list"]],

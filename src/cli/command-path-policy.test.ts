@@ -244,6 +244,10 @@ describe("command-path-policy", () => {
       loadPlugins: "never",
       networkProxy: "bypass",
     });
+    expectResolvedPolicy(["routines", "list"], {
+      loadPlugins: "never",
+      networkProxy: "bypass",
+    });
   });
 
   it("defaults unknown command paths to network proxy routing", () => {
@@ -258,6 +262,7 @@ describe("command-path-policy", () => {
 
   it("resolves static network proxy bypass policies from the catalog", () => {
     expect(resolveCliNetworkProxyPolicy(["node", "openclaw", "status"])).toBe("bypass");
+    expect(resolveCliNetworkProxyPolicy(["node", "openclaw", "routines", "list"])).toBe("bypass");
     expect(
       resolveCliNetworkProxyPolicy(["node", "openclaw", "config", "get", "proxy.enabled"]),
     ).toBe("bypass");

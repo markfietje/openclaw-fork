@@ -279,3 +279,5 @@ export type CronListResult = CronJob[];
 export type CronAddInput = CronJobCreate;
 /** Normalized patch input accepted by cron service updates. */
 export type CronUpdateInput = CronJobPatch;
+/** Cron-store-locked guard evaluated against the current job before an update applies. */
+export type CronUpdatePrecondition = (job: CronJob, nowMs: number) => void;

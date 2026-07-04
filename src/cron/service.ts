@@ -51,6 +51,14 @@ export class CronService implements CronServiceContract {
     return await ops.update(this.state, id, patch);
   }
 
+  async updateWithPrecondition(
+    id: string,
+    patch: CronJobPatch,
+    precondition: (job: CronJob, nowMs: number) => void,
+  ) {
+    return await ops.updateWithPrecondition(this.state, id, patch, precondition);
+  }
+
   async remove(id: string) {
     return await ops.remove(this.state, id);
   }

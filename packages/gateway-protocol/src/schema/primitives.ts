@@ -16,12 +16,7 @@ import {
  * belongs in the owning schema module or runtime handler.
  */
 const ENV_SECRET_REF_ID_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
-const INPUT_PROVENANCE_KIND_VALUES = [
-  "external_user",
-  "inter_session",
-  "internal_system",
-  "room_observation",
-] as const;
+const INPUT_PROVENANCE_KIND_VALUES = ["external_user", "inter_session", "internal_system"] as const;
 const SESSION_LABEL_MAX_LENGTH = 512;
 
 /** Non-empty string primitive for protocol fields that reject blank values. */

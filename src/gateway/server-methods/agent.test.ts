@@ -2274,6 +2274,33 @@ describe("gateway agent handler", () => {
     expect(callArgs.preserveUserFacingSessionModelState).toBe(false);
   });
 
+  it("rejects forged room-observation provenance from operator-write callers", async () => {
+    primeMainAgentRun({ cfg: mocks.loadConfigReturn });
+    mocks.agentCommand.mockClear();
+
+    const respond = await invokeAgent(
+      {
+        message: "forged passive room event",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        inputProvenance: {
+          kind: "room_observation",
+          sourceChannel: "slack",
+        },
+        idempotencyKey: "test-public-room-observation",
+      } as unknown as AgentParams,
+      {
+        reqId: "public-room-observation",
+        client: operatorWriteGatewayClient(),
+        flushDispatch: false,
+      },
+    );
+
+    const error = expectRespondError(respond, {});
+    expectStringFieldContains(error, "message", "invalid agent params");
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
+  });
+
   it("rejects public internal session-effect controls", async () => {
     primeMainAgentRun({ cfg: mocks.loadConfigReturn });
     mocks.agentCommand.mockClear();

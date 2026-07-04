@@ -7,6 +7,7 @@ import {
   cleanupTempPaths,
   createContextEngineAttemptRunner,
   createContextEngineBootstrapAndAssemble,
+  getHoisted,
   preloadRunEmbeddedAttemptForTests,
   resetEmbeddedAttemptHarness,
 } from "./attempt.spawn-workspace.test-support.js";
@@ -77,6 +78,20 @@ describe("runEmbeddedAttempt trajectory suppression", () => {
 
     await expectMissing(cacheTracePath);
     await expectMissing(anthropicPayloadPath);
+  });
+
+  it("suppresses live transcript updates for the detached passive session manager", async () => {
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      attemptOverrides: passiveAttemptOverrides,
+    });
+
+    expect(getHoisted().guardSessionManagerMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ suppressTranscriptUpdates: true }),
+    );
   });
 
   it("does not create or append configured-directory trajectories for passive observations", async () => {

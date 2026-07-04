@@ -67,6 +67,7 @@ type AttemptSpawnWorkspaceHoisted = {
   spawnSubagentDirectMock: UnknownMock;
   createAgentSessionMock: UnknownMock;
   sessionManagerOpenMock: UnknownMock;
+  guardSessionManagerMock: UnknownMock;
   defaultResourceLoaderInitMock: UnknownMock;
   resolveSandboxContextMock: UnknownMock;
   ensureGlobalUndiciEnvProxyDispatcherMock: UnknownMock;
@@ -146,6 +147,7 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
   const spawnSubagentDirectMock = vi.fn();
   const createAgentSessionMock = vi.fn();
   const sessionManagerOpenMock = vi.fn();
+  const guardSessionManagerMock = vi.fn((sessionManager: unknown) => sessionManager);
   const defaultResourceLoaderInitMock = vi.fn();
   const resolveSandboxContextMock = vi.fn();
   const ensureGlobalUndiciEnvProxyDispatcherMock = vi.fn();
@@ -218,6 +220,7 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
     spawnSubagentDirectMock,
     createAgentSessionMock,
     sessionManagerOpenMock,
+    guardSessionManagerMock,
     defaultResourceLoaderInitMock,
     resolveSandboxContextMock,
     ensureGlobalUndiciEnvProxyDispatcherMock,
@@ -358,7 +361,7 @@ vi.mock("../../sandbox.js", () => ({
 }));
 
 vi.mock("../../session-tool-result-guard-wrapper.js", () => ({
-  guardSessionManager: (sessionManager: unknown) => sessionManager,
+  guardSessionManager: (...args: unknown[]) => hoisted.guardSessionManagerMock(...args),
 }));
 
 vi.mock("../../embedded-agent-subscribe.js", () => ({
@@ -978,6 +981,9 @@ export function resetEmbeddedAttemptHarness(
   }
   hoisted.createAgentSessionMock.mockReset();
   hoisted.sessionManagerOpenMock.mockReset().mockReturnValue(hoisted.sessionManager);
+  hoisted.guardSessionManagerMock
+    .mockReset()
+    .mockImplementation((sessionManager: unknown) => sessionManager);
   hoisted.defaultResourceLoaderInitMock.mockReset();
   hoisted.resolveSandboxContextMock.mockReset();
   hoisted.ensureGlobalUndiciEnvProxyDispatcherMock.mockReset();

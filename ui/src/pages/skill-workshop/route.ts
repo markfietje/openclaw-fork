@@ -38,5 +38,5 @@ export const page = definePage({
       },
     })),
   loader: ({ app }: SkillWorkshopLoadContext) =>
-    loadSkillWorkshopProposals(app).then(() => undefined),
+    loadSkillWorkshopProposals(app, { force: true }).then(() => undefined),
 });

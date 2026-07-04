@@ -975,8 +975,11 @@ export function renderChatQuotaPill(state: AppViewState, onNavigate?: (routeId: 
         ) {
           return;
         }
+        if (!onNavigate) {
+          return;
+        }
         event.preventDefault();
-        onNavigate?.("usage");
+        onNavigate("usage");
       }}
     >
       <span class="chat-controls__quota-label">${t("tabs.usage")}</span>

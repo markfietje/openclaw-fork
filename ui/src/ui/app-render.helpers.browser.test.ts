@@ -168,6 +168,14 @@ describe("chat header controls (browser)", () => {
     );
     expect(quota.getAttribute("href")).toBe("/usage");
     expect(quota.getAttribute("title")).toContain("Codex");
+    let preventedByQuota = true;
+    container.addEventListener("click", (event) => {
+      preventedByQuota = event.defaultPrevented;
+      event.preventDefault();
+    });
+    const click = new MouseEvent("click", { bubbles: true, button: 0, cancelable: true });
+    quota.dispatchEvent(click);
+    expect(preventedByQuota).toBe(false);
   });
 
   it("omits the quota pill from the desktop composer controls when no usage data is present", async () => {

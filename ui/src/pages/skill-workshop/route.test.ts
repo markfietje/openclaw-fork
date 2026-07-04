@@ -13,6 +13,15 @@ vi.mock("./page.ts", () => ({
 describe("skill workshop route", () => {
   beforeEach(() => {
     vi.mocked(loadSkillWorkshopProposals).mockReset();
+    vi.mocked(loadSkillWorkshopProposals).mockResolvedValue();
+  });
+
+  it("forces proposal refreshes when the route loads", async () => {
+    const app = {};
+
+    await page.loader?.({ app } as never, {} as never);
+
+    expect(loadSkillWorkshopProposals).toHaveBeenCalledWith(app, { force: true });
   });
 
   it("refreshes proposals when the active session changes", async () => {

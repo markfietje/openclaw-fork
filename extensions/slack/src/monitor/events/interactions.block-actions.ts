@@ -17,6 +17,7 @@ import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { isSlackApprovalAuthorizedSender } from "../../approval-auth.js";
 import { isSlackExecApprovalAuthorizedSender } from "../../exec-approvals.js";
 import { dispatchSlackPluginInteractiveHandler } from "../../interactive-dispatch.js";
+import { parseSlackModalPrivateMetadata } from "../../modal-metadata.js";
 import {
   SLACK_REPLY_BUTTON_ACTION_ID,
   SLACK_REPLY_LINK_ACTION_ID,
@@ -27,9 +28,10 @@ import {
   authorizeSlackSystemEventSender,
   resolveSlackCommandIngress,
   resolveSlackEffectiveAllowFrom,
+  resolveSlackRoomRequestUserPolicy,
 } from "../auth.js";
-import { resolveSlackChannelConfig } from "../channel-config.js";
-import type { SlackMonitorContext } from "../context.js";
+import { resolveSlackChannelConfig, resolveSlackRequestUserAccess } from "../channel-config.js";
+import { normalizeSlackChannelType, type SlackMonitorContext } from "../context.js";
 import {
   buildPluginBindingResolvedText,
   parsePluginBindingApprovalCustomId,
@@ -101,6 +103,7 @@ type SlackBlockActionBody = {
   channel?: { id?: string };
   container?: { channel_id?: string; message_ts?: string; thread_ts?: string };
   message?: { ts?: string; text?: string; blocks?: unknown[] };
+  view?: { id?: string; private_metadata?: string; hash?: string };
 };
 
 type SlackBlockActionRespond = NonNullable<SlackActionMiddlewareArgs["respond"]>;
@@ -118,6 +121,8 @@ type ParsedSlackBlockAction = {
   blockId?: string;
   userId: string;
   channelId?: string;
+  channelTypeHint?: "im" | "mpim" | "channel" | "group";
+  expectedUserId?: string;
   messageTs?: string;
   threadTs?: string;
   actionSummary: SlackActionSummary;
@@ -499,10 +504,11 @@ async function authorizeSlackBlockAction(params: {
     ctx: params.ctx,
     senderId: params.parsed.userId,
     channelId: params.parsed.channelId,
+    channelType: params.parsed.channelTypeHint,
     // Block action sender identity is verified by Slack's request signing.
     // Pass the Slack-verified userId as expectedSenderId to satisfy the
     // mandatory actor-binding requirement for interactive events.
-    expectedSenderId: params.parsed.userId,
+    expectedSenderId: params.parsed.expectedUserId ?? params.parsed.userId,
     interactiveEvent: true,
   });
   if (auth.allowed) {
@@ -513,6 +519,100 @@ async function authorizeSlackBlockAction(params: {
   );
   await respondEphemeral(params.respond, "You are not authorized to use this control.");
   return { allowed: false };
+}
+
+async function bindSlackModalBlockActionRequestUserAuthority(params: {
+  ctx: SlackMonitorContext;
+  parsed: ParsedSlackBlockAction;
+  respond?: SlackBlockActionRespond;
+}): Promise<ParsedSlackBlockAction | null> {
+  const view = params.parsed.typedBody.view;
+  if (!view) {
+    return params.parsed;
+  }
+  const metadata = parseSlackModalPrivateMetadata(view.private_metadata);
+  const metadataPolicy = await resolveSlackRoomRequestUserPolicy({
+    ctx: params.ctx,
+    channelId: metadata.channelId,
+    channelType: metadata.channelType,
+  });
+  const bodyPolicy =
+    params.parsed.channelId && params.parsed.channelId !== metadata.channelId
+      ? await resolveSlackRoomRequestUserPolicy({
+          ctx: params.ctx,
+          channelId: params.parsed.channelId,
+        })
+      : metadataPolicy;
+  const requestUserPolicy = metadataPolicy.configured ? metadataPolicy : bodyPolicy;
+  if (!metadataPolicy.configured && !bodyPolicy.configured) {
+    return params.parsed;
+  }
+  const metadataMatchesActor = Boolean(metadata.userId && metadata.userId === params.parsed.userId);
+  const metadataMatchesChannel = Boolean(
+    metadata.channelId &&
+    (!params.parsed.channelId || params.parsed.channelId === metadata.channelId),
+  );
+  if (!metadataMatchesActor || !metadataMatchesChannel) {
+    params.ctx.runtime.log?.(
+      `slack:interaction drop modal action=${params.parsed.actionId} user=${params.parsed.userId} channel=${metadata.channelId ?? params.parsed.channelId ?? "unknown"} reason=invalid-private-metadata-authority`,
+    );
+    await respondEphemeral(params.respond, "You are not authorized to use this control.");
+    return null;
+  }
+  return {
+    ...params.parsed,
+    channelId: metadata.channelId,
+    channelTypeHint: requestUserPolicy.channelType,
+    expectedUserId: metadata.userId,
+  };
+}
+
+async function authorizeSlackApprovalRequestUser(params: {
+  ctx: SlackMonitorContext;
+  parsed: ParsedSlackBlockAction;
+  respond?: SlackBlockActionRespond;
+}): Promise<boolean> {
+  const hasRequestUserPolicy = Object.values(params.ctx.channelsConfig ?? {}).some(
+    (channel) => channel.requestUsers !== undefined,
+  );
+  if (!hasRequestUserPolicy) {
+    return true;
+  }
+  const channelId = params.parsed.channelId;
+  if (!channelId) {
+    return true;
+  }
+  const channelInfo: {
+    name?: string;
+    type?: "im" | "mpim" | "channel" | "group";
+  } = await params.ctx.resolveChannelName(channelId).catch(() => ({}));
+  const channelType = normalizeSlackChannelType(channelInfo.type, channelId);
+  if (channelType !== "channel" && channelType !== "group") {
+    return true;
+  }
+  const channelConfig = resolveSlackChannelConfig({
+    channelId,
+    channelName: channelInfo.name,
+    channels: params.ctx.channelsConfig,
+    channelKeys: params.ctx.channelsConfigKeys,
+    defaultRequireMention: params.ctx.defaultRequireMention,
+    allowNameMatching: params.ctx.allowNameMatching,
+  });
+  const sender = await params.ctx.resolveUserName(params.parsed.userId).catch(() => undefined);
+  const requestAccess = resolveSlackRequestUserAccess({
+    requestUsers: channelConfig?.requestUsers,
+    senderId: params.parsed.userId,
+    senderName: sender?.name,
+    allowNameMatching: params.ctx.allowNameMatching,
+  });
+  if (requestAccess.allowed) {
+    return true;
+  }
+  params.ctx.runtime.log?.(
+    `slack:interaction drop approval action=${params.parsed.actionId} user=${params.parsed.userId} channel=${channelId} reason=sender-not-authorized`,
+  );
+  await respondEphemeral(params.respond, "You are not authorized to use this control.");
+  return false;
 }
 
 async function handleSlackPluginBindingApproval(params: {
@@ -908,10 +1008,18 @@ async function handleSlackBlockAction(params: {
     params.ctx.runtime.log?.("slack:interaction drop block action payload (mismatched app/team)");
     return;
   }
-  const parsed = parseSlackBlockAction({
+  const rawParsed = parseSlackBlockAction({
     body,
     action,
     log: params.ctx.runtime.log,
+  });
+  if (!rawParsed) {
+    return;
+  }
+  const parsed = await bindSlackModalBlockActionRequestUserAuthority({
+    ctx: params.ctx,
+    parsed: rawParsed,
+    respond,
   });
   if (!parsed) {
     return;
@@ -926,6 +1034,11 @@ async function handleSlackBlockAction(params: {
     summary: parsed.actionSummary,
   });
   if (pluginInteractionData && isSlackReplyActionId(parsed.actionId)) {
+    // Approval-specific approvers intentionally remain independent from channel
+    // allowFrom, but an explicit room requestUsers boundary must run first.
+    if (!(await authorizeSlackApprovalRequestUser({ ctx: params.ctx, parsed, respond }))) {
+      return;
+    }
     const handledExecApproval = await handleSlackExecApprovalInteraction({
       ctx: params.ctx,
       parsed,

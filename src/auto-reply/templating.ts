@@ -286,6 +286,8 @@ export type MsgContext = {
   ImplicitMentionKinds?: string[];
   /** Provider-native source that caused the current mention decision. */
   MentionSource?: MentionSource;
+  /** Trusted request-level authority. False is a hard deny; absent preserves legacy behavior. */
+  RequestAuthorized?: boolean;
   CommandAuthorized?: boolean;
   CommandTurn?: CommandTurnContext;
   CommandSource?: "text" | "native";

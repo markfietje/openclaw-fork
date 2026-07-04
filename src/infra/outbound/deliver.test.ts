@@ -1730,6 +1730,79 @@ describe("deliverOutboundPayloads", () => {
     expect(sendText).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { label: "live send", skipQueue: undefined },
+    { label: "durable replay", skipQueue: true },
+  ])(
+    "keeps source-bound $label isolated from outbound plugin and internal hooks",
+    async ({ skipQueue }) => {
+      hookMocks.runner.hasHooks.mockReturnValue(true);
+      hookMocks.runner.runReplyPayloadSending.mockResolvedValue({
+        payload: { text: "private payload rewrite" },
+      });
+      hookMocks.runner.runMessageSending.mockResolvedValue({ content: "private message rewrite" });
+      const sendText = vi.fn().mockResolvedValue({
+        channel: "matrix" as const,
+        messageId: "sent",
+        roomId: "!room",
+      });
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "matrix",
+            source: "test",
+            plugin: createOutboundTestPlugin({
+              id: "matrix",
+              outbound: { deliveryMode: "direct", sendText },
+            }),
+          },
+        ]),
+      );
+
+      const results = await deliverOutboundPayloads({
+        cfg: {},
+        channel: "matrix",
+        to: "!room",
+        payloads: [{ text: "safe observation" }],
+        outboundPayloadPolicy: "source_bound_plain_text",
+        replyPayloadSendingHook: {
+          kind: "final",
+          channel: "matrix",
+          context: { channelId: "matrix", conversationId: "!room" },
+        },
+        session: { key: "agent:main:matrix:room" },
+        mirror: {
+          sessionKey: "agent:main:matrix:room",
+          agentId: "main",
+          text: "safe observation",
+        },
+        ...(skipQueue ? { skipQueue: true } : {}),
+      });
+
+      expect(results).toHaveLength(1);
+      expect(sendText).toHaveBeenCalledOnce();
+      expect(requireMockCallArg(sendText, "sendText").text).toBe("safe observation");
+      expect(hookMocks.runner.hasHooks).not.toHaveBeenCalled();
+      expect(hookMocks.runner.runReplyPayloadSending).not.toHaveBeenCalled();
+      expect(hookMocks.runner.runMessageSending).not.toHaveBeenCalled();
+      expect(hookMocks.runner.runMessageSent).not.toHaveBeenCalled();
+      expect(internalHookMocks.createInternalHookEvent).not.toHaveBeenCalled();
+      expect(internalHookMocks.triggerInternalHook).not.toHaveBeenCalled();
+      expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+      if (skipQueue) {
+        expect(queueMocks.enqueueDelivery).not.toHaveBeenCalled();
+      } else {
+        expect(queueMocks.enqueueDelivery).toHaveBeenCalledOnce();
+        expect(requireMockCallArg(queueMocks.enqueueDelivery, "enqueueDelivery")).toMatchObject({
+          outboundPayloadPolicy: "source_bound_plain_text",
+          replyPayloadSendingHook: undefined,
+          session: undefined,
+          mirror: undefined,
+        });
+      }
+    },
+  );
+
   it("keeps payload outcome indexes tied to original input payload positions", async () => {
     const sendMatrix = vi.fn().mockResolvedValue({
       messageId: "visible",

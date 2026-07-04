@@ -1073,6 +1073,7 @@ export function applyExtraParamsToAgent(
   options?: {
     preparedExtraParams?: Record<string, unknown>;
     nativeWebSearchPolicyContext?: NativeWebSearchToolPolicyParams;
+    nativeWebSearchAllowedByToolPolicy?: boolean;
   },
 ): { effectiveExtraParams: Record<string, unknown> } {
   const resolvedExtraParams = resolveExtraParams({
@@ -1119,15 +1120,17 @@ export function applyExtraParamsToAgent(
   };
 
   const providerStreamBase = agent.streamFn;
-  const nativeWebSearchAllowedByToolPolicy = options?.nativeWebSearchPolicyContext
-    ? isNativeWebSearchAllowedByToolPolicy({
-        config: cfg,
-        modelProvider: model?.provider,
-        modelId: model?.id,
-        agentId,
-        ...options.nativeWebSearchPolicyContext,
-      })
-    : undefined;
+  const nativeWebSearchAllowedByToolPolicy =
+    options?.nativeWebSearchAllowedByToolPolicy ??
+    (options?.nativeWebSearchPolicyContext
+      ? isNativeWebSearchAllowedByToolPolicy({
+          config: cfg,
+          modelProvider: model?.provider,
+          modelId: model?.id,
+          agentId,
+          ...options.nativeWebSearchPolicyContext,
+        })
+      : undefined);
   const pluginWrappedStreamFn = providerRuntimeDeps.wrapProviderStreamFn({
     provider,
     config: cfg,

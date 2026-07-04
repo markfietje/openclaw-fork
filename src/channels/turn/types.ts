@@ -146,6 +146,8 @@ export type ProjectedEventAccessFacts = {
 
 /** Access decisions for DMs, groups, commands, events, and mention gating. */
 export type AccessFacts = {
+  /** Request-level authority. False is a hard deny; absent preserves legacy behavior. */
+  requestAuthorized?: boolean;
   dm?: {
     decision: "allow" | "pairing" | "deny";
     reason?: string;

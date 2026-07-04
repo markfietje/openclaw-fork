@@ -36,6 +36,15 @@ export type ReplyThreadingPolicy = {
 
 export type SourceReplyDeliveryMode = "automatic" | "message_tool_only";
 
+/** Restricts one message-tool instance to one attempt on its source-bound route. */
+export type SourceBoundMessagePolicy = {
+  mode: "source_bound";
+  channel: string;
+  accountId: string;
+  conversationId: string;
+  threadId?: string;
+};
+
 /** Correlates queued reply ownership transfer with later delivery drains. */
 export type QueuedReplyDeliveryCorrelation = {
   begin: () => (() => void) | void;
@@ -105,6 +114,8 @@ export type GetReplyOptions = {
   disableTools?: boolean;
   /** Runtime tool allow-list for this turn. Empty means no tools. */
   toolsAllow?: string[];
+  /** Runtime message policy that permits only sends to this turn's exact source route. */
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   /** If true, include the heartbeat response tool for structured heartbeat outcomes. */
   enableHeartbeatTool?: boolean;
   /** If true, keep the heartbeat response tool available even under narrow tool profiles. */

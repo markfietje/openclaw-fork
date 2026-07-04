@@ -927,6 +927,7 @@ describe("delivery-queue recovery", () => {
         gifPlayback: true,
         silent: true,
         gatewayClientScopes: ["operator.write"],
+        outboundPayloadPolicy: "source_bound_plain_text",
         mirror: {
           sessionKey: "agent:main:main",
           text: "a",
@@ -956,6 +957,7 @@ describe("delivery-queue recovery", () => {
       replyToMode?: string;
       formatting?: unknown;
       gatewayClientScopes?: string[];
+      outboundPayloadPolicy?: string;
       mirror?: unknown;
       session?: unknown;
     };
@@ -971,20 +973,9 @@ describe("delivery-queue recovery", () => {
       chunkMode: "newline",
     });
     expect(deliverInput.gatewayClientScopes).toEqual(["operator.write"]);
-    expect(deliverInput.mirror).toEqual({
-      sessionKey: "agent:main:main",
-      text: "a",
-      mediaUrls: ["https://example.com/a.png"],
-    });
-    expect(deliverInput.session).toEqual({
-      key: "agent:main:main",
-      agentId: "agent-main",
-      requesterAccountId: "acct-1",
-      requesterSenderId: "sender-1",
-      requesterSenderName: "Sender One",
-      requesterSenderUsername: "sender.one",
-      requesterSenderE164: "+15551234567",
-    });
+    expect(deliverInput.outboundPayloadPolicy).toBe("source_bound_plain_text");
+    expect(deliverInput.mirror).toBeUndefined();
+    expect(deliverInput.session).toBeUndefined();
   });
 
   it("respects maxRecoveryMs time budget without bumping deferred retries", async () => {

@@ -40,6 +40,7 @@ import {
   isSubagentSessionKey,
   normalizeMainKey,
 } from "../../routing/session-key.js";
+import { isRoomObservationInputProvenance } from "../../sessions/input-provenance.js";
 import {
   buildPersistedUserTurnMediaInputsFromFields,
   createUserTurnTranscriptRecorder,
@@ -90,6 +91,7 @@ import {
 } from "./inbound-meta.js";
 import type { createModelSelectionState } from "./model-selection.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
+import { assertPassiveRoomTurnBoundary } from "./passive-room-boundary.js";
 import { buildReplyPromptEnvelope, buildReplyPromptEnvelopeBase } from "./prompt-prelude.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { resolveQueueSettings } from "./queue/settings-runtime.js";
@@ -489,6 +491,10 @@ type RunPreparedReplyParams = {
 export async function runPreparedReply(
   params: RunPreparedReplyParams,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  assertPassiveRoomTurnBoundary({
+    ctx: params.ctx,
+    sourceBoundMessagePolicy: params.opts?.sourceBoundMessagePolicy,
+  });
   const {
     ctx,
     sessionCtx,
@@ -561,6 +567,11 @@ export async function runPreparedReply(
     isHeartbeat,
   });
   const inboundEventKind = promptSessionCtx.InboundEventKind;
+  const inputProvenance =
+    typeof ctx.RequestAuthorized === "boolean"
+      ? ctx.InputProvenance
+      : (ctx.InputProvenance ?? sessionCtx.InputProvenance);
+  const isRoomObservation = isRoomObservationInputProvenance(inputProvenance);
   const isInternalPromptChannel = isInternalSourceReplyChannel(promptSessionCtx);
   const sourceReplyDeliveryMode =
     inboundEventKind === "room_event" && !isInternalPromptChannel
@@ -804,7 +815,7 @@ export async function runPreparedReply(
   // A commitment-only wake must not consume the one-shot aborted-run hint;
   // that recovery context belongs to the next normal conversation turn.
   let prefixedBodyBase =
-    heartbeatRunScope === "commitment-only"
+    heartbeatRunScope === "commitment-only" || isRoomObservation
       ? effectiveBaseBody
       : await applySessionHints({
           baseBody: effectiveBaseBody,
@@ -854,7 +865,7 @@ export async function runPreparedReply(
     transcriptCommandBody: string;
     currentInboundContext?: typeof promptEnvelopeBase.currentInboundContext;
   }> => {
-    if (!useFastReplyRuntime && heartbeatRunScope !== "commitment-only") {
+    if (!useFastReplyRuntime && heartbeatRunScope !== "commitment-only" && !isRoomObservation) {
       const eventsBlock = await drainFormattedSystemEvents({
         cfg,
         sessionKey,
@@ -886,7 +897,7 @@ export async function runPreparedReply(
     });
   };
   const skillResult =
-    process.env.OPENCLAW_TEST_FAST === "1"
+    process.env.OPENCLAW_TEST_FAST === "1" || isRoomObservation
       ? {
           sessionEntry,
           skillsSnapshot: sessionEntry?.skillsSnapshot,
@@ -1094,16 +1105,25 @@ export async function runPreparedReply(
       };
     }
     const shouldUseEphemeralSession = params.autoFallbackPrimaryProbe !== undefined;
-    const authSessionKey = shouldUseEphemeralSession ? (sessionKey ?? sessionIdFinal) : sessionKey;
-    const authSessionEntry =
-      shouldUseEphemeralSession && preparedSessionState.sessionEntry
+    const shouldUseDetachedAuthSession = isRoomObservation || shouldUseEphemeralSession;
+    const authSessionKey = shouldUseDetachedAuthSession
+      ? (sessionKey ?? sessionIdFinal)
+      : sessionKey;
+    const authSessionEntry = isRoomObservation
+      ? {
+          ...(preparedSessionState.sessionEntry ?? {
+            sessionId: preparedSessionState.sessionId,
+            updatedAt: Date.now(),
+          }),
+        }
+      : shouldUseEphemeralSession && preparedSessionState.sessionEntry
         ? { ...preparedSessionState.sessionEntry }
         : preparedSessionState.sessionEntry;
     if (params.autoFallbackPrimaryProbe && authSessionEntry) {
       clearAutoFallbackPrimaryProbeSelection(authSessionEntry);
     }
     const authSessionStore =
-      shouldUseEphemeralSession && authSessionEntry
+      shouldUseDetachedAuthSession && authSessionEntry
         ? { [authSessionKey]: authSessionEntry }
         : sessionStore;
     const resolvedAuthProfileId = await resolveSessionAuthProfileOverride({
@@ -1114,7 +1134,7 @@ export async function runPreparedReply(
       sessionEntry: authSessionEntry,
       sessionStore: authSessionStore,
       sessionKey: authSessionKey,
-      storePath: shouldUseEphemeralSession ? undefined : storePath,
+      storePath: shouldUseDetachedAuthSession ? undefined : storePath,
       isNewSession,
     });
     return {
@@ -1258,21 +1278,24 @@ export async function runPreparedReply(
     ctx,
     sessionKey,
   });
-  const currentTurnImages = await traceRunPhase("reply.resolve_current_turn_images", () =>
-    resolveCurrentTurnImages({
-      ctx,
-      cfg,
-      images: opts?.images,
-      imageOrder: opts?.imageOrder,
-      extractedFileImages: opts?.extractedFileImages,
-    }),
-  );
+  const currentTurnImages = isRoomObservation
+    ? {}
+    : await traceRunPhase("reply.resolve_current_turn_images", () =>
+        resolveCurrentTurnImages({
+          ctx,
+          cfg,
+          images: opts?.images,
+          imageOrder: opts?.imageOrder,
+          extractedFileImages: opts?.extractedFileImages,
+        }),
+      );
   const queuedFollowupAbortSignal =
     inboundEventKind === "room_event"
       ? (opts?.queuedFollowupAbortSignal ?? opts?.abortSignal)
       : undefined;
-  const userTurnMediaForPersistence = buildPersistedUserTurnMediaInputsFromFields(ctx);
-  const inputProvenance = ctx.InputProvenance ?? sessionCtx.InputProvenance;
+  const userTurnMediaForPersistence = isRoomObservation
+    ? []
+    : buildPersistedUserTurnMediaInputsFromFields(ctx);
   const userTurnTimestamp = normalizeMessageTimestampMs(ctx.Timestamp);
   const userTurnTranscriptText = resolvePersistedUserTurnText(transcriptBody, {
     hasMedia: userTurnMediaForPersistence.length > 0,
@@ -1313,7 +1336,7 @@ export async function runPreparedReply(
             config: cfg,
           }),
           errorContext: "reply user turn transcript",
-          beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
+          beforeMessageWrite: isRoomObservation ? undefined : runAgentHarnessBeforeMessageWriteHook,
           onMessagePersisted: isRoomEvent
             ? async () =>
                 await updateRoomEventAmbientTranscriptWatermark({
@@ -1332,7 +1355,7 @@ export async function runPreparedReply(
       OriginatingChannel: ctx.OriginatingChannel ?? sessionCtx.OriginatingChannel,
       OriginatingTo: ctx.OriginatingTo ?? sessionCtx.OriginatingTo,
       AccountId: ctx.AccountId ?? sessionCtx.AccountId,
-      InputProvenance: ctx.InputProvenance ?? sessionCtx.InputProvenance,
+      InputProvenance: inputProvenance,
       ChatType: ctx.ChatType ?? sessionCtx.ChatType,
     },
     entry: preparedSessionState.sessionEntry,
@@ -1347,20 +1370,22 @@ export async function runPreparedReply(
     (replyRoute.channel as OriginatingChannelType | undefined) ??
     (messageProvider as OriginatingChannelType | undefined);
   const followupRun = {
-    prompt: queuedBody,
+    prompt: isRoomObservation ? transcriptCommandBody : queuedBody,
     transcriptPrompt: transcriptCommandBody,
     ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
     currentInboundEventKind: inboundEventKind,
-    currentInboundAudio: hasInboundAudio(sessionCtx),
-    currentInboundContext,
+    currentInboundAudio: isRoomObservation ? false : hasInboundAudio(sessionCtx),
+    currentInboundContext: isRoomObservation ? undefined : currentInboundContext,
+    toolsAllow: opts?.toolsAllow,
+    sourceBoundMessagePolicy: opts?.sourceBoundMessagePolicy,
     ...(queuedFollowupAbortSignal ? { abortSignal: queuedFollowupAbortSignal } : {}),
     deliveryCorrelations: opts?.queuedDeliveryCorrelations,
     queuedLifecycle: opts?.queuedFollowupLifecycle,
     messageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
     summaryLine: baseBodyTrimmedRaw,
     enqueuedAt: Date.now(),
-    images: currentTurnImages.images,
-    imageOrder: currentTurnImages.imageOrder,
+    images: isRoomObservation ? undefined : currentTurnImages.images,
+    imageOrder: isRoomObservation ? undefined : currentTurnImages.imageOrder,
     // Originating channel for reply routing.
     originatingChannel: replyRoute.channel,
     originatingTo: replyRoute.to,
@@ -1460,6 +1485,7 @@ export async function runPreparedReply(
       ownerNumbers: command.ownerList.length > 0 ? command.ownerList : undefined,
       inputProvenance,
       extraSystemPrompt: extraSystemPromptParts.join("\n\n") || undefined,
+      roomObservationSystemPrompt: isRoomObservation ? groupSystemPrompt || undefined : undefined,
       sourceReplyDeliveryMode,
       silentReplyPromptMode,
       extraSystemPromptStatic,

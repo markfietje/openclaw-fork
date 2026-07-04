@@ -22,7 +22,7 @@ import {
   normalizeSlackAllowOwnerEntry,
   normalizeSlackSlug,
 } from "./allow-list.js";
-import { resolveSlackChannelConfig } from "./channel-config.js";
+import { resolveSlackChannelConfig, resolveSlackRequestUserAccess } from "./channel-config.js";
 import { inferSlackChannelType } from "./channel-type.js";
 import { normalizeSlackChannelType, type SlackMonitorContext } from "./context.js";
 
@@ -55,6 +55,24 @@ const CHANNEL_MEMBERS_CACHE_MAX = 512;
 const SLACK_CHANNEL_ID = "slack";
 const SLACK_USER_NAME_KIND =
   "plugin:slack-user-name" as const satisfies ChannelIngressIdentifierKind;
+
+function resolveSlackAuthorizationChannelType(params: {
+  channelId?: string;
+  declaredType?: string | null;
+  resolvedType?: SlackIngressChannelType;
+}): SlackIngressChannelType {
+  const inferred = inferSlackChannelType(params.channelId);
+  if (inferred === "im" || inferred === "channel") {
+    return inferred;
+  }
+  if (inferred === "group") {
+    return params.resolvedType === "mpim" || params.declaredType === "mpim" ? "mpim" : "group";
+  }
+  return (
+    normalizeSlackChannelType(params.resolvedType ?? params.declaredType, params.channelId) ??
+    "channel"
+  );
+}
 
 function normalizeSlackUserId(raw?: string | null): string {
   const value = (raw ?? "").trim().toLowerCase();
@@ -481,6 +499,9 @@ export async function authorizeSlackSystemEventSender(params: {
   channelId?: string;
   channelType?: string | null;
   expectedSenderId?: string;
+  /** Verified actor for requestUsers checks when the event subject differs from
+   *  the actor. Pass null when Slack does not provide an actor. */
+  requestUserActorId?: string | null;
   /** When true, requires expectedSenderId, rejects ambiguous channel types,
    *  and applies interactive-only owner allowFrom checks without changing the
    *  open-by-default channel behavior when no allowlists are configured. */
@@ -510,8 +531,12 @@ export async function authorizeSlackSystemEventSender(params: {
       type?: "im" | "mpim" | "channel" | "group";
     } = await params.ctx.resolveChannelName(channelId).catch(() => ({}));
     channelName = info.name;
-    const resolvedTypeSource = params.channelType ?? info.type;
-    channelType = normalizeSlackChannelType(resolvedTypeSource, channelId);
+    const resolvedTypeSource = info.type ?? params.channelType;
+    channelType = resolveSlackAuthorizationChannelType({
+      channelId,
+      declaredType: params.channelType,
+      resolvedType: info.type,
+    });
     if (
       !params.ctx.isChannelAllowed({
         channelId,
@@ -580,6 +605,45 @@ export async function authorizeSlackSystemEventSender(params: {
     : null;
   const channelUsersAllowlistConfigured =
     Array.isArray(channelConfig?.users) && channelConfig.users.length > 0;
+  let requestAuthoritySenderId = senderId;
+  let requestAuthoritySenderName = senderName;
+  if (
+    (channelType === "channel" || channelType === "group") &&
+    channelConfig?.requestUsers !== undefined &&
+    params.requestUserActorId !== undefined
+  ) {
+    const actorId = params.requestUserActorId?.trim();
+    if (!actorId) {
+      return {
+        allowed: false,
+        reason: "missing-request-authority-actor",
+        ...(channelId ? { channelType, channelName } : {}),
+      };
+    }
+    requestAuthoritySenderId = actorId;
+    if (actorId !== senderId) {
+      const actorInfo: { name?: string } = await params.ctx
+        .resolveUserName(actorId)
+        .catch(() => ({}));
+      requestAuthoritySenderName = actorInfo.name;
+    }
+  }
+  if (
+    (channelType === "channel" || channelType === "group") &&
+    channelConfig?.requestUsers !== undefined &&
+    !resolveSlackRequestUserAccess({
+      requestUsers: channelConfig.requestUsers,
+      senderId: requestAuthoritySenderId,
+      senderName: requestAuthoritySenderName,
+      allowNameMatching: params.ctx.allowNameMatching,
+    }).allowed
+  ) {
+    return {
+      allowed: false,
+      reason: "sender-not-authorized",
+      ...(channelId ? { channelType, channelName } : {}),
+    };
+  }
   const decision = await decideSlackSystemIngress({
     ctx: params.ctx,
     senderId,
@@ -614,5 +678,45 @@ export async function authorizeSlackSystemEventSender(params: {
           : "sender-not-allowlisted",
     channelType,
     channelName,
+  };
+}
+
+export async function resolveSlackRoomRequestUserPolicy(params: {
+  ctx: SlackMonitorContext;
+  channelId?: string;
+  channelType?: string | null;
+}): Promise<{
+  configured: boolean;
+  channelType?: SlackIngressChannelType;
+  channelName?: string;
+}> {
+  const channelId = params.channelId?.trim();
+  if (!channelId) {
+    return { configured: false };
+  }
+  const info: {
+    name?: string;
+    type?: SlackIngressChannelType;
+  } = await params.ctx.resolveChannelName(channelId).catch(() => ({}));
+  const channelType = resolveSlackAuthorizationChannelType({
+    channelId,
+    declaredType: params.channelType,
+    resolvedType: info.type,
+  });
+  if (channelType !== "channel" && channelType !== "group") {
+    return { configured: false, channelType, channelName: info.name };
+  }
+  const channelConfig = resolveSlackChannelConfig({
+    channelId,
+    channelName: info.name,
+    channels: params.ctx.channelsConfig,
+    channelKeys: params.ctx.channelsConfigKeys,
+    defaultRequireMention: params.ctx.defaultRequireMention,
+    allowNameMatching: params.ctx.allowNameMatching,
+  });
+  return {
+    configured: channelConfig?.requestUsers !== undefined,
+    channelType,
+    channelName: info.name,
   };
 }

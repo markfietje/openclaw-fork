@@ -8,6 +8,14 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import type { MsgContext } from "../templating.js";
 import { initSessionState } from "./session.js";
 
+const lifecycleMocks = vi.hoisted(() => ({
+  resetRegisteredAgentHarnessSessions: vi.fn(async () => undefined),
+}));
+
+vi.mock("../../agents/harness/registry.js", () => ({
+  resetRegisteredAgentHarnessSessions: lifecycleMocks.resetRegisteredAgentHarnessSessions,
+}));
+
 vi.mock("../../plugin-sdk/browser-maintenance.js", () => ({
   closeTrackedBrowserTabsForSessions: vi.fn(async () => 0),
 }));
@@ -17,6 +25,7 @@ describe("initSessionState - heartbeat should not trigger session reset", () => 
   let storePath: string;
 
   beforeEach(async () => {
+    lifecycleMocks.resetRegisteredAgentHarnessSessions.mockClear();
     tempDir = await fs.mkdtemp("/tmp/openclaw-test-");
     storePath = path.join(tempDir, "sessions.json");
   });
@@ -300,6 +309,98 @@ describe("initSessionState - heartbeat should not trigger session reset", () => 
 
     expect(userResult.isNewSession).toBe(true);
     expect(userResult.sessionId).not.toBe("legacy-idle-session");
+  });
+
+  it("keeps a passive room observation non-authoritative across an idle boundary", async () => {
+    const now = Date.now();
+    const staleTime = now - 10 * 60 * 1000;
+    const sessionFile = path.join(tempDir, "owner-session.jsonl");
+    await fs.writeFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "owner-session",
+        timestamp: new Date(staleTime).toISOString(),
+        cwd: tempDir,
+      })}\n`,
+      "utf8",
+    );
+    const preserved = {
+      updatedAt: staleTime,
+      lastInteractionAt: staleTime,
+      lastChannel: "slack",
+      lastTo: "channel:C_OWNER",
+      lastAccountId: "owner-account",
+      lastThreadId: "owner-thread",
+      route: {
+        channel: "slack",
+        accountId: "owner-account",
+        target: { to: "channel:C_OWNER" },
+        thread: { id: "owner-thread" },
+      },
+      deliveryContext: {
+        channel: "slack",
+        to: "channel:C_OWNER",
+        accountId: "owner-account",
+        threadId: "owner-thread",
+      },
+      origin: {
+        provider: "slack",
+        accountId: "owner-account",
+        nativeChannelId: "C_OWNER",
+        threadId: "owner-thread",
+      },
+      displayName: "owner conversation",
+      modelProvider: "openai",
+      model: "gpt-owner",
+      cliSessionIds: { openai: "owner-cli-session" },
+    } satisfies Partial<SessionEntry>;
+    await saveExistingSession("owner-session", staleTime, {
+      sessionFile,
+      ...preserved,
+    });
+    const ownerEntryBeforePassive = structuredClone(
+      expectPersistedSession(loadSessionStore(storePath)),
+    );
+
+    const passiveResult = await initSessionState({
+      ctx: createBaseCtx({
+        Body: "attacker room comment",
+        RequestAuthorized: false,
+        InputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+        Provider: "slack",
+        Surface: "slack",
+        AccountId: "attacker-account",
+        To: "channel:C_ATTACKER",
+        OriginatingChannel: "slack",
+        OriginatingTo: "channel:C_ATTACKER",
+        MessageThreadId: "attacker-thread",
+        ThreadLabel: "attacker thread",
+      }),
+      cfg: createBaseConfig(),
+      commandAuthorized: false,
+    });
+
+    expect(passiveResult.isNewSession).toBe(false);
+    expect(passiveResult.resetTriggered).toBe(false);
+    expect(passiveResult.previousSessionEntry).toBeUndefined();
+    expect(passiveResult.sessionId).toBe("owner-session");
+    expect(passiveResult.sessionEntry).toEqual(ownerEntryBeforePassive);
+    expect(lifecycleMocks.resetRegisteredAgentHarnessSessions).not.toHaveBeenCalled();
+    await expect(fs.stat(sessionFile)).resolves.toBeDefined();
+    expect((await fs.readdir(tempDir)).filter((name) => name.includes(".reset."))).toEqual([]);
+
+    const persisted = expectPersistedSession(loadSessionStore(storePath));
+    expect(persisted).toEqual(ownerEntryBeforePassive);
+
+    const ownerResult = await initSessionState({
+      ctx: createBaseCtx({ Body: "real owner request" }),
+      cfg: createBaseConfig(),
+      commandAuthorized: true,
+    });
+    expect(ownerResult.isNewSession).toBe(true);
+    expect(ownerResult.sessionId).not.toBe("owner-session");
   });
 
   it("should handle cron-event provider same as heartbeat (no reset)", async () => {

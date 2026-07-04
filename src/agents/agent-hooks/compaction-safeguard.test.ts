@@ -2463,6 +2463,159 @@ describe("compaction-safeguard double-compaction guard", () => {
     ).toBe(true);
   });
 
+  it("writes an empty boundary instead of reloading a passive-only branch", async () => {
+    mockSummarizeInStages.mockReset();
+
+    const now = Date.now();
+    const sessionManager = {
+      ...stubSessionManager(),
+      getBranch: () => [
+        {
+          type: "message",
+          id: "passive-user-1",
+          parentId: null,
+          timestamp: new Date(now).toISOString(),
+          message: {
+            role: "user",
+            content: "PASSIVE_PREFIX_MUST_NOT_SURVIVE",
+            provenance: { kind: "room_observation", sourceChannel: "slack" },
+            timestamp: now,
+          },
+        },
+        {
+          type: "message",
+          id: "passive-assistant-1",
+          parentId: "passive-user-1",
+          timestamp: new Date(now + 1).toISOString(),
+          message: {
+            role: "assistant",
+            content: "PASSIVE_ANALYSIS_MUST_NOT_SURVIVE",
+            timestamp: now + 1,
+          },
+        },
+      ],
+    } as ExtensionContext["sessionManager"];
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, { model, recentTurnsPreserve: 0 });
+
+    const mockEvent = {
+      preparation: {
+        messagesToSummarize: [] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-after-passive-prefix",
+        tokensBefore: 38_085,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        isSplitTurn: false,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+    const { result, getApiKeyAndHeadersMock } = await runCompactionScenario({
+      sessionManager,
+      event: mockEvent,
+      apiKey: "test-key",
+    });
+
+    const compaction = expectCompactionResult(result);
+    expect(compaction.summary).toContain("No prior history.");
+    expect(compaction.summary).not.toContain("PASSIVE_PREFIX_MUST_NOT_SURVIVE");
+    expect(compaction.summary).not.toContain("PASSIVE_ANALYSIS_MUST_NOT_SURVIVE");
+    expect(mockSummarizeInStages).not.toHaveBeenCalled();
+    expect(getApiKeyAndHeadersMock).not.toHaveBeenCalled();
+  });
+
+  it("reloads later authorized branch content without its passive prefix", async () => {
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockResolvedValue("trusted owner summary");
+
+    const now = Date.now();
+    const sessionManager = {
+      ...stubSessionManager(),
+      getBranch: () => [
+        {
+          type: "message",
+          id: "passive-user-1",
+          parentId: null,
+          timestamp: new Date(now).toISOString(),
+          message: {
+            role: "user",
+            content: "PASSIVE_PREFIX_MUST_NOT_SURVIVE",
+            provenance: { kind: "room_observation", sourceChannel: "slack" },
+            timestamp: now,
+          },
+        },
+        {
+          type: "message",
+          id: "passive-assistant-1",
+          parentId: "passive-user-1",
+          timestamp: new Date(now + 1).toISOString(),
+          message: {
+            role: "assistant",
+            content: "PASSIVE_ANALYSIS_MUST_NOT_SURVIVE",
+            timestamp: now + 1,
+          },
+        },
+        {
+          type: "message",
+          id: "owner-user-1",
+          parentId: "passive-assistant-1",
+          timestamp: new Date(now + 2).toISOString(),
+          message: {
+            role: "user",
+            content: "OWNER_REQUEST_MUST_SURVIVE",
+            timestamp: now + 2,
+          },
+        },
+        {
+          type: "message",
+          id: "owner-assistant-1",
+          parentId: "owner-user-1",
+          timestamp: new Date(now + 3).toISOString(),
+          message: {
+            role: "assistant",
+            content: "OWNER_PROGRESS_MUST_SURVIVE",
+            timestamp: now + 3,
+          },
+        },
+      ],
+    } as ExtensionContext["sessionManager"];
+    const model = createAnthropicModelFixture();
+    setCompactionSafeguardRuntime(sessionManager, { model, recentTurnsPreserve: 0 });
+
+    const mockEvent = {
+      preparation: {
+        messagesToSummarize: [] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-after-owner-turn",
+        tokensBefore: 38_085,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        isSplitTurn: false,
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event: mockEvent,
+      apiKey: "test-key",
+    });
+
+    const compaction = expectCompactionResult(result);
+    expect(compaction.summary).toContain("trusted owner summary");
+    expect(compaction.summary).not.toContain("PASSIVE_PREFIX_MUST_NOT_SURVIVE");
+    expect(compaction.summary).not.toContain("PASSIVE_ANALYSIS_MUST_NOT_SURVIVE");
+    expect(mockSummarizeInStages).toHaveBeenCalledTimes(1);
+    const summarizeCall = requireRecord(mockCallArg(mockSummarizeInStages));
+    const messages = requireArray(summarizeCall.messages);
+    const serializedMessages = JSON.stringify(messages);
+    expect(serializedMessages).toContain("OWNER_REQUEST_MUST_SURVIVE");
+    expect(serializedMessages).toContain("OWNER_PROGRESS_MUST_SURVIVE");
+    expect(serializedMessages).not.toContain("PASSIVE_PREFIX_MUST_NOT_SURVIVE");
+    expect(serializedMessages).not.toContain("PASSIVE_ANALYSIS_MUST_NOT_SURVIVE");
+  });
+
   it("recovers user and assistant branch turns when compaction preparation has only tool output", async () => {
     mockSummarizeInStages.mockReset();
     mockSummarizeInStages.mockResolvedValue("branch summary with visible turns");
@@ -2592,6 +2745,31 @@ describe("compaction-safeguard double-compaction guard", () => {
         1,
       ),
     ).toBe(true);
+  });
+
+  it("does not count passive turn rows as real conversation before a later owner turn", () => {
+    const messages = [
+      {
+        role: "user",
+        content: "passive room post",
+        provenance: { kind: "room_observation", sourceChannel: "slack" },
+      },
+      { role: "assistant", content: "private passive analysis" },
+      {
+        role: "toolResult",
+        toolCallId: "passive-tool",
+        toolName: "message",
+        content: [{ type: "text", text: "passive comment delivered" }],
+      },
+      { role: "user", content: "owner request" },
+      { role: "assistant", content: "owner response" },
+    ] as AgentMessage[];
+
+    expect(testing.isRealConversationMessage(messages[0], messages, 0)).toBe(false);
+    expect(testing.isRealConversationMessage(messages[1], messages, 1)).toBe(false);
+    expect(testing.isRealConversationMessage(messages[2], messages, 2)).toBe(false);
+    expect(testing.isRealConversationMessage(messages[3], messages, 3)).toBe(true);
+    expect(testing.isRealConversationMessage(messages[4], messages, 4)).toBe(true);
   });
 
   it("does not treat assistant-only tool calls as meaningful conversation", () => {

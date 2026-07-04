@@ -28,6 +28,10 @@ export type EmbeddedAgentQueueHandle = {
   cancel?: (reason?: "user_abort" | "restart" | "superseded") => void;
   abort: (reason?: "restart") => void;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  /** False for isolated passive runs that must never accept another turn. */
+  acceptsSteering?: boolean;
+  /** False for non-authoritative runs that must never arm restart recovery. */
+  restartRecoverable?: boolean;
 };
 
 export type EmbeddedAgentQueueMessageOptions = {
@@ -118,7 +122,11 @@ export function getActiveEmbeddedRunCount(): number {
 export function listActiveEmbeddedRunSessionKeys(): string[] {
   return [
     ...new Set([
-      ...ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.keys(),
+      ...[...ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.entries()]
+        .filter(
+          ([, sessionId]) => ACTIVE_EMBEDDED_RUNS.get(sessionId)?.restartRecoverable !== false,
+        )
+        .map(([sessionKey]) => sessionKey),
       ...listActiveReplyRunSessionKeys(),
     ]),
   ].toSorted((a, b) => a.localeCompare(b));
@@ -128,9 +136,15 @@ export function listActiveEmbeddedRunSessionKeys(): string[] {
 export function listActiveEmbeddedRunSessionIds(): string[] {
   return [
     ...new Set([
-      ...ACTIVE_EMBEDDED_RUNS.keys(),
-      ...ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.values(),
-      ...ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE.values(),
+      ...[...ACTIVE_EMBEDDED_RUNS.entries()]
+        .filter(([, handle]) => handle.restartRecoverable !== false)
+        .map(([sessionId]) => sessionId),
+      ...[...ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.values()].filter(
+        (sessionId) => ACTIVE_EMBEDDED_RUNS.get(sessionId)?.restartRecoverable !== false,
+      ),
+      ...[...ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE.values()].filter(
+        (sessionId) => ACTIVE_EMBEDDED_RUNS.get(sessionId)?.restartRecoverable !== false,
+      ),
       ...listActiveReplyRunSessionIds(),
     ]),
   ].toSorted((a, b) => a.localeCompare(b));

@@ -39,10 +39,21 @@ vi.mock("../../config/sessions/paths.js", () => ({
 const storeRuntimeLoads = vi.hoisted(() => vi.fn());
 const updateSessionStore = vi.hoisted(() => vi.fn());
 const updateAmbientTranscriptWatermarkMock = vi.hoisted(() => vi.fn().mockResolvedValue(null));
+const resolveCurrentTurnImagesMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../config/sessions/ambient-transcript-watermark.js", () => ({
   updateAmbientTranscriptWatermark: updateAmbientTranscriptWatermarkMock,
 }));
+
+vi.mock("./current-turn-images.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./current-turn-images.js")>();
+  resolveCurrentTurnImagesMock.mockImplementation(actual.resolveCurrentTurnImages);
+  return {
+    ...actual,
+    resolveCurrentTurnImages: (...args: Parameters<typeof actual.resolveCurrentTurnImages>) =>
+      resolveCurrentTurnImagesMock(...args),
+  };
+});
 
 vi.mock("../../config/sessions/store.runtime.js", () => {
   storeRuntimeLoads();
@@ -252,6 +263,53 @@ function ownerParams(): Parameters<typeof runPreparedReply>[0] {
   return params;
 }
 
+function passiveRoomParams(
+  overrides: Partial<Parameters<typeof runPreparedReply>[0]> = {},
+): Parameters<typeof runPreparedReply>[0] {
+  const policy = {
+    mode: "source_bound" as const,
+    channel: "slack",
+    accountId: "default",
+    conversationId: "C123",
+    threadId: "171234.567",
+  };
+  const params = baseParams({
+    ctx: {
+      Body: "observed message",
+      RawBody: "observed message",
+      CommandBody: "",
+      RequestAuthorized: false,
+      InputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+      InboundEventKind: "room_event",
+      OriginatingChannel: "slack",
+      OriginatingTo: "channel:C123",
+      Provider: "slack",
+      AccountId: "default",
+      NativeChannelId: "C123",
+      ChatId: "C123",
+      MessageThreadId: "171234.567",
+      ChatType: "group",
+    },
+    sessionCtx: {
+      Body: "observed message",
+      BodyStripped: "observed message",
+      RequestAuthorized: false,
+      InputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+      InboundEventKind: "room_event",
+      OriginatingChannel: "slack",
+      OriginatingTo: "channel:C123",
+      Provider: "slack",
+      AccountId: "default",
+      NativeChannelId: "C123",
+      ChatId: "C123",
+      MessageThreadId: "171234.567",
+      ChatType: "group",
+    },
+    opts: { sourceBoundMessagePolicy: policy },
+  });
+  return { ...params, ...overrides };
+}
+
 type MockCallSource = {
   mock: {
     calls: ReadonlyArray<ReadonlyArray<unknown>>;
@@ -305,6 +363,7 @@ describe("runPreparedReply media-only handling", () => {
     storeRuntimeLoads.mockClear();
     updateSessionStore.mockReset();
     updateAmbientTranscriptWatermarkMock.mockClear();
+    resolveCurrentTurnImagesMock.mockClear();
     vi.clearAllMocks();
     vi.mocked(buildDirectChatContext).mockReturnValue("");
     vi.mocked(buildGroupIntro).mockReturnValue("");
@@ -326,6 +385,50 @@ describe("runPreparedReply media-only handling", () => {
     expect(storeRuntimeLoads).not.toHaveBeenCalled();
   });
 
+  it("hard-denies RequestAuthorized=false without passive provenance", async () => {
+    const params = baseParams({
+      ctx: { ...baseParams().ctx, RequestAuthorized: false },
+    });
+
+    await expect(runPreparedReply(params)).rejects.toThrow(
+      "RequestAuthorized=false requires room_observation provenance",
+    );
+
+    expect(runReplyAgent).not.toHaveBeenCalled();
+    expect(applySessionHints).not.toHaveBeenCalled();
+    expect(drainFormattedSystemEvents).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "a different provenance kind",
+      provenance: { kind: "external_user" as const, sourceChannel: "slack" },
+      error: "RequestAuthorized=false requires room_observation provenance",
+    },
+    {
+      label: "a different source channel",
+      provenance: { kind: "room_observation" as const, sourceChannel: "discord" },
+      error: "room_observation provenance does not match the source-bound channel",
+    },
+  ])("hard-denies RequestAuthorized=false with $label", async ({ provenance, error }) => {
+    const params = passiveRoomParams();
+    params.ctx = { ...params.ctx, InputProvenance: provenance };
+
+    await expect(runPreparedReply(params)).rejects.toThrow(error);
+
+    expect(runReplyAgent).not.toHaveBeenCalled();
+  });
+
+  it("hard-denies RequestAuthorized=false without a source-bound policy", async () => {
+    const params = passiveRoomParams({ opts: undefined });
+
+    await expect(runPreparedReply(params)).rejects.toThrow(
+      "RequestAuthorized=false requires a complete source-bound message policy",
+    );
+
+    expect(runReplyAgent).not.toHaveBeenCalled();
+  });
+
   it("passes approved elevated defaults to the runner", async () => {
     await runPreparedReply(
       baseParams({
@@ -342,6 +445,128 @@ describe("runPreparedReply media-only handling", () => {
       defaultLevel: "on",
       fullAccessAvailable: true,
     });
+  });
+
+  it("does not resolve MediaPath images for passive room observations", async () => {
+    const pluginRegistryState = Symbol.for("openclaw.pluginRegistryState");
+    const globalWithRegistry = globalThis as typeof globalThis & Record<symbol, unknown>;
+    const previousRegistry = globalWithRegistry[pluginRegistryState];
+    globalWithRegistry[pluginRegistryState] = {
+      activeRegistry: {
+        providers: [
+          {
+            provider: {
+              id: "anthropic",
+              resolveThinkingProfile: () => ({
+                levels: [
+                  { id: "off", rank: 0 },
+                  { id: "high", rank: 4 },
+                ],
+                defaultLevel: "high",
+              }),
+            },
+          },
+        ],
+      },
+    };
+    const params = passiveRoomParams();
+    params.modelState = {
+      resolveDefaultThinkingLevel: async () => "high",
+      resolveThinkingCatalog: async () => [],
+      allowedModelCatalog: [
+        {
+          provider: "anthropic",
+          id: "claude-opus-4-1",
+          name: "Claude Opus",
+          reasoning: true,
+        },
+      ],
+    } as never;
+    params.ctx = {
+      ...params.ctx,
+      MediaPath: "/private/should-not-be-read.png",
+      MediaType: "image/png",
+    };
+    params.sessionCtx = {
+      ...params.sessionCtx,
+      MediaPath: "/private/should-not-be-read.png",
+      MediaType: "image/png",
+    };
+
+    try {
+      await runPreparedReply(params);
+
+      expect(resolveCurrentTurnImagesMock).not.toHaveBeenCalled();
+      const call = requireLastRunReplyAgentCall();
+      expect(call.followupRun.images).toBeUndefined();
+      expect(call.followupRun.imageOrder).toBeUndefined();
+    } finally {
+      if (previousRegistry === undefined) {
+        delete globalWithRegistry[pluginRegistryState];
+      } else {
+        globalWithRegistry[pluginRegistryState] = previousRegistry;
+      }
+    }
+  });
+
+  it("isolates passive auth selection from the owner session entry and store", async () => {
+    const { resolveSessionAuthProfileOverride } =
+      await import("../../agents/auth-profiles/session-override.js");
+    const ownerEntry: SessionEntry = {
+      sessionId: "owner-session",
+      sessionFile: "/tmp/owner-session.jsonl",
+      authProfileOverride: "openai:owner",
+      authProfileOverrideSource: "user",
+      authProfileOverrideCompactionCount: 4,
+      compactionCount: 4,
+      updatedAt: 123,
+    };
+    const ownerStore = { "session-key": ownerEntry };
+    const ownerEntryBefore = structuredClone(ownerEntry);
+    const ownerStoreBefore = structuredClone(ownerStore);
+
+    vi.mocked(resolveSessionAuthProfileOverride).mockImplementationOnce(async (params) => {
+      expect(params.sessionEntry).not.toBe(ownerEntry);
+      expect(params.sessionEntry).toEqual(ownerEntryBefore);
+      expect(params.sessionStore).not.toBe(ownerStore);
+      expect(params.sessionStore).toEqual({ "session-key": params.sessionEntry });
+      expect(params.sessionKey).toBe("session-key");
+      expect(params.storePath).toBeUndefined();
+
+      const isolatedEntry = params.sessionEntry;
+      if (!isolatedEntry || !params.sessionStore || !params.sessionKey) {
+        throw new Error("expected a detached auth selection session");
+      }
+      isolatedEntry.authProfileOverride = "openai:passive";
+      isolatedEntry.authProfileOverrideSource = "auto";
+      isolatedEntry.authProfileOverrideCompactionCount = 5;
+      isolatedEntry.updatedAt = 999;
+      params.sessionStore[params.sessionKey] = isolatedEntry;
+      return isolatedEntry.authProfileOverride;
+    });
+
+    await runPreparedReply(
+      passiveRoomParams({
+        provider: "openai",
+        model: "gpt-5.5",
+        isNewSession: false,
+        sessionId: ownerEntry.sessionId,
+        sessionEntry: ownerEntry,
+        sessionStore: ownerStore,
+        storePath: "/tmp/owner-session-store.json",
+      }),
+    );
+
+    expect(ownerEntry).toEqual(ownerEntryBefore);
+    expect(ownerStore).toEqual(ownerStoreBefore);
+    expect(ownerStore["session-key"]).toBe(ownerEntry);
+    expect(ownerEntry.authProfileOverride).toBe("openai:owner");
+    expect(ownerEntry.authProfileOverrideSource).toBe("user");
+    expect(ownerEntry.authProfileOverrideCompactionCount).toBe(4);
+    expect(ownerEntry.updatedAt).toBe(123);
+    const call = requireLastRunReplyAgentCall();
+    expect(call.followupRun.run.authProfileId).toBe("openai:passive");
+    expect(call.followupRun.run.authProfileIdSource).toBe("auto");
   });
 
   it("propagates non-visible assistant silence for group runs", async () => {

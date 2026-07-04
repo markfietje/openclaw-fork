@@ -4,6 +4,7 @@
  */
 import { stripHeartbeatToken } from "../auto-reply/heartbeat.js";
 import { isSilentReplyText } from "../auto-reply/tokens.js";
+import { isRoomObservationInputProvenance } from "../sessions/input-provenance.js";
 import type { AgentMessage } from "./runtime/index.js";
 
 const TOOL_RESULT_REAL_CONVERSATION_LOOKBACK = 20;
@@ -101,12 +102,28 @@ function isToolResultConversationAnchor(message: AgentMessage): boolean {
   );
 }
 
+function isRoomObservationTurnMessage(messages: AgentMessage[], index: number): boolean {
+  for (let i = index; i >= 0; i -= 1) {
+    const candidate = messages[i];
+    if (candidate?.role !== "user") {
+      continue;
+    }
+    return isRoomObservationInputProvenance(
+      (candidate as AgentMessage & { provenance?: unknown }).provenance,
+    );
+  }
+  return false;
+}
+
 /** Returns whether a transcript message should count as real conversation. */
 export function isRealConversationMessage(
   message: AgentMessage,
   messages: AgentMessage[],
   index: number,
 ): boolean {
+  if (isRoomObservationTurnMessage(messages, index)) {
+    return false;
+  }
   if (
     message.role === "user" ||
     message.role === "assistant" ||

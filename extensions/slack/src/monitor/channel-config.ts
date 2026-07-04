@@ -8,11 +8,15 @@ import {
 import type { ChannelBotLoopProtectionConfig } from "openclaw/plugin-sdk/config-contracts";
 import { mergePairLoopGuardConfig } from "openclaw/plugin-sdk/pair-loop-guard-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { normalizeSlackSlug } from "./allow-list.js";
+import { allowListMatches, normalizeAllowListLower, normalizeSlackSlug } from "./allow-list.js";
 
 export type SlackChannelConfigResolved = {
   allowed: boolean;
   requireMention: boolean;
+  requestUsers?: Array<string | number>;
+  mediaDownloads?: boolean;
+  sourceBoundMessageTool?: boolean;
+  textCommands?: boolean;
   allowBots?: boolean | "mentions";
   botLoopProtection?: ChannelBotLoopProtectionConfig;
   users?: Array<string | number>;
@@ -25,6 +29,10 @@ export type SlackChannelConfigResolved = {
 type SlackChannelConfigEntry = {
   enabled?: boolean;
   requireMention?: boolean;
+  requestUsers?: Array<string | number>;
+  mediaDownloads?: boolean;
+  sourceBoundMessageTool?: boolean;
+  textCommands?: boolean;
   allowBots?: boolean | "mentions";
   botLoopProtection?: ChannelBotLoopProtectionConfig;
   users?: Array<string | number>;
@@ -113,6 +121,13 @@ export function resolveSlackChannelConfig(params: {
   const requireMention =
     firstDefined(resolved.requireMention, fallback?.requireMention, requireMentionDefault) ??
     requireMentionDefault;
+  const requestUsers = firstDefined(resolved.requestUsers, fallback?.requestUsers);
+  const mediaDownloads = firstDefined(resolved.mediaDownloads, fallback?.mediaDownloads);
+  const sourceBoundMessageTool = firstDefined(
+    resolved.sourceBoundMessageTool,
+    fallback?.sourceBoundMessageTool,
+  );
+  const textCommands = firstDefined(resolved.textCommands, fallback?.textCommands);
   const allowBots = firstDefined(resolved.allowBots, fallback?.allowBots);
   const botLoopProtection = mergePairLoopGuardConfig(
     fallback?.botLoopProtection,
@@ -124,6 +139,10 @@ export function resolveSlackChannelConfig(params: {
   const result: SlackChannelConfigResolved = {
     allowed,
     requireMention,
+    requestUsers,
+    mediaDownloads,
+    sourceBoundMessageTool,
+    textCommands,
     allowBots,
     botLoopProtection,
     users,
@@ -131,4 +150,27 @@ export function resolveSlackChannelConfig(params: {
     systemPrompt,
   };
   return applyChannelMatchMeta(result, match);
+}
+
+export function resolveSlackRequestUserAccess(params: {
+  requestUsers?: Array<string | number>;
+  senderId: string;
+  senderName?: string;
+  allowNameMatching?: boolean;
+}): { configured: boolean; allowed: boolean } {
+  if (params.requestUsers === undefined) {
+    return { configured: false, allowed: true };
+  }
+  const allowList = normalizeAllowListLower(params.requestUsers);
+  return {
+    configured: true,
+    allowed:
+      allowList.length > 0 &&
+      allowListMatches({
+        allowList,
+        id: params.senderId,
+        name: params.senderName,
+        allowNameMatching: params.allowNameMatching,
+      }),
+  };
 }

@@ -3,7 +3,10 @@
  * image payloads before replaying messages into the app-server projector.
  */
 import fs from "node:fs/promises";
-import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  stripRoomObservationTurns,
+  type AgentMessage,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { SessionEntry } from "openclaw/plugin-sdk/agent-sessions";
 import {
   buildSessionContext,
@@ -47,10 +50,8 @@ export async function readCodexMirroredSessionHistoryMessages(
         (entry as { type?: unknown }).type !== "session"
       );
     });
-    return sanitizeCodexHistoryImagePayloads(
-      buildSessionContext(sessionEntries).messages,
-      "codex mirrored history",
-    );
+    const messages = stripRoomObservationTurns(buildSessionContext(sessionEntries).messages);
+    return sanitizeCodexHistoryImagePayloads(messages, "codex mirrored history");
   } catch {
     return undefined;
   }

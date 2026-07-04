@@ -24,6 +24,7 @@ import {
   type OpenClawConfig,
 } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { isRoomObservationInputProvenance } from "../../sessions/input-provenance.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
 import type { TemplateContext } from "../templating.js";
 import {
@@ -61,6 +62,18 @@ export function resolveQueuedReplyRuntimeConfig(config: OpenClawConfig): OpenCla
       runtimeSourceConfig,
     }) ?? config
   );
+}
+
+/** Drops passive observations if a refreshed runtime selects a context engine that loses provenance. */
+export function shouldDropRoomObservationForRuntimeConfig(
+  config: OpenClawConfig,
+  inputProvenance: unknown,
+): boolean {
+  if (!isRoomObservationInputProvenance(inputProvenance)) {
+    return false;
+  }
+  const contextEngine = config.plugins?.slots?.contextEngine?.trim().toLowerCase();
+  return Boolean(contextEngine && contextEngine !== "legacy");
 }
 
 /** Resolves command secrets for queued reply execution, scoped to the origin route. */

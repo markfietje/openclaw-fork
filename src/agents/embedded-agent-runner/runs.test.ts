@@ -426,6 +426,25 @@ describe("embedded-agent runner run registry", () => {
     expect(queueMessage).not.toHaveBeenCalled();
   });
 
+  it("rejects steering into isolated passive runs", async () => {
+    const queueMessage = vi.fn(async () => {});
+    setActiveEmbeddedRun("session-passive", {
+      ...createRunHandle(),
+      acceptsSteering: false,
+      queueMessage,
+    });
+
+    await expect(
+      queueEmbeddedAgentMessageWithOutcomeAsync("session-passive", "authorized follow-up"),
+    ).resolves.toEqual({
+      queued: false,
+      sessionId: "session-passive",
+      reason: "steering_disabled",
+      gatewayHealth: "live",
+    });
+    expect(queueMessage).not.toHaveBeenCalled();
+  });
+
   it("defaults active embedded steering to all pending messages", () => {
     const queueMessage = vi.fn(async () => {});
     setActiveEmbeddedRun("session-default-steer", {

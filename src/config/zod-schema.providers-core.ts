@@ -921,6 +921,10 @@ export const SlackChannelSchema = z
   .object({
     enabled: z.boolean().optional(),
     requireMention: z.boolean().optional(),
+    requestUsers: z.array(z.union([z.string(), z.number()])).optional(),
+    mediaDownloads: z.boolean().optional(),
+    sourceBoundMessageTool: z.boolean().optional(),
+    textCommands: z.boolean().optional(),
     tools: ToolPolicySchema,
     toolsBySender: ToolPolicyBySenderSchema,
     allowBots: z.union([z.boolean(), z.literal("mentions")]).optional(),

@@ -44,6 +44,7 @@ import {
   resolveSlackBotToken,
 } from "../token.js";
 import { normalizeAllowList } from "./allow-list.js";
+import type { SlackChannelConfigEntries } from "./channel-config.js";
 import { resolveSlackSlashCommandConfig } from "./commands.js";
 import {
   getRuntimeConfig,
@@ -80,6 +81,42 @@ import { registerSlackMonitorSlashCommands } from "./slash.js";
 import type { MonitorSlackOpts } from "./types.js";
 
 let slackBoltInterop: SlackBoltResolvedExports | undefined;
+
+function addSlackRequestUserEntries(target: Set<string>, entry: unknown): void {
+  if (!entry || typeof entry !== "object") {
+    return;
+  }
+  const requestUsers = (entry as { requestUsers?: Array<string | number> }).requestUsers;
+  for (const value of requestUsers ?? []) {
+    const normalized = normalizeOptionalString(value);
+    if (normalized && normalized !== "*") {
+      target.add(normalized);
+    }
+  }
+}
+
+function patchSlackRequestUsersInConfigEntries(
+  entries: SlackChannelConfigEntries,
+  resolvedMap: Map<string, SlackUserResolution>,
+): SlackChannelConfigEntries {
+  const nextEntries = { ...entries };
+  for (const [entryKey, entryConfig] of Object.entries(entries)) {
+    const requestUsers = entryConfig?.requestUsers;
+    if (!Array.isArray(requestUsers) || requestUsers.length === 0) {
+      continue;
+    }
+    const additions = requestUsers.flatMap((entry) => {
+      const input = normalizeOptionalString(entry);
+      const resolved = input ? resolvedMap.get(input) : undefined;
+      return resolved?.resolved && resolved.id ? [resolved.id] : [];
+    });
+    nextEntries[entryKey] = {
+      ...entryConfig,
+      requestUsers: mergeAllowlist({ existing: requestUsers, additions }),
+    };
+  }
+  return nextEntries;
+}
 
 async function getSlackBoltInterop(): Promise<SlackBoltResolvedExports> {
   if (!slackBoltInterop) {
@@ -538,6 +575,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         const userEntries = new Set<string>();
         for (const channel of Object.values(channelsConfig)) {
           addAllowlistUserEntriesFromConfigEntry(userEntries, channel);
+          addSlackRequestUserEntries(userEntries, channel);
         }
 
         if (userEntries.size > 0) {
@@ -548,10 +586,13 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
             const { resolvedMap, mapping } = buildAllowlistResolutionSummary(stableResolvedUsers, {
               formatResolved: formatSlackUserResolved,
             });
-            const nextChannels = patchAllowlistUsersInConfigEntries({
-              entries: channelsConfig,
+            const nextChannels = patchSlackRequestUsersInConfigEntries(
+              patchAllowlistUsersInConfigEntries({
+                entries: channelsConfig,
+                resolvedMap,
+              }),
               resolvedMap,
-            });
+            );
             channelsConfig = nextChannels;
             ctx.channelsConfig = nextChannels;
             summarizeMapping("slack channel users", mapping, [], runtime);
@@ -570,10 +611,13 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
                 },
               );
 
-              const nextChannels = patchAllowlistUsersInConfigEntries({
-                entries: channelsConfig,
+              const nextChannels = patchSlackRequestUsersInConfigEntries(
+                patchAllowlistUsersInConfigEntries({
+                  entries: channelsConfig,
+                  resolvedMap,
+                }),
                 resolvedMap,
-              });
+              );
               channelsConfig = nextChannels;
               ctx.channelsConfig = nextChannels;
               summarizeMapping("slack channel users", mapping, unresolved, runtime);
@@ -599,6 +643,10 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     if (slackMode === "socket") {
       let reconnectAttempts = 0;
       let hasLoggedSocketConnected = false;
+      let lastConnectedAt: number | undefined;
+      const publishConnected = () => {
+        lastConnectedAt = publishSlackConnectedStatus(opts.setStatus, lastConnectedAt);
+      };
       while (!opts.abortSignal?.aborted) {
         try {
           const disconnect = await startSlackSocketAndWaitForDisconnect({
@@ -606,11 +654,16 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
             abortSignal: opts.abortSignal,
             onStarted: () => {
               reconnectAttempts = 0;
-              publishSlackConnectedStatus(opts.setStatus);
+              publishConnected();
               if (!hasLoggedSocketConnected) {
                 hasLoggedSocketConnected = true;
                 runtime.log?.("slack socket mode connected");
               }
+            },
+            onSocketClose: () => publishSlackDisconnectedStatus(opts.setStatus),
+            onReconnected: () => {
+              reconnectAttempts = 0;
+              publishConnected();
             },
           });
           if (!disconnect) {

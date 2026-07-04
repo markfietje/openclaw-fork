@@ -28,6 +28,7 @@ import {
   projectOutboundPayloadPlanForMirror,
 } from "./payloads.js";
 import { buildOutboundSessionContext } from "./session-context.js";
+import { assertSourceBoundReplyPayload } from "./source-bound-message-policy.js";
 import { resolveOutboundTarget } from "./targets.js";
 
 const SEND_BUFFER_MEDIA_URL = "buffer://message-send/attachment";
@@ -86,6 +87,7 @@ type MessageSendParams = {
   abortSignal?: AbortSignal;
   silent?: boolean;
   parseMode?: "HTML";
+  outboundPayloadPolicy?: "source_bound_plain_text";
 };
 
 export type MessageSendResult = {
@@ -299,6 +301,10 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
   const channel = await resolveRequiredChannel({ cfg, channel: params.channel });
   const plugin = resolveRequiredPlugin(channel, cfg);
   const deliveryMode = plugin.outbound?.deliveryMode ?? "direct";
+  const sourceBoundSend = params.outboundPayloadPolicy === "source_bound_plain_text";
+  if (sourceBoundSend && deliveryMode === "gateway") {
+    throw new Error("Source-bound message policy requires direct channel delivery.");
+  }
   const mediaSources = [params.mediaUrl, ...(params.mediaUrls ?? [])].filter(
     (source): source is string => Boolean(source),
   );
@@ -320,6 +326,11 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
         ];
   const outboundPlan = createOutboundPayloadPlan(outboundPayloads);
   const normalizedPayloads = projectOutboundPayloadPlanForDelivery(outboundPlan);
+  if (params.outboundPayloadPolicy === "source_bound_plain_text") {
+    for (const payload of normalizedPayloads) {
+      assertSourceBoundReplyPayload(payload);
+    }
+  }
   const mirrorProjection = projectOutboundPayloadPlanForMirror(outboundPlan);
   const mirrorText = mirrorProjection.text;
   const mirrorMediaUrls = mirrorProjection.mediaUrls;
@@ -349,16 +360,18 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
       throw resolvedTarget.error;
     }
 
-    const outboundSession = buildOutboundSessionContext({
-      cfg,
-      agentId: params.agentId,
-      sessionKey: params.requesterSessionKey ?? params.mirror?.sessionKey,
-      requesterAccountId: params.requesterAccountId ?? params.accountId,
-      requesterSenderId: params.requesterSenderId,
-      requesterSenderName: params.requesterSenderName,
-      requesterSenderUsername: params.requesterSenderUsername,
-      requesterSenderE164: params.requesterSenderE164,
-    });
+    const outboundSession = sourceBoundSend
+      ? undefined
+      : buildOutboundSessionContext({
+          cfg,
+          agentId: params.agentId,
+          sessionKey: params.requesterSessionKey ?? params.mirror?.sessionKey,
+          requesterAccountId: params.requesterAccountId ?? params.accountId,
+          requesterSenderId: params.requesterSenderId,
+          requesterSenderName: params.requesterSenderName,
+          requesterSenderUsername: params.requesterSenderUsername,
+          requesterSenderE164: params.requesterSenderE164,
+        });
     if (params.queuePolicy === "required") {
       await assertRequiredMessageSendDurability({
         cfg,
@@ -388,14 +401,16 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
       silent: params.silent,
       mediaAccess: params.mediaAccess,
       formatting: params.parseMode ? { parseMode: params.parseMode } : undefined,
-      mirror: params.mirror
-        ? {
-            ...params.mirror,
-            text: mirrorText || params.content,
-            mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
-            idempotencyKey: params.mirror.idempotencyKey ?? params.idempotencyKey,
-          }
-        : undefined,
+      outboundPayloadPolicy: params.outboundPayloadPolicy,
+      mirror:
+        !sourceBoundSend && params.mirror
+          ? {
+              ...params.mirror,
+              text: mirrorText || params.content,
+              mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
+              idempotencyKey: params.mirror.idempotencyKey ?? params.idempotencyKey,
+            }
+          : undefined,
     });
     if (!params.bestEffort && (send.status === "failed" || send.status === "partial_failed")) {
       throw send.error;

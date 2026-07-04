@@ -44,6 +44,10 @@ const collectSlackMutableAllowlistWarnings =
             pathLabel: `${scope.prefix}.channels.${channelKey}.users`,
             list: channel.users,
           });
+          lists.push({
+            pathLabel: `${scope.prefix}.channels.${channelKey}.requestUsers`,
+            list: channel.requestUsers,
+          });
         }
       }
       return lists;
@@ -178,6 +182,33 @@ function collectSlackNameKeyedChannelWarnings({ cfg }: { cfg: OpenClawConfig }):
   return [...warnings];
 }
 
+function collectSlackRequestUsersContextEngineWarnings({ cfg }: { cfg: OpenClawConfig }): string[] {
+  const contextEngineSlot = cfg.plugins?.slots?.contextEngine?.trim();
+  if (!contextEngineSlot || contextEngineSlot.toLowerCase() === "legacy") {
+    return [];
+  }
+  const slack = asObjectRecord(asObjectRecord(cfg.channels)?.slack);
+  const channelMaps = [
+    asObjectRecord(slack?.channels),
+    ...Object.values(asObjectRecord(slack?.accounts) ?? {}).map((account) =>
+      asObjectRecord(asObjectRecord(account)?.channels),
+    ),
+  ];
+  const hasRequestUsers = channelMaps.some((channels) =>
+    Object.values(channels ?? {}).some((channel) => {
+      const requestUsers = asObjectRecord(channel)?.requestUsers;
+      return (
+        Array.isArray(requestUsers) && !requestUsers.some((entry) => String(entry).trim() === "*")
+      );
+    }),
+  );
+  return hasRequestUsers
+    ? [
+        `Slack channels.*.requestUsers passive observations require plugins.slots.contextEngine to be unset or "legacy"; selected context engine "${contextEngineSlot}" cannot preserve request-authority provenance, so non-request-user events will be dropped.`,
+      ]
+    : [];
+}
+
 export const slackDoctor: ChannelDoctorAdapter = {
   dmAllowFromMode: "topOnly",
   groupModel: "route",
@@ -188,5 +219,6 @@ export const slackDoctor: ChannelDoctorAdapter = {
   collectMutableAllowlistWarnings: ({ cfg }) => [
     ...collectSlackMutableAllowlistWarnings({ cfg }),
     ...collectSlackNameKeyedChannelWarnings({ cfg }),
+    ...collectSlackRequestUsersContextEngineWarnings({ cfg }),
   ],
 };

@@ -14,6 +14,10 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { mergeEmbeddedAgentRunResultForModelFallbackExhaustion } from "../../agents/embedded-agent-runner/result-fallback-classifier.js";
 import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
+import {
+  canRunPassiveRoomObservationWithEmbeddedHarness,
+  PASSIVE_ROOM_OBSERVATION_RUNTIME_REQUIREMENT,
+} from "../../agents/harness/passive-runtime.js";
 import { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-plugin.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
@@ -38,8 +42,12 @@ import {
   registerAgentRunContext,
 } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { defaultRuntime } from "../../runtime.js";
-import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  isRoomObservationInputProvenance,
+  shouldPreserveUserFacingSessionStateForInputProvenance,
+} from "../../sessions/input-provenance.js";
 import { isInternalMessageChannel } from "../../utils/message-channel.js";
 import {
   getReplyPayloadMetadata,
@@ -71,6 +79,7 @@ import {
   resolveModelFallbackOptions,
   resolveRunFastModeForFallbackCandidate,
   resolveRunAuthProfile,
+  shouldDropRoomObservationForRuntimeConfig,
 } from "./agent-runner-utils.js";
 import {
   createCompactionHookNoticePayload,
@@ -98,6 +107,8 @@ import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
 type EmbeddedAgentRunResult = Awaited<ReturnType<typeof runEmbeddedAgent>>;
+
+const passiveRoomObservationLog = createSubsystemLogger("auto-reply/passive-room");
 
 type FollowupAgentEvent = { stream: string; data: Record<string, unknown> };
 
@@ -508,8 +519,8 @@ export function createFollowupRunner(params: {
     const endDeliveryCorrelations = (queued.deliveryCorrelations ?? [])
       .map((correlation) => correlation.begin())
       .filter((end): end is () => void => typeof end === "function");
-    const queuedImages = queued.images ?? opts?.images;
-    const queuedImageOrder = queued.imageOrder ?? opts?.imageOrder;
+    let queuedImages = queued.images ?? opts?.images;
+    let queuedImageOrder = queued.imageOrder ?? opts?.imageOrder;
     let replyOperation: ReplyOperation | undefined;
     let deferred = false;
 
@@ -527,6 +538,23 @@ export function createFollowupRunner(params: {
           ? queued
           : { ...queued, run: { ...queued.run, config: runtimeConfig } };
       let run = effectiveQueued.run;
+      if (shouldDropRoomObservationForRuntimeConfig(runtimeConfig, run.inputProvenance)) {
+        passiveRoomObservationLog.warn(
+          "Passive room observations require the built-in legacy context engine. Queued observation rejected before model invocation.",
+          {
+            code: "context_engine",
+            sessionKey: replySessionKey ?? "unknown",
+            provider: run.provider,
+            model: run.model,
+          },
+        );
+        return;
+      }
+      const isRoomObservation = isRoomObservationInputProvenance(run.inputProvenance);
+      if (isRoomObservation) {
+        queuedImages = undefined;
+        queuedImageOrder = undefined;
+      }
       let activeSessionEntry =
         (replySessionKey ? sessionStore?.[replySessionKey] : undefined) ??
         (replySessionKey === sessionKey ? sessionEntry : undefined);
@@ -537,6 +565,48 @@ export function createFollowupRunner(params: {
       });
       if (run !== effectiveQueued.run) {
         effectiveQueued = { ...effectiveQueued, run };
+      }
+      if (isRoomObservation) {
+        const runtimeOverride = resolveSessionRuntimeOverrideForProvider({
+          provider: run.provider,
+          entry: activeSessionEntry,
+          cfg: runtimeConfig,
+        });
+        const authProfile = resolveRunAuthProfile(run, run.provider, { config: runtimeConfig });
+        const cliExecutionProvider =
+          (runtimeOverride && isCliProvider(runtimeOverride, runtimeConfig)
+            ? runtimeOverride
+            : undefined) ??
+          resolveCliRuntimeExecutionProvider({
+            provider: run.provider,
+            cfg: runtimeConfig,
+            agentId: run.agentId,
+            modelId: run.model,
+            authProfileId: authProfile.authProfileId,
+          }) ??
+          run.provider;
+        if (
+          isCliProvider(cliExecutionProvider, runtimeConfig) ||
+          !canRunPassiveRoomObservationWithEmbeddedHarness({
+            config: runtimeConfig,
+            provider: run.provider,
+            modelId: run.model,
+            agentId: run.agentId,
+            sessionKey: run.runtimePolicySessionKey ?? replySessionKey,
+            runtimeOverride,
+          })
+        ) {
+          passiveRoomObservationLog.warn(
+            `${PASSIVE_ROOM_OBSERVATION_RUNTIME_REQUIREMENT} Queued observation rejected before model invocation.`,
+            {
+              code: "runtime_model",
+              sessionKey: replySessionKey ?? "unknown",
+              provider: run.provider,
+              model: run.model,
+            },
+          );
+          return;
+        }
       }
       const resolveCurrentVerboseLevel = () => {
         if (replySessionKey && storePath) {
@@ -606,6 +676,7 @@ export function createFollowupRunner(params: {
         resetTriggered: false,
         routeThreadId: queued.originatingThreadId,
         upstreamAbortSignal: queued.abortSignal,
+        restartRecoverable: !isRoomObservation,
       });
       if (admission.status === "skipped") {
         if (admission.reason === "active-run") {
@@ -701,25 +772,28 @@ export function createFollowupRunner(params: {
           lifecycleGeneration,
           verboseLevel: run.verboseLevel,
           isControlUiVisible: shouldSurfaceToControlUi,
+          persistSessionLifecycle: !isRoomObservation,
         });
       }
       const prePreflightCompactionCount = activeSessionEntry?.compactionCount ?? 0;
       let preflightCompactionApplied;
       try {
-        activeSessionEntry = await runPreflightCompactionIfNeeded({
-          cfg: runtimeConfig,
-          followupRun: effectiveQueued,
-          promptForEstimate: queued.prompt,
-          defaultModel,
-          agentCfgContextTokens,
-          sessionEntry: activeSessionEntry,
-          sessionStore,
-          sessionKey: replySessionKey,
-          storePath,
-          isHeartbeat: opts?.isHeartbeat === true,
-          replyOperation,
-          onCompactionNotice: notifyPreflightCompaction,
-        });
+        if (!isRoomObservation) {
+          activeSessionEntry = await runPreflightCompactionIfNeeded({
+            cfg: runtimeConfig,
+            followupRun: effectiveQueued,
+            promptForEstimate: queued.prompt,
+            defaultModel,
+            agentCfgContextTokens,
+            sessionEntry: activeSessionEntry,
+            sessionStore,
+            sessionKey: replySessionKey,
+            storePath,
+            isHeartbeat: opts?.isHeartbeat === true,
+            replyOperation,
+            onCompactionNotice: notifyPreflightCompaction,
+          });
+        }
         preflightCompactionApplied =
           (activeSessionEntry?.compactionCount ?? 0) > prePreflightCompactionCount;
       } catch (err) {
@@ -760,6 +834,7 @@ export function createFollowupRunner(params: {
           lifecycleGeneration,
           verboseLevel: run.verboseLevel,
           isControlUiVisible: shouldSurfaceToControlUi,
+          persistSessionLifecycle: !isRoomObservation,
         });
       }
       let bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
@@ -874,6 +949,7 @@ export function createFollowupRunner(params: {
         const outcomePlan = buildAgentRuntimeOutcomePlan();
         const fallbackResult = await runWithModelFallback<EmbeddedAgentRunResult>({
           ...resolveModelFallbackOptions(run, runtimeConfig),
+          ...(isRoomObservation ? { fallbacksOverride: [], skipAuthProfileRuntime: true } : {}),
           cfg: runtimeConfig,
           runId,
           sessionId: run.sessionId,
@@ -885,13 +961,28 @@ export function createFollowupRunner(params: {
               cfg: runtimeConfig,
             }),
           prepareAgentHarnessRuntime: async ({ provider, model, agentHarnessRuntimeOverride }) => {
+            if (
+              isRoomObservation &&
+              !canRunPassiveRoomObservationWithEmbeddedHarness({
+                config: runtimeConfig,
+                provider,
+                modelId: model,
+                agentId: run.agentId,
+                sessionKey: run.runtimePolicySessionKey ?? replySessionKey,
+                runtimeOverride: agentHarnessRuntimeOverride,
+              })
+            ) {
+              return;
+            }
             await ensureSelectedAgentHarnessPlugin({
               config: runtimeConfig,
               provider,
               modelId: model,
               agentId: run.agentId,
               sessionKey: run.runtimePolicySessionKey ?? replySessionKey,
-              agentHarnessRuntimeOverride,
+              agentHarnessRuntimeOverride: isRoomObservation
+                ? "openclaw"
+                : agentHarnessRuntimeOverride,
               workspaceDir: run.workspaceDir,
             });
           },
@@ -1101,6 +1192,7 @@ export function createFollowupRunner(params: {
                     runId,
                     extraSystemPrompt: run.extraSystemPrompt,
                     sourceReplyDeliveryMode: run.sourceReplyDeliveryMode,
+                    sourceBoundMessagePolicy: queued.sourceBoundMessagePolicy,
                     silentReplyPromptMode: run.silentReplyPromptMode,
                     allowEmptyAssistantReplyAsSilent: run.allowEmptyAssistantReplyAsSilent,
                     extraSystemPromptStatic: run.extraSystemPromptStatic,
@@ -1132,6 +1224,7 @@ export function createFollowupRunner(params: {
                     currentMessageId: followupCurrentMessageId,
                     agentAccountId: run.agentAccountId,
                     senderIsOwner: run.senderIsOwner,
+                    toolsAllow: queued.toolsAllow,
                     disableTools: opts?.disableTools,
                     abortSignal: runAbortSignal,
                   },
@@ -1200,10 +1293,13 @@ export function createFollowupRunner(params: {
                 currentInboundEventKind: queued.currentInboundEventKind,
                 currentInboundAudio: queued.currentInboundAudio,
                 currentInboundContext: queued.currentInboundContext,
+                roomObservationSystemPrompt: run.roomObservationSystemPrompt,
                 extraSystemPrompt: run.extraSystemPrompt,
                 silentReplyPromptMode: run.silentReplyPromptMode,
                 sourceReplyDeliveryMode: run.sourceReplyDeliveryMode,
+                sourceBoundMessagePolicy: queued.sourceBoundMessagePolicy,
                 forceMessageTool: run.sourceReplyDeliveryMode === "message_tool_only",
+                toolsAllow: queued.toolsAllow,
                 suppressNextUserMessagePersistence: suppressQueuedUserPersistenceForCandidate,
                 onUserMessagePersisted: notifyUserMessagePersisted,
                 suppressTranscriptOnlyAssistantPersistence:
@@ -1409,7 +1505,7 @@ export function createFollowupRunner(params: {
           allowAsyncLoad: false,
         }) ?? DEFAULT_CONTEXT_TOKENS;
 
-      if (storePath && replySessionKey) {
+      if (storePath && replySessionKey && !isRoomObservation) {
         await persistRunSessionUsage({
           storePath,
           sessionKey: replySessionKey,
@@ -1511,7 +1607,7 @@ export function createFollowupRunner(params: {
       if (responseUsageLine) {
         deliveryPayloads = appendUsageLine(deliveryPayloads, responseUsageLine);
       }
-      if (autoCompactionCount > 0) {
+      if (autoCompactionCount > 0 && !isRoomObservation) {
         const previousSessionId = run.sessionId;
         const count = await incrementRunCompactionCount({
           cfg: runtimeConfig,

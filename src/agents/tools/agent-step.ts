@@ -5,7 +5,7 @@
  */
 import crypto from "node:crypto";
 import { callGateway } from "../../gateway/call.js";
-import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
+import { annotateInputProvenancePromptText } from "../../sessions/input-provenance.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { retireSessionMcpRuntimeForSessionKey } from "../agent-bundle-mcp-tools.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
@@ -65,7 +65,7 @@ export async function runAgentStep(params: {
     sourceTool: params.sourceTool ?? "sessions_send",
   };
   // Mark inter-session prompts so downstream transcripts can distinguish tool-routed text.
-  const message = annotateInterSessionPromptText(params.message, inputProvenance);
+  const message = annotateInputProvenancePromptText(params.message, inputProvenance);
   const lane = params.lane ?? resolveNestedAgentLaneForSession(params.sessionKey);
   const channel = params.channel ?? INTERNAL_MESSAGE_CHANNEL;
   if (params.transcriptMessage !== undefined) {

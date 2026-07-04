@@ -92,6 +92,7 @@ import {
 import { getGlobalHookRunner, getGlobalPluginRegistry } from "../../plugins/hook-runner-global.js";
 import type { PluginHookReplyDispatchEvent } from "../../plugins/hook-types.js";
 import { isAcpSessionKey } from "../../routing/session-key.js";
+import { isRoomObservationInputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { resolveSilentReplyPolicyFromPolicies } from "../../shared/silent-reply-policy.js";
@@ -1317,6 +1318,9 @@ export async function dispatchReplyFromConfig(
   let dispatchReplyOperation: ReplyOperation | undefined;
   let dispatchAbortOperation: ReplyOperation | undefined;
   let preDispatchAbortOperation: ReplyOperation | undefined;
+  const restartRecoverable = !(
+    ctx.RequestAuthorized === false || isRoomObservationInputProvenance(ctx.InputProvenance)
+  );
   type DispatchReplyOperationAcquisition = { status: "ready" } | { status: "busy" };
   const ensureDispatchReplyOperation = async (
     phase: "pre_dispatch" | "dispatch",
@@ -1376,6 +1380,7 @@ export async function dispatchReplyFromConfig(
       resetTriggered: false,
       routeThreadId,
       upstreamAbortSignal: params.replyOptions?.abortSignal,
+      restartRecoverable,
       waitForActive: !allowActivePreDispatch && !allowSlackRoutedThreadBypass,
       ...(shouldRecoverStaleVisibleOperation ? { waitTimeoutMs: visibleReplyRecoveryWaitMs } : {}),
     });
@@ -1421,6 +1426,7 @@ export async function dispatchReplyFromConfig(
           resetTriggered: false,
           routeThreadId,
           upstreamAbortSignal: params.replyOptions?.abortSignal,
+          restartRecoverable,
           waitForActive: replyOperationStillActive,
           waitTimeoutMs: visibleReplyRecoveryWaitMs,
         });
@@ -1464,6 +1470,7 @@ export async function dispatchReplyFromConfig(
           resetTriggered: false,
           routeThreadId,
           upstreamAbortSignal: params.replyOptions?.abortSignal,
+          restartRecoverable,
           waitForActive: !allowActivePreDispatch && !allowSlackRoutedThreadBypass,
         });
       }
@@ -2132,7 +2139,11 @@ export async function dispatchReplyFromConfig(
     | "plugin-bound-fallback-no-handler"
     | undefined;
 
-  if (pluginOwnedBinding) {
+  if (
+    pluginOwnedBinding &&
+    ctx.RequestAuthorized !== false &&
+    !isRoomObservationInputProvenance(ctx.InputProvenance)
+  ) {
     if (isPreDispatchOperationAborted()) {
       return finishReplyOperationAbortedDispatch();
     }
@@ -2267,8 +2278,12 @@ export async function dispatchReplyFromConfig(
   }
 
   // Trigger plugin hooks (fire-and-forget)
+  const suppressPassiveMessageHooks =
+    ctx.RequestAuthorized === false || isRoomObservationInputProvenance(ctx.InputProvenance);
   const hasMessageReceivedHookConsumer =
-    ctx.SuppressMessageReceivedHooks !== true && hookRunner?.hasHooks("message_received") === true;
+    !suppressPassiveMessageHooks &&
+    ctx.SuppressMessageReceivedHooks !== true &&
+    hookRunner?.hasHooks("message_received") === true;
   if (hasMessageReceivedHookConsumer) {
     const messageReceivedHookContext = buildMessageReceivedHookContext();
     fireAndForgetHook(
@@ -2281,7 +2296,7 @@ export async function dispatchReplyFromConfig(
   }
 
   // Bridge to internal hooks (HOOK.md discovery system) - refs #8807
-  if (ctx.SuppressMessageReceivedHooks !== true && sessionKey) {
+  if (!suppressPassiveMessageHooks && ctx.SuppressMessageReceivedHooks !== true && sessionKey) {
     const messageReceivedHookContext = buildMessageReceivedHookContext();
     fireAndForgetHook(
       triggerInternalHook(
@@ -2609,7 +2624,7 @@ export async function dispatchReplyFromConfig(
     };
 
     // Run before_dispatch hook — let plugins inspect or handle before model dispatch.
-    if (hookRunner?.hasHooks("before_dispatch")) {
+    if (!suppressPassiveMessageHooks && hookRunner?.hasHooks("before_dispatch")) {
       const beforeDispatchResult = await traceReplyPhase("reply.before_dispatch_hooks", () =>
         runWithDispatchAbortSignal(getPreDispatchAbortSignal(), () =>
           hookRunner.runBeforeDispatch(
@@ -2667,7 +2682,7 @@ export async function dispatchReplyFromConfig(
       }
     }
 
-    if (hookRunner?.hasHooks("reply_dispatch")) {
+    if (!suppressPassiveMessageHooks && hookRunner?.hasHooks("reply_dispatch")) {
       const replyDispatchResult = await traceReplyPhase("reply.reply_dispatch_hooks", () =>
         runWithDispatchAbortSignal(getPreDispatchAbortSignal(), () =>
           hookRunner.runReplyDispatch(
@@ -2676,6 +2691,7 @@ export async function dispatchReplyFromConfig(
               runId: params.replyOptions?.runId,
               sessionKey: acpDispatchSessionKey,
               toolsAllow: params.replyOptions?.toolsAllow,
+              sourceBoundMessagePolicy: params.replyOptions?.sourceBoundMessagePolicy,
               images: params.replyOptions?.images,
               inboundAudio,
               sessionTtsAuto,
@@ -3475,7 +3491,7 @@ export async function dispatchReplyFromConfig(
       // Command handling prepared a trailing prompt after ACP in-place reset.
       // Route that tail through ACP now (same turn) instead of embedded dispatch.
       ctx.AcpDispatchTailAfterReset = false;
-      if (hookRunner?.hasHooks("reply_dispatch")) {
+      if (!suppressPassiveMessageHooks && hookRunner?.hasHooks("reply_dispatch")) {
         const tailDispatchResult = await runWithDispatchAbortSignal(getDispatchAbortSignal(), () =>
           hookRunner.runReplyDispatch(
             createReplyDispatchEvent({
@@ -3483,6 +3499,7 @@ export async function dispatchReplyFromConfig(
               runId: params.replyOptions?.runId,
               sessionKey: acpDispatchSessionKey,
               toolsAllow: params.replyOptions?.toolsAllow,
+              sourceBoundMessagePolicy: params.replyOptions?.sourceBoundMessagePolicy,
               images: params.replyOptions?.images,
               inboundAudio,
               sessionTtsAuto,

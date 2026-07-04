@@ -1839,6 +1839,61 @@ describe("initSessionState RawBody", () => {
 
     expect(result.sessionKey).toBe(boundSessionKey);
   });
+
+  it("does not resolve or touch conversation bindings for passive room observations", async () => {
+    setMinimalCurrentConversationBindingRegistryForTests();
+    const resolveByConversation = vi.fn(() => ({
+      bindingId: "slack:default:C123",
+      targetSessionKey: "agent:codex:acp:binding:slack:default:bound",
+      targetKind: "session" as const,
+      conversation: {
+        channel: "slack",
+        accountId: "default",
+        conversationId: "C123",
+      },
+      status: "active" as const,
+      boundAt: Date.now(),
+    }));
+    const touch = vi.fn();
+    registerSessionBindingAdapter({
+      channel: "slack",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation,
+      touch,
+    });
+    const storePath = await createStorePath("openclaw-passive-binding-");
+    const ownerSessionKey = "agent:main:slack:seed";
+    await writeSessionStoreFast(storePath, {
+      [ownerSessionKey]: {
+        sessionId: "owner-session",
+        updatedAt: Date.now(),
+      },
+    });
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "passive room comment",
+        RawBody: "passive room comment",
+        SessionKey: ownerSessionKey,
+        Provider: "slack",
+        Surface: "slack",
+        AccountId: "default",
+        To: "channel:C123",
+        OriginatingTo: "channel:C123",
+        ChatType: "group",
+        RequestAuthorized: false,
+        InputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+      },
+      cfg: { session: { store: storePath } } as OpenClawConfig,
+      commandAuthorized: false,
+    });
+
+    expect(result.sessionKey).toBe(ownerSessionKey);
+    expect(result.sessionId).toBe("owner-session");
+    expect(resolveByConversation).not.toHaveBeenCalled();
+    expect(touch).not.toHaveBeenCalled();
+  });
 });
 
 describe("initSessionState reset policy", () => {

@@ -44,6 +44,14 @@ export type SlackChannelConfig = {
   enabled?: boolean;
   /** Require mentioning the bot to trigger replies. */
   requireMention?: boolean;
+  /** Optional allowlist of users whose messages may become actionable requests. Other admitted users remain passive room events. */
+  requestUsers?: Array<string | number>;
+  /** If false, do not download Slack files or attachment media for this channel. Metadata placeholders remain visible. Default: true. */
+  mediaDownloads?: boolean;
+  /** If true, every message-tool send from this channel is plain text bound to the originating conversation and thread. */
+  sourceBoundMessageTool?: boolean;
+  /** If false, do not interpret text in this channel as OpenClaw or plugin commands. Default: true. */
+  textCommands?: boolean;
   /** Optional tool policy overrides for this channel. */
   tools?: GroupToolPolicyConfig;
   toolsBySender?: GroupToolPolicyBySenderConfig;

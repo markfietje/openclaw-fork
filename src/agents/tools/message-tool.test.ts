@@ -1370,6 +1370,248 @@ describe("message tool secret scoping", () => {
   });
 });
 
+describe("message tool source-bound policy", () => {
+  const policy = {
+    mode: "source_bound" as const,
+    channel: "slack",
+    accountId: "default",
+    conversationId: "C123",
+    threadId: "111.222",
+  };
+
+  function createSourceBoundTool() {
+    return createMessageTool({
+      currentChannelProvider: "slack",
+      currentChannelId: "channel:C123",
+      currentMessagingTarget: "channel:C123",
+      currentThreadTs: "111.222",
+      agentAccountId: "default",
+      sourceBoundMessagePolicy: policy,
+      runMessageAction: mocks.runMessageAction as never,
+    });
+  }
+
+  it("exposes only send and applies the trusted current route", async () => {
+    mockSendResult({ channel: "slack", to: "channel:C123" });
+    const tool = createSourceBoundTool();
+
+    expect(getActionEnum(getToolProperties(tool))).toEqual(["send"]);
+    expect(Object.keys(getToolProperties(tool)).toSorted()).toEqual(["action", "message"]);
+    expect(tool.description).toContain("current source conversation and thread only");
+
+    await tool.execute("1", { action: "send", message: "an independent observation" });
+
+    expect(firstRunMessageActionInput()?.toolContext).toMatchObject({
+      currentChannelProvider: "slack",
+      currentChannelId: "channel:C123",
+      currentThreadTs: "111.222",
+      replyToMode: "all",
+    });
+  });
+
+  it("allows only one source-bound send attempt per tool instance", async () => {
+    mockSendResult({ channel: "slack", to: "channel:C123" });
+    const tool = createSourceBoundTool();
+
+    await tool.execute("1", { action: "send", message: "first observation" });
+    await expect(
+      tool.execute("2", { action: "send", message: "second observation" }),
+    ).rejects.toThrow("already attempted a send");
+
+    expect(mocks.runMessageAction).toHaveBeenCalledOnce();
+  });
+
+  it("retains the source-bound send claim after an ambiguous failure", async () => {
+    mocks.runMessageAction.mockRejectedValueOnce(new Error("gateway timeout"));
+    const tool = createSourceBoundTool();
+
+    await expect(
+      tool.execute("1", { action: "send", message: "first observation" }),
+    ).rejects.toThrow("gateway timeout");
+    await expect(
+      tool.execute("2", { action: "send", message: "retry observation" }),
+    ).rejects.toThrow("already attempted a send");
+
+    expect(mocks.runMessageAction).toHaveBeenCalledOnce();
+  });
+
+  it("does not consume the send claim on local validation failure", async () => {
+    mockSendResult({ channel: "slack", to: "channel:C123" });
+    const tool = createSourceBoundTool();
+
+    await expect(
+      tool.execute("1", {
+        action: "send",
+        target: "channel:C999",
+        message: "invalid route",
+      }),
+    ).rejects.toThrow("Source-bound message policy denied");
+    await tool.execute("2", { action: "send", message: "valid observation" });
+
+    expect(mocks.runMessageAction).toHaveBeenCalledOnce();
+  });
+
+  it("atomically reserves a source-bound send before parallel dispatch", async () => {
+    let resolveFirst: ((value: MessageActionRunResult) => void) | undefined;
+    mocks.runMessageAction.mockImplementationOnce(
+      () =>
+        new Promise<MessageActionRunResult>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    const tool = createSourceBoundTool();
+
+    const first = tool.execute("1", { action: "send", message: "first observation" });
+    const second = tool.execute("2", { action: "send", message: "second observation" });
+
+    await expect(second).rejects.toThrow("already attempted a send");
+    expect(mocks.runMessageAction).toHaveBeenCalledOnce();
+    resolveFirst?.({
+      kind: "send",
+      action: "send",
+      channel: "slack",
+      to: "channel:C123",
+      handledBy: "plugin",
+      payload: {},
+      dryRun: false,
+    });
+    await first;
+  });
+
+  it.each([
+    { replyToMode: "off" as const, sameChannelThreadRequired: false },
+    { replyToMode: "first" as const, sameChannelThreadRequired: true },
+    { replyToMode: "batched" as const, sameChannelThreadRequired: true },
+  ])(
+    "allows a top-level send with a trusted current-message reply anchor in $replyToMode mode",
+    async ({ replyToMode, sameChannelThreadRequired }) => {
+      mockSendResult({ channel: "slack", to: "channel:C123" });
+      const tool = createMessageTool({
+        currentChannelProvider: "slack",
+        currentChannelId: "channel:C123",
+        currentMessagingTarget: "channel:C123",
+        currentThreadTs: "111.222",
+        currentMessageId: "111.222",
+        replyToMode,
+        sameChannelThreadRequired,
+        agentAccountId: "default",
+        sourceBoundMessagePolicy: { ...policy, threadId: undefined },
+        runMessageAction: mocks.runMessageAction as never,
+      });
+
+      await tool.execute("1", { action: "send", message: "top-level observation" });
+
+      expect(firstRunMessageActionInput()?.toolContext).toMatchObject({
+        currentChannelProvider: "slack",
+        currentChannelId: "channel:C123",
+        currentThreadTs: "111.222",
+        currentMessageId: "111.222",
+        replyToMode,
+        sameChannelThreadRequired,
+      });
+    },
+  );
+
+  it.each([
+    ["same target", { action: "send", target: "channel:C123", message: "no" }],
+    ["same provider", { action: "send", channel: "slack", message: "no" }],
+    ["same account", { action: "send", accountId: "default", message: "no" }],
+    ["same thread", { action: "send", threadId: "111.222", message: "no" }],
+    ["null thread", { action: "send", threadId: null, message: "no" }],
+    ["top level", { action: "send", topLevel: true, message: "no" }],
+    ["reply broadcast", { action: "send", replyBroadcast: true, message: "no" }],
+    ["host file", { action: "send", media: "/home/user/.openclaw/credentials.json" }],
+    ["media URLs", { action: "send", message: "no", mediaUrls: ["file:///tmp/private"] }],
+    ["media_urls alias", { action: "send", message: "no", media_urls: ["data:text/plain,x"] }],
+    ["file path", { action: "send", message: "no", filePath: "/tmp/private" }],
+    ["file URL", { action: "send", message: "no", fileUrl: "file:///tmp/private" }],
+    ["base64 buffer", { action: "send", buffer: "c2VjcmV0", message: "no" }],
+    [
+      "attachments",
+      { action: "send", attachments: [{ media: "/tmp/private", type: "file" }], message: "no" },
+    ],
+    ["presentation", { action: "send", presentation: { blocks: [] }, message: "no" }],
+    ["interactive", { action: "send", interactive: { buttons: [] }, message: "no" }],
+    ["object message", { action: "send", message: { text: "no" } }],
+    ["array message", { action: "send", message: ["no"] }],
+    ["empty message", { action: "send", message: "   " }],
+    ["foreign target", { action: "send", target: "channel:C999", message: "no" }],
+    ["broadcast action", { action: "broadcast", targets: ["channel:C123"], message: "no" }],
+    ["other action", { action: "react", messageId: "123", emoji: "eyes" }],
+  ])("rejects explicit or non-send routing: %s", async (_label, args) => {
+    const tool = createSourceBoundTool();
+
+    await expect(tool.execute("1", args)).rejects.toThrow("Source-bound message policy denied");
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "<!he<think>x</think>re> observation",
+    "[<think>x</think>[reply_to:999.888]] observation",
+  ])("rejects delivery markup synthesized by text sanitization: %s", async (message) => {
+    const tool = createSourceBoundTool();
+
+    await expect(tool.execute("1", { action: "send", message })).rejects.toThrow(
+      "Source-bound message policy denied",
+    );
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
+  it.each(["<!channel> hello", "<!here> hello", "<!everyone> hello", "<!subteam^S123> hello"])(
+    "rejects mass-mention text: %s",
+    async (message) => {
+      const tool = createSourceBoundTool();
+
+      await expect(tool.execute("1", { action: "send", message })).rejects.toThrow(
+        "channel-wide and user-group mentions",
+      );
+      expect(mocks.runMessageAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["<@U123ABC> hello", "<@UAPPBOT> deploy now"])(
+    "rejects native user or app mentions: %s",
+    async (message) => {
+      const tool = createSourceBoundTool();
+
+      await expect(tool.execute("1", { action: "send", message })).rejects.toThrow(
+        "native user and app mentions are not allowed",
+      );
+      expect(mocks.runMessageAction).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "observation [[reply_to:999.888]]",
+    "observation [[reply_to_current]]",
+    "observation [[audio_as_voice]]",
+    "MEDIA:/home/user/.openclaw/credentials.json",
+  ])("rejects message delivery directives: %s", async (message) => {
+    const tool = createSourceBoundTool();
+
+    await expect(tool.execute("1", { action: "send", message })).rejects.toThrow(
+      "message delivery directives are not allowed",
+    );
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the active source context no longer matches", async () => {
+    const tool = createMessageTool({
+      currentChannelProvider: "slack",
+      currentChannelId: "channel:C999",
+      currentThreadTs: "111.222",
+      agentAccountId: "default",
+      sourceBoundMessagePolicy: policy,
+      runMessageAction: mocks.runMessageAction as never,
+    });
+
+    await expect(tool.execute("1", { action: "send", message: "no" })).rejects.toThrow(
+      "active conversation does not match",
+    );
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+});
+
 describe("message tool delivery mode schema", () => {
   it("hides bestEffort when required durable delivery is not available", () => {
     const plugin = createChannelPlugin({

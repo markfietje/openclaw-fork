@@ -4,7 +4,10 @@
  * Creates the per-run tool inventory from config, channel context, sandbox policy, auth stores, and plugin tools.
  */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
+import type {
+  SourceBoundMessagePolicy,
+  SourceReplyDeliveryMode,
+} from "../auto-reply/get-reply-options.types.js";
 import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import { selectApplicableRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -146,6 +149,8 @@ export function createOpenClawTools(
     requireExplicitMessageTarget?: boolean;
     /** Visible source replies must be sent through the message tool when set to message_tool_only. */
     sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+    /** Restrict message sends to the exact source route for this run. */
+    sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
     inboundEventKind?: InboundEventKind;
     /** If true, omit the message tool from the tool list. */
     disableMessageTool?: boolean;
@@ -360,6 +365,7 @@ export function createOpenClawTools(
         sandboxRoot: options?.sandboxRoot,
         requireExplicitTarget: options?.requireExplicitMessageTarget,
         sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,
+        sourceBoundMessagePolicy: options?.sourceBoundMessagePolicy,
         inboundEventKind: options?.inboundEventKind,
         requesterSenderId: options?.requesterSenderId ?? undefined,
         senderIsOwner: options?.senderIsOwner,

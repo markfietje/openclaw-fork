@@ -315,6 +315,22 @@ vi.mock("../../sessions/index.js", () => {
     async reload() {}
   }
   function ModelRegistry() {}
+  class SettingsManager {
+    static inMemory() {
+      return new SettingsManager();
+    }
+    setRetryEnabled() {}
+    setCompactionEnabled() {}
+    getGlobalSettings() {
+      return {};
+    }
+    getProjectSettings() {
+      return {};
+    }
+    getCompactionReserveTokens() {
+      return 0;
+    }
+  }
   const estimateTokens = (value: unknown) =>
     Math.max(1, Math.ceil(JSON.stringify(value ?? "").length / 4));
 
@@ -325,6 +341,7 @@ vi.mock("../../sessions/index.js", () => {
     estimateTokens,
     generateSummary: async () => "",
     ModelRegistry,
+    SettingsManager,
     SessionManager: {
       open: (...args: unknown[]) => hoisted.sessionManagerOpenMock(...args),
     },
@@ -702,6 +719,10 @@ vi.mock("../../tool-policy.js", async (importOriginal) => {
 });
 
 vi.mock("../../transcript-policy.js", () => ({
+  createCoreTranscriptPolicy: () => ({
+    allowSyntheticToolResults: false,
+    repairToolUseResultPairing: true,
+  }),
   resolveTranscriptPolicy: () => ({
     allowSyntheticToolResults: false,
     repairToolUseResultPairing: true,
@@ -1155,6 +1176,8 @@ export function expectCalledWithSessionKey(mock: ReturnType<typeof vi.fn>, sessi
 const testModel = {
   api: "openai-completions",
   provider: "openai",
+  baseUrl: "https://api.openai.com/v1",
+  headers: {},
   compat: {},
   contextWindow: 8192,
   input: ["text"],

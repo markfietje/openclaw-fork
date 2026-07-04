@@ -58,6 +58,7 @@ export { createReplyReferencePlanner } from "../auto-reply/reply/reply-reference
 export type {
   GetReplyOptions,
   BlockReplyContext,
+  SourceBoundMessagePolicy,
   SourceReplyDeliveryMode,
 } from "../auto-reply/get-reply-options.types.js";
 export type { ReplyPayload } from "./reply-payload.js";

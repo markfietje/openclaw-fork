@@ -30,6 +30,10 @@ export function registerSlackMemberEvents(params: {
       const ingressContext = await authorizeAndResolveSlackSystemEventContext({
         ctx,
         senderId: payload.user,
+        // Join events identify the inviter; absent inviter means the member
+        // joined on their own authority. Leave events expose no actor.
+        requestUserActorId:
+          paramsLocal.verb === "joined" ? (payload.inviter ?? payload.user ?? null) : null,
         channelId,
         channelType,
         eventKind: `member-${paramsLocal.verb}`,

@@ -56,6 +56,8 @@ type MockResolvedModel = {
   provider: string;
   contextWindow: number;
   api: string;
+  baseUrl?: string;
+  headers?: Record<string, string>;
   reasoning?: boolean;
 };
 

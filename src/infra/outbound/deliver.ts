@@ -91,6 +91,7 @@ import { stripInternalRuntimeScaffolding } from "./protocol-scaffolding.js";
 import { createReplyToDeliveryPolicy } from "./reply-policy.js";
 import type { OutboundSendDeps } from "./send-deps.js";
 import type { OutboundSessionContext } from "./session-context.js";
+import { assertSourceBoundReplyPayload } from "./source-bound-message-policy.js";
 import type { OutboundChannel } from "./targets.js";
 
 export type { OutboundDeliveryResult } from "./deliver-types.js";
@@ -203,6 +204,7 @@ type ChannelHandlerParams = {
   silent?: boolean;
   mediaAccess?: OutboundMediaAccess;
   gatewayClientScopes?: readonly string[];
+  outboundPayloadPolicy?: "source_bound_plain_text";
   onPlatformSendStart?: () => Promise<void>;
   onDeliveryResult?: (result: OutboundDeliveryResult) => Promise<void> | void;
 };
@@ -594,6 +596,7 @@ function createChannelOutboundContextBase(
     mediaReadFile: params.mediaAccess?.readFile,
     gatewayClientScopes: params.gatewayClientScopes,
     onDeliveryResult: params.onDeliveryResult,
+    outboundPayloadPolicy: params.outboundPayloadPolicy,
   };
 }
 
@@ -686,6 +689,7 @@ type DeliverOutboundPayloadsCoreParams = {
   mirror?: DeliveryMirror;
   silent?: boolean;
   gatewayClientScopes?: readonly string[];
+  outboundPayloadPolicy?: "source_bound_plain_text";
 };
 
 /**
@@ -1273,6 +1277,7 @@ export async function deliverOutboundPayloadsInternal(
   params: DeliverOutboundPayloadsParams,
 ): Promise<OutboundDeliveryResult[]> {
   const { channel, to, payloads } = params;
+  const sourceBoundPlainText = params.outboundPayloadPolicy === "source_bound_plain_text";
   const queuePolicy = params.queuePolicy ?? "best_effort";
   const queuePayloads = payloads.map(stripInternalRuntimeScaffoldingFromPayload);
   const queuePayloadsChanged = queuePayloads.some((payload, index) => payload !== payloads[index]);
@@ -1299,11 +1304,12 @@ export async function deliverOutboundPayloadsInternal(
         bestEffort: params.bestEffort,
         gifPlayback: params.gifPlayback,
         forceDocument: params.forceDocument,
-        replyPayloadSendingHook: params.replyPayloadSendingHook,
+        replyPayloadSendingHook: sourceBoundPlainText ? undefined : params.replyPayloadSendingHook,
         silent: params.silent,
-        mirror: params.mirror,
-        session: params.session,
+        mirror: sourceBoundPlainText ? undefined : params.mirror,
+        session: sourceBoundPlainText ? undefined : params.session,
         gatewayClientScopes: params.gatewayClientScopes,
+        outboundPayloadPolicy: params.outboundPayloadPolicy,
       }).catch((err: unknown) => {
         if (queuePolicy === "required") {
           throw err;
@@ -1733,6 +1739,7 @@ async function deliverOutboundPayloadsCore(
       gatewayClientScopes: params.gatewayClientScopes,
       onPlatformSendStart: params.onPlatformSendStart,
       onDeliveryResult: reportIdentifiedDeliveryResult,
+      outboundPayloadPolicy: params.outboundPayloadPolicy,
     });
   const baseHandler = await createHandler([]);
   const handlerByMediaSources = new Map<string, Promise<ChannelHandler>>();
@@ -1806,17 +1813,21 @@ async function deliverOutboundPayloadsCore(
       recordPayloadOutcome(suppressedPayloadOutcome({ index, reason: "no_visible_payload" }));
     });
   }
+  const sourceBoundPlainText = params.outboundPayloadPolicy === "source_bound_plain_text";
   const deliveredMirrorPayloads: NormalizedOutboundPayload[] = [];
   const recordDeliveredMirrorPayload = (
     payloadSummary: NormalizedOutboundPayload,
     deliveredResults: readonly OutboundDeliveryResult[],
   ): void => {
-    if (!params.mirror || deliveredResults.length === 0) {
+    if (sourceBoundPlainText || !params.mirror || deliveredResults.length === 0) {
       return;
     }
     deliveredMirrorPayloads.push(payloadSummary);
   };
-  const hookRunner = getGlobalHookRunner();
+  // Passive source-bound sends must stay on the built-in channel transport path.
+  // Arbitrary delivery hooks can otherwise rewrite safe model output with private
+  // plugin data before the final plain-text validator runs.
+  const hookRunner = sourceBoundPlainText ? null : getGlobalHookRunner();
   // Canonical session key forwarded to internal lifecycle hooks
   // (`message:sent` event, `message_sending` plugin hook ctx, etc.). Mirror
   // delivery wins because mirror sends are explicitly bound to the mirror's
@@ -1826,7 +1837,9 @@ async function deliverOutboundPayloadsCore(
   // fall back to `session.policyKey` here — the policy key describes the
   // delivery target's policy, not the canonical control session, and
   // handing it to plugins that correlate against agent_end would be wrong.
-  const sessionKeyForInternalHooks = params.mirror?.sessionKey ?? params.session?.key;
+  const sessionKeyForInternalHooks = sourceBoundPlainText
+    ? undefined
+    : (params.mirror?.sessionKey ?? params.session?.key);
   const mirrorIsGroup = params.mirror?.isGroup;
   const mirrorGroupId = params.mirror?.groupId;
   const { emitMessageSent, hasMessageSentHooks } = createMessageSentEmitter({
@@ -1839,7 +1852,9 @@ async function deliverOutboundPayloadsCore(
     mirrorGroupId,
   });
   const hasMessageSendingHooks = hookRunner?.hasHooks("message_sending") ?? false;
-  const diagnosticSessionKey = sessionKeyForDeliveryDiagnostics(params);
+  const diagnosticSessionKey = sourceBoundPlainText
+    ? undefined
+    : sessionKeyForDeliveryDiagnostics(params);
   if (hasMessageSentHooks && params.session?.agentId && !sessionKeyForInternalHooks) {
     log.warn(
       "deliverOutboundPayloads: session.agentId present without session key; internal message:sent hook will be skipped",
@@ -1897,7 +1912,7 @@ async function deliverOutboundPayloadsCore(
       throwIfAborted(abortSignal);
 
       const replyHookResult = await applyReplyPayloadSendingHook({
-        hook: params.replyPayloadSendingHook,
+        hook: sourceBoundPlainText ? undefined : params.replyPayloadSendingHook,
         payload,
       });
       if (replyHookResult.cancelled) {
@@ -1972,6 +1987,9 @@ async function deliverOutboundPayloadsCore(
           }),
         );
         continue;
+      }
+      if (params.outboundPayloadPolicy === "source_bound_plain_text") {
+        assertSourceBoundReplyPayload(effectivePayload);
       }
       payloadSummary = buildPayloadSummary(effectivePayload);
       const deliveryHandler = await getDeliveryHandler(payloadSummary.mediaUrls);
@@ -2242,7 +2260,7 @@ async function deliverOutboundPayloadsCore(
       params.onError?.(err, payloadSummary);
     }
   }
-  if (params.mirror && deliveredMirrorPayloads.length > 0) {
+  if (!sourceBoundPlainText && params.mirror && deliveredMirrorPayloads.length > 0) {
     const deliveredMirror = {
       text: deliveredMirrorPayloads
         .map((payload) => payload.hookContent ?? payload.text)

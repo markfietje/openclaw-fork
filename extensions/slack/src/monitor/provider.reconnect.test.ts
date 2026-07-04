@@ -68,6 +68,18 @@ describe("slack socket reconnect helpers", () => {
     expect(status).not.toHaveProperty("lastEventAt");
   });
 
+  it("keeps connected generations monotonic within the same millisecond", () => {
+    const setStatus = vi.fn();
+    vi.spyOn(Date, "now").mockReturnValue(1_711_406_400_000);
+
+    const first = publishSlackConnectedStatus(setStatus);
+    const second = publishSlackConnectedStatus(setStatus, first);
+
+    expect(first).toBe(1_711_406_400_000);
+    expect(second).toBe(1_711_406_400_001);
+    expect(statusCallAt(setStatus, 1)?.lastConnectedAt).toBe(second);
+  });
+
   it("marks socket mode disconnected when an error closes the socket", () => {
     const setStatus = vi.fn();
     const err = new Error("dns down");
@@ -102,6 +114,60 @@ describe("slack socket reconnect helpers", () => {
       },
       lastError: null,
     });
+  });
+
+  it("publishes a disconnected gap and fresh generation across native reconnect", async () => {
+    const client = new FakeEmitter();
+    const snapshots: Array<Record<string, unknown>> = [];
+    let status: Record<string, unknown> = {};
+    const setStatus = vi.fn((next: Record<string, unknown>) => {
+      status = { ...status, ...next };
+      snapshots.push({ ...status });
+    });
+    vi.spyOn(Date, "now").mockReturnValue(1_711_406_400_000);
+    const app = {
+      receiver: { client },
+      start: vi.fn().mockImplementation(async () => {
+        client.emit("connected");
+      }),
+    };
+
+    let lastConnectedAt: number | undefined;
+    const publishConnected = () => {
+      lastConnectedAt = publishSlackConnectedStatus(setStatus, lastConnectedAt);
+    };
+    const monitor = startSlackSocketAndWaitForDisconnect({
+      app: app as never,
+      onStarted: publishConnected,
+      onSocketClose: () => publishSlackDisconnectedStatus(setStatus),
+      onReconnected: publishConnected,
+    });
+    await vi.waitFor(() => expect(snapshots).toHaveLength(1));
+
+    client.emit("close");
+    client.emit("connected");
+
+    expect(snapshots).toHaveLength(3);
+    expect(snapshots[0]).toMatchObject({
+      connected: true,
+      healthState: "healthy",
+      lastConnectedAt: 1_711_406_400_000,
+    });
+    expect(snapshots[1]).toMatchObject({
+      connected: false,
+      healthState: "disconnected",
+      lastConnectedAt: 1_711_406_400_000,
+    });
+    expect(snapshots[2]).toMatchObject({
+      connected: true,
+      healthState: "healthy",
+      lastConnectedAt: 1_711_406_400_001,
+    });
+
+    client.emit("disconnected");
+    await expect(monitor).resolves.toEqual({ event: "disconnect" });
+    expect(client.listenerCount("close")).toBe(0);
+    expect(client.listenerCount("connected")).toBe(0);
   });
 
   it("formats recoverable disconnects beyond the former cap as unlimited", () => {
@@ -229,6 +295,8 @@ describe("slack socket reconnect helpers", () => {
     expect(client.listenerCount("disconnected")).toBe(0);
     expect(client.listenerCount("unable_to_socket_mode_start")).toBe(0);
     expect(client.listenerCount("error")).toBe(0);
+    expect(client.listenerCount("close")).toBe(0);
+    expect(client.listenerCount("connected")).toBe(0);
   });
 
   it("preserves error payload from unable_to_socket_mode_start event", async () => {
@@ -263,6 +331,8 @@ describe("slack socket reconnect helpers", () => {
     expect(client.listenerCount("disconnected")).toBe(0);
     expect(client.listenerCount("unable_to_socket_mode_start")).toBe(0);
     expect(client.listenerCount("error")).toBe(0);
+    expect(client.listenerCount("close")).toBe(0);
+    expect(client.listenerCount("connected")).toBe(0);
   });
 
   it("marks the socket client as shutting down before stop runs", async () => {

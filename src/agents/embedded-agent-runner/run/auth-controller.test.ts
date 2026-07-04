@@ -98,6 +98,7 @@ function createMutableEmbeddedRunAuthController(params: {
   profileCandidates?: string[];
   authStore?: AuthProfileStore;
   fallbackConfigured?: boolean;
+  skipProviderRuntimeAuth?: boolean;
   warn?: (message: string) => void;
 }) {
   return createEmbeddedRunAuthController({
@@ -116,6 +117,7 @@ function createMutableEmbeddedRunAuthController(params: {
     attemptedThinking: new Set(),
     fallbackConfigured: params.fallbackConfigured ?? false,
     allowTransientCooldownProbe: false,
+    skipProviderRuntimeAuth: params.skipProviderRuntimeAuth,
     getProvider: () => "custom-openai",
     getModelId: () => "test-model",
     getRuntimeModel: () => params.harness.runtimeModel,
@@ -207,6 +209,63 @@ describe("createEmbeddedRunAuthController", () => {
     expect(harness.runtimeAuthState?.sourceApiKey).toBe("source-api-key");
     expect(harness.runtimeAuthState?.authMode).toBe("api-key");
     expect(harness.runtimeAuthState?.profileId).toBe("default");
+  });
+
+  it("injects core credentials without invoking provider runtime auth hooks when requested", async () => {
+    const harness = createMutableAuthControllerHarness();
+    harness.runtimeModel = {
+      ...harness.runtimeModel,
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      headers: undefined,
+    };
+    harness.effectiveModel = harness.runtimeModel;
+    const setRuntimeApiKey = vi.fn<(provider: string, apiKey: string) => void>();
+    mocks.getApiKeyForModel.mockResolvedValue({
+      apiKey: "core-api-key",
+      mode: "api-key",
+      profileId: "openai:default",
+      source: "env",
+    });
+
+    const controller = createMutableEmbeddedRunAuthController({
+      harness,
+      setRuntimeApiKey,
+      skipProviderRuntimeAuth: true,
+    });
+    await controller.initializeAuthProfile();
+
+    expect(mocks.prepareProviderRuntimeAuth).not.toHaveBeenCalled();
+    expect(setRuntimeApiKey).toHaveBeenCalledWith("openai", "core-api-key");
+    expect(harness.runtimeAuthState).toBeNull();
+  });
+
+  it("rejects api-key-less aws-sdk auth without invoking runtime hooks in core-only mode", async () => {
+    const harness = createMutableAuthControllerHarness();
+    harness.runtimeModel = {
+      ...harness.runtimeModel,
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      headers: undefined,
+    };
+    harness.effectiveModel = harness.runtimeModel;
+    const setRuntimeApiKey = vi.fn<(provider: string, apiKey: string) => void>();
+    mocks.getApiKeyForModel.mockResolvedValue({
+      apiKey: undefined,
+      mode: "aws-sdk",
+      source: "aws-sdk default chain",
+    });
+
+    const controller = createMutableEmbeddedRunAuthController({
+      harness,
+      setRuntimeApiKey,
+      skipProviderRuntimeAuth: true,
+    });
+
+    await expect(controller.initializeAuthProfile()).rejects.toThrow("No API key resolved");
+    expect(mocks.prepareProviderRuntimeAuth).not.toHaveBeenCalled();
+    expect(setRuntimeApiKey).not.toHaveBeenCalled();
+    expect(harness.runtimeAuthState).toBeNull();
   });
 
   it("includes the checked credential source when an api key is missing", async () => {

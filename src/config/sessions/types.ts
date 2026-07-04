@@ -245,6 +245,8 @@ export type SessionEntry = {
   pluginExtensionSlotKeys?: Record<string, Record<string, string>>;
   /** Durable one-shot prompt additions drained before the next agent turn. */
   pluginNextTurnInjections?: Record<string, SessionPluginNextTurnInjection[]>;
+  /** Deferred lifecycle hook marker for sessions first seen via a passive room observation. */
+  passiveSessionStartPending?: boolean;
   sessionId: string;
   updatedAt: number;
   sessionFile?: string;

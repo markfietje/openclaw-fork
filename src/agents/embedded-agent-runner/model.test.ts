@@ -841,6 +841,9 @@ describe("resolveModel", () => {
   });
 
   it("looks up each static fallback candidate with its own normalized model id", async () => {
+    resolveRuntimeExternalAuthProviderRefsMock.mockImplementation(() => {
+      throw new Error("passive model resolution must not invoke external auth plugins");
+    });
     resolveBundledStaticCatalogModelMock.mockImplementation(({ provider, modelId }) => ({
       provider,
       id: modelId,
@@ -877,6 +880,7 @@ describe("resolveModel", () => {
       provider: "openai",
       id: "gpt-4o",
     });
+    expect(resolveRuntimeExternalAuthProviderRefsMock).not.toHaveBeenCalled();
     expect(resolveBundledStaticCatalogModelMock).toHaveBeenCalledWith({
       provider: "anthropic",
       modelId: "claude-haiku-4-5",

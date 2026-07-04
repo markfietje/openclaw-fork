@@ -317,6 +317,13 @@ async function runDispatch(params: {
   suppressReplyLifecycle?: boolean;
   sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
   toolsAllow?: string[];
+  sourceBoundMessagePolicy?: {
+    mode: "source_bound";
+    channel: string;
+    accountId: string;
+    conversationId: string;
+    threadId?: string;
+  };
 }) {
   const targetSessionKey = params.sessionKeyOverride ?? sessionKey;
   return tryDispatchAcpReply({
@@ -345,6 +352,7 @@ async function runDispatch(params: {
     shouldSendToolSummaries: true,
     bypassForCommand: false,
     toolsAllow: params.toolsAllow,
+    sourceBoundMessagePolicy: params.sourceBoundMessagePolicy,
     ...(params.onReplyStart ? { onReplyStart: params.onReplyStart } : {}),
     recordProcessed: vi.fn(),
     markIdle: vi.fn(),
@@ -1443,6 +1451,27 @@ describe("tryDispatchAcpReply", () => {
 
     expect(managerMocks.runTurn).toHaveBeenCalledOnce();
     expect(runTurnCall().text).toBe("test");
+  });
+
+  it("fails closed when ACP dispatch cannot enforce a source-bound message policy", async () => {
+    setReadyAcpResolution();
+    const { dispatcher } = createDispatcher();
+
+    await runDispatch({
+      bodyForAgent: "test",
+      dispatcher,
+      sourceBoundMessagePolicy: {
+        mode: "source_bound",
+        channel: "slack",
+        accountId: "default",
+        conversationId: "C123",
+        threadId: "111.222",
+      },
+    });
+
+    expect(managerMocks.runTurn).not.toHaveBeenCalled();
+    expect(dispatcherCall(dispatcher.sendFinalReply).isError).toBe(true);
+    expect(dispatcherCall(dispatcher.sendFinalReply).text).toContain("source-bound message policy");
   });
 
   it("does not unbind stale bindings when ACP dispatch is disabled by policy", async () => {

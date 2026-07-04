@@ -1032,12 +1032,50 @@ Current Slack message actions include `send`, `upload-file`, `download-file`, `r
 
     - `requireMention`
     - `users` (allowlist)
+    - `requestUsers` (request-authority allowlist)
+    - `mediaDownloads` (set `false` to keep Slack files and attachment media out of the agent turn)
+    - `sourceBoundMessageTool` (plain-text sends to the originating conversation/thread only)
+    - `textCommands` (set `false` to keep OpenClaw and plugin text commands out of the room)
     - `allowBots`
     - `skills`
     - `systemPrompt`
     - `tools`, `toolsBySender`
     - `toolsBySender` key format: `channel:`, `id:`, `e164:`, `username:`, `name:`, or `"*"` wildcard
       (legacy unprefixed keys still map to `id:` only)
+
+    `users` controls who is admitted to the channel at all. `requestUsers` is narrower: admitted senders not listed there are still available as passive `room_event` context, but their mentions, text commands, and abort requests cannot become actionable requests. Native slash commands and interactive controls from those senders are denied. `requestUsers` does not grant command authority; listed senders must still pass the normal owner/command authorization checks.
+
+    When `requestUsers` is unset, Slack keeps its existing behavior. An empty list allows nobody to create requests, while `"*"` allows every admitted sender. Use stable Slack user IDs. Set the channel's `requireMention: false` to admit unmentioned messages from non-request users. The `messages.groupChat.unmentionedInbound` setting still controls unmentioned messages from listed request users.
+
+    Passive `requestUsers` observations currently require `plugins.slots.contextEngine` to be unset or set to `"legacy"`. With an explicit non-legacy context engine, OpenClaw drops non-request-user events before history or transcript persistence because custom engines cannot yet guarantee preservation of request-authority provenance.
+
+    Passive observations also require the built-in embedded OpenClaw runtime and an unmodified core OpenAI transport (`https://api.openai.com/v1` using the core Responses or Completions API). Explicit Codex, Copilot, CLI, custom-runtime, non-OpenAI, or custom OpenAI transport/model configuration fails closed before model invocation and emits an operator warning; OpenClaw does not try configured model fallbacks for these turns.
+
+    Slack suppresses typing indicators for passive `room_event` turns while the agent decides whether a message-tool comment is worth posting.
+
+    ```json5
+    {
+      messages: {
+        groupChat: {
+          unmentionedInbound: "room_event",
+          visibleReplies: "message_tool",
+        },
+      },
+      channels: {
+        slack: {
+          channels: {
+            C12345678: {
+              requireMention: false,
+              requestUsers: ["U12345678"],
+              mediaDownloads: false,
+              sourceBoundMessageTool: true,
+              textCommands: false,
+            },
+          },
+        },
+      },
+    }
+    ```
 
     `allowBots` is conservative for channels and private channels: bot-authored room messages are accepted only when the sending bot is explicitly listed in that room's `users` allowlist, or when at least one explicit Slack owner ID from `channels.slack.allowFrom` is currently a room member. Wildcards and display-name owner entries do not satisfy owner presence. Owner presence uses Slack `conversations.members`; make sure the app has the matching read scope for the room type (`channels:read` for public channels, `groups:read` for private channels). If the member lookup fails, OpenClaw drops the bot-authored room message.
 
@@ -1458,7 +1496,7 @@ Primary reference: [Configuration reference - Slack](/gateway/config-channels#sl
 - mode/auth: `mode`, `botToken`, `appToken`, `signingSecret`, `webhookPath`, `accounts.*`
 - DM access: `dm.enabled`, `dmPolicy`, `allowFrom` (legacy: `dm.policy`, `dm.allowFrom`), `dm.groupEnabled`, `dm.groupChannels`
 - compatibility toggle: `dangerouslyAllowNameMatching` (break-glass; keep off unless needed)
-- channel access: `groupPolicy`, `channels.*`, `channels.*.users`, `channels.*.requireMention`
+- channel access: `groupPolicy`, `channels.*`, `channels.*.users`, `channels.*.requestUsers`, `channels.*.requireMention`
 - threading/history: `replyToMode`, `replyToModeByChatType`, `thread.*`, `historyLimit`, `dmHistoryLimit`, `dms.*.historyLimit`
 - delivery: `textChunkLimit`, `chunkMode`, `mediaMaxMb`, `streaming`, `streaming.nativeTransport`, `streaming.preview.toolProgress`
 - unfurls: `unfurlLinks` (default: `false`), `unfurlMedia` for `chat.postMessage` link/media preview control; set `unfurlLinks: true` to opt back into link previews

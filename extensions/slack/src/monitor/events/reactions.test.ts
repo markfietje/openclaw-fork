@@ -138,6 +138,28 @@ describe("registerSlackReactionEvents", () => {
       expectedCalls: 0,
     },
     {
+      name: "blocks channel reactions from users outside requestUsers",
+      input: {
+        overrides: {
+          channelType: "channel",
+          requestUsers: ["U_OWNER"],
+        },
+        event: buildReactionEvent({ channel: "C1", user: "U_ATTACKER" }),
+      },
+      expectedCalls: 0,
+    },
+    {
+      name: "allows channel reactions from users inside requestUsers",
+      input: {
+        overrides: {
+          channelType: "channel",
+          requestUsers: ["U_OWNER"],
+        },
+        event: buildReactionEvent({ channel: "C1", user: "U_OWNER" }),
+      },
+      expectedCalls: 1,
+    },
+    {
       name: "blocks reactions when reaction notifications are off",
       input: { overrides: { dmPolicy: "open", reactionMode: "off" } },
       expectedCalls: 0,

@@ -116,6 +116,7 @@ type SlackSendOpts = {
   metadata?: MessageMetadata;
   /** Persist each concrete platform send before any later chunk can fail. */
   onDeliveryResult?: (result: SlackSendResult) => Promise<void> | void;
+  outboundPayloadPolicy?: "source_bound_plain_text";
 };
 
 type SlackWebApiErrorData = {
@@ -760,10 +761,13 @@ async function sendMessageSlackQueuedInner(params: {
   if (opts.replyBroadcast && opts.mediaUrl) {
     throw new Error("Slack replyBroadcast is only supported for text or block thread replies.");
   }
-  const unfurl = {
-    unfurlLinks: account.config.unfurlLinks,
-    unfurlMedia: account.config.unfurlMedia,
-  };
+  const unfurl =
+    opts.outboundPayloadPolicy === "source_bound_plain_text"
+      ? { unfurlLinks: false, unfurlMedia: false }
+      : {
+          unfurlLinks: account.config.unfurlLinks,
+          unfurlMedia: account.config.unfurlMedia,
+        };
   const directUserPostChannelId = resolveDirectUserPostChannelId({
     recipient,
     hasMedia: Boolean(opts.mediaUrl),
@@ -832,6 +836,9 @@ async function sendMessageSlackQueuedInner(params: {
     markdownToSlackMrkdwnChunks(markdown, chunkLimit, { tableMode }),
   );
   const resolvedChunks = resolveTextChunksWithFallback(trimmedMessage, chunks);
+  if (opts.outboundPayloadPolicy === "source_bound_plain_text" && resolvedChunks.length !== 1) {
+    throw new Error("Source-bound Slack delivery must fit in exactly one message.");
+  }
   const mediaMaxBytes =
     typeof account.config.mediaMaxMb === "number"
       ? account.config.mediaMaxMb * 1024 * 1024

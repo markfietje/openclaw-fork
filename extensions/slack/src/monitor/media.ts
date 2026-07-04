@@ -420,6 +420,7 @@ export async function resolveSlackAttachmentContent(params: {
   client?: SlackWebClient;
   token: string;
   maxBytes: number;
+  mediaDownloads?: boolean;
   readIdleTimeoutMs?: number;
   totalTimeoutMs?: number;
   abortSignal?: AbortSignal;
@@ -447,7 +448,8 @@ export async function resolveSlackAttachmentContent(params: {
       textBlocks.push(`${heading}\n${text}`);
     }
 
-    const imageUrl = resolveForwardedAttachmentImageUrl(att);
+    const imageUrl =
+      params.mediaDownloads !== false ? resolveForwardedAttachmentImageUrl(att) : null;
     if (imageUrl) {
       try {
         const { url: slackUrl, requestInit } = createSlackMediaRequest(imageUrl, params.token);
@@ -475,7 +477,7 @@ export async function resolveSlackAttachmentContent(params: {
       }
     }
 
-    if (att.files && att.files.length > 0) {
+    if (params.mediaDownloads !== false && att.files && att.files.length > 0) {
       const fileMedia = await resolveSlackMedia({
         files: att.files,
         client: params.client,

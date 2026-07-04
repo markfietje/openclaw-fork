@@ -18,8 +18,11 @@ vi.mock("../../cli/command-secret-targets.js", () => ({
     hoisted.getScopedChannelsCommandSecretTargetsMock(...args),
 }));
 
-const { resolveQueuedReplyExecutionConfig, resolveQueuedReplyRuntimeConfig } =
-  await import("./agent-runner-utils.js");
+const {
+  resolveQueuedReplyExecutionConfig,
+  resolveQueuedReplyRuntimeConfig,
+  shouldDropRoomObservationForRuntimeConfig,
+} = await import("./agent-runner-utils.js");
 const { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } =
   await import("../../config/config.js");
 
@@ -193,5 +196,35 @@ describe("resolveQueuedReplyExecutionConfig channel scope", () => {
 
     expect(resolveQueuedReplyRuntimeConfig(structuredClone(sourceConfig))).toBe(staleRuntimeConfig);
     expect(resolveQueuedReplyRuntimeConfig(scopedResolvedConfig)).toBe(scopedResolvedConfig);
+  });
+
+  it("drops a queued passive observation when the runtime config switched context engines", () => {
+    const sourceConfig = { plugins: { slots: { contextEngine: "legacy" } } } as OpenClawConfig;
+    const runtimeConfig = {
+      plugins: { slots: { contextEngine: "custom-context" } },
+    } as OpenClawConfig;
+    setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
+
+    const selected = resolveQueuedReplyRuntimeConfig(structuredClone(sourceConfig));
+
+    expect(selected).toBe(runtimeConfig);
+    expect(
+      shouldDropRoomObservationForRuntimeConfig(selected, {
+        kind: "room_observation",
+        sourceChannel: "slack",
+      }),
+    ).toBe(true);
+    expect(
+      shouldDropRoomObservationForRuntimeConfig(sourceConfig, {
+        kind: "room_observation",
+        sourceChannel: "slack",
+      }),
+    ).toBe(false);
+    expect(
+      shouldDropRoomObservationForRuntimeConfig(runtimeConfig, {
+        kind: "external_user",
+        sourceChannel: "slack",
+      }),
+    ).toBe(false);
   });
 });

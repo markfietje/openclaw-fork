@@ -320,6 +320,16 @@ export async function prepareCliRunContext(
       `CLI backend ${backendResolved.id} cannot enforce runtime toolsAllow; use an embedded runtime for restricted tool policy`,
     );
   }
+  if (params.inputProvenance?.kind === "room_observation") {
+    throw new Error(
+      `CLI backend ${backendResolved.id} cannot process passive room observations; use the embedded OpenClaw runtime`,
+    );
+  }
+  if (params.sourceBoundMessagePolicy !== undefined) {
+    throw new Error(
+      `CLI backend ${backendResolved.id} cannot enforce a source-bound message policy; use an embedded runtime for restricted message delivery`,
+    );
+  }
   const sideQuestionDisablesNativeTools =
     isSideQuestion && backendResolved.sideQuestionToolMode === "disabled";
   if (

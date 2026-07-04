@@ -14,9 +14,10 @@ import type {
   ProviderReplaySessionState,
 } from "../../plugins/types.js";
 import {
-  annotateInterSessionPromptText,
-  hasInterSessionUserProvenance,
+  annotateInputProvenancePromptText,
+  hasModelSafetyInputProvenance,
   normalizeInputProvenance,
+  stripRoomObservationTurns,
 } from "../../sessions/input-provenance.js";
 import { isTranscriptOnlyOpenClawAssistantMessage } from "../../shared/transcript-only-openclaw-assistant.js";
 import { stripStaleAssistantUsageBeforeLatestCompaction } from "../compaction-usage.js";
@@ -106,18 +107,18 @@ function createProviderReplayPluginParams(params: ProviderReplayHookParams) {
   };
 }
 
-function annotateInterSessionUserMessages(messages: AgentMessage[]): AgentMessage[] {
+function annotateInputProvenanceUserMessages(messages: AgentMessage[]): AgentMessage[] {
   let touched = false;
   const out: AgentMessage[] = [];
   for (const msg of messages) {
-    if (!hasInterSessionUserProvenance(msg as { role?: unknown; provenance?: unknown })) {
+    if (!hasModelSafetyInputProvenance(msg as { role?: unknown; provenance?: unknown })) {
       out.push(msg);
       continue;
     }
     const provenance = normalizeInputProvenance((msg as { provenance?: unknown }).provenance);
     const user = msg as Extract<AgentMessage, { role: "user" }>;
     if (typeof user.content === "string") {
-      const annotated = annotateInterSessionPromptText(user.content, provenance);
+      const annotated = annotateInputProvenancePromptText(user.content, provenance);
       if (annotated === user.content) {
         out.push(msg);
         continue;
@@ -144,7 +145,7 @@ function annotateInterSessionUserMessages(messages: AgentMessage[]): AgentMessag
 
     if (textIndex >= 0) {
       const existing = user.content[textIndex] as { type: "text"; text: string };
-      const annotated = annotateInterSessionPromptText(existing.text, provenance);
+      const annotated = annotateInputProvenancePromptText(existing.text, provenance);
       if (annotated === existing.text) {
         out.push(msg);
         continue;
@@ -168,7 +169,12 @@ function annotateInterSessionUserMessages(messages: AgentMessage[]): AgentMessag
       content: [
         {
           type: "text",
-          text: annotateInterSessionPromptText("Inter-session content follows.", provenance),
+          text: annotateInputProvenancePromptText(
+            provenance?.kind === "room_observation"
+              ? "Room observation content follows."
+              : "Inter-session content follows.",
+            provenance,
+          ),
         },
         ...user.content,
       ],
@@ -695,7 +701,10 @@ export async function sanitizeSessionHistory(params: {
       env: params.env,
       model: params.model,
     });
-  const withInterSessionMarkers = annotateInterSessionUserMessages(params.messages);
+  const withoutRoomObservationTurns = stripRoomObservationTurns(params.messages);
+  const withInputProvenanceMarkers = annotateInputProvenanceUserMessages(
+    withoutRoomObservationTurns,
+  );
   const signedThinkingProvider = providerRequiresSignedThinking(params.provider);
   const allowProviderOwnedThinkingReplay = shouldAllowProviderOwnedThinkingReplay({
     modelApi: params.modelApi,
@@ -716,7 +725,7 @@ export async function sanitizeSessionHistory(params: {
         modelId: params.modelId,
       })
     : false;
-  const normalizedAssistantReplay = normalizeAssistantReplayContent(withInterSessionMarkers);
+  const normalizedAssistantReplay = normalizeAssistantReplayContent(withInputProvenanceMarkers);
   const sanitizedImages = await sanitizeSessionMessagesImages(
     normalizedAssistantReplay,
     "session:history",

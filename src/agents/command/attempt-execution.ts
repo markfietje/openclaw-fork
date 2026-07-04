@@ -21,7 +21,7 @@ import { redactSensitiveText } from "../../logging/redact.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { isSubagentSessionKey } from "../../routing/session-key.js";
-import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
+import { annotateInputProvenancePromptText } from "../../sessions/input-provenance.js";
 import {
   preparePersistedUserTurnMessageForTranscriptWrite,
   type PersistedUserTurnMessage,
@@ -538,7 +538,7 @@ export function runAgentAttempt(params: {
   });
   const effectivePrompt = isRawModelRun
     ? resolvedPrompt
-    : annotateInterSessionPromptText(resolvedPrompt, params.opts.inputProvenance);
+    : annotateInputProvenancePromptText(resolvedPrompt, params.opts.inputProvenance);
   const bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
     params.sessionEntry?.systemPromptReport,
   );

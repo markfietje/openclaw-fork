@@ -19,7 +19,11 @@ import {
 } from "../../plugins/provider-runtime.js";
 import { discoverAuthStorage, discoverModels } from "../agent-model-discovery.js";
 import { resolveDefaultAgentDir } from "../agent-scope.js";
-import { ensureAuthProfileStore, resolveAuthProfileOrder } from "../auth-profiles.js";
+import {
+  ensureAuthProfileStore,
+  ensureAuthProfileStoreWithoutExternalProfiles,
+  resolveAuthProfileOrder,
+} from "../auth-profiles.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../defaults.js";
 import { resolveAgentHarnessPolicy } from "../harness/policy.js";
@@ -1071,14 +1075,20 @@ function resolveDynamicModelAuthProfile(params: {
   agentDir?: string;
   authProfileId?: string;
   preferredProfile?: string;
+  skipProviderRuntimeHooks?: boolean;
 }): {
   authProfileId?: string;
   authProfileMode?: AuthProfileCredential["type"] | "aws-sdk";
 } {
   const explicitProfileId = params.authProfileId?.trim() || undefined;
-  const store = ensureAuthProfileStore(params.agentDir, {
-    allowKeychainPrompt: false,
-  });
+  const store = params.skipProviderRuntimeHooks
+    ? ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
+        allowKeychainPrompt: false,
+        readOnly: true,
+      })
+    : ensureAuthProfileStore(params.agentDir, {
+        allowKeychainPrompt: false,
+      });
   if (explicitProfileId) {
     const credential = store.profiles[explicitProfileId];
     const configuredMode = params.cfg?.auth?.profiles?.[explicitProfileId]?.mode;
@@ -1128,6 +1138,7 @@ function resolvePluginDynamicModelWithRegistry(params: {
   authProfileId?: string;
   preferredProfile?: string;
   runtimeHooks?: ProviderRuntimeHooks;
+  skipProviderRuntimeHooks?: boolean;
 }): Model | undefined {
   const { provider, modelId, modelRegistry, cfg, agentDir, workspaceDir } = params;
   const runtimeHooks = params.runtimeHooks ?? DEFAULT_PROVIDER_RUNTIME_HOOKS;
@@ -1144,6 +1155,7 @@ function resolvePluginDynamicModelWithRegistry(params: {
     agentDir,
     authProfileId: params.authProfileId,
     preferredProfile: params.preferredProfile,
+    skipProviderRuntimeHooks: params.skipProviderRuntimeHooks,
   });
   const preferDiscoveredModelMetadata = shouldCompareProviderRuntimeResolvedModel({
     provider,
@@ -1202,6 +1214,7 @@ function resolveRuntimePreferredSuppressedModel(params: {
   authProfileId?: string;
   preferredProfile?: string;
   runtimeHooks?: ProviderRuntimeHooks;
+  skipProviderRuntimeHooks?: boolean;
 }): Model | undefined {
   const runtimeHooks = params.runtimeHooks ?? DEFAULT_PROVIDER_RUNTIME_HOOKS;
   if (
@@ -1509,6 +1522,7 @@ export function resolveModelWithRegistry(params: {
   authProfileId?: string;
   preferredProfile?: string;
   runtimeHooks?: ProviderRuntimeHooks;
+  skipProviderRuntimeHooks?: boolean;
   skipConfiguredFallback?: boolean;
 }): Model | undefined {
   const workspaceDir = params.workspaceDir ?? params.cfg?.agents?.defaults?.workspace;
@@ -1603,6 +1617,7 @@ export function resolveModel(
     authProfileId: options?.authProfileId,
     preferredProfile: options?.preferredProfile,
     runtimeHooks,
+    skipProviderRuntimeHooks: options?.skipProviderRuntimeHooks,
   });
   if (model) {
     return { model, authStorage, modelRegistry };
@@ -1688,6 +1703,7 @@ export async function resolveModelAsync(
       authProfileId: options?.authProfileId,
       preferredProfile: options?.preferredProfile,
       runtimeHooks,
+      skipProviderRuntimeHooks: options?.skipProviderRuntimeHooks,
     });
     if (suppressedRuntimeModel) {
       return { model: suppressedRuntimeModel, authStorage, modelRegistry };
@@ -1712,6 +1728,7 @@ export async function resolveModelAsync(
     agentDir: resolvedAgentDir,
     authProfileId: options?.authProfileId,
     preferredProfile: options?.preferredProfile,
+    skipProviderRuntimeHooks: options?.skipProviderRuntimeHooks,
   });
   let staticCatalogLookup: Promise<ProviderRuntimeModel | undefined> | undefined;
   const resolveStaticCatalogModel = async () => {
@@ -1788,6 +1805,7 @@ export async function resolveModelAsync(
       authProfileId: options?.authProfileId,
       preferredProfile: options?.preferredProfile,
       runtimeHooks,
+      skipProviderRuntimeHooks: options?.skipProviderRuntimeHooks,
       ...(options?.allowBundledStaticCatalogFallback ? { skipConfiguredFallback: true } : {}),
     });
   };

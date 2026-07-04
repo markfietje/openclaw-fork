@@ -1,6 +1,7 @@
 // Best-effort inbound session metadata recorder for channel plugin command handlers.
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { isRoomObservationInputProvenance } from "../sessions/input-provenance.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 
 // Keep the session writer out of channel startup paths that only need SDK types.
@@ -23,7 +24,14 @@ export async function recordInboundSessionMetaSafe(params: {
     agentId: params.agentId,
   });
   try {
-    await runtime.recordSessionMetaFromInbound({
+    const isPassiveRoomObservation =
+      params.ctx.RequestAuthorized === false ||
+      isRoomObservationInputProvenance(params.ctx.InputProvenance);
+    await (
+      isPassiveRoomObservation
+        ? runtime.recordPassiveRoomSessionMetaFromInbound
+        : runtime.recordSessionMetaFromInbound
+    )({
       storePath,
       sessionKey: params.sessionKey,
       ctx: params.ctx,

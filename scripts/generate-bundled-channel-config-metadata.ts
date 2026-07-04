@@ -1,9 +1,9 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 // Generate Bundled Channel Config Metadata script supports OpenClaw repository automation.
 import fs from "node:fs";
 import path from "node:path";
 import { loadBundledPluginPublicArtifactModuleSync } from "../src/plugins/public-surface-loader.js";
-import { loadChannelConfigSurfaceModule } from "./load-channel-config-surface.ts";
 
 const GENERATED_BY = "scripts/generate-bundled-channel-config-metadata.ts";
 const DEFAULT_OUTPUT_PATH = "src/config/bundled-channel-config-metadata.generated.ts";
@@ -77,6 +77,34 @@ type BundledChannelConfigMetadata = {
 type BundledChannelSecuritySurface = {
   unsupportedSecretRefSurfacePatterns?: readonly string[];
 };
+
+function loadChannelConfigSurfaceModuleIsolated(
+  modulePath: string,
+  repoRoot: string,
+): { schema: Record<string, unknown>; uiHints?: Record<string, unknown> } | null {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      path.join(repoRoot, "scripts", "load-channel-config-surface.ts"),
+      modulePath,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      result.stderr || result.stdout || `channel config loader failed for ${modulePath}`,
+    );
+  }
+  return JSON.parse(result.stdout || "null") as {
+    schema: Record<string, unknown>;
+    uiHints?: Record<string, unknown>;
+  } | null;
+}
 
 function resolveChannelConfigSchemaModulePath(rootDir: string): string | null {
   const candidates = [
@@ -253,7 +281,9 @@ export async function collectBundledChannelConfigMetadata(params?: { repoRoot?: 
     if (!modulePath) {
       continue;
     }
-    const surface = await loadChannelConfigSurfaceModule(modulePath, { repoRoot });
+    // Isolate each plugin surface so package-loader singleton state from one
+    // bundled plugin cannot redirect later plugins to stale build artifacts.
+    const surface = loadChannelConfigSurfaceModuleIsolated(modulePath, repoRoot);
     if (!surface?.schema) {
       continue;
     }

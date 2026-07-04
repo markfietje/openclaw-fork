@@ -38,6 +38,28 @@ describe("slack config schema", () => {
     }
   });
 
+  it("accepts per-channel request and passive-room safety settings", () => {
+    expectSlackConfigValid({
+      channels: {
+        C123: {
+          requestUsers: ["U_OWNER"],
+          mediaDownloads: false,
+          sourceBoundMessageTool: true,
+          textCommands: false,
+        },
+      },
+      accounts: {
+        ops: {
+          channels: {
+            C456: {
+              requestUsers: [],
+            },
+          },
+        },
+      },
+    });
+  });
+
   it("rejects Slack Web API URL config overrides", () => {
     const res = SlackConfigSchema.safeParse({
       apiUrl: "http://127.0.0.1:49152/api/",

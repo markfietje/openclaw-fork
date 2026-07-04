@@ -4,6 +4,7 @@ import { OAuthRefreshFailureError } from "../../agents/auth-profiles/oauth-refre
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.js";
 import { formatBillingErrorMessage } from "../../agents/embedded-agent-helpers.js";
 import { FailoverError } from "../../agents/failover-error.js";
+import { PassiveRoomObservationAdmissionError } from "../../agents/harness/passive-runtime.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { MissingProviderAuthError } from "../../agents/model-auth.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
@@ -54,6 +55,9 @@ const state = vi.hoisted(() => ({
   isLikelyContextOverflowErrorMock: vi.fn((_: string | undefined) => false),
   updateSessionStoreMock: vi.fn(),
   resolveCurrentTurnImagesMock: vi.fn(),
+  shouldDropRoomObservationForRuntimeConfigMock: vi.fn(
+    (_config?: unknown, _provenance?: unknown) => false,
+  ),
 }));
 
 const GENERIC_RUN_FAILURE_TEXT =
@@ -279,6 +283,8 @@ vi.mock("./agent-runner-utils.js", () => ({
     },
   }),
   resolveQueuedReplyRuntimeConfig: <T>(config: T) => config,
+  shouldDropRoomObservationForRuntimeConfig: (config: unknown, provenance: unknown) =>
+    state.shouldDropRoomObservationForRuntimeConfigMock(config, provenance),
   resolveModelFallbackOptions: vi.fn(
     (run: { provider?: string; model?: string; config?: unknown; agentDir?: string }) => ({
       provider: run.provider,
@@ -318,6 +324,8 @@ async function getApplyFallbackCandidateSelectionToEntry() {
 type FallbackRunnerParams = {
   provider: string;
   model: string;
+  fallbacksOverride?: string[];
+  skipAuthProfileRuntime?: boolean;
   sessionId?: string;
   abortSignal?: AbortSignal;
   run: (provider: string, model: string) => Promise<unknown>;
@@ -463,6 +471,7 @@ function createMockReplyOperation(): {
       abortSignal: new AbortController().signal,
       resetTriggered: false,
       terminalRecovery: false,
+      restartRecoverable: true,
       phase: "running",
       result: null,
       setPhase: vi.fn(),
@@ -477,6 +486,7 @@ function createMockReplyOperation(): {
       fail: failMock,
       abortByUser: vi.fn(() => true),
       abortForRestart: vi.fn(() => true),
+      disableRestartRecovery: vi.fn(),
       markTerminalRecovery: vi.fn(),
     },
   };
@@ -1298,6 +1308,7 @@ describe("runAgentTurnWithFallback", () => {
     state.isLikelyContextOverflowErrorMock.mockReturnValue(false);
     state.updateSessionStoreMock.mockReset();
     state.resolveCurrentTurnImagesMock.mockReset();
+    state.shouldDropRoomObservationForRuntimeConfigMock.mockReset().mockReturnValue(false);
     state.resolveCurrentTurnImagesMock.mockImplementation(
       async (params: { images?: unknown[]; imageOrder?: unknown[] }) => ({
         images: params.images,
@@ -1754,6 +1765,301 @@ describe("runAgentTurnWithFallback", () => {
 
     expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "embedded run params", {
       toolsAllow: ["message"],
+    });
+  });
+
+  it("fails visibly before model, media, or transcript work when refreshed config rejects a passive turn", async () => {
+    state.shouldDropRoomObservationForRuntimeConfigMock.mockReturnValueOnce(true);
+    const followupRun = createFollowupRun();
+    followupRun.run.inputProvenance = {
+      kind: "room_observation",
+      sourceChannel: "slack",
+    };
+    const recorder = createTestUserTurnRecorder({
+      role: "user",
+      content: "ambient room message",
+    } as never);
+    followupRun.userTurnTranscriptRecorder = recorder;
+    const { replyOperation } = createMockReplyOperation();
+    const consoleWarn = vi.fn();
+    setLoggerOverride({ level: "silent", consoleLevel: "warn", consoleStyle: "compact" });
+    loggingState.rawConsole = {
+      log: vi.fn(),
+      info: vi.fn(),
+      warn: consoleWarn,
+      error: vi.fn(),
+    };
+
+    try {
+      const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+      const result = await runAgentTurnWithFallback(
+        createMinimalRunAgentTurnParams({ followupRun, replyOperation }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "final",
+        payload: {
+          isError: true,
+          text: expect.stringContaining("built-in legacy context engine"),
+        },
+      });
+      expect(consoleWarn.mock.calls.map(([line]) => String(line)).join("\n")).toContain(
+        "rejected before model invocation",
+      );
+      expect(state.resolveCurrentTurnImagesMock).not.toHaveBeenCalled();
+      expect(state.runWithModelFallbackMock).not.toHaveBeenCalled();
+      expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(recorder.hasPersisted()).toBe(false);
+      expect(replyOperation.disableRestartRecovery).toHaveBeenCalledOnce();
+    } finally {
+      loggingState.rawConsole = null;
+      setLoggerOverride(null);
+      resetLogger();
+    }
+  });
+
+  it("fails visibly without invocation or persistence for an unsupported passive runtime", async () => {
+    const followupRun = createFollowupRun();
+    followupRun.run.provider = "openai";
+    followupRun.run.model = "gpt-5.5";
+    followupRun.run.config = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.5": { agentRuntime: { id: "codex" } },
+          },
+        },
+      },
+    };
+    followupRun.run.inputProvenance = {
+      kind: "room_observation",
+      sourceChannel: "slack",
+    };
+    const recorder = createTestUserTurnRecorder({
+      role: "user",
+      content: "ambient room message",
+    } as never);
+    followupRun.userTurnTranscriptRecorder = recorder;
+    const { replyOperation, failMock } = createMockReplyOperation();
+    const consoleWarn = vi.fn();
+    setLoggerOverride({ level: "silent", consoleLevel: "warn", consoleStyle: "compact" });
+    loggingState.rawConsole = {
+      log: vi.fn(),
+      info: vi.fn(),
+      warn: consoleWarn,
+      error: vi.fn(),
+    };
+
+    try {
+      const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+      const result = await runAgentTurnWithFallback(
+        createMinimalRunAgentTurnParams({ followupRun, replyOperation }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "final",
+        payload: {
+          isError: true,
+          text: expect.stringContaining(
+            "embedded OpenClaw runtime with an official core OpenAI model and transport",
+          ),
+        },
+      });
+      expect(failMock).toHaveBeenCalledWith(
+        "run_failed",
+        expect.objectContaining({ message: expect.stringContaining("before model invocation") }),
+      );
+      expect(consoleWarn.mock.calls.map(([line]) => String(line)).join("\n")).toContain(
+        "official core OpenAI model and transport",
+      );
+      expect(state.resolveCurrentTurnImagesMock).not.toHaveBeenCalled();
+      expect(state.runWithModelFallbackMock).not.toHaveBeenCalled();
+      expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(recorder.hasPersisted()).toBe(false);
+    } finally {
+      loggingState.rawConsole = null;
+      setLoggerOverride(null);
+      resetLogger();
+    }
+  });
+
+  it.each([
+    { provider: "anthropic", model: "claude-opus-4-6" },
+    { provider: "ollama", model: "llama3.3" },
+    { provider: "custom-provider", model: "custom-model" },
+  ])(
+    "fails visibly before invoking a resolved passive $provider/$model route",
+    async ({ provider, model }) => {
+      const followupRun = createFollowupRun();
+      followupRun.run.provider = provider;
+      followupRun.run.model = model;
+      followupRun.run.inputProvenance = {
+        kind: "room_observation",
+        sourceChannel: "slack",
+      };
+      const recorder = createTestUserTurnRecorder({
+        role: "user",
+        content: "ambient room message",
+      } as never);
+      followupRun.userTurnTranscriptRecorder = recorder;
+      const { replyOperation, failMock } = createMockReplyOperation();
+      const consoleWarn = vi.fn();
+      setLoggerOverride({ level: "silent", consoleLevel: "warn", consoleStyle: "compact" });
+      loggingState.rawConsole = {
+        log: vi.fn(),
+        info: vi.fn(),
+        warn: consoleWarn,
+        error: vi.fn(),
+      };
+
+      try {
+        const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+        const result = await runAgentTurnWithFallback(
+          createMinimalRunAgentTurnParams({ followupRun, replyOperation }),
+        );
+
+        expect(result).toMatchObject({
+          kind: "final",
+          payload: {
+            isError: true,
+            text: expect.stringContaining(
+              "embedded OpenClaw runtime with an official core OpenAI model and transport",
+            ),
+          },
+        });
+        expect(failMock).toHaveBeenCalledWith(
+          "run_failed",
+          expect.objectContaining({ message: expect.stringContaining("before model invocation") }),
+        );
+        expect(consoleWarn.mock.calls.map(([line]) => String(line)).join("\n")).toContain(
+          "official core OpenAI model and transport",
+        );
+        expect(state.resolveCurrentTurnImagesMock).not.toHaveBeenCalled();
+        expect(state.runWithModelFallbackMock).not.toHaveBeenCalled();
+        expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+        expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+        expect(recorder.hasPersisted()).toBe(false);
+      } finally {
+        loggingState.rawConsole = null;
+        setLoggerOverride(null);
+        resetLogger();
+      }
+    },
+  );
+
+  it("surfaces post-resolution passive admission rejection without model invocation or persistence", async () => {
+    const followupRun = createFollowupRun();
+    followupRun.run.provider = "openai";
+    followupRun.run.model = "gpt-5.5";
+    followupRun.run.inputProvenance = {
+      kind: "room_observation",
+      sourceChannel: "slack",
+    };
+    const recorder = createTestUserTurnRecorder({
+      role: "user",
+      content: "ambient room message",
+    } as never);
+    followupRun.userTurnTranscriptRecorder = recorder;
+    const { replyOperation, failMock } = createMockReplyOperation();
+    const consoleWarn = vi.fn();
+    setLoggerOverride({ level: "silent", consoleLevel: "warn", consoleStyle: "compact" });
+    loggingState.rawConsole = {
+      log: vi.fn(),
+      info: vi.fn(),
+      warn: consoleWarn,
+      error: vi.fn(),
+    };
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run("openai", "gpt-5.5"),
+      provider: "openai",
+      model: "gpt-5.5",
+      attempts: [],
+    }));
+    state.runEmbeddedAgentMock.mockRejectedValueOnce(
+      new PassiveRoomObservationAdmissionError({
+        provider: "openai",
+        model: "gpt-5.5",
+      }),
+    );
+
+    try {
+      const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+      const result = await runAgentTurnWithFallback(
+        createMinimalRunAgentTurnParams({ followupRun, replyOperation }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "final",
+        payload: {
+          isError: true,
+          text: expect.stringContaining(
+            "embedded OpenClaw runtime with an official core OpenAI model and transport",
+          ),
+        },
+      });
+      expect(failMock).toHaveBeenCalledWith(
+        "run_failed",
+        expect.objectContaining({ message: expect.stringContaining("before model invocation") }),
+      );
+      expect(consoleWarn.mock.calls.map(([line]) => String(line)).join("\n")).toContain(
+        "official core OpenAI model and transport",
+      );
+      expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
+      expect(state.updateSessionStoreMock).not.toHaveBeenCalled();
+      expect(recorder.hasPersisted()).toBe(false);
+    } finally {
+      loggingState.rawConsole = null;
+      setLoggerOverride(null);
+      resetLogger();
+    }
+  });
+
+  it("skips local media reads and configured fallback discovery for admitted passive turns", async () => {
+    const followupRun = createFollowupRun();
+    followupRun.run.provider = "openai";
+    followupRun.run.model = "gpt-5.5";
+    followupRun.run.inputProvenance = {
+      kind: "room_observation",
+      sourceChannel: "slack",
+    };
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      meta: { durationMs: 1 },
+    });
+    state.runWithModelFallbackMock.mockImplementationOnce(async (params: FallbackRunnerParams) => ({
+      result: await params.run("openai", "gpt-5.5"),
+      provider: "openai",
+      model: "gpt-5.5",
+      attempts: [],
+    }));
+
+    const runAgentTurnWithFallback = await getRunAgentTurnWithFallback();
+    await runAgentTurnWithFallback(
+      createMinimalRunAgentTurnParams({
+        followupRun,
+        sessionCtx: {
+          Provider: "slack",
+          MessageSid: "msg",
+          MediaPath: "/private/should-not-be-read.png",
+          MediaType: "image/png",
+        } as unknown as TemplateContext,
+      }),
+    );
+
+    expect(state.resolveCurrentTurnImagesMock).not.toHaveBeenCalled();
+    const fallbackParams = requireRecord(
+      state.runWithModelFallbackMock.mock.calls[0]?.[0],
+      "fallback params",
+    );
+    expect(fallbackParams.fallbacksOverride).toEqual([]);
+    expect(fallbackParams.skipAuthProfileRuntime).toBe(true);
+    expectMockCallArgFields(state.runEmbeddedAgentMock, 0, "embedded run params", {
+      provider: "openai",
+      model: "gpt-5.5",
+      images: undefined,
+      imageOrder: undefined,
     });
   });
 

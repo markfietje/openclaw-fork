@@ -199,6 +199,7 @@ export async function createCopilotToolBridge(
     runtimeToolAllowlist: effectiveToolPlan.runtimeToolAllowlist,
     sessionId: input.sessionId,
     sessionKey: attemptParams.sandboxSessionKey ?? attemptParams.sessionKey ?? input.sessionKey,
+    sourceBoundMessagePolicy: attemptParams.sourceBoundMessagePolicy,
     sourceReplyDeliveryMode: attemptParams.sourceReplyDeliveryMode,
     toolsAllow: attemptParams.toolsAllow,
   });
@@ -404,6 +405,7 @@ function buildOpenClawCodingToolsOptions(
     requireExplicitMessageTarget:
       a.requireExplicitMessageTarget ?? isSubagentSessionKey(liveSessionKey),
     sourceReplyDeliveryMode: a.sourceReplyDeliveryMode,
+    sourceBoundMessagePolicy: a.sourceBoundMessagePolicy,
     disableMessageTool: a.disableMessageTool,
     forceMessageTool: a.forceMessageTool,
     enableHeartbeatTool: a.enableHeartbeatTool,

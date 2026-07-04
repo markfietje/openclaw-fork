@@ -172,6 +172,7 @@ async function sendSlackOutboundMessage(params: {
   onDeliveryResult?: Parameters<
     NonNullable<ChannelOutboundAdapter["sendText"]>
   >[0]["onDeliveryResult"];
+  outboundPayloadPolicy?: "source_bound_plain_text";
 }) {
   const send =
     resolveOutboundSendDep<SlackSendFn>(params.deps, "slack") ??
@@ -200,6 +201,9 @@ async function sendSlackOutboundMessage(params: {
           await params.onDeliveryResult?.(attachChannelToResult("slack", progress));
         }
       : undefined,
+    ...(params.outboundPayloadPolicy
+      ? { outboundPayloadPolicy: params.outboundPayloadPolicy }
+      : {}),
   });
   return result;
 }
@@ -370,6 +374,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
             threadId: ctx.threadId,
             identity: ctx.identity,
             onDeliveryResult: ctx.onDeliveryResult,
+            outboundPayloadPolicy: ctx.outboundPayloadPolicy,
           }),
         finalize: async () => {
           const blockResult = await sendSlackOutboundMessage({
@@ -386,6 +391,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
             threadId: ctx.threadId,
             identity: ctx.identity,
             onDeliveryResult: ctx.onDeliveryResult,
+            outboundPayloadPolicy: ctx.outboundPayloadPolicy,
           });
           if (!presentationFallbackText) {
             return blockResult;
@@ -403,6 +409,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
             threadId: ctx.threadId,
             identity: ctx.identity,
             onDeliveryResult: ctx.onDeliveryResult,
+            outboundPayloadPolicy: ctx.outboundPayloadPolicy,
           });
         },
       }),
@@ -420,6 +427,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
       threadId,
       identity,
       onDeliveryResult,
+      outboundPayloadPolicy,
     }) =>
       await sendSlackOutboundMessage({
         cfg,
@@ -431,6 +439,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
         threadId,
         identity,
         onDeliveryResult,
+        outboundPayloadPolicy,
       }),
     sendMedia: async ({
       cfg,
@@ -446,6 +455,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
       threadId,
       identity,
       onDeliveryResult,
+      outboundPayloadPolicy,
     }) =>
       await sendSlackOutboundMessage({
         cfg,
@@ -461,6 +471,7 @@ export const slackOutbound: ChannelOutboundAdapter = {
         threadId,
         identity,
         onDeliveryResult,
+        outboundPayloadPolicy,
       }),
   }),
 };

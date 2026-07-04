@@ -30,7 +30,7 @@ function makeSlackCtx(allowFrom: string[]): SlackMonitorContext {
 
 function makeAuthorizeCtx(params?: {
   allowFrom?: string[];
-  channelsConfig?: Record<string, { users?: string[] }>;
+  channelsConfig?: Record<string, { users?: string[]; requestUsers?: string[] }>;
   resolveUserName?: (userId: string) => Promise<{ name?: string }>;
   resolveChannelName?: (
     channelId: string,
@@ -713,6 +713,43 @@ describe("authorizeSlackSystemEventSender interactiveEvent", () => {
     expect(result).toEqual({
       allowed: true,
       channelType: "channel",
+      channelName: "general",
+    });
+  });
+
+  it("applies requestUsers to non-interactive room events", async () => {
+    const result = await authorizeSlackSystemEventSender({
+      ctx: makeAuthorizeCtx({
+        channelsConfig: { C1: { requestUsers: ["U_OWNER"] } },
+      }),
+      senderId: "U_OTHER",
+      channelId: "C1",
+    });
+
+    expect(result).toEqual({
+      allowed: false,
+      reason: "sender-not-authorized",
+      channelType: "channel",
+      channelName: "general",
+    });
+  });
+
+  it("does not apply requestUsers to interactive DMs", async () => {
+    const result = await authorizeSlackSystemEventSender({
+      ctx: makeAuthorizeCtx({
+        allowFrom: ["U_OTHER"],
+        channelsConfig: { D1: { requestUsers: ["U_OWNER"] } },
+      }),
+      senderId: "U_OTHER",
+      channelId: "D1",
+      channelType: "im",
+      expectedSenderId: "U_OTHER",
+      interactiveEvent: true,
+    });
+
+    expect(result).toEqual({
+      allowed: true,
+      channelType: "im",
       channelName: "general",
     });
   });

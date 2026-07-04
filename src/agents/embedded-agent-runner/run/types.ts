@@ -52,6 +52,10 @@ export type EmbeddedRunContextWindowInfo = {
 export type EmbeddedRunFastModeParam = boolean | (() => boolean | undefined);
 
 export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
+  /** Internal admission set only after the outer runner validates a passive core OpenAI model. */
+  passiveRoomObservationAdmission?: "core-openai";
+  /** Disable trajectory recorder creation for privacy-isolated attempts. */
+  disableTrajectories?: boolean;
   /** Active file-backed artifact target resolved by the run/session target seam. */
   sessionFile: string;
   initialReplayState?: EmbeddedRunReplayState;

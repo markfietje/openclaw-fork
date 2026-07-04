@@ -24,7 +24,7 @@ import {
   type SessionUnreferencedArtifactSweepResult,
 } from "./disk-budget.js";
 import { extractGeneratedTranscriptSessionId } from "./generated-transcript-session-id.js";
-import { deriveSessionMetaPatch } from "./metadata.js";
+import { deriveGroupSessionPatch, deriveSessionMetaPatch } from "./metadata.js";
 import { resolveExplicitSessionFilePath, resolveSessionFilePath } from "./paths.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import {
@@ -1908,6 +1908,47 @@ export async function recordSessionMetaFromInbound(params: {
       : mergeSessionEntry(existing, patch);
     return await persistResolvedSessionEntry({
       storePath,
+      store,
+      resolved,
+      next,
+      takeCacheOwnership: true,
+      returnDetached: true,
+    });
+  });
+}
+
+/**
+ * Creates only safe room-level metadata for a first passive observation. An
+ * existing owner row is returned byte-for-byte without persistence.
+ */
+export async function recordPassiveRoomSessionMetaFromInbound(params: {
+  storePath: string;
+  sessionKey: string;
+  ctx: MsgContext;
+  groupResolution?: import("./types.js").GroupKeyResolution | null;
+  createIfMissing?: boolean;
+}): Promise<SessionEntry | null> {
+  const createIfMissing = params.createIfMissing ?? true;
+  return await runExclusiveSessionStoreWrite(params.storePath, async () => {
+    const store = loadMutableSessionStoreForWriter(params.storePath);
+    const resolved = resolveSessionStoreEntry({ store, sessionKey: params.sessionKey });
+    if (resolved.existing) {
+      return cloneSessionEntry(resolved.existing);
+    }
+    if (!createIfMissing) {
+      return null;
+    }
+    const groupPatch = deriveGroupSessionPatch({
+      ctx: params.ctx,
+      sessionKey: resolved.normalizedKey,
+      groupResolution: params.groupResolution,
+    });
+    const next = mergeSessionEntry(undefined, {
+      ...(groupPatch ?? {}),
+      passiveSessionStartPending: true,
+    });
+    return await persistResolvedSessionEntry({
+      storePath: params.storePath,
       store,
       resolved,
       next,

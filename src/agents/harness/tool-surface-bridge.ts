@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { isValidSourceBoundMessagePolicy } from "../../infra/outbound/source-bound-message-policy.js";
 import type { HookContext } from "../agent-tools.before-tool-call.js";
 import {
   CODE_MODE_EXEC_TOOL_NAME,
@@ -68,9 +69,13 @@ export function createAgentHarnessToolSurfaceRuntime(params: {
   runtimeToolAllowlist?: readonly string[];
   sessionId?: string;
   sessionKey?: string;
+  sourceBoundMessagePolicy?: unknown;
   sourceReplyDeliveryMode?: string;
+  strictMessageOnly?: boolean;
   toolsAllow?: readonly string[];
 }): AgentHarnessToolSurfaceRuntime {
+  const strictMessagePolicyValid =
+    !params.strictMessageOnly || isValidSourceBoundMessagePolicy(params.sourceBoundMessagePolicy);
   const forceDirectMessageTool =
     params.forceMessageTool === true || params.sourceReplyDeliveryMode === "message_tool_only";
   const codeModeConfig = resolveCodeModeConfig(params.config, params.agentId);
@@ -87,13 +92,18 @@ export function createAgentHarnessToolSurfaceRuntime(params: {
     params.disableTools !== true &&
     params.isRawModelRun !== true &&
     params.toolsAllow?.length !== 0;
-  const codeModeControlsEnabled = toolsAvailable && codeModeConfig.enabled;
+  const codeModeControlsEnabled =
+    !params.strictMessageOnly && toolsAvailable && codeModeConfig.enabled;
   const toolSearchControlsEnabled =
-    toolsAvailable && !codeModeControlsEnabled && toolSearchConfig.enabled;
+    !params.strictMessageOnly &&
+    toolsAvailable &&
+    !codeModeControlsEnabled &&
+    toolSearchConfig.enabled;
   const toolSearchCatalogRef =
     toolSearchControlsEnabled || codeModeControlsEnabled ? createToolSearchCatalogRef() : undefined;
-  const runtimeToolAllowlist =
-    (toolSearchControlsEnabled || codeModeControlsEnabled) && params.runtimeToolAllowlist
+  const runtimeToolAllowlist = !strictMessagePolicyValid
+    ? []
+    : (toolSearchControlsEnabled || codeModeControlsEnabled) && params.runtimeToolAllowlist
       ? [
           ...new Set([
             ...params.runtimeToolAllowlist,
@@ -123,6 +133,12 @@ export function createAgentHarnessToolSurfaceRuntime(params: {
     });
     const uncompactedProjection = filterRuntimeCompatibleTools(projectedUncompactedTools);
     let effectiveTools = [...uncompactedProjection.tools];
+    if (!strictMessagePolicyValid) {
+      return { tools: [] };
+    }
+    if (params.strictMessageOnly) {
+      return { tools: effectiveTools };
+    }
     const codeModeTools = codeModeControlsEnabled
       ? createCodeModeTools({
           config: params.config,

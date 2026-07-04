@@ -972,6 +972,135 @@ describe("main-session-restart-recovery", () => {
     );
   });
 
+  it("recovers an authorized pending delivery before suppressing a later passive tail", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const pendingPayload = "The authorized final answer.";
+    const createdAt = Date.now() - 10_000;
+    const lastAttemptAt = Date.now() - 5_000;
+    const deliveryContext = {
+      channel: "slack" as const,
+      to: "channel:C123",
+      accountId: "main",
+      threadId: "authorized-thread",
+    };
+    await writeStore(sessionsDir, {
+      "agent:main:slack:channel:C123": {
+        sessionId: "main-session",
+        updatedAt: Date.now() - 1_000,
+        status: "running",
+        abortedLastRun: true,
+        pendingFinalDelivery: true,
+        pendingFinalDeliveryText: pendingPayload,
+        pendingFinalDeliveryCreatedAt: createdAt,
+        pendingFinalDeliveryLastAttemptAt: lastAttemptAt,
+        pendingFinalDeliveryAttemptCount: 1,
+        pendingFinalDeliveryLastError: "previous delivery failed",
+        pendingFinalDeliveryContext: deliveryContext,
+        pendingFinalDeliveryIntentId: "authorized-intent",
+      },
+    });
+    await writeTranscript(sessionsDir, "main-session", [
+      { role: "user", content: "authorized request" },
+      { role: "assistant", content: pendingPayload },
+      {
+        role: "user",
+        content: "later passive observation",
+        provenance: { kind: "room_observation", sourceChannel: "slack" },
+      },
+      { role: "assistant", content: "passive entertainment reply" },
+    ]);
+
+    const first = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+    const second = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+
+    expect(first).toEqual({ recovered: 1, failed: 0, skipped: 0 });
+    expect(second).toEqual({ recovered: 0, failed: 0, skipped: 0 });
+    expect(callGateway).toHaveBeenCalledOnce();
+    expect(firstGatewayParams()).toMatchObject({
+      deliver: true,
+      bestEffortDeliver: true,
+      channel: "slack",
+      to: "channel:C123",
+      accountId: "main",
+      threadId: "authorized-thread",
+    });
+    expect(firstGatewayParams().message).toContain(pendingPayload);
+    expect(firstGatewayParams().message).not.toContain("later passive observation");
+    expect(firstGatewayParams().message).not.toContain("passive entertainment reply");
+
+    const store = loadSessionStore(path.join(sessionsDir, "sessions.json"));
+    const entry = store["agent:main:slack:channel:C123"];
+    expect(entry?.abortedLastRun).toBe(false);
+    expect(entry?.pendingFinalDelivery).toBe(true);
+    expect(entry?.pendingFinalDeliveryText).toBe(pendingPayload);
+    expect(entry?.pendingFinalDeliveryCreatedAt).toBe(createdAt);
+    expect(entry?.pendingFinalDeliveryLastAttemptAt).toBeGreaterThan(lastAttemptAt);
+    expect(entry?.pendingFinalDeliveryAttemptCount).toBe(2);
+    expect(entry?.pendingFinalDeliveryLastError).toBeNull();
+    expect(entry?.pendingFinalDeliveryContext).toEqual(deliveryContext);
+    expect(entry?.pendingFinalDeliveryIntentId).toBe("authorized-intent");
+  });
+
+  it("retries a pending authorized delivery before reading an unreadable transcript", async () => {
+    const sessionsDir = await makeSessionsDir();
+    const transcriptPath = path.join(sessionsDir, "main-session.jsonl");
+    const pendingPayload = "The authorized answer survives transcript damage.";
+    const createdAt = Date.now() - 10_000;
+    const lastAttemptAt = Date.now() - 5_000;
+    const deliveryContext = {
+      channel: "slack" as const,
+      to: "channel:C123",
+      accountId: "main",
+      threadId: "authorized-thread",
+    };
+    await writeStore(sessionsDir, {
+      "agent:main:slack:channel:C123": {
+        sessionId: "main-session",
+        updatedAt: Date.now() - 1_000,
+        status: "running",
+        abortedLastRun: true,
+        pendingFinalDelivery: true,
+        pendingFinalDeliveryText: pendingPayload,
+        pendingFinalDeliveryCreatedAt: createdAt,
+        pendingFinalDeliveryLastAttemptAt: lastAttemptAt,
+        pendingFinalDeliveryAttemptCount: 1,
+        pendingFinalDeliveryLastError: "previous delivery failed",
+        pendingFinalDeliveryContext: deliveryContext,
+        pendingFinalDeliveryIntentId: "authorized-intent",
+      },
+    });
+    // A directory at the transcript path cannot be read or parsed as JSONL.
+    await fs.mkdir(transcriptPath);
+
+    const first = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+    const second = await recoverRestartAbortedMainSessions({ stateDir: tmpDir });
+
+    expect(first).toEqual({ recovered: 1, failed: 0, skipped: 0 });
+    expect(second).toEqual({ recovered: 0, failed: 0, skipped: 0 });
+    expect(callGateway).toHaveBeenCalledOnce();
+    expect(firstGatewayParams()).toMatchObject({
+      deliver: true,
+      bestEffortDeliver: true,
+      channel: "slack",
+      to: "channel:C123",
+      accountId: "main",
+      threadId: "authorized-thread",
+    });
+    expect(firstGatewayParams().message).toContain(pendingPayload);
+
+    const store = loadSessionStore(path.join(sessionsDir, "sessions.json"));
+    const entry = store["agent:main:slack:channel:C123"];
+    expect(entry?.abortedLastRun).toBe(false);
+    expect(entry?.pendingFinalDelivery).toBe(true);
+    expect(entry?.pendingFinalDeliveryText).toBe(pendingPayload);
+    expect(entry?.pendingFinalDeliveryCreatedAt).toBe(createdAt);
+    expect(entry?.pendingFinalDeliveryLastAttemptAt).toBeGreaterThan(lastAttemptAt);
+    expect(entry?.pendingFinalDeliveryAttemptCount).toBe(2);
+    expect(entry?.pendingFinalDeliveryLastError).toBeNull();
+    expect(entry?.pendingFinalDeliveryContext).toEqual(deliveryContext);
+    expect(entry?.pendingFinalDeliveryIntentId).toBe("authorized-intent");
+  });
+
   it("sanitizes durable pending final delivery payloads before resume prompts", async () => {
     const sessionsDir = await makeSessionsDir();
     const pendingPayload = [

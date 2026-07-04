@@ -25,11 +25,12 @@ type MemberCaseArgs = {
   shouldDropMismatchedSlackEvent?: (body: unknown) => boolean;
 };
 
-function makeMemberEvent(overrides?: { channel?: string; user?: string }) {
+function makeMemberEvent(overrides?: { channel?: string; user?: string; inviter?: string }) {
   return {
     type: "member_joined_channel",
     user: overrides?.user ?? "U1",
     channel: overrides?.channel ?? "D1",
+    ...(overrides?.inviter ? { inviter: overrides.inviter } : {}),
     event_ts: "123.456",
   };
 }
@@ -116,6 +117,90 @@ describe("registerSlackMemberEvents", () => {
           channelUsers: ["U_OWNER"],
         },
         event: makeMemberEvent({ channel: "C1", user: "U_ATTACKER" }),
+      },
+      calls: 0,
+    },
+    {
+      name: "blocks channel member events for users outside requestUsers",
+      args: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeMemberEvent({ channel: "C1", user: "U_ATTACKER" }),
+      },
+      calls: 0,
+    },
+    {
+      name: "allows channel member events for users inside requestUsers",
+      args: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeMemberEvent({ channel: "C1", user: "U_OWNER" }),
+      },
+      calls: 1,
+    },
+    {
+      name: "allows a join when the inviter is inside requestUsers",
+      args: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeMemberEvent({
+          channel: "C1",
+          user: "U_ATTACKER",
+          inviter: "U_OWNER",
+        }),
+      },
+      calls: 1,
+    },
+    {
+      name: "does not let an allowed inviter bypass channel users for member_joined_channel",
+      args: {
+        overrides: {
+          channelType: "channel",
+          channelUsers: ["U_ALLOWED"],
+          requestUsers: ["U_OWNER"],
+        },
+        event: makeMemberEvent({
+          channel: "C1",
+          user: "U_ATTACKER",
+          inviter: "U_OWNER",
+        }),
+      },
+      calls: 0,
+    },
+    {
+      name: "allows member_joined_channel when member and inviter pass their own policies",
+      args: {
+        overrides: {
+          channelType: "channel",
+          channelUsers: ["U_ALLOWED"],
+          requestUsers: ["U_OWNER"],
+        },
+        event: makeMemberEvent({
+          channel: "C1",
+          user: "U_ALLOWED",
+          inviter: "U_OWNER",
+        }),
+      },
+      calls: 1,
+    },
+    {
+      name: "blocks a join when the member is allowed but the inviter is not",
+      args: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeMemberEvent({
+          channel: "C1",
+          user: "U_OWNER",
+          inviter: "U_ATTACKER",
+        }),
+      },
+      calls: 0,
+    },
+    {
+      name: "blocks a leave under requestUsers because Slack omits the actor",
+      args: {
+        handler: "left",
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: {
+          ...makeMemberEvent({ channel: "C1", user: "U_OWNER" }),
+          type: "member_left_channel",
+        },
       },
       calls: 0,
     },

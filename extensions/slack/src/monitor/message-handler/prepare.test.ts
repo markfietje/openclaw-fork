@@ -1,5 +1,6 @@
 // Slack tests cover prepare plugin behavior.
 import type { App } from "@slack/bolt";
+import { resolveDefaultModelForAgent } from "openclaw/plugin-sdk/agent-runtime";
 import { expectChannelInboundContextContract as expectInboundContextContract } from "openclaw/plugin-sdk/channel-contract-testing";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
@@ -10,7 +11,7 @@ import {
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { resolveThreadSessionKeys } from "openclaw/plugin-sdk/routing";
-import { saveSessionStore } from "openclaw/plugin-sdk/session-store-runtime";
+import { resolveStorePath, saveSessionStore } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedSlackAccount } from "../../accounts.js";
 import {
@@ -165,12 +166,13 @@ describe("slack prepareSlackMessage inbound contract", () => {
     ctx: SlackMonitorContext,
     account: ResolvedSlackAccount,
     message: SlackMessageEvent,
+    source: "message" | "app_mention" = "message",
   ) {
     return prepareSlackMessage({
       ctx,
       account,
       message,
-      opts: { source: "message" },
+      opts: { source },
     });
   }
 
@@ -701,6 +703,59 @@ describe("slack prepareSlackMessage inbound contract", () => {
     expect(replies).toHaveBeenCalledTimes(2);
   }
 
+  async function prepareRestrictedRoomThreadHydration(params: {
+    requestUsers: Array<string | number>;
+    starter: Record<string, string>;
+    history: Array<Record<string, string>>;
+  }) {
+    const { storePath } = storeFixture.makeTmpStorePath();
+    const replies = vi
+      .fn()
+      .mockResolvedValueOnce({ messages: [params.starter] })
+      .mockResolvedValueOnce({
+        messages: params.history,
+        response_metadata: { next_cursor: "" },
+      });
+    const channelsConfig = {
+      C123: {
+        users: ["U_OWNER"],
+        requestUsers: params.requestUsers,
+        requireMention: false,
+      },
+    };
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        session: { store: storePath },
+        channels: {
+          slack: {
+            enabled: true,
+            replyToMode: "all",
+            groupPolicy: "open",
+            contextVisibility: "all",
+            channels: channelsConfig,
+          },
+        },
+      } as OpenClawConfig,
+      appClient: { conversations: { replies } } as unknown as App["client"],
+      channelsConfig,
+      defaultRequireMention: false,
+      replyToMode: "all",
+    });
+    slackCtx.botUserId = "U_BOT";
+    slackCtx.botId = "B1";
+    slackCtx.resolveUserName = async (id: string) => ({
+      name: id === "U_OWNER" ? "Owner" : "Attacker",
+    });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const prepared = await prepareThreadMessage(slackCtx, {
+      user: "U_OWNER",
+      text: "current owner reply",
+      ts: "101.000",
+    });
+    return { prepared, replies };
+  }
+
   function createDmScopeMainSlackCtx(): SlackMonitorContext {
     const slackCtx = createInboundSlackCtx({
       cfg: {
@@ -926,6 +981,319 @@ describe("slack prepareSlackMessage inbound contract", () => {
     expect(prepared.ctxPayload.CommandBody).toBe("please stop");
   });
 
+  it("keeps non-request users passive even when they mention, command, or abort", async () => {
+    const channelsConfig = {
+      C123: {
+        requireMention: false,
+        requestUsers: ["U_OWNER"],
+      },
+    };
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        commands: { allowFrom: { slack: ["*"] } },
+        messages: {
+          ackReaction: "eyes",
+          statusReactions: { enabled: true },
+        },
+        channels: {
+          slack: {
+            enabled: true,
+            groupPolicy: "open",
+            channels: channelsConfig,
+          },
+        },
+      } as OpenClawConfig,
+      channelsConfig,
+      defaultRequireMention: false,
+    });
+    slackCtx.allowFrom = ["U_OWNER"];
+    slackCtx.resolveUserName = async (userId) => ({ name: userId }) as any;
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const passiveCases = [
+      { text: "<@B1> do this", source: "message" as const },
+      { text: "app mention request", source: "app_mention" as const },
+      { text: "/new", source: "message" as const },
+      { text: "please stop", source: "message" as const },
+    ];
+    for (const [index, { text, source }] of passiveCases.entries()) {
+      const prepared = await prepareMessageWith(
+        slackCtx,
+        defaultAccount,
+        {
+          channel: "C123",
+          channel_type: "channel",
+          user: "U_OTHER",
+          text,
+          ts: `2.00${index}`,
+        } as SlackMessageEvent,
+        source,
+      );
+
+      assertPrepared(prepared, text);
+      expect(prepared.ctxPayload.InboundEventKind).toBe("room_event");
+      expect(prepared.ctxPayload.RequestAuthorized).toBe(false);
+      expect(prepared.ctxPayload.CommandAuthorized).toBe(false);
+      expect(prepared.ctxPayload.CommandBody).toBe("");
+      expect(prepared.ctxPayload.BodyForCommands).toBe("");
+      expect(prepared.ackReactionPromise).toBeNull();
+    }
+
+    const ownerMention = await prepareMessageWith(slackCtx, defaultAccount, {
+      channel: "C123",
+      channel_type: "channel",
+      user: "U_OWNER",
+      text: "<@B1> take a look",
+      ts: "3.000",
+    } as SlackMessageEvent);
+
+    assertPrepared(ownerMention);
+    expect(ownerMention.ctxPayload.InboundEventKind).toBe("user_request");
+    expect(ownerMention.ctxPayload.RequestAuthorized).toBe(true);
+  });
+
+  it("never downloads or attaches media for passive requestUsers events", async () => {
+    const channelsConfig = {
+      C123: {
+        requireMention: false,
+        requestUsers: ["U_OWNER"],
+        mediaDownloads: true,
+      },
+    };
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        channels: { slack: { enabled: true, groupPolicy: "open", channels: channelsConfig } },
+      } as OpenClawConfig,
+      channelsConfig,
+      defaultRequireMention: false,
+    });
+    slackCtx.resolveUserName = async () => ({ name: "Guest" }) as any;
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+    const repliesMock = vi.fn().mockResolvedValue({ messages: [] });
+    (
+      slackCtx.app.client as unknown as { conversations: { replies: typeof repliesMock } }
+    ).conversations = { replies: repliesMock };
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as typeof fetch;
+    try {
+      const prepared = await prepareMessageWith(
+        slackCtx,
+        defaultAccount,
+        createSlackMessage({
+          channel: "C123",
+          channel_type: "channel",
+          user: "U_OTHER",
+          text: "look at this",
+          ts: "1.001",
+          thread_ts: "1.000",
+          parent_user_id: "U_SOMEONE",
+          files: [
+            {
+              id: "FPRIVATE",
+              name: "private.png",
+              mimetype: "image/png",
+              url_private: "https://files.slack.com/private.png",
+            },
+          ],
+        }),
+      );
+
+      assertPrepared(prepared);
+      expect(prepared.ctxPayload.RequestAuthorized).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(repliesMock).not.toHaveBeenCalled();
+      expect(prepared.ctxPayload.MediaPath).toBeUndefined();
+      expect(prepared.ctxPayload.MediaPaths).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not carry rolling channel history into a later requestUsers-authorized turn", async () => {
+    const channelsConfig = {
+      C123: {
+        requireMention: false,
+        requestUsers: ["U_OWNER"],
+      },
+    };
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        channels: {
+          slack: {
+            enabled: true,
+            groupPolicy: "open",
+            channels: channelsConfig,
+          },
+        },
+      } as OpenClawConfig,
+      channelsConfig,
+      defaultRequireMention: false,
+    });
+    slackCtx.historyLimit = 5;
+    slackCtx.resolveUserName = async (userId) => ({
+      name: userId === "U_OWNER" ? "Owner" : "Mallory",
+    });
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const unauthorized = await prepareMessageWith(slackCtx, defaultAccount, {
+      channel: "C123",
+      channel_type: "channel",
+      user: "U_OTHER",
+      text: "unauthorized channel secret",
+      ts: "3.200",
+    } as SlackMessageEvent);
+
+    assertPrepared(unauthorized);
+    expect(unauthorized.ctxPayload.RequestAuthorized).toBe(false);
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+    expect(slackCtx.channelHistories.size).toBe(0);
+
+    const authorized = await prepareMessageWith(slackCtx, defaultAccount, {
+      channel: "C123",
+      channel_type: "channel",
+      user: "U_OWNER",
+      text: "authorized owner request",
+      ts: "3.201",
+    } as SlackMessageEvent);
+
+    assertPrepared(authorized);
+    expect(authorized.ctxPayload.RequestAuthorized).toBe(true);
+    expect(authorized.ctxPayload.Body).toContain("authorized owner request");
+    expect(authorized.ctxPayload.Body).not.toContain("unauthorized channel secret");
+    expect(authorized.ctxPayload.InboundHistory).toBeUndefined();
+    expect(authorized.turn.history).toBeUndefined();
+    expect(slackCtx.channelHistories.size).toBe(0);
+    expect(enqueueSystemEventMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops passive requestUsers events before persistence with a custom context engine", async () => {
+    const channelsConfig = {
+      C123: {
+        requireMention: false,
+        requestUsers: ["U_OWNER"],
+      },
+    };
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        plugins: { slots: { contextEngine: "custom-context" } },
+        channels: {
+          slack: {
+            enabled: true,
+            groupPolicy: "open",
+            channels: channelsConfig,
+          },
+        },
+      } as OpenClawConfig,
+      channelsConfig,
+      defaultRequireMention: false,
+    });
+    slackCtx.resolveUserName = async (userId) => ({ name: userId }) as any;
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+    const prepared = await prepareMessageWith(slackCtx, defaultAccount, {
+      channel: "C123",
+      channel_type: "channel",
+      user: "U_OTHER",
+      text: "passive note that must not reach a custom context engine",
+      ts: "3.100",
+    } as SlackMessageEvent);
+
+    expect(prepared).toBeNull();
+    expect(slackCtx.channelHistories.size).toBe(0);
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a non-request user passive after implicit participated-thread activation", async () => {
+    const channelsConfig = {
+      C123: {
+        requireMention: true,
+        requestUsers: ["U_OWNER"],
+      },
+    };
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        channels: {
+          slack: {
+            enabled: true,
+            groupPolicy: "open",
+            channels: channelsConfig,
+          },
+        },
+      } as OpenClawConfig,
+      channelsConfig,
+      defaultRequireMention: true,
+    });
+    slackCtx.resolveUserName = async (userId) => ({ name: userId }) as any;
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+    const repliesMock = vi.fn().mockResolvedValue({ messages: [] });
+    (
+      slackCtx.app.client as unknown as { conversations: { replies: typeof repliesMock } }
+    ).conversations = { replies: repliesMock };
+    recordSlackThreadParticipation("default", "C123", "4.000");
+
+    const prepared = await prepareMessageWith(slackCtx, defaultAccount, {
+      channel: "C123",
+      channel_type: "channel",
+      user: "U_OTHER",
+      text: "a follow-up for the thread",
+      ts: "4.001",
+      thread_ts: "4.000",
+      parent_user_id: "U_SOMEONE",
+    } as SlackMessageEvent);
+
+    assertPrepared(prepared);
+    expect(prepared.ctxPayload.ImplicitMentionKinds).toContain("bot_thread_participant");
+    expect(prepared.ctxPayload.MentionSource).toBe("implicit_thread");
+    expect(prepared.ctxPayload.InboundEventKind).toBe("room_event");
+    expect(prepared.ctxPayload.RequestAuthorized).toBe(false);
+    expect(prepared.ctxPayload.CommandAuthorized).toBe(false);
+    expect(prepared.ctxPayload.CommandBody).toBe("");
+    expect(prepared.ctxPayload.BodyForCommands).toBe("");
+    expect(repliesMock).not.toHaveBeenCalled();
+  });
+
+  it("treats plugin-looking text as ordinary content when channel text commands are disabled", async () => {
+    const channelsConfig = {
+      C123: {
+        requireMention: false,
+        requestUsers: ["U_OWNER"],
+        textCommands: false,
+      },
+    };
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        commands: { text: true, allowFrom: { slack: ["U_OWNER"] } },
+        channels: {
+          slack: {
+            enabled: true,
+            groupPolicy: "open",
+            channels: channelsConfig,
+          },
+        },
+      } as OpenClawConfig,
+      channelsConfig,
+      defaultRequireMention: false,
+    });
+    slackCtx.allowFrom = ["U_OWNER"];
+    slackCtx.resolveUserName = async (userId) => ({ name: userId }) as any;
+    slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+    const prepared = await prepareMessageWith(slackCtx, defaultAccount, {
+      channel: "C123",
+      channel_type: "channel",
+      user: "U_OWNER",
+      text: "/codex threads",
+      ts: "4.100",
+    } as SlackMessageEvent);
+
+    assertPrepared(prepared);
+    expect(prepared.ctxPayload.RequestAuthorized).toBe(true);
+    expect(prepared.ctxPayload.CommandAuthorized).toBe(false);
+    expect(prepared.ctxPayload.CommandBody).toBe("");
+    expect(prepared.ctxPayload.BodyForCommands).toBe("");
+    expect(prepared.ctxPayload.RawBody).toBe("/codex threads");
+  });
+
   it("includes forwarded shared attachment text in raw body", async () => {
     const prepared = await prepareWithDefaultCtx(
       createSlackMessage({
@@ -1023,6 +1391,80 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
     expect(prepared.ctxPayload.RawBody).toContain("[Slack file:");
     expect(prepared.ctxPayload.RawBody).toContain("voice.ogg (fileId: FVOICE)");
     expect(prepared.ctxPayload.RawBody).toContain("photo.jpg (fileId: FPHOTO)");
+  });
+
+  it("keeps file metadata but skips authenticated downloads when channel media is disabled", async () => {
+    const originalFetch = globalThis.fetch;
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch as typeof fetch;
+    try {
+      const result = await resolveSlackMessageContent({
+        message: createSlackMessage({
+          text: "",
+          files: [
+            {
+              id: "FINTERNAL",
+              name: "internal.pdf",
+              mimetype: "application/pdf",
+              url_private: "https://files.slack.com/internal.pdf",
+            },
+          ],
+        }),
+        isThreadReply: false,
+        threadStarter: null,
+        isBotMessage: false,
+        botToken: "xoxb-test",
+        mediaMaxBytes: 20 * 1024 * 1024,
+        mediaDownloads: false,
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result?.effectiveDirectMedia).toBeNull();
+      expect(result?.rawBody).toContain("internal.pdf (fileId: FINTERNAL)");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps forwarded text but skips forwarded media when channel media is disabled", async () => {
+    const originalFetch = globalThis.fetch;
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch as typeof fetch;
+    try {
+      const result = await resolveSlackMessageContent({
+        message: createSlackMessage({
+          text: "",
+          attachments: [
+            {
+              is_share: true,
+              author_name: "Bob",
+              text: "Shared public context",
+              image_url: "https://files.slack.com/forwarded.jpg",
+              files: [
+                {
+                  id: "FPRIVATE",
+                  name: "private.pdf",
+                  url_private: "https://files.slack.com/private.pdf",
+                },
+              ],
+            },
+          ],
+        }),
+        isThreadReply: false,
+        threadStarter: null,
+        isBotMessage: false,
+        botToken: "xoxb-test",
+        mediaMaxBytes: 20 * 1024 * 1024,
+        mediaDownloads: false,
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(result?.effectiveDirectMedia).toBeNull();
+      expect(result?.rawBody).toContain("[Forwarded message from Bob]\nShared public context");
+      expect(result?.rawBody).not.toContain("private.pdf");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("falls back to generic file label when a Slack file name is empty", async () => {
@@ -1842,6 +2284,48 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
     );
   });
 
+  it("hard-intersects wildcard requestUsers thread hydration with room users", async () => {
+    const { prepared, replies } = await prepareRestrictedRoomThreadHydration({
+      requestUsers: ["*"],
+      starter: { text: "attacker starter", user: "U_ATTACKER", ts: "100.000" },
+      history: [
+        { text: "attacker starter", user: "U_ATTACKER", ts: "100.000" },
+        { text: "attacker follow-up", user: "U_ATTACKER", ts: "100.700" },
+        { text: "admitted owner context", user: "U_OWNER", ts: "100.800" },
+        { text: "current owner reply", user: "U_OWNER", ts: "101.000" },
+      ],
+    });
+
+    assertPrepared(prepared);
+    expect(prepared.ctxPayload.RequestAuthorized).toBe(true);
+    expect(prepared.ctxPayload.ThreadStarterBody).toBeUndefined();
+    expect(prepared.ctxPayload.ThreadHistoryBody).toContain("admitted owner context");
+    expect(prepared.ctxPayload.ThreadHistoryBody).not.toContain("attacker starter");
+    expect(prepared.ctxPayload.ThreadHistoryBody).not.toContain("attacker follow-up");
+    expect(replies).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not launder an unverifiable current-bot root into an owner request", async () => {
+    const { prepared, replies } = await prepareRestrictedRoomThreadHydration({
+      requestUsers: ["U_OWNER"],
+      starter: { text: "passive bot observation", bot_id: "B1", ts: "100.000" },
+      history: [
+        { text: "passive bot observation", bot_id: "B1", ts: "100.000" },
+        { text: "admitted owner context", user: "U_OWNER", ts: "100.800" },
+        { text: "current owner reply", user: "U_OWNER", ts: "101.000" },
+      ],
+    });
+
+    assertPrepared(prepared);
+    expect(prepared.ctxPayload.RequestAuthorized).toBe(true);
+    expect(prepared.ctxPayload.ThreadStarterBody).toBeUndefined();
+    expect(prepared.ctxPayload.ThreadLabel).toBe("Slack thread #general");
+    expect(prepared.ctxPayload.ThreadHistoryBody).toContain("admitted owner context");
+    expect(prepared.ctxPayload.ThreadHistoryBody).not.toContain("passive bot observation");
+    expect(prepared.ctxPayload.ThreadHistoryBody).not.toContain("Bot (this assistant) (assistant)");
+    expect(replies).toHaveBeenCalledTimes(2);
+  });
+
   it("does not apply the owner allowlist to open-room thread context", async () => {
     const { prepared, replies } = await prepareThreadContextAllowlistCase({
       channel: "C124",
@@ -2542,6 +3026,102 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
         parentConversationId: "C123",
       });
       expect(touch).toHaveBeenCalledWith("test-binding", undefined);
+    } finally {
+      unregisterSessionBindingAdapter({ channel: "slack", accountId: "default", adapter });
+    }
+  });
+
+  it("keeps static agent routing for passive requestUsers events without touching runtime bindings", async () => {
+    const targetSessionKey = "agent:review:acp:session-passive";
+    const binding: SessionBindingRecord = {
+      bindingId: "passive-binding",
+      targetSessionKey,
+      targetKind: "session",
+      conversation: {
+        channel: "slack",
+        accountId: "default",
+        conversationId: "100.000",
+        parentConversationId: "C123",
+      },
+      status: "active",
+      boundAt: Date.now(),
+      metadata: {},
+    };
+    const resolveByConversation: SessionBindingAdapter["resolveByConversation"] = vi.fn(
+      () => binding,
+    );
+    const touch: NonNullable<SessionBindingAdapter["touch"]> = vi.fn();
+    const adapter: SessionBindingAdapter = {
+      channel: "slack",
+      accountId: "default",
+      listBySession: () => [],
+      resolveByConversation,
+      touch,
+    };
+    registerSessionBindingAdapter(adapter);
+    try {
+      const channelsConfig = {
+        C123: {
+          requireMention: false,
+          requestUsers: ["U_OWNER"],
+        },
+      };
+      const replies = vi.fn();
+      const slackCtx = createInboundSlackCtx({
+        cfg: {
+          agents: {
+            defaults: { model: "openai/default-model" },
+            list: [
+              { id: "main", default: true },
+              { id: "review", model: "openai/review-model" },
+            ],
+          },
+          bindings: [
+            {
+              agentId: "review",
+              match: { channel: "slack", peer: { kind: "channel", id: "C123" } },
+            },
+          ],
+          channels: {
+            slack: {
+              enabled: true,
+              replyToMode: "all",
+              groupPolicy: "open",
+              channels: channelsConfig,
+            },
+          },
+        } as OpenClawConfig,
+        appClient: { conversations: { replies } } as unknown as App["client"],
+        channelsConfig,
+        defaultRequireMention: false,
+        replyToMode: "all",
+      });
+      slackCtx.resolveUserName = async () => ({ name: "Guest" });
+      slackCtx.resolveChannelName = async () => ({ name: "general", type: "channel" });
+
+      const prepared = await prepareThreadMessage(slackCtx, {
+        user: "U_OTHER",
+        text: "passive bound-thread observation",
+        ts: "101.000",
+        thread_ts: "100.000",
+      });
+
+      assertPrepared(prepared);
+      expect(prepared.ctxPayload.RequestAuthorized).toBe(false);
+      expect(prepared.ctxPayload.InboundEventKind).toBe("room_event");
+      expect(prepared.route.sessionKey).not.toBe(targetSessionKey);
+      expect(prepared.route.agentId).toBe("review");
+      expect(prepared.route.matchedBy).toBe("binding.peer");
+      expect(prepared.route.sessionKey).toBe("agent:review:slack:channel:c123");
+      expect(prepared.ctxPayload.AgentId).toBe("review");
+      expect(prepared.ctxPayload.SessionKey).toBe("agent:review:slack:channel:c123:thread:100.000");
+      expect(prepared.turn.storePath).toBe(resolveStorePath(undefined, { agentId: "review" }));
+      expect(
+        resolveDefaultModelForAgent({ cfg: slackCtx.cfg, agentId: prepared.route.agentId }),
+      ).toEqual({ provider: "openai", model: "review-model" });
+      expect(resolveByConversation).not.toHaveBeenCalled();
+      expect(touch).not.toHaveBeenCalled();
+      expect(replies).not.toHaveBeenCalled();
     } finally {
       unregisterSessionBindingAdapter({ channel: "slack", accountId: "default", adapter });
     }

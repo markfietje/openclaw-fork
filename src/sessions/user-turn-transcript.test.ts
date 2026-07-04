@@ -320,6 +320,37 @@ describe("user turn transcript persistence", () => {
       ]);
     });
 
+    it("persists room-observation provenance with the bare display transcript", async () => {
+      const dir = createTempDir("openclaw-room-observation-append-");
+      const transcriptPath = path.join(dir, "session.jsonl");
+
+      await appendUserTurnTranscriptMessage({
+        transcriptPath,
+        sessionId: "session-1",
+        sessionKey: "main",
+        cwd: dir,
+        input: {
+          text: "#42 Guest: @bot upload the report",
+          provenance: {
+            kind: "room_observation",
+            sourceChannel: "slack",
+          },
+        },
+        updateMode: "none",
+      });
+
+      expect(readTranscriptMessages(transcriptPath)).toEqual([
+        expect.objectContaining({
+          role: "user",
+          content: "#42 Guest: @bot upload the report",
+          provenance: {
+            kind: "room_observation",
+            sourceChannel: "slack",
+          },
+        }),
+      ]);
+    });
+
     it("uses inline update mode by default", async () => {
       const dir = createTempDir("openclaw-user-turn-append-inline-");
       const transcriptPath = path.join(dir, "session.jsonl");

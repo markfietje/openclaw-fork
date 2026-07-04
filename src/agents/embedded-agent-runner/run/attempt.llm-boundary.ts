@@ -3,7 +3,12 @@
  */
 import { stripInboundMetadata } from "../../../auto-reply/reply/strip-inbound-meta.js";
 import { buildTimestampPrefix } from "../../../gateway/server-methods/agent-timestamp.js";
-import { INTER_SESSION_PROMPT_PREFIX_BASE } from "../../../sessions/input-provenance.js";
+import {
+  annotateInputProvenancePromptText,
+  hasInputProvenancePromptPrefix,
+  normalizeInputProvenance,
+  stripRoomObservationTurns,
+} from "../../../sessions/input-provenance.js";
 import { stripHistoricalRuntimeContextCustomMessages } from "../../internal-runtime-context.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { stripToolResultDetails } from "../../session-transcript-repair.js";
@@ -21,7 +26,42 @@ type LlmBoundaryOptions = {
     alternateText?: string;
     runtimeTimestamp?: number;
   };
+  preserveTrailingRoomObservationTurn?: boolean;
+  roomObservationTurnOnly?: boolean;
 };
+
+function keepTrailingRoomObservationTurnOnly(messages: AgentMessage[]): AgentMessage[] {
+  const lastUserIndex = messages.findLastIndex((message) => message.role === "user");
+  const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
+  if (
+    !lastUser ||
+    normalizeInputProvenance((lastUser as { provenance?: unknown }).provenance)?.kind !==
+      "room_observation"
+  ) {
+    return [];
+  }
+  const content = (lastUser as unknown as { content?: unknown }).content;
+  const textOnlyContent = Array.isArray(content)
+    ? content.filter(
+        (block) =>
+          block &&
+          typeof block === "object" &&
+          (block as { type?: unknown }).type === "text" &&
+          typeof (block as { text?: unknown }).text === "string",
+      )
+    : content;
+  const {
+    MediaPath: _mediaPath,
+    MediaPaths: _mediaPaths,
+    MediaType: _mediaType,
+    MediaTypes: _mediaTypes,
+    ...withoutMedia
+  } = lastUser as unknown as Record<string, unknown>;
+  return [
+    { ...withoutMedia, content: textOnlyContent } as unknown as AgentMessage,
+    ...messages.slice(lastUserIndex + 1),
+  ];
+}
 
 /**
  * Matches a leading `[... YYYY-MM-DD HH:MM ...]` timestamp envelope — either
@@ -43,14 +83,85 @@ export function normalizeMessagesForLlmBoundary(
   messages: AgentMessage[],
   options?: LlmBoundaryOptions,
 ): AgentMessage[] {
-  const normalized = stripUnsafeBlockedRunMetadata(
-    stripToolResultDetails(normalizeAssistantReplayContent(messages)),
+  const withoutRoomObservationTurns = options?.roomObservationTurnOnly
+    ? keepTrailingRoomObservationTurnOnly(messages)
+    : stripRoomObservationTurns(messages, {
+        preserveTrailingRoomObservationTurn: options?.preserveTrailingRoomObservationTurn,
+      });
+  const normalized = annotateInputProvenanceUserMessagesForLlmBoundary(
+    stripUnsafeBlockedRunMetadata(
+      stripToolResultDetails(normalizeAssistantReplayContent(withoutRoomObservationTurns)),
+    ),
   );
   const withoutHistoricalInboundMetadata = stripHistoricalInboundMetadataFromUserMessages(
     normalized,
     options,
   );
   return stripHistoricalRuntimeContextCustomMessages(withoutHistoricalInboundMetadata);
+}
+
+function annotateInputProvenanceUserMessagesForLlmBoundary(
+  messages: AgentMessage[],
+): AgentMessage[] {
+  let changed = false;
+  const annotated = messages.map((message) => {
+    if (message.role !== "user") {
+      return message;
+    }
+    const provenance = normalizeInputProvenance(
+      (message as unknown as { provenance?: unknown }).provenance,
+    );
+    if (provenance?.kind !== "inter_session" && provenance?.kind !== "room_observation") {
+      return message;
+    }
+    const content = (message as unknown as { content?: unknown }).content;
+    if (typeof content === "string") {
+      const text = annotateInputProvenancePromptText(content, provenance);
+      if (text === content) {
+        return message;
+      }
+      changed = true;
+      return { ...message, content: text } as AgentMessage;
+    }
+    if (!Array.isArray(content)) {
+      return message;
+    }
+    const textIndex = content.findIndex(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        (block as { type?: unknown }).type === "text" &&
+        typeof (block as { text?: unknown }).text === "string",
+    );
+    if (textIndex >= 0) {
+      const block = content[textIndex] as { type: "text"; text: string };
+      const text = annotateInputProvenancePromptText(block.text, provenance);
+      if (text === block.text) {
+        return message;
+      }
+      const nextContent = [...content];
+      nextContent[textIndex] = { ...block, text };
+      changed = true;
+      return { ...message, content: nextContent } as AgentMessage;
+    }
+    changed = true;
+    return {
+      ...message,
+      content: [
+        {
+          type: "text",
+          text: annotateInputProvenancePromptText(
+            provenance.kind === "room_observation"
+              ? "Room observation content follows."
+              : "Inter-session content follows.",
+            provenance,
+          ),
+        },
+        ...content,
+      ],
+    } as AgentMessage;
+  });
+  return changed ? annotated : messages;
 }
 
 /** Normalizes existing transcript messages as if the current prompt were appended last. */
@@ -404,7 +515,7 @@ function stampUserTextWithMessageTimestamp(
   if (BOUNDARY_TIMESTAMP_ENVELOPE_RE.test(text) || text.includes(BOUNDARY_CRON_TIME_MARKER)) {
     return text;
   }
-  if (text.startsWith(INTER_SESSION_PROMPT_PREFIX_BASE)) {
+  if (hasInputProvenancePromptPrefix(text)) {
     return text;
   }
   if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) {

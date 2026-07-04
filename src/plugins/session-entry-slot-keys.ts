@@ -127,6 +127,7 @@ const SESSION_ENTRY_RESERVED_SLOT_KEY_LIST = [
   "skillsSnapshot",
   "systemPromptReport",
   "pluginDebugEntries",
+  "passiveSessionStartPending",
   "acp",
   "quotaSuspension",
 ] as const satisfies ReadonlyArray<keyof SessionEntry | "__proto__" | "constructor" | "prototype">;

@@ -36,6 +36,7 @@ import {
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
+import { loadSessionStore } from "../../config/sessions/store.js";
 import { parseSessionThreadInfoFast } from "../../config/sessions/thread-info.js";
 import {
   DEFAULT_RESET_TRIGGERS,
@@ -59,7 +60,10 @@ import {
   isAcpSessionKey,
   normalizeMainKey,
 } from "../../routing/session-key.js";
-import { isInterSessionInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  isInterSessionInputProvenance,
+  isRoomObservationInputProvenance,
+} from "../../sessions/input-provenance.js";
 import {
   normalizeDeliveryChannelRoute,
   normalizeSessionDeliveryFields,
@@ -206,6 +210,7 @@ export type InitSessionStateParams = {
 type InitSessionStateAttemptContext = {
   agentId: string;
   conversationBindingContext: ReturnType<typeof resolveSessionConversationBindingContext>;
+  isPassiveRoomObservation: boolean;
   isSystemEvent: boolean;
   sessionCtxForState: MsgContext;
   storePath: string;
@@ -276,19 +281,26 @@ function resolveInitSessionStateAttemptContext(
   // Automated system events must not reset sessions or retarget conversation bindings.
   const isSystemEvent =
     ctx.Provider === "heartbeat" || ctx.Provider === "cron-event" || ctx.Provider === "exec-event";
-  const conversationBindingContext = isSystemEvent
+  const isPassiveRoomObservation =
+    ctx.RequestAuthorized === false || isRoomObservationInputProvenance(ctx.InputProvenance);
+  const preserveExistingSessionState = isSystemEvent || isPassiveRoomObservation;
+  const conversationBindingContext = preserveExistingSessionState
     ? null
     : resolveSessionConversationBindingContext(cfg, ctx);
   // Slash/menu commands may arrive on a transport session while targeting the chat session.
   // Prefer explicit command target before binding lookup so command mutations land there.
-  const commandTargetSessionKey = resolveCommandTurnTargetSessionKey(ctx);
+  const commandTargetSessionKey = preserveExistingSessionState
+    ? undefined
+    : resolveCommandTurnTargetSessionKey(ctx);
   const targetSessionKey =
     commandTargetSessionKey ??
-    resolveBoundConversationSessionKey({
-      cfg,
-      ctx,
-      bindingContext: conversationBindingContext,
-    });
+    (preserveExistingSessionState
+      ? undefined
+      : resolveBoundConversationSessionKey({
+          cfg,
+          ctx,
+          bindingContext: conversationBindingContext,
+        }));
   const sessionCtxForState =
     targetSessionKey && targetSessionKey !== ctx.SessionKey
       ? { ...ctx, SessionKey: targetSessionKey }
@@ -301,6 +313,7 @@ function resolveInitSessionStateAttemptContext(
   return {
     agentId,
     conversationBindingContext,
+    isPassiveRoomObservation,
     isSystemEvent,
     sessionCtxForState,
     storePath: resolveStorePath(cfg.session?.store, { agentId }),
@@ -331,8 +344,15 @@ async function initSessionStateAttemptLocked(
   staleSnapshotRetried: boolean,
 ): Promise<SessionInitResult> {
   const { ctx, cfg, commandAuthorized } = params;
-  const { agentId, conversationBindingContext, isSystemEvent, sessionCtxForState, storePath } =
-    attemptContext;
+  const {
+    agentId,
+    conversationBindingContext,
+    isPassiveRoomObservation,
+    isSystemEvent,
+    sessionCtxForState,
+    storePath,
+  } = attemptContext;
+  const preserveExistingSessionState = isSystemEvent || isPassiveRoomObservation;
   const sessionCfg = cfg.session;
   const maintenanceConfig = resolveMaintenanceConfigFromInput(sessionCfg?.maintenance);
   const mainKey = normalizeMainKey(sessionCfg?.mainKey);
@@ -462,21 +482,25 @@ async function initSessionStateAttemptLocked(
         `elapsedMs=${Date.now() - sessionStoreLoadStartMs} path=${storePath}`,
     );
   }
-  const retiredLegacyMainDelivery = maybeRetireLegacyMainDeliveryRoute({
-    sessionCfg,
-    sessionKey,
-    legacyMain: initializationSnapshot.readEntry(
-      buildAgentMainSessionKey({
+  const retiredLegacyMainDelivery = isPassiveRoomObservation
+    ? undefined
+    : maybeRetireLegacyMainDeliveryRoute({
+        sessionCfg,
+        sessionKey,
+        legacyMain: initializationSnapshot.readEntry(
+          buildAgentMainSessionKey({
+            agentId,
+            mainKey,
+          }),
+        ),
         agentId,
         mainKey,
-      }),
-    ),
-    agentId,
-    mainKey,
-    isGroup,
-    ctx,
-  });
+        isGroup,
+        ctx,
+      });
   const entry = initializationSnapshot.currentEntry;
+  const deferredSessionStart =
+    !isPassiveRoomObservation && entry?.passiveSessionStartPending === true;
   const now = Date.now();
   const isThread = resolveThreadFlag({
     sessionKey,
@@ -544,7 +568,7 @@ async function initSessionStateAttemptLocked(
       }) ?? "",
     );
   const terminalMainTranscriptNewerThanRegistry =
-    !isSystemEvent &&
+    !preserveExistingSessionState &&
     (await hasTerminalMainSessionTranscriptNewerThanRegistry({
       entry,
       sessionScope,
@@ -555,12 +579,12 @@ async function initSessionStateAttemptLocked(
     }));
   const recoverTerminalVisibleEntry =
     canReuseExistingEntry &&
-    !isSystemEvent &&
+    !preserveExistingSessionState &&
     !resetTriggered &&
     (entryFreshness?.fresh ?? false) &&
     isRecoverableTerminalSessionStatus(entry?.status);
   const freshEntry =
-    (isSystemEvent && canReuseExistingEntry) ||
+    (preserveExistingSessionState && canReuseExistingEntry) ||
     (((reconnectResumeRequested && canReuseExistingEntry) ||
       recoverTerminalVisibleEntry ||
       (entryFreshness?.fresh ?? false) ||
@@ -697,7 +721,7 @@ async function initSessionStateAttemptLocked(
   // Otherwise a heartbeat target like "group:..." or a synthetic sender like
   // "heartbeat" leaks into the shared session and later user replies route to
   // the wrong chat.
-  const lastChannelRaw = isSystemEvent
+  const lastChannelRaw = preserveExistingSessionState
     ? baseEntry?.lastChannel
     : resolveLastChannelRaw({
         originatingChannelRaw,
@@ -705,7 +729,7 @@ async function initSessionStateAttemptLocked(
         sessionKey,
         isInterSession,
       });
-  const lastToRaw = isSystemEvent
+  const lastToRaw = preserveExistingSessionState
     ? baseEntry?.lastTo
     : resolveLastToRaw({
         originatingChannelRaw,
@@ -716,7 +740,7 @@ async function initSessionStateAttemptLocked(
         sessionKey,
         isInterSession,
       });
-  const lastAccountIdRaw = isSystemEvent
+  const lastAccountIdRaw = preserveExistingSessionState
     ? baseEntry?.lastAccountId
     : resolveSessionDefaultAccountId({
         cfg,
@@ -727,44 +751,54 @@ async function initSessionStateAttemptLocked(
   // Only fall back to persisted threadId for thread sessions. Non-thread
   // sessions (e.g. DM without topics) must not inherit a stale threadId from a
   // previous interaction that happened inside a topic/thread.
-  const lastThreadIdRaw = isSystemEvent
+  const lastThreadIdRaw = preserveExistingSessionState
     ? baseEntry?.lastThreadId
     : (ctx.MessageThreadId ??
       ctx.TransportThreadId ??
       (isThread ? baseEntry?.lastThreadId : undefined));
-  const deliveryFields = isSystemEvent
-    ? normalizeSessionDeliveryFields({
-        route: isThread ? baseEntry?.route : stripThreadFromSessionRoute(baseEntry?.route),
-        channel: baseEntry?.channel,
+  const deliveryFields = isPassiveRoomObservation
+    ? {
+        route: baseEntry?.route,
         lastChannel: baseEntry?.lastChannel,
         lastTo: baseEntry?.lastTo,
         lastAccountId: baseEntry?.lastAccountId,
-        lastThreadId:
-          baseEntry?.lastThreadId ??
-          baseEntry?.deliveryContext?.threadId ??
-          baseEntry?.origin?.threadId,
+        lastThreadId: baseEntry?.lastThreadId,
         deliveryContext: baseEntry?.deliveryContext,
-      })
-    : normalizeSessionDeliveryFields({
-        deliveryContext: {
-          channel: lastChannelRaw,
-          to: lastToRaw,
-          accountId: lastAccountIdRaw,
-          threadId: lastThreadIdRaw,
-        },
-      });
+      }
+    : isSystemEvent
+      ? normalizeSessionDeliveryFields({
+          route: isThread ? baseEntry?.route : stripThreadFromSessionRoute(baseEntry?.route),
+          channel: baseEntry?.channel,
+          lastChannel: baseEntry?.lastChannel,
+          lastTo: baseEntry?.lastTo,
+          lastAccountId: baseEntry?.lastAccountId,
+          lastThreadId:
+            baseEntry?.lastThreadId ??
+            baseEntry?.deliveryContext?.threadId ??
+            baseEntry?.origin?.threadId,
+          deliveryContext: baseEntry?.deliveryContext,
+        })
+      : normalizeSessionDeliveryFields({
+          deliveryContext: {
+            channel: lastChannelRaw,
+            to: lastToRaw,
+            accountId: lastAccountIdRaw,
+            threadId: lastThreadIdRaw,
+          },
+        });
   const lastChannel = deliveryFields.lastChannel ?? lastChannelRaw;
   const lastTo = deliveryFields.lastTo ?? lastToRaw;
   const lastAccountId = deliveryFields.lastAccountId ?? lastAccountIdRaw;
   const lastThreadId = deliveryFields.lastThreadId ?? lastThreadIdRaw;
   sessionEntry = {
     ...baseEntry,
+    passiveSessionStartPending: isPassiveRoomObservation ? true : undefined,
     sessionId,
-    updatedAt: Date.now(),
+    updatedAt: isPassiveRoomObservation && baseEntry ? baseEntry.updatedAt : Date.now(),
     sessionStartedAt: isNewSession
       ? now
       : (baseEntry?.sessionStartedAt ?? lifecycleTimestamps.sessionStartedAt),
-    lastInteractionAt: isSystemEvent ? baseEntry?.lastInteractionAt : now,
+    lastInteractionAt: preserveExistingSessionState ? baseEntry?.lastInteractionAt : now,
     systemSent,
     abortedLastRun: recoveredTerminalEntry ? undefined : abortedLastRun,
     // Persist previously stored thinking/verbose levels when present.
@@ -818,13 +852,15 @@ async function initSessionStateAttemptLocked(
     lastAccountId,
     lastThreadId,
   };
-  const metaPatch = deriveSessionMetaPatch({
-    ctx: sessionCtxForState,
-    sessionKey,
-    existing: sessionEntry,
-    groupResolution,
-    skipSystemEventOrigin: isSystemEvent,
-  });
+  const metaPatch = isPassiveRoomObservation
+    ? undefined
+    : deriveSessionMetaPatch({
+        ctx: sessionCtxForState,
+        sessionKey,
+        existing: sessionEntry,
+        groupResolution,
+        skipSystemEventOrigin: isSystemEvent,
+      });
   if (metaPatch) {
     sessionEntry = { ...sessionEntry, ...metaPatch };
   }
@@ -837,25 +873,28 @@ async function initSessionStateAttemptLocked(
       origin: stripThreadIdFromOrigin(sessionEntry.origin),
     };
   }
-  if (!sessionEntry.chatType) {
+  if (!sessionEntry.chatType && !isPassiveRoomObservation) {
     sessionEntry.chatType = "direct";
   }
   const threadLabel = normalizeOptionalString(ctx.ThreadLabel);
-  if (threadLabel) {
+  if (threadLabel && !isPassiveRoomObservation) {
     sessionEntry.displayName = threadLabel;
   }
-  const parentSessionKey = normalizeOptionalString(ctx.ParentSessionKey);
+  const parentSessionKey = isPassiveRoomObservation
+    ? undefined
+    : normalizeOptionalString(ctx.ParentSessionKey);
   const alreadyForked = sessionEntry.forkedFromParent === true;
   const threadIdFromSessionKey = parseSessionThreadInfoFast(
     sessionCtxForState.SessionKey ?? sessionKey,
   ).threadId;
-  const fallbackSessionFile = !sessionEntry.sessionFile
-    ? resolveSessionTranscriptPath(
-        sessionEntry.sessionId,
-        agentId,
-        ctx.MessageThreadId ?? threadIdFromSessionKey,
-      )
-    : undefined;
+  const fallbackSessionFile =
+    !isPassiveRoomObservation && !sessionEntry.sessionFile
+      ? resolveSessionTranscriptPath(
+          sessionEntry.sessionId,
+          agentId,
+          ctx.MessageThreadId ?? threadIdFromSessionKey,
+        )
+      : undefined;
   if (isNewSession) {
     sessionEntry.compactionCount = 0;
     sessionEntry.memoryFlushCompactionCount = undefined;
@@ -892,44 +931,53 @@ async function initSessionStateAttemptLocked(
     // snapshot through /new; the next turn must rebuild the visible skill list.
     sessionEntry.skillsSnapshot = undefined;
   }
-  // Archive old transcript so it doesn't accumulate on disk (#14869).
-  const committed = await commitReplySessionInitialization({
-    activeSessionKey: sessionKey,
-    agentId,
-    expectedRevision: initializationSnapshot.revision,
-    fallbackSessionFile,
-    maintenanceConfig,
-    onArchiveError: (error, sourcePath) => {
-      log.warn(
-        `failed to archive previous session transcript ${sourcePath} for session ${previousSessionEntry?.sessionId}`,
-        { error: String(error) },
-      );
-    },
-    onMaintenanceWarning: (warning) =>
-      deliverSessionMaintenanceWarning({
-        cfg,
-        sessionKey,
-        entry: sessionEntry,
-        warning,
-      }),
-    prepareSessionEntry: async ({ readEntry, sessionEntry: entryToCommit }) =>
-      await prepareReplySessionParentFork({
-        agentId,
-        alreadyForked,
-        parentSessionKey,
-        readEntry,
-        sessionEntry: entryToCommit,
-        sessionKey,
-        storePath,
-        warn: (message) => log.warn(message),
-      }),
-    previousEntry: previousSessionEntry,
-    retiredEntry: retiredLegacyMainDelivery,
-    sessionEntry,
-    sessionKey,
-    snapshotEntry: initializationSnapshot.currentEntry,
-    storePath,
-  });
+  // Existing owner rows are read-only for passive observations. In particular,
+  // do not synthesize a transcript path from an untrusted room thread.
+  const committed =
+    isPassiveRoomObservation && entry && !isNewSession
+      ? {
+          ok: true as const,
+          previousSessionTranscript: {},
+          sessionEntry: { ...entry },
+          sessionStoreView: loadSessionStore(storePath, { skipCache: true }),
+        }
+      : await commitReplySessionInitialization({
+          activeSessionKey: sessionKey,
+          agentId,
+          expectedRevision: initializationSnapshot.revision,
+          fallbackSessionFile,
+          maintenanceConfig,
+          onArchiveError: (error, sourcePath) => {
+            log.warn(
+              `failed to archive previous session transcript ${sourcePath} for session ${previousSessionEntry?.sessionId}`,
+              { error: String(error) },
+            );
+          },
+          onMaintenanceWarning: (warning) =>
+            deliverSessionMaintenanceWarning({
+              cfg,
+              sessionKey,
+              entry: sessionEntry,
+              warning,
+            }),
+          prepareSessionEntry: async ({ readEntry, sessionEntry: entryToCommit }) =>
+            await prepareReplySessionParentFork({
+              agentId,
+              alreadyForked,
+              parentSessionKey,
+              readEntry,
+              sessionEntry: entryToCommit,
+              sessionKey,
+              storePath,
+              warn: (message) => log.warn(message),
+            }),
+          previousEntry: previousSessionEntry,
+          retiredEntry: retiredLegacyMainDelivery,
+          sessionEntry,
+          sessionKey,
+          snapshotEntry: initializationSnapshot.currentEntry,
+          storePath,
+        });
   if (!committed.ok) {
     if (!staleSnapshotRetried) {
       return await initSessionStateAttemptLocked(params, attemptContext, true);
@@ -989,18 +1037,26 @@ async function initSessionStateAttemptLocked(
 
   // Run session plugin hooks (fire-and-forget)
   const hookRunner = getGlobalHookRunner();
-  if (hookRunner && isNewSession) {
+  if (hookRunner && !isPassiveRoomObservation && (isNewSession || deferredSessionStart)) {
     const effectiveSessionId = sessionId ?? "";
+    // Passive-only sessions never emitted session_start, so they cannot emit a
+    // matching session_end or serve as a lifecycle predecessor after rollover.
+    // Keep previousSessionEntry intact above so its transcript is still archived.
+    const previousStartedSessionEntry =
+      previousSessionEntry?.passiveSessionStartPending === true ? undefined : previousSessionEntry;
 
     // If replacing an existing session, fire session_end for the old one
-    if (previousSessionEntry?.sessionId && previousSessionEntry.sessionId !== effectiveSessionId) {
+    if (
+      previousStartedSessionEntry?.sessionId &&
+      previousStartedSessionEntry.sessionId !== effectiveSessionId
+    ) {
       // The shutdown finalizer must not re-fire session_end for a session
       // that is being replaced here; forget unconditionally so the next drain
       // skips this id even when no `session_end` plugin is currently attached.
-      forgetActiveSessionForShutdown(previousSessionEntry.sessionId);
+      forgetActiveSessionForShutdown(previousStartedSessionEntry.sessionId);
       if (hookRunner.hasHooks("session_end")) {
         const payload = buildSessionEndHookPayload({
-          sessionId: previousSessionEntry.sessionId,
+          sessionId: previousStartedSessionEntry.sessionId,
           sessionKey,
           cfg,
           reason: previousSessionEndReason,
@@ -1031,7 +1087,7 @@ async function initSessionStateAttemptLocked(
         sessionId: effectiveSessionId,
         sessionKey,
         cfg,
-        resumedFrom: previousSessionEntry?.sessionId,
+        resumedFrom: previousStartedSessionEntry?.sessionId,
       });
       void hookRunner.runSessionStart(payload.event, payload.context).catch(() => {});
     }

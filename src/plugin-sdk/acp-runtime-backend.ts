@@ -76,6 +76,7 @@ export async function tryDispatchAcpReplyHook(
     runId: event.runId,
     sessionKey: event.sessionKey,
     toolsAllow: event.toolsAllow,
+    sourceBoundMessagePolicy: event.sourceBoundMessagePolicy,
     images: event.images,
     abortSignal: ctx.abortSignal,
     inboundAudio: event.inboundAudio,

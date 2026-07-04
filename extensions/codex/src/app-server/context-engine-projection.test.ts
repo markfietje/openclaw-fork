@@ -71,6 +71,32 @@ describe("projectContextEngineAssemblyForCodex", () => {
     expect(ordered.prePromptMessageCount).toBe(1);
   });
 
+  it("excludes passive room turns while preserving later authorized history", () => {
+    const passiveUser = {
+      ...textMessage("user", "passive room instruction"),
+      provenance: { kind: "room_observation", sourceChannel: "slack" },
+    } as AgentMessage;
+    const passiveAssistant = textMessage("assistant", "passive room reply");
+    const ownerUser = {
+      ...textMessage("user", "authorized owner request"),
+      provenance: { kind: "external_user", sourceChannel: "slack" },
+    } as AgentMessage;
+    const ownerAssistant = textMessage("assistant", "authorized owner reply");
+    const messages = [passiveUser, passiveAssistant, ownerUser, ownerAssistant];
+
+    const result = projectContextEngineAssemblyForCodex({
+      assembledMessages: messages,
+      originalHistoryMessages: messages,
+      prompt: "current owner request",
+    });
+
+    expect(result.promptText).not.toContain("passive room");
+    expect(result.promptText).toContain("authorized owner request");
+    expect(result.promptText).toContain("authorized owner reply");
+    expect(result.assembledMessages).toEqual([ownerUser, ownerAssistant]);
+    expect(result.prePromptMessageCount).toBe(2);
+  });
+
   it("frames projected history as reference data and omits tool payloads", () => {
     const result = projectContextEngineAssemblyForCodex({
       assembledMessages: [

@@ -49,7 +49,7 @@ import {
   resolveSlackCommandIngress,
   resolveSlackEffectiveAllowFrom,
 } from "../auth.js";
-import { resolveSlackChannelConfig } from "../channel-config.js";
+import { resolveSlackChannelConfig, resolveSlackRequestUserAccess } from "../channel-config.js";
 import { stripSlackMentionsForCommandDetection } from "../commands.js";
 import {
   readSessionUpdatedAt,
@@ -298,7 +298,11 @@ async function resolveSlackHistoryMediaForPendingRecord(params: {
   isThreadReply: boolean;
   threadStarter: SlackThreadStarter | null;
   isBotMessage: boolean;
+  mediaDownloads?: boolean;
 }) {
+  if (params.mediaDownloads === false) {
+    return [];
+  }
   const mediaMessage = buildSlackHistoryMediaCandidateMessage(params.message);
   if (!mediaMessage) {
     return [];
@@ -650,6 +654,48 @@ export async function prepareSlackMessage(params: {
     return null;
   }
   const { senderId, allowFromLower } = authorization;
+  let resolvedSenderName = normalizeOptionalString(message.username);
+  const resolveSenderName = async (): Promise<string> => {
+    if (resolvedSenderName) {
+      return resolvedSenderName;
+    }
+    if (message.user) {
+      const sender = await ctx.resolveUserName(message.user);
+      const normalized = normalizeOptionalString(sender?.name);
+      if (normalized) {
+        resolvedSenderName = normalized;
+        return resolvedSenderName;
+      }
+    }
+    resolvedSenderName = message.user ?? message.bot_id ?? "unknown";
+    return resolvedSenderName;
+  };
+  const senderNameForAuth = ctx.allowNameMatching ? await resolveSenderName() : undefined;
+  const requestUserAccess = isRoom
+    ? resolveSlackRequestUserAccess({
+        requestUsers: channelConfig?.requestUsers,
+        senderId,
+        senderName: senderNameForAuth,
+        allowNameMatching: ctx.allowNameMatching,
+      })
+    : { configured: false, allowed: true };
+  // requestUsers narrows request authority without hiding the rest of the room.
+  // Classify before resolving bindings: binding lookup touches runtime state and
+  // configured bindings may start a plugin-owned runtime.
+  const forcePassiveRoomEvent =
+    isRoom && requestUserAccess.configured && !requestUserAccess.allowed;
+  const contextEngineSlot = cfg.plugins?.slots?.contextEngine?.trim();
+  if (forcePassiveRoomEvent && contextEngineSlot && contextEngineSlot.toLowerCase() !== "legacy") {
+    ctx.logger.warn(
+      {
+        channel: message.channel,
+        senderId,
+        contextEngineSlot,
+      },
+      "dropping passive Slack room event because the selected context engine cannot preserve request-authority provenance",
+    );
+    return null;
+  }
   const messageText = message.text ?? "";
   const mentionMetadata = collectSlackMentionMetadata(messageText);
   const { mentionedUserIds, mentionedSubteamIds, hasAnyMention } = mentionMetadata;
@@ -719,6 +765,7 @@ export async function prepareSlackMessage(params: {
     isRoomish,
     seedTopLevelRoomThread: seedTopLevelRoomThreadBySource,
     assistantThreadTs: assistantThreadContext?.threadTs,
+    allowConversationBindings: !forcePassiveRoomEvent,
   });
 
   const resolveWasMentioned = (mentionRegexes: RegExp[]) =>
@@ -763,6 +810,7 @@ export async function prepareSlackMessage(params: {
       isRoomish,
       seedTopLevelRoomThread: true,
       assistantThreadTs: assistantThreadContext?.threadTs,
+      allowConversationBindings: !forcePassiveRoomEvent,
     });
     mentionRegexes = buildPolicyMentionRegexes(routing.route.agentId);
     wasMentioned = resolveWasMentioned(mentionRegexes);
@@ -780,6 +828,11 @@ export async function prepareSlackMessage(params: {
     sessionKey,
     historyKey,
   } = routing;
+  if (requestUserAccess.configured) {
+    // requestUsers is an authority boundary. Never carry unfiltered room text
+    // across turns through the legacy rolling-history side channel.
+    ctx.channelHistories.delete(historyKey);
+  }
   const isAssistantThreadMessage = Boolean(isDirectMessage && messageAssistantThreadContext);
   const shouldForceAssistantReplyThread = Boolean(
     assistantThreadContext?.threadTs &&
@@ -850,28 +903,13 @@ export async function prepareSlackMessage(params: {
           );
   }
 
-  let resolvedSenderName = normalizeOptionalString(message.username);
-  const resolveSenderName = async (): Promise<string> => {
-    if (resolvedSenderName) {
-      return resolvedSenderName;
-    }
-    if (message.user) {
-      const sender = await ctx.resolveUserName(message.user);
-      const normalized = normalizeOptionalString(sender?.name);
-      if (normalized) {
-        resolvedSenderName = normalized;
-        return resolvedSenderName;
-      }
-    }
-    resolvedSenderName = message.user ?? message.bot_id ?? "unknown";
-    return resolvedSenderName;
-  };
-  const senderNameForAuth = ctx.allowNameMatching ? await resolveSenderName() : undefined;
-
-  const allowTextCommands = shouldHandleTextCommands({
-    cfg,
-    surface: "slack",
-  });
+  const allowTextCommands =
+    channelConfig?.textCommands === false
+      ? false
+      : shouldHandleTextCommands({
+          cfg,
+          surface: "slack",
+        });
   const shouldRequireMention = isRoom
     ? (channelConfig?.requireMention ?? ctx.defaultRequireMention)
     : false;
@@ -902,7 +940,8 @@ export async function prepareSlackMessage(params: {
     ownerAllowFromLower: allowFromLower,
     channelUsers: isRoom ? channelConfig?.users : undefined,
     allowTextCommands,
-    hasControlCommand: hasControlCommandInMessage,
+    hasControlCommand:
+      forcePassiveRoomEvent || !allowTextCommands ? false : hasControlCommandInMessage,
     mentionFacts: {
       canDetectMention,
       wasMentioned,
@@ -966,9 +1005,14 @@ export async function prepareSlackMessage(params: {
     channel: "slack",
     accountId: account.accountId,
   });
-  const commandAuthorized = messageIngress.commandAccess.authorized;
+  const commandAuthorized =
+    allowTextCommands && messageIngress.commandAccess.authorized && !forcePassiveRoomEvent;
 
-  if (isRoomish && messageIngress.commandAccess.shouldBlockControlCommand) {
+  if (
+    isRoomish &&
+    messageIngress.commandAccess.shouldBlockControlCommand &&
+    !forcePassiveRoomEvent
+  ) {
     logInboundDrop({
       log: logVerbose,
       channel: "slack",
@@ -980,6 +1024,9 @@ export async function prepareSlackMessage(params: {
 
   if (isRoom && shouldRequireMention && messageIngress.activationAccess.shouldSkip) {
     ctx.logger.info({ channel: message.channel, reason: "no-mention" }, "skipping channel message");
+    if (requestUserAccess.configured) {
+      return null;
+    }
     const pendingText = (message.text ?? "").trim();
     const historyMediaCandidate = buildSlackHistoryMediaCandidateMessage(message);
     const fallbackFile = message.files?.length
@@ -1031,6 +1078,7 @@ export async function prepareSlackMessage(params: {
             isThreadReply,
             threadStarter: skippedThreadStarter,
             isBotMessage,
+            mediaDownloads: channelConfig?.mediaDownloads,
           }),
       },
     });
@@ -1038,7 +1086,7 @@ export async function prepareSlackMessage(params: {
   }
 
   const threadStarter =
-    isThreadReply && threadTs
+    !forcePassiveRoomEvent && isThreadReply && threadTs
       ? await resolveSlackThreadStarter({
           channelId: message.channel,
           threadTs,
@@ -1053,6 +1101,7 @@ export async function prepareSlackMessage(params: {
     botToken: ctx.botToken,
     client: ctx.app.client,
     mediaMaxBytes: ctx.mediaMaxBytes,
+    mediaDownloads: forcePassiveRoomEvent ? false : channelConfig?.mediaDownloads,
     resolveUserName: ctx.resolveUserName,
   });
   if (!resolvedMessageContent) {
@@ -1060,16 +1109,18 @@ export async function prepareSlackMessage(params: {
   }
   const { rawBody, effectiveDirectMedia } = resolvedMessageContent;
   const chatType = resolveSlackChatType(conversation.resolvedChannelType);
-  const inboundEventKind = classifyChannelInboundEvent({
-    conversation: { kind: chatType },
-    unmentionedGroupPolicy: resolveUnmentionedGroupInboundPolicy({
-      cfg,
-      agentId: route.agentId,
-    }),
-    wasMentioned: effectiveWasMentioned,
-    hasControlCommand: hasControlCommandInMessage,
-    hasAbortRequest,
-  });
+  const inboundEventKind = forcePassiveRoomEvent
+    ? "room_event"
+    : classifyChannelInboundEvent({
+        conversation: { kind: chatType },
+        unmentionedGroupPolicy: resolveUnmentionedGroupInboundPolicy({
+          cfg,
+          agentId: route.agentId,
+        }),
+        wasMentioned: effectiveWasMentioned,
+        hasControlCommand: allowTextCommands && hasControlCommandInMessage,
+        hasAbortRequest: allowTextCommands && hasAbortRequest,
+      });
 
   const ackReaction = resolveAckReaction(cfg, route.agentId, {
     channel: "slack",
@@ -1084,6 +1135,7 @@ export async function prepareSlackMessage(params: {
   const statusReactionsExplicitlyEnabled = cfg.messages?.statusReactions?.enabled === true;
   const shouldAckReaction = () =>
     Boolean(
+      !forcePassiveRoomEvent &&
       ackReaction &&
       shouldAckReactionGate({
         scope: ctx.ackReactionScope as AckReactionScope | undefined,
@@ -1136,10 +1188,12 @@ export async function prepareSlackMessage(params: {
       ? `slack:channel:${message.channel}`
       : `slack:group:${message.channel}`;
 
-  enqueueSystemEvent(inboundLabel, {
-    sessionKey,
-    contextKey: `slack:message:${message.channel}:${message.ts ?? "unknown"}`,
-  });
+  if (!forcePassiveRoomEvent) {
+    enqueueSystemEvent(inboundLabel, {
+      sessionKey,
+      contextKey: `slack:message:${message.channel}:${message.ts ?? "unknown"}`,
+    });
+  }
 
   const envelopeFrom =
     resolveConversationLabel({
@@ -1194,7 +1248,7 @@ export async function prepareSlackMessage(params: {
   if (dmHistoryContext.body) {
     combinedBody = `${dmHistoryContext.body}\n\n${combinedBody}`;
   }
-  if (isRoomish && ctx.historyLimit > 0) {
+  if (isRoomish && !requestUserAccess.configured && ctx.historyLimit > 0) {
     combinedBody = channelHistory.buildPendingContext({
       historyKey,
       limit: ctx.historyLimit,
@@ -1222,40 +1276,54 @@ export async function prepareSlackMessage(params: {
     channelConfig,
   });
 
+  const threadContextData = forcePassiveRoomEvent
+    ? {
+        threadStarterBody: undefined,
+        threadHistoryBody: undefined,
+        shouldSeedInitialThreadContext: false,
+        threadLabel: undefined,
+        threadStarterMedia: null,
+      }
+    : await resolveSlackThreadContextData({
+        ctx,
+        account,
+        message,
+        isThreadReply,
+        threadTs,
+        threadStarter,
+        roomLabel,
+        storePath,
+        sessionKey,
+        forceInitialHistory: Boolean(directThreadRoutedToDmSession),
+        allowFromLower: threadContextAllowFromLower,
+        requestUsers: isRoom ? channelConfig?.requestUsers : undefined,
+        allowNameMatching: ctx.allowNameMatching,
+        contextVisibilityMode,
+        envelopeOptions,
+        effectiveDirectMedia,
+        mediaDownloads: channelConfig?.mediaDownloads,
+      });
   const {
     threadStarterBody,
     threadHistoryBody,
     shouldSeedInitialThreadContext,
     threadLabel,
     threadStarterMedia,
-  } = await resolveSlackThreadContextData({
-    ctx,
-    account,
-    message,
-    isThreadReply,
-    threadTs,
-    threadStarter,
-    roomLabel,
-    storePath,
-    sessionKey,
-    forceInitialHistory: Boolean(directThreadRoutedToDmSession),
-    allowFromLower: threadContextAllowFromLower,
-    allowNameMatching: ctx.allowNameMatching,
-    contextVisibilityMode,
-    envelopeOptions,
-    effectiveDirectMedia,
-  });
+  } = threadContextData;
 
   // Use direct media (including forwarded attachment media) if available, else thread starter media
-  const effectiveMedia = effectiveDirectMedia ?? threadStarterMedia;
+  const effectiveMedia = forcePassiveRoomEvent
+    ? null
+    : (effectiveDirectMedia ?? threadStarterMedia);
   const inboundHistory =
-    isRoomish && ctx.historyLimit > 0
+    isRoomish && !requestUserAccess.configured && ctx.historyLimit > 0
       ? channelHistory.buildInboundHistory({
           historyKey,
           limit: ctx.historyLimit,
         })
       : dmHistoryContext.inboundHistory;
-  const commandBody = textForCommandDetection.trim();
+  const commandBody =
+    forcePassiveRoomEvent || !allowTextCommands ? "" : textForCommandDetection.trim();
   const supplementalThreadHistoryBody =
     directThreadRoutedToDmSession && !threadHistoryBody ? threadStarterBody : threadHistoryBody;
   const effectiveMessageThreadId =
@@ -1302,6 +1370,7 @@ export async function prepareSlackMessage(params: {
       inboundHistory,
     },
     access: {
+      ...(requestUserAccess.configured ? { requestAuthorized: requestUserAccess.allowed } : {}),
       mentions: {
         canDetectMention: isRoomish,
         wasMentioned: effectiveWasMentioned,
@@ -1356,7 +1425,7 @@ export async function prepareSlackMessage(params: {
     },
   }) satisfies FinalizedMsgContext;
 
-  if (isRoomish && !shouldRequireMention) {
+  if (isRoomish && !requestUserAccess.configured && !shouldRequireMention) {
     channelHistory.record({
       historyKey,
       limit: ctx.historyLimit,
@@ -1447,7 +1516,7 @@ export async function prepareSlackMessage(params: {
         },
       },
       history:
-        isRoomish && shouldRequireMention
+        isRoomish && !requestUserAccess.configured && shouldRequireMention
           ? {
               isGroup: true,
               historyKey,

@@ -20,6 +20,7 @@ import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import type { ContextVisibilityMode } from "../../config/types.base.js";
 import type { PluginHookChannelContext } from "../../plugins/hook-channel-context.types.js";
 import { shouldIncludeSupplementalContext } from "../../security/context-visibility.js";
+import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import type {
   AccessFacts,
   CommandFacts,
@@ -391,10 +392,37 @@ export function finalizeChannelInboundContext<T extends Record<string, unknown>>
 function resolveAccessFactsCommandAuthorized(
   access: BuildAccessFacts | undefined,
 ): boolean | undefined {
+  if (access?.requestAuthorized === false) {
+    return false;
+  }
   const commands = access?.commands;
   return typeof commands?.authorized === "boolean"
     ? commands.authorized
     : commands?.authorizers?.some((entry) => entry.allowed);
+}
+
+function resolveAccessFactsRequestAuthorized(
+  access: BuildAccessFacts | undefined,
+): boolean | undefined {
+  return typeof access?.requestAuthorized === "boolean" ? access.requestAuthorized : undefined;
+}
+
+function resolveChannelInputProvenance(params: {
+  channel: string;
+  access?: BuildAccessFacts;
+  extra?: Record<string, unknown>;
+}): InputProvenance | undefined {
+  const requestAuthorized = resolveAccessFactsRequestAuthorized(params.access);
+  if (requestAuthorized === false) {
+    return {
+      kind: "room_observation",
+      sourceChannel: params.channel,
+    } satisfies InputProvenance;
+  }
+  if (requestAuthorized === true) {
+    return undefined;
+  }
+  return normalizeInputProvenance(params.extra?.InputProvenance);
 }
 
 function normalizeUntrustedGroupPrompt(value: unknown): string | undefined {
@@ -439,7 +467,14 @@ function resolveChannelCommandContext(params: {
   access?: BuildAccessFacts;
 }): CommandTurnContext | undefined {
   if (params.commandTurn) {
-    return params.commandTurn;
+    if (resolveAccessFactsRequestAuthorized(params.access) !== false) {
+      return params.commandTurn;
+    }
+    return createCommandTurnContext(params.commandTurn.source, {
+      authorized: false,
+      commandName: params.commandTurn.commandName,
+      body: params.commandTurn.body,
+    });
   }
   const command = params.command;
   if (!command) {
@@ -448,7 +483,7 @@ function resolveChannelCommandContext(params: {
   const body = command.body ?? params.message.commandBody ?? params.message.rawBody;
   return createCommandTurnContext(commandTurnKindToSource(command.kind), {
     authorized:
-      command.kind === "normal"
+      command.kind === "normal" || resolveAccessFactsRequestAuthorized(params.access) === false
         ? false
         : (command.authorized ?? resolveAccessFactsCommandAuthorized(params.access) === true),
     commandName: command.name,
@@ -515,8 +550,6 @@ export function buildChannelInboundEventContext(
     MentionedSubteamIds: params.access?.mentions?.mentionedSubteamIds,
     ImplicitMentionKinds: params.access?.mentions?.implicitMentionKinds,
     MentionSource: params.access?.mentions?.mentionSource,
-    CommandAuthorized: resolveAccessFactsCommandAuthorized(params.access) === true,
-    CommandTurn: commandTurn,
     MessageThreadId: params.reply.messageThreadId ?? params.conversation.threadId,
     NativeChannelId: params.reply.nativeChannelId ?? params.conversation.nativeChannelId,
     ChannelContext: params.channelContext,
@@ -524,6 +557,10 @@ export function buildChannelInboundEventContext(
     OriginatingTo: params.reply.originatingTo ?? params.reply.to,
     ThreadParentId: params.reply.threadParentId ?? params.conversation.parentId,
     ...params.extra,
+    InputProvenance: resolveChannelInputProvenance(params),
+    RequestAuthorized: resolveAccessFactsRequestAuthorized(params.access),
+    CommandAuthorized: resolveAccessFactsCommandAuthorized(params.access) === true,
+    CommandTurn: commandTurn,
   };
   const finalizeParams = {
     finalize: params.finalize,

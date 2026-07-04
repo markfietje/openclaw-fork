@@ -298,6 +298,24 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     expect(toolSearchControlsCase.toolSearchCatalogRef).toEqual({});
   });
 
+  it("rejects direct passive attempts before session or context startup", async () => {
+    const contextEngine = createContextEngineBootstrapAndAssemble();
+
+    await expect(
+      createContextEngineAttemptRunner({
+        contextEngine,
+        sessionKey,
+        tempPaths,
+        attemptOverrides: {
+          inputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+        },
+      }),
+    ).rejects.toThrow("require an admitted core OpenAI model");
+
+    expect(hoisted.createAgentSessionMock).not.toHaveBeenCalled();
+    expect(contextEngine.assemble).not.toHaveBeenCalled();
+  });
+
   it("keeps client tool names out of context engine capability guidance", async () => {
     const contextEngine = createContextEngineBootstrapAndAssemble();
 
@@ -367,7 +385,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       },
     };
     let submittedPrompt = "";
-    resetSubagentRegistryForTests({ persist: false });
+    resetSubagentRegistryForTests();
     addSubagentRunForTests(pendingRun);
 
     try {
@@ -394,7 +412,88 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
       expect(retained?.prompt).toContain(frozenResultText);
       releasePendingAgentSteeringItems({ runIds: [childRunId], leaseId });
     } finally {
-      resetSubagentRegistryForTests({ persist: false });
+      resetSubagentRegistryForTests();
+    }
+  });
+
+  it("keeps pending private child results out of passive room observations", async () => {
+    const childRunId = "private-child-run";
+    const frozenResultText = "private delegated output for the owner only";
+    const endedAt = Date.now() - 1_000;
+    const pendingRun: SubagentRunRecord = {
+      runId: childRunId,
+      childSessionKey: `agent:main:subagent:${childRunId}`,
+      requesterSessionKey: sessionKey,
+      requesterDisplayKey: sessionKey,
+      task: "inspect private owner context",
+      cleanup: "delete",
+      createdAt: endedAt - 1_000,
+      endedAt,
+      outcome: { status: "ok" },
+      expectsCompletionMessage: true,
+      completion: { required: true, resultText: frozenResultText },
+      delivery: {
+        status: "pending",
+        createdAt: endedAt + 1,
+        payload: {
+          requesterSessionKey: sessionKey,
+          requesterDisplayKey: sessionKey,
+          childSessionKey: `agent:main:subagent:${childRunId}`,
+          childRunId,
+          task: "inspect private owner context",
+          endedAt,
+          outcome: { status: "ok" },
+          expectsCompletionMessage: true,
+          frozenResultText,
+        },
+      },
+    };
+    let passivePrompt = "";
+    let ownerPrompt = "";
+    resetSubagentRegistryForTests();
+    addSubagentRunForTests(pendingRun);
+
+    try {
+      await createContextEngineAttemptRunner({
+        contextEngine: createContextEngineBootstrapAndAssemble(),
+        sessionKey,
+        tempPaths,
+        attemptOverrides: {
+          inputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+          passiveRoomObservationAdmission: "core-openai",
+        },
+        sessionPrompt: async (_session, prompt) => {
+          passivePrompt = prompt;
+        },
+      });
+
+      expect(passivePrompt).not.toContain(frozenResultText);
+      expect(pendingRun.delivery).toMatchObject({
+        status: "pending",
+        payload: { frozenResultText },
+      });
+      expect(pendingRun.delivery?.steeringLeaseId).toBeUndefined();
+      expect(pendingRun.delivery?.steeringInjectedAt).toBeUndefined();
+
+      // A later authorized owner turn can still consume the untouched result.
+      await createContextEngineAttemptRunner({
+        contextEngine: createContextEngineBootstrapAndAssemble(),
+        sessionKey,
+        tempPaths,
+        sessionPrompt: async (_session, prompt) => {
+          ownerPrompt = prompt;
+          // Keep acknowledgement from starting unrelated asynchronous cleanup.
+          pendingRun.cleanupCompletedAt = Date.now();
+        },
+      });
+
+      expect(ownerPrompt).toContain(frozenResultText);
+      expect(pendingRun.delivery).toMatchObject({
+        status: "delivered",
+      });
+      expect(pendingRun.delivery?.payload).toBeUndefined();
+    } finally {
+      resetSubagentRegistryForTests();
     }
   });
 
@@ -492,6 +591,108 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     );
     const customTools = requireRecords(sessionOptions.customTools, "customTools");
     expect(customTools.map((tool) => tool.name)).toEqual(["message"]);
+  });
+
+  it.each([
+    ["Code Mode", { codeMode: true }],
+    ["Tool Search", { toolSearch: true }],
+  ])("keeps passive room observations message-only when %s is enabled", async (_label, tools) => {
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        config: { tools } as OpenClawConfig,
+        disableTools: false,
+        forceMessageTool: true,
+        inputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+        passiveRoomObservationAdmission: "core-openai",
+        sourceBoundMessagePolicy: {
+          mode: "source_bound",
+          channel: "slack",
+          accountId: "default",
+          conversationId: "C123",
+        },
+        toolsAllow: ["message"],
+      },
+    });
+
+    expect(hoisted.createOpenClawCodingToolsMock).not.toHaveBeenCalled();
+    const sessionOptions = mockParams(
+      hoisted.createAgentSessionMock,
+      0,
+      "createAgentSession options",
+    );
+    const customTools = requireRecords(sessionOptions.customTools, "customTools");
+    expect(customTools.map((tool) => tool.name)).toEqual(["message"]);
+  });
+
+  it.each([
+    ["missing", undefined],
+    [
+      "malformed",
+      { mode: "source_bound", channel: "slack", accountId: "", conversationId: "C123" },
+    ],
+  ])("exposes no tools when passive source-bound policy is %s", async (_label, policy) => {
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        disableTools: false,
+        forceMessageTool: true,
+        inputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+        passiveRoomObservationAdmission: "core-openai",
+        sourceBoundMessagePolicy: policy as never,
+        toolsAllow: ["message"],
+      },
+    });
+
+    expect(hoisted.createOpenClawCodingToolsMock).not.toHaveBeenCalled();
+    const sessionOptions = mockParams(
+      hoisted.createAgentSessionMock,
+      0,
+      "createAgentSession options",
+    );
+    expect(requireRecords(sessionOptions.customTools, "customTools")).toEqual([]);
+  });
+
+  it("keeps Code Mode controls for an authorized source-bound turn", async () => {
+    hoisted.createOpenClawCodingToolsMock.mockReturnValueOnce([
+      {
+        name: "message",
+        label: "Message",
+        description: "Send a visible reply.",
+        parameters: { type: "object", properties: {} },
+        execute: async () => ({ text: "sent" }),
+      },
+    ]);
+
+    await createContextEngineAttemptRunner({
+      contextEngine: createContextEngineBootstrapAndAssemble(),
+      sessionKey,
+      tempPaths,
+      attemptOverrides: {
+        config: { tools: { codeMode: true } } as OpenClawConfig,
+        disableTools: false,
+        forceMessageTool: true,
+        sourceBoundMessagePolicy: {
+          mode: "source_bound",
+          channel: "slack",
+          accountId: "default",
+          conversationId: "C123",
+        },
+        toolsAllow: ["message"],
+      },
+    });
+
+    const sessionOptions = mockParams(
+      hoisted.createAgentSessionMock,
+      0,
+      "createAgentSession options",
+    );
+    const customTools = requireRecords(sessionOptions.customTools, "customTools");
+    expect(customTools.map((tool) => tool.name)).toEqual(["exec", "wait"]);
   });
 
   it("quarantines unsupported tool schemas before creating the model session", async () => {

@@ -29,7 +29,9 @@ type SlackTestState = {
   readAllowFromStoreMock: Mock<(...args: unknown[]) => Promise<unknown>>;
   upsertPairingRequestMock: Mock<(...args: unknown[]) => Promise<unknown>>;
   resolveSlackUserAllowlistMock: Mock<
-    (params: { entries: string[] }) => Promise<Array<{ input: string; resolved: boolean }>>
+    (params: {
+      entries: string[];
+    }) => Promise<Array<{ input: string; resolved: boolean; id?: string; name?: string }>>
   >;
 };
 

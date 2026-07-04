@@ -132,12 +132,17 @@ export function finalizeInboundContext<T extends Record<string, unknown>>(
     normalized.ConversationLabel = explicitLabel;
   }
 
-  // Always set. Default-deny when upstream forgets to populate it.
-  normalized.CommandAuthorized = normalized.CommandAuthorized === true;
+  // Preserve the optional request-authority marker only when it came through as a boolean.
+  // False is a hard deny for every command authorization path.
+  normalized.RequestAuthorized =
+    typeof normalized.RequestAuthorized === "boolean" ? normalized.RequestAuthorized : undefined;
+  normalized.CommandAuthorized =
+    normalized.RequestAuthorized === false ? false : normalized.CommandAuthorized === true;
   normalized.CommandTurn = resolveCommandTurnContext(normalized);
   if (normalized.CommandTurn.source === "native" || normalized.CommandTurn.source === "text") {
     normalized.CommandSource = normalized.CommandTurn.source;
-    normalized.CommandAuthorized = normalized.CommandTurn.authorized;
+    normalized.CommandAuthorized =
+      normalized.RequestAuthorized === false ? false : normalized.CommandTurn.authorized;
   } else {
     normalized.CommandSource = undefined;
   }

@@ -10,6 +10,7 @@ type SlackMessageSubtypeHandler = {
   describe: (channelLabel: string) => string;
   contextKey: (event: SlackMessageEvent) => string;
   resolveSenderId: (event: SlackMessageEvent) => string | undefined;
+  resolveRequestUserActorId: (event: SlackMessageEvent) => string | null;
   resolveChannelId: (event: SlackMessageEvent) => string | undefined;
   resolveChannelType: (event: SlackMessageEvent) => string | null | undefined;
 };
@@ -34,6 +35,10 @@ const changedHandler: SlackMessageSubtypeHandler = {
       changed.previous_message?.bot_id
     );
   },
+  resolveRequestUserActorId: (event) => {
+    const changed = event as SlackMessageChangedEvent;
+    return changed.message?.edited?.user ?? null;
+  },
   resolveChannelId: (event) => (event as SlackMessageChangedEvent).channel,
   resolveChannelType: () => undefined,
 };
@@ -52,6 +57,9 @@ const deletedHandler: SlackMessageSubtypeHandler = {
     const deleted = event as SlackMessageDeletedEvent;
     return deleted.previous_message?.user ?? deleted.previous_message?.bot_id;
   },
+  // Slack's message_deleted event identifies the deleted message author, not
+  // the actor who deleted it. requestUsers must therefore fail closed.
+  resolveRequestUserActorId: () => null,
   resolveChannelId: (event) => (event as SlackMessageDeletedEvent).channel,
   resolveChannelType: () => undefined,
 };

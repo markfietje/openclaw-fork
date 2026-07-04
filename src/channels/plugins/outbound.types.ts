@@ -42,6 +42,8 @@ export type ChannelOutboundContext = {
   gatewayClientScopes?: readonly string[];
   /** @internal Report each completed platform sub-send before starting another fallible step. */
   onDeliveryResult?: (result: OutboundDeliveryResult) => Promise<void> | void;
+  /** Durable payload constraint propagated to channel adapters. */
+  outboundPayloadPolicy?: "source_bound_plain_text";
 };
 
 export type ChannelOutboundPayloadContext = ChannelOutboundContext & {

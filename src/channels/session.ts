@@ -2,6 +2,7 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { GroupKeyResolution } from "../config/sessions/types.js";
+import { isRoomObservationInputProvenance } from "../sessions/input-provenance.js";
 import { normalizeSessionKeyPreservingOpaquePeerIds } from "../sessions/session-key-utils.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import type { InboundLastRouteUpdate } from "./session.types.js";
@@ -42,19 +43,23 @@ export async function recordInboundSession(params: {
   const { storePath, sessionKey, ctx, groupResolution, createIfMissing } = params;
   const canonicalSessionKey = normalizeSessionKeyPreservingOpaquePeerIds(sessionKey);
   const runtime = await loadInboundSessionRuntime();
-  const metaTask = runtime
-    .recordSessionMetaFromInbound({
-      storePath,
-      sessionKey: canonicalSessionKey,
-      ctx,
-      groupResolution,
-      createIfMissing,
-    })
-    .catch(params.onRecordError);
+  const isPassiveRoomObservation =
+    ctx.RequestAuthorized === false || isRoomObservationInputProvenance(ctx.InputProvenance);
+  const metaTask = (
+    isPassiveRoomObservation
+      ? runtime.recordPassiveRoomSessionMetaFromInbound
+      : runtime.recordSessionMetaFromInbound
+  )({
+    storePath,
+    sessionKey: canonicalSessionKey,
+    ctx,
+    groupResolution,
+    createIfMissing,
+  }).catch(params.onRecordError);
   params.trackSessionMetaTask?.(metaTask);
   void metaTask;
 
-  const update = params.updateLastRoute;
+  const update = isPassiveRoomObservation ? undefined : params.updateLastRoute;
   if (!update) {
     return;
   }

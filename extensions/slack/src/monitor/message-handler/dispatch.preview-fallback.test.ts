@@ -45,9 +45,17 @@ let mockedPinnedMainDmOwner: string | undefined;
 let capturedReplyOptions:
   | {
       disableBlockStreaming?: boolean;
+      suppressTyping?: boolean;
       suppressDefaultToolProgressMessages?: boolean;
       allowProgressCallbacksWhenSourceDeliverySuppressed?: boolean;
       allowToolLifecycleWhenProgressHidden?: boolean;
+      sourceBoundMessagePolicy?: {
+        mode: "source_bound";
+        channel: string;
+        accountId: string;
+        conversationId: string;
+        threadId?: string;
+      };
       onAssistantMessageStart?: () => Promise<void> | void;
       onReasoningEnd?: () => Promise<void> | void;
       onReasoningStream?: (payload?: {
@@ -97,6 +105,7 @@ let capturedReplyOptions:
       onPartialReply?: (payload: { text: string }) => Promise<void> | void;
     }
   | undefined;
+let capturedToolsAllow: string[] | undefined;
 let capturedStatusReactionOptions: { enabled?: boolean; initialEmoji?: string } | undefined;
 const statusReactionControllerMock = {
   setQueued: vi.fn(async () => {}),
@@ -946,8 +955,17 @@ vi.mock("../reply.runtime.js", () => ({
       ) => Promise<TestReplyPayload | null> | TestReplyPayload | null;
       deliver: (payload: TestReplyPayload, info: { kind: TestReplyDispatchKind }) => Promise<void>;
     };
+    toolsAllow?: string[];
     replyOptions?: {
       disableBlockStreaming?: boolean;
+      suppressTyping?: boolean;
+      sourceBoundMessagePolicy?: {
+        mode: "source_bound";
+        channel: string;
+        accountId: string;
+        conversationId: string;
+        threadId?: string;
+      };
       suppressDefaultToolProgressMessages?: boolean;
       onItemEvent?: (payload: {
         kind?: string;
@@ -998,6 +1016,7 @@ vi.mock("../reply.runtime.js", () => ({
       onPartialReply?: (payload: { text: string }) => Promise<void> | void;
     };
   }) => {
+    capturedToolsAllow = params.toolsAllow;
     capturedReplyOptions = params.replyOptions;
     if (mockedReplyOptionEvents.length > 0) {
       for (const entry of mockedReplyOptionEvents) {
@@ -1247,6 +1266,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     mockedSlackDraftMode = "append";
     mockedPinnedMainDmOwner = undefined;
     capturedReplyOptions = undefined;
+    capturedToolsAllow = undefined;
     capturedStatusReactionOptions = undefined;
     capturedTyping = undefined;
     mockedReplyThreadTs = THREAD_TS;
@@ -1280,6 +1300,93 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     expect(deliverRepliesMock).toHaveBeenCalledTimes(1);
     expectDeliverReplyCall(0, FINAL_REPLY_TEXT);
   });
+
+  it("limits non-authority room events to the message tool", async () => {
+    await dispatchPreparedSlackMessage(
+      createPreparedSlackMessage({
+        ctxPayload: {
+          InboundEventKind: "room_event",
+          RequestAuthorized: false,
+        },
+      }),
+    );
+
+    expect(capturedToolsAllow).toEqual(["message"]);
+    expect(capturedReplyOptions?.suppressTyping).toBe(true);
+    expect(capturedReplyOptions?.sourceBoundMessagePolicy).toEqual({
+      mode: "source_bound",
+      channel: "slack",
+      accountId: "default",
+      conversationId: "C123",
+      threadId: THREAD_TS,
+    });
+    expect(Object.isFrozen(capturedReplyOptions?.sourceBoundMessagePolicy)).toBe(true);
+  });
+
+  it("suppresses typing for authorized ambient room events", async () => {
+    await dispatchPreparedSlackMessage(
+      createPreparedSlackMessage({
+        ctxPayload: {
+          InboundEventKind: "room_event",
+          RequestAuthorized: true,
+        },
+      }),
+    );
+
+    expect(capturedToolsAllow).toBeUndefined();
+    expect(capturedReplyOptions?.suppressTyping).toBe(true);
+  });
+
+  it("can source-bind authorized channel turns without restricting their other tools", async () => {
+    await dispatchPreparedSlackMessage(
+      createPreparedSlackMessage({
+        channelConfig: { sourceBoundMessageTool: true },
+        ctxPayload: {
+          InboundEventKind: "user_request",
+          RequestAuthorized: true,
+        },
+      }),
+    );
+
+    expect(capturedToolsAllow).toBeUndefined();
+    expect(capturedReplyOptions?.sourceBoundMessagePolicy).toEqual({
+      mode: "source_bound",
+      channel: "slack",
+      accountId: "default",
+      conversationId: "C123",
+      threadId: THREAD_TS,
+    });
+    expect(Object.isFrozen(capturedReplyOptions?.sourceBoundMessagePolicy)).toBe(true);
+  });
+
+  it("keeps typing policy unchanged for user requests", async () => {
+    await dispatchPreparedSlackMessage(
+      createPreparedSlackMessage({
+        ctxPayload: {
+          InboundEventKind: "user_request",
+          RequestAuthorized: true,
+        },
+      }),
+    );
+
+    expect(capturedReplyOptions?.suppressTyping).toBeUndefined();
+  });
+
+  it.each([true, undefined] as const)(
+    "preserves the configured tool surface for request authority %s",
+    async (requestAuthorized) => {
+      await dispatchPreparedSlackMessage(
+        createPreparedSlackMessage({
+          ctxPayload: {
+            InboundEventKind: "room_event",
+            RequestAuthorized: requestAuthorized,
+          },
+        }),
+      );
+
+      expect(capturedToolsAllow).toBeUndefined();
+    },
+  );
 
   it("uses the relay identity when the agent has no explicit Slack identity", async () => {
     const relayIdentity = { username: "Nik Team Claw" };

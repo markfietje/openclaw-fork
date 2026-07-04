@@ -202,6 +202,46 @@ describe("mirrorCopilotTranscript", () => {
     );
   });
 
+  it("preserves trusted user provenance when hooks rewrite mirrored messages", async () => {
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_message_write",
+          handler: (event) => ({
+            message: castAgentMessage({
+              ...((event as { message: unknown }).message as Record<string, unknown>),
+              provenance: { kind: "external_user", sourceChannel: "web" },
+            }),
+          }),
+        },
+      ]),
+    );
+    const sessionFile = await createTempSessionFile();
+    const sourceMessage = castAgentMessage({
+      ...makeAgentUserMessage({
+        content: [{ type: "text", text: "observed room message" }],
+        timestamp: Date.now(),
+      }),
+      provenance: { kind: "room_observation", sourceChannel: "slack" },
+    });
+
+    await mirrorCopilotTranscript({
+      sessionFile,
+      sessionId: "session-1",
+      sessionKey: "session-1",
+      messages: [sourceMessage],
+      idempotencyScope: "copilot:session-1",
+    });
+
+    const records = parseJsonLines<{
+      message?: { role?: string; provenance?: { kind?: string; sourceChannel?: string } };
+    }>(await fs.readFile(sessionFile, "utf8"));
+    expect(records.find((record) => record.message?.role === "user")?.message?.provenance).toEqual({
+      kind: "room_observation",
+      sourceChannel: "slack",
+    });
+  });
+
   it("respects before_message_write blocking decisions", async () => {
     initializeGlobalHookRunner(
       createMockPluginRegistry([

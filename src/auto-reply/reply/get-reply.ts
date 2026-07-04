@@ -27,6 +27,7 @@ import {
   buildAgentHookContextIdentityFields,
 } from "../../plugins/hook-agent-context.js";
 import { defaultRuntime } from "../../runtime.js";
+import { isRoomObservationInputProvenance } from "../../sessions/input-provenance.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
@@ -58,6 +59,7 @@ import { finalizeInboundContext } from "./inbound-context.js";
 import { hasInboundMedia, hasInboundMediaForUnderstanding } from "./inbound-media.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createFastTestModelSelectionState, createModelSelectionState } from "./model-selection.js";
+import { assertPassiveRoomTurnBoundary } from "./passive-room-boundary.js";
 import { sanitizePendingFinalDeliveryText } from "./pending-final-delivery.js";
 import { createReplyTimingTracker } from "./reply-timing-tracker.js";
 import { initSessionState } from "./session.js";
@@ -173,11 +175,14 @@ function mergeSkillFilters(channelFilter?: string[], agentFilter?: string[]): st
 }
 
 function hasLinkCandidate(ctx: MsgContext): boolean {
-  const message = ctx.BodyForCommands ?? ctx.CommandBody ?? ctx.RawBody ?? ctx.Body;
-  if (!message) {
-    return false;
-  }
-  return /\bhttps?:\/\/\S+/i.test(message);
+  const message = [
+    ctx.BodyForCommands,
+    ctx.CommandBody,
+    ctx.RawBody,
+    ctx.BodyForAgent,
+    ctx.Body,
+  ].find((candidate) => typeof candidate === "string" && candidate.length > 0);
+  return typeof message === "string" && /\bhttps?:\/\/\S+/i.test(message);
 }
 
 async function applyMediaUnderstandingIfNeeded(params: {
@@ -266,6 +271,13 @@ export async function getReplyFromConfig(
   const finalized = resolverTiming.measureSync("reply.finalize_context", () =>
     finalizeInboundContext(ctx),
   );
+  assertPassiveRoomTurnBoundary({
+    ctx: finalized,
+    sourceBoundMessagePolicy: opts?.sourceBoundMessagePolicy,
+  });
+  const isRoomObservation =
+    finalized.RequestAuthorized === false ||
+    isRoomObservationInputProvenance(finalized.InputProvenance);
   const { agentSessionKey, agentId } = resolverTiming.measureSync(
     "reply.resolve_agent_scope",
     () => {
@@ -388,44 +400,47 @@ export async function getReplyFromConfig(
     return controller;
   });
 
-  const nativeSlashCommandFastReply = await traceGetReplyPhase(
-    "reply.native_slash_command_fast_path",
-    () =>
-      maybeResolveNativeSlashCommandFastReply({
-        ctx: finalized,
-        cfg,
-        agentId,
-        agentDir,
-        agentCfg,
-        commandAuthorized: finalized.CommandAuthorized,
-        defaultProvider,
-        defaultModel,
-        aliasIndex,
-        provider,
-        model,
-        workspaceDir: workspaceDirForNativeCommand,
-        typing,
-        opts: resolvedOpts,
-        skillFilter: mergedSkillFilter,
-      }),
-  );
+  const nativeSlashCommandFastReply = isRoomObservation
+    ? ({ handled: false } as const)
+    : await traceGetReplyPhase("reply.native_slash_command_fast_path", () =>
+        maybeResolveNativeSlashCommandFastReply({
+          ctx: finalized,
+          cfg,
+          agentId,
+          agentDir,
+          agentCfg,
+          commandAuthorized: finalized.CommandAuthorized,
+          defaultProvider,
+          defaultModel,
+          aliasIndex,
+          provider,
+          model,
+          workspaceDir: workspaceDirForNativeCommand,
+          typing,
+          opts: resolvedOpts,
+          skillFilter: mergedSkillFilter,
+        }),
+      );
   if (nativeSlashCommandFastReply.handled) {
     logResolverTiming("completed", "native_slash_command_fast_path");
     return nativeSlashCommandFastReply.reply;
   }
 
-  const workspace = await traceGetReplyPhase("reply.ensure_workspace", async () =>
-    useFastTestBootstrap
-      ? (await fs.mkdir(workspaceDirRaw, { recursive: true }), { dir: workspaceDirRaw })
-      : await ensureAgentWorkspace({
-          dir: workspaceDirRaw,
-          ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
-          skipOptionalBootstrapFiles: agentCfg?.skipOptionalBootstrapFiles,
-        }),
-  );
+  const workspace = isRoomObservation
+    ? { dir: workspaceDirRaw }
+    : await traceGetReplyPhase("reply.ensure_workspace", async () =>
+        useFastTestBootstrap
+          ? (await fs.mkdir(workspaceDirRaw, { recursive: true }), { dir: workspaceDirRaw })
+          : await ensureAgentWorkspace({
+              dir: workspaceDirRaw,
+              ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
+              skipOptionalBootstrapFiles: agentCfg?.skipOptionalBootstrapFiles,
+            }),
+      );
   const workspaceDir = workspace.dir;
 
   if (
+    !isRoomObservation &&
     !isFastTestEnv &&
     normalizeOptionalString(finalized.MediaRemoteHost) &&
     hasInboundMedia(finalized)
@@ -439,7 +454,7 @@ export async function getReplyFromConfig(
       }),
     );
   }
-  if (!isFastTestEnv && hasInboundMediaForUnderstanding(finalized)) {
+  if (!isRoomObservation && !isFastTestEnv && hasInboundMediaForUnderstanding(finalized)) {
     const mediaResult = await traceGetReplyPhase("reply.apply_media_understanding", () =>
       applyMediaUnderstandingIfNeeded({
         ctx: finalized,
@@ -454,7 +469,7 @@ export async function getReplyFromConfig(
       extractedFileImages = mediaResult.extractedFileImages;
     }
   }
-  if (!isFastTestEnv && hasLinkCandidate(finalized)) {
+  if (!isRoomObservation && !isFastTestEnv && hasLinkCandidate(finalized)) {
     await traceGetReplyPhase("reply.apply_link_understanding", () =>
       applyLinkUnderstandingIfNeeded({
         ctx: finalized,
@@ -462,11 +477,13 @@ export async function getReplyFromConfig(
       }),
     );
   }
-  emitPreAgentMessageHooks({
-    ctx: finalized,
-    cfg,
-    isFastTestEnv,
-  });
+  if (!isRoomObservation) {
+    emitPreAgentMessageHooks({
+      ctx: finalized,
+      cfg,
+      isFastTestEnv,
+    });
+  }
 
   const commandAuthorized = finalized.CommandAuthorized;
   const sessionState = useFastTestBootstrap
@@ -844,48 +861,55 @@ export async function getReplyFromConfig(
     });
   };
 
-  const inlineActionResult = await traceGetReplyPhase("reply.handle_inline_actions", () =>
-    handleInlineActions({
-      ctx,
-      sessionCtx,
-      cfg,
-      agentId,
-      agentDir,
-      sessionEntry,
-      previousSessionEntry,
-      sessionStore,
-      sessionKey,
-      storePath,
-      sessionScope,
-      workspaceDir,
-      isGroup,
-      opts: withExtractedFileImages(resolvedOpts, extractedFileImages),
-      typing,
-      allowTextCommands,
-      inlineStatusRequested,
-      command,
-      skillCommands,
-      directives,
-      cleanedBody,
-      elevatedEnabled,
-      elevatedAllowed,
-      elevatedFailures,
-      defaultActivation: () => defaultActivation,
-      resolvedThinkLevel,
-      resolvedVerboseLevel,
-      resolvedReasoningLevel,
-      resolvedElevatedLevel,
-      blockReplyChunking,
-      resolvedBlockStreamingBreak,
-      resolveDefaultThinkingLevel: modelState.resolveDefaultThinkingLevel,
-      provider,
-      model,
-      contextTokens,
-      directiveAck,
-      abortedLastRun,
-      skillFilter: mergedSkillFilter,
-    }),
-  );
+  const inlineActionResult = isRoomObservation
+    ? ({
+        kind: "continue",
+        directives,
+        abortedLastRun,
+        cleanedBody,
+      } as const)
+    : await traceGetReplyPhase("reply.handle_inline_actions", () =>
+        handleInlineActions({
+          ctx,
+          sessionCtx,
+          cfg,
+          agentId,
+          agentDir,
+          sessionEntry,
+          previousSessionEntry,
+          sessionStore,
+          sessionKey,
+          storePath,
+          sessionScope,
+          workspaceDir,
+          isGroup,
+          opts: withExtractedFileImages(resolvedOpts, extractedFileImages),
+          typing,
+          allowTextCommands,
+          inlineStatusRequested,
+          command,
+          skillCommands,
+          directives,
+          cleanedBody,
+          elevatedEnabled,
+          elevatedAllowed,
+          elevatedFailures,
+          defaultActivation: () => defaultActivation,
+          resolvedThinkLevel,
+          resolvedVerboseLevel,
+          resolvedReasoningLevel,
+          resolvedElevatedLevel,
+          blockReplyChunking,
+          resolvedBlockStreamingBreak,
+          resolveDefaultThinkingLevel: modelState.resolveDefaultThinkingLevel,
+          provider,
+          model,
+          contextTokens,
+          directiveAck,
+          abortedLastRun,
+          skillFilter: mergedSkillFilter,
+        }),
+      );
   if (inlineActionResult.kind === "reply") {
     await maybeEmitMissingResetHooks();
     logResolverTiming("completed", "inline_action_reply");
@@ -895,9 +919,11 @@ export async function getReplyFromConfig(
   directives = inlineActionResult.directives;
   cleanedBody = inlineActionResult.cleanedBody;
   abortedLastRun = inlineActionResult.abortedLastRun ?? abortedLastRun;
-  const runAutoFallbackPrimaryProbe = directives.hasModelDirective
+  const runAutoFallbackPrimaryProbe = isRoomObservation
     ? undefined
-    : autoFallbackPrimaryProbe;
+    : directives.hasModelDirective
+      ? undefined
+      : autoFallbackPrimaryProbe;
   const runProvider = runAutoFallbackPrimaryProbe?.provider ?? provider;
   const runModel = runAutoFallbackPrimaryProbe?.model ?? model;
   let runModelState = modelState;
@@ -959,7 +985,7 @@ export async function getReplyFromConfig(
   }
 
   // Allow plugins to intercept and return a synthetic reply before the LLM runs.
-  if (!useFastTestBootstrap) {
+  if (!isRoomObservation && !useFastTestBootstrap) {
     const { getGlobalHookRunner } = await loadHookRunnerGlobal();
     const hookRunner = getGlobalHookRunner();
     if (hookRunner?.hasHooks("before_agent_reply")) {
@@ -1008,7 +1034,13 @@ export async function getReplyFromConfig(
   // synchronously so it could surface 5xx before respond(). Skipping here keeps
   // staging a single-call contract instead of relying on relative-path no-op
   // semantics in stageSandboxMedia.
-  if (!useFastTestBootstrap && sessionKey && !ctx.MediaStaged && hasInboundMedia(ctx)) {
+  if (
+    !isRoomObservation &&
+    !useFastTestBootstrap &&
+    sessionKey &&
+    !ctx.MediaStaged &&
+    hasInboundMedia(ctx)
+  ) {
     const { stageSandboxMedia } = await loadStageSandboxMediaRuntime();
     await traceGetReplyPhase("reply.stage_media", () =>
       stageSandboxMedia({

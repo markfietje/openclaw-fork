@@ -12,16 +12,18 @@ type SlackAuthorizedSystemEventContext = {
 export async function authorizeAndResolveSlackSystemEventContext(params: {
   ctx: SlackMonitorContext;
   senderId?: string;
+  requestUserActorId?: string | null;
   channelId?: string;
   channelType?: string | null;
   eventKind: string;
 }): Promise<SlackAuthorizedSystemEventContext | undefined> {
-  const { ctx, senderId, channelId, channelType, eventKind } = params;
+  const { ctx, senderId, requestUserActorId, channelId, channelType, eventKind } = params;
   const auth = await authorizeSlackSystemEventSender({
     ctx,
     senderId,
     channelId,
     channelType,
+    requestUserActorId,
   });
   if (!auth.allowed) {
     logVerbose(

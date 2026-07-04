@@ -117,6 +117,8 @@ export type AgentEventPayload = {
   data: Record<string, unknown>;
   /** Internal, non-enumerable gateway lifecycle generation that owns this run. */
   lifecycleGeneration?: string;
+  /** Internal, non-enumerable gate for durable lifecycle/session projection. */
+  persistSessionLifecycle?: boolean;
   sessionKey?: string;
   /**
    * sessionId the run was bound to when it started. Lifecycle persistence uses
@@ -138,6 +140,8 @@ export type AgentRunContext = {
   isHeartbeat?: boolean;
   /** Whether control UI clients should receive chat/agent updates for this run. */
   isControlUiVisible?: boolean;
+  /** Whether lifecycle events may update durable session/restart state. */
+  persistSessionLifecycle?: boolean;
   /** Timestamp when this context was first registered (for TTL-based cleanup). */
   registeredAt?: number;
   /** Timestamp of last activity (updated on every emitAgentEvent). */
@@ -250,6 +254,9 @@ export function registerAgentRunContext(runId: string, context: AgentRunContext)
   if (context.isControlUiVisible !== undefined) {
     existing.isControlUiVisible = context.isControlUiVisible;
   }
+  if (context.persistSessionLifecycle !== undefined) {
+    existing.persistSessionLifecycle = context.persistSessionLifecycle;
+  }
   if (context.isHeartbeat !== undefined && existing.isHeartbeat !== context.isHeartbeat) {
     existing.isHeartbeat = context.isHeartbeat;
   }
@@ -334,7 +341,11 @@ export function listAgentRunsForSession(params: {
     const matches = context.sessionId
       ? context.sessionId === params.sessionId
       : context.sessionKey === params.sessionKey;
-    if (matches && context.lifecycleGeneration === currentLifecycleGeneration) {
+    if (
+      matches &&
+      context.lifecycleGeneration === currentLifecycleGeneration &&
+      context.persistSessionLifecycle !== false
+    ) {
       runs.push({ runId, lifecycleGeneration: context.lifecycleGeneration });
     }
   }
@@ -467,6 +478,13 @@ export function emitAgentEvent(event: Omit<AgentEventPayload, "seq" | "ts">) {
     // public payloads. Keep the internal generation readable without serializing it.
     Object.defineProperty(enriched, "lifecycleGeneration", {
       value: lifecycleGeneration,
+      enumerable: false,
+    });
+  }
+  const persistSessionLifecycle = event.persistSessionLifecycle ?? context?.persistSessionLifecycle;
+  if (persistSessionLifecycle === false) {
+    Object.defineProperty(enriched, "persistSessionLifecycle", {
+      value: false,
       enumerable: false,
     });
   }

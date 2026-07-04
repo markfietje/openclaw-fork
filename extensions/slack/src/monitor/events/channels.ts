@@ -7,7 +7,7 @@ import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { danger, warn } from "openclaw/plugin-sdk/runtime-env";
 import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { migrateSlackChannelConfig } from "../../channel-migration.js";
-import { resolveSlackChannelLabel } from "../channel-config.js";
+import { resolveSlackChannelConfig, resolveSlackChannelLabel } from "../channel-config.js";
 import type { SlackMonitorContext } from "../context.js";
 import type {
   SlackChannelCreatedEvent,
@@ -33,6 +33,20 @@ export function registerSlackChannelEvents(params: {
         channelType: "channel",
       })
     ) {
+      return;
+    }
+
+    const channelConfig = resolveSlackChannelConfig({
+      channelId: paramsLocal.channelId ?? "",
+      channelName: paramsLocal.channelName,
+      channels: ctx.channelsConfig,
+      channelKeys: ctx.channelsConfigKeys,
+      defaultRequireMention: ctx.defaultRequireMention,
+      allowNameMatching: ctx.allowNameMatching,
+    });
+    // Slack does not identify the actor for these lifecycle events. A
+    // requestUsers boundary therefore cannot safely authorize the event.
+    if (channelConfig?.requestUsers !== undefined) {
       return;
     }
 

@@ -10,6 +10,7 @@ import {
   getCompactionProvider,
   type CompactionProvider,
 } from "../../plugins/compaction-provider.js";
+import { stripRoomObservationTurns } from "../../sessions/input-provenance.js";
 import { normalizeAcceptedSessionSpawnResult } from "../accepted-session-spawn.js";
 import {
   buildHistoryPrunePlanWithWorker,
@@ -898,15 +899,17 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
   api.on("session_before_compact", async (event, ctx) => {
     const { preparation, customInstructions: eventInstructions, signal } = event;
     const rawTurnPrefixMessages = preparation.turnPrefixMessages ?? [];
-    let baseMessagesToSummarize = stripRuntimeContextCustomMessages(
-      preparation.messagesToSummarize,
+    let baseMessagesToSummarize = stripRoomObservationTurns(
+      stripRuntimeContextCustomMessages(preparation.messagesToSummarize),
     );
-    let baseTurnPrefixMessages = stripRuntimeContextCustomMessages(rawTurnPrefixMessages);
+    let baseTurnPrefixMessages = stripRoomObservationTurns(
+      stripRuntimeContextCustomMessages(rawTurnPrefixMessages),
+    );
     let hasRealSummarizable = containsRealConversation(baseMessagesToSummarize);
     let hasRealTurnPrefix = containsRealConversation(baseTurnPrefixMessages);
     if (!hasRealSummarizable && !hasRealTurnPrefix) {
-      const branchMessages = stripRuntimeContextCustomMessages(
-        collectSessionBranchMessages(ctx.sessionManager),
+      const branchMessages = stripRoomObservationTurns(
+        stripRuntimeContextCustomMessages(collectSessionBranchMessages(ctx.sessionManager)),
       );
       if (containsRealConversation(branchMessages)) {
         log.info(

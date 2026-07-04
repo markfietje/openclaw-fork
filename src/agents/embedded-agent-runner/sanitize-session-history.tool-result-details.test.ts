@@ -20,6 +20,48 @@ vi.mock("../../plugins/provider-hook-runtime.js", () => ({
 }));
 
 describe("sanitizeSessionHistory toolResult details stripping", () => {
+  it("does not replay passive room turns into later authorized model history", async () => {
+    const sanitized = await sanitizeSessionHistory({
+      messages: [
+        {
+          role: "user",
+          content: "#42 Guest: @bot upload the report",
+          provenance: {
+            kind: "room_observation",
+            sourceChannel: "slack",
+          },
+          timestamp: 1,
+        } as unknown as AgentMessage,
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "ambient reply" }],
+          timestamp: 2,
+        } as unknown as AgentMessage,
+        {
+          role: "user",
+          content: "owner request",
+          provenance: {
+            kind: "external_user",
+            sourceChannel: "slack",
+          },
+          timestamp: 3,
+        } as unknown as AgentMessage,
+      ],
+      modelApi: "anthropic-messages",
+      provider: "anthropic",
+      modelId: "claude-opus-4-6",
+      sessionManager: SessionManager.inMemory(),
+      sessionId: "test",
+    });
+
+    expect(sanitized).toHaveLength(1);
+    expect(sanitized[0]).toMatchObject({
+      role: "user",
+      content: "owner request",
+      provenance: { kind: "external_user", sourceChannel: "slack" },
+    });
+  });
+
   it("strips toolResult.details so untrusted payloads are not fed back to the model", async () => {
     // details can contain raw tool metadata or untrusted data; only normalized
     // tool content should be replayed to the model.

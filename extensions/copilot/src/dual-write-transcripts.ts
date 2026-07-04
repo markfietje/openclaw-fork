@@ -128,6 +128,10 @@ export async function mirrorCopilotTranscript(
       let didAppendMessage = false;
       const existingIdempotencyKeys = readTranscriptIdempotencyKeys(await transcript.readEvents());
       for (const message of messages) {
+        const originalUserProvenance =
+          message.role === "user"
+            ? (message as unknown as { provenance?: unknown }).provenance
+            : undefined;
         const dedupeIdentity = buildMirrorDedupeIdentity(message);
         const idempotencyKey = params.idempotencyScope
           ? `${params.idempotencyScope}:${dedupeIdentity}`
@@ -152,8 +156,16 @@ export async function mirrorCopilotTranscript(
             ? {
                 ...(nextMessage as unknown as Record<string, unknown>),
                 idempotencyKey,
+                ...(nextMessage.role === "user" && originalUserProvenance !== undefined
+                  ? { provenance: originalUserProvenance }
+                  : {}),
               }
-            : nextMessage
+            : nextMessage.role === "user" && originalUserProvenance !== undefined
+              ? {
+                  ...(nextMessage as unknown as Record<string, unknown>),
+                  provenance: originalUserProvenance,
+                }
+              : nextMessage
         ) as AgentMessage;
         const appended = await transcript.appendMessage({
           message: messageToAppend,

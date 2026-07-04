@@ -51,6 +51,11 @@ describe("delivery-queue storage", () => {
           gifPlayback: true,
           silent: true,
           gatewayClientScopes: ["operator.write"],
+          outboundPayloadPolicy: "source_bound_plain_text",
+          replyPayloadSendingHook: {
+            kind: "final",
+            context: { channelId: "directchat", conversationId: "+1555" },
+          },
           mirror: {
             sessionKey: "agent:main:main",
             text: "hello",
@@ -83,17 +88,10 @@ describe("delivery-queue storage", () => {
       expect(entry.gifPlayback).toBe(true);
       expect(entry.silent).toBe(true);
       expect(entry.gatewayClientScopes).toEqual(["operator.write"]);
-      expect(entry.mirror).toEqual({
-        sessionKey: "agent:main:main",
-        text: "hello",
-        mediaUrls: ["https://example.com/file.png"],
-      });
-      expect(entry.session).toEqual({
-        key: "agent:main:main",
-        agentId: "agent-main",
-        requesterAccountId: "acct-1",
-        requesterSenderId: "sender-1",
-      });
+      expect(entry.outboundPayloadPolicy).toBe("source_bound_plain_text");
+      expect(entry.replyPayloadSendingHook).toBeUndefined();
+      expect(entry.mirror).toBeUndefined();
+      expect(entry.session).toBeUndefined();
       expect(entry.retryCount).toBe(0);
       expect(entry.payloads).toEqual([{ text: "hello" }]);
 

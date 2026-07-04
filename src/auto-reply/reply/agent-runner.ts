@@ -40,7 +40,10 @@ import {
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
-import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  isRoomObservationInputProvenance,
+  shouldPreserveUserFacingSessionStateForInputProvenance,
+} from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import {
   normalizeDeliveryContext,
@@ -85,7 +88,10 @@ import {
 } from "./agent-runner-reminder-guard.js";
 import { resetReplyRunSession } from "./agent-runner-session-reset.js";
 import { appendUsageLine, resolveResponseUsageLine } from "./agent-runner-usage-line.js";
-import { resolveQueuedReplyExecutionConfig } from "./agent-runner-utils.js";
+import {
+  resolveQueuedReplyExecutionConfig,
+  shouldDropRoomObservationForRuntimeConfig,
+} from "./agent-runner-utils.js";
 import { createAudioAsVoiceBuffer, createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveEffectiveBlockStreamingConfig } from "./block-streaming.js";
 import {
@@ -1217,6 +1223,10 @@ export async function runReplyAgent(params: {
   let activeIsNewSession = isNewSession;
   const effectiveResetTriggered = resetTriggered === true;
   const activeRunQueueMode = effectiveResetTriggered ? "interrupt" : resolvedQueue.mode;
+  const isRoomObservation = isRoomObservationInputProvenance(followupRun.run.inputProvenance);
+  if (isRoomObservation) {
+    providedReplyOperation?.disableRestartRecovery();
+  }
 
   const isHeartbeat = opts?.isHeartbeat === true;
   const replyOperationRunState = resolveReplyOperationRunState(opts);
@@ -1234,7 +1244,8 @@ export async function runReplyAgent(params: {
       config: followupRun.run.config,
       attributes: traceAttributes,
     });
-  const effectiveShouldSteer = !isHeartbeat && !effectiveResetTriggered && shouldSteer;
+  const effectiveShouldSteer =
+    !isRoomObservation && !isHeartbeat && !effectiveResetTriggered && shouldSteer;
   const effectiveShouldFollowup = !effectiveResetTriggered && shouldFollowup;
   const typingSignals = createTypingSignaler({
     typing,
@@ -1260,7 +1271,7 @@ export async function runReplyAgent(params: {
   const pendingToolTasks = new Set<Promise<void>>();
   const blockReplyTimeoutMs = opts?.blockReplyTimeoutMs ?? BLOCK_REPLY_SEND_TIMEOUT_MS;
   const touchActiveSessionEntry = async () => {
-    if (!activeSessionEntry || !activeSessionStore || !sessionKey) {
+    if (isRoomObservation || !activeSessionEntry || !activeSessionStore || !sessionKey) {
       return;
     }
     const updatedAt = Date.now();
@@ -1365,6 +1376,18 @@ export async function runReplyAgent(params: {
     originatingAccountId: followupRun.originatingAccountId,
     agentAccountId: followupRun.run.agentAccountId,
   });
+  if (
+    shouldDropRoomObservationForRuntimeConfig(
+      followupRun.run.config,
+      followupRun.run.inputProvenance,
+    )
+  ) {
+    logVerbose(
+      "dropping passive room observation after runtime config selected a non-legacy context engine",
+    );
+    typing.cleanup();
+    return undefined;
+  }
 
   const replyToChannel = resolveOriginMessageProvider({
     originatingChannel: sessionCtx.OriginatingChannel,
@@ -1449,6 +1472,7 @@ export async function runReplyAgent(params: {
       resetTriggered: effectiveResetTriggered,
       routeThreadId: replyRouteThreadId,
       upstreamAbortSignal: opts?.abortSignal,
+      restartRecoverable: !isRoomObservation,
     });
     if (replyOperationRunState) {
       replyOperationRunState.admission =
@@ -1494,7 +1518,7 @@ export async function runReplyAgent(params: {
   const restartRecoveryDeliveryRunId = crypto.randomUUID();
   let trackedRestartRecoveryDeliveryContext = false;
   const persistRestartRecoveryDeliveryContext = async (): Promise<void> => {
-    if (!sessionKey || !storePath) {
+    if (isRoomObservation || !sessionKey || !storePath) {
       return;
     }
     const entry = activeSessionStore?.[sessionKey] ?? activeSessionEntry;
@@ -1535,7 +1559,7 @@ export async function runReplyAgent(params: {
     }
   };
   const clearRestartRecoveryDeliveryContext = async (): Promise<void> => {
-    if (!trackedRestartRecoveryDeliveryContext || !sessionKey || !storePath) {
+    if (isRoomObservation || !trackedRestartRecoveryDeliveryContext || !sessionKey || !storePath) {
       return;
     }
     const patch: Partial<SessionEntry> = {
@@ -1563,7 +1587,7 @@ export async function runReplyAgent(params: {
     }
   };
   const isRestartRecoveryArmed = (): boolean => {
-    if (!trackedRestartRecoveryDeliveryContext || !sessionKey || !storePath) {
+    if (isRoomObservation || !trackedRestartRecoveryDeliveryContext || !sessionKey || !storePath) {
       return false;
     }
     const persisted = loadSessionEntry({
@@ -1580,49 +1604,53 @@ export async function runReplyAgent(params: {
   try {
     await typingSignals.signalRunStart();
 
-    activeSessionEntry = await traceAgentPhase("reply.preflight_compaction", () =>
-      runPreflightCompactionIfNeeded({
-        cfg,
-        followupRun,
-        promptForEstimate: followupRun.prompt,
-        defaultModel,
-        agentCfgContextTokens,
-        sessionEntry: activeSessionEntry,
-        sessionStore: activeSessionStore,
-        sessionKey,
-        runtimePolicySessionKey,
-        storePath,
-        isHeartbeat,
-        replyOperation,
-        onCompactionNotice: sendDirectCompactionNotice,
-      }),
-    );
+    if (!isRoomObservation) {
+      activeSessionEntry = await traceAgentPhase("reply.preflight_compaction", () =>
+        runPreflightCompactionIfNeeded({
+          cfg,
+          followupRun,
+          promptForEstimate: followupRun.prompt,
+          defaultModel,
+          agentCfgContextTokens,
+          sessionEntry: activeSessionEntry,
+          sessionStore: activeSessionStore,
+          sessionKey,
+          runtimePolicySessionKey,
+          storePath,
+          isHeartbeat,
+          replyOperation,
+          onCompactionNotice: sendDirectCompactionNotice,
+        }),
+      );
+    }
     preflightCompactionApplied =
       (activeSessionEntry?.compactionCount ?? 0) > prePreflightCompactionCount;
 
     const visibleMemoryFlushErrorPayloads: ReplyPayload[] = [];
-    activeSessionEntry = await traceAgentPhase("reply.memory_flush", () =>
-      runMemoryFlushIfNeeded({
-        cfg,
-        followupRun,
-        promptForEstimate: followupRun.prompt,
-        sessionCtx,
-        opts,
-        defaultModel,
-        agentCfgContextTokens,
-        resolvedVerboseLevel,
-        sessionEntry: activeSessionEntry,
-        sessionStore: activeSessionStore,
-        sessionKey,
-        runtimePolicySessionKey,
-        storePath,
-        isHeartbeat,
-        replyOperation,
-        onVisibleErrorPayloads: (payloads) => {
-          visibleMemoryFlushErrorPayloads.push(...payloads);
-        },
-      }),
-    );
+    if (!isRoomObservation) {
+      activeSessionEntry = await traceAgentPhase("reply.memory_flush", () =>
+        runMemoryFlushIfNeeded({
+          cfg,
+          followupRun,
+          promptForEstimate: followupRun.prompt,
+          sessionCtx,
+          opts,
+          defaultModel,
+          agentCfgContextTokens,
+          resolvedVerboseLevel,
+          sessionEntry: activeSessionEntry,
+          sessionStore: activeSessionStore,
+          sessionKey,
+          runtimePolicySessionKey,
+          storePath,
+          isHeartbeat,
+          replyOperation,
+          onVisibleErrorPayloads: (payloads) => {
+            visibleMemoryFlushErrorPayloads.push(...payloads);
+          },
+        }),
+      );
+    }
 
     if (replyOperation.result?.kind === "aborted") {
       throw replyOperation.abortSignal.reason ?? new Error("reply operation aborted");
@@ -1777,6 +1805,7 @@ export async function runReplyAgent(params: {
     let { didLogHeartbeatStrip } = runOutcome;
 
     if (
+      !isRoomObservation &&
       shouldInjectGroupIntro &&
       activeSessionEntry &&
       activeSessionStore &&
@@ -1947,27 +1976,29 @@ export async function runReplyAgent(params: {
       }) ??
       DEFAULT_CONTEXT_TOKENS;
 
-    await persistRunSessionUsage({
-      storePath,
-      sessionKey,
-      cfg,
-      usage,
-      lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
-      compactionTokensAfter: runResult.meta?.agentMeta?.compactionTokensAfter,
-      promptTokens,
-      usageIsContextSnapshot: usedCliProvider ? true : undefined,
-      isHeartbeat,
-      preserveRuntimeModel: fallbackExhausted,
-      preserveUserFacingSessionModelState: preserveUserFacingSessionState,
-      modelUsed,
-      providerUsed,
-      contextTokensUsed,
-      systemPromptReport: runResult.meta?.systemPromptReport,
-      cliSessionId,
-      cliSessionBinding,
-      clearCliSessionBinding,
-      preserveFreshTotalTokensOnStaleUsage: preflightCompactionApplied,
-    });
+    if (!isRoomObservation) {
+      await persistRunSessionUsage({
+        storePath,
+        sessionKey,
+        cfg,
+        usage,
+        lastCallUsage: runResult.meta?.agentMeta?.lastCallUsage,
+        compactionTokensAfter: runResult.meta?.agentMeta?.compactionTokensAfter,
+        promptTokens,
+        usageIsContextSnapshot: usedCliProvider ? true : undefined,
+        isHeartbeat,
+        preserveRuntimeModel: fallbackExhausted,
+        preserveUserFacingSessionModelState: preserveUserFacingSessionState,
+        modelUsed,
+        providerUsed,
+        contextTokensUsed,
+        systemPromptReport: runResult.meta?.systemPromptReport,
+        cliSessionId,
+        cliSessionBinding,
+        clearCliSessionBinding,
+        preserveFreshTotalTokensOnStaleUsage: preflightCompactionApplied,
+      });
+    }
 
     const successfulSideEffectDelivery = hasSuccessfulSideEffectDelivery({
       blockReplyPipeline,
@@ -2173,17 +2204,19 @@ export async function runReplyAgent(params: {
         ? appendUnscheduledReminderNote(replyPayloads)
         : replyPayloads;
 
-    enqueueCommitmentExtractionForTurn({
-      cfg,
-      commandBody,
-      isHeartbeat,
-      followupRun,
-      sessionCtx,
-      sessionKey,
-      replyToChannel,
-      payloads: replyPayloads,
-      runId,
-    });
+    if (!isRoomObservation) {
+      enqueueCommitmentExtractionForTurn({
+        cfg,
+        commandBody,
+        isHeartbeat,
+        followupRun,
+        sessionCtx,
+        sessionKey,
+        replyToChannel,
+        payloads: replyPayloads,
+        runId,
+      });
+    }
 
     await signalTypingIfNeeded(guardedReplyPayloads, typingSignals);
 
@@ -2272,7 +2305,7 @@ export async function runReplyAgent(params: {
       prefixNotices.push({ text: `🧭 New session: ${followupRun.run.sessionId}` });
     }
 
-    if (autoCompactionCount > 0) {
+    if (autoCompactionCount > 0 && !isRoomObservation) {
       const previousSessionId = activeSessionEntry?.sessionId ?? followupRun.run.sessionId;
       const count = await incrementRunCompactionCount({
         cfg,
@@ -2471,7 +2504,7 @@ export async function runReplyAgent(params: {
     // Capture only policy-visible final payloads in session store to support
     // durable delivery retries. Hidden reasoning, message-tool-only replies,
     // and sendPolicy-denied replies must not become heartbeat-replayable text.
-    if (sessionKey && storePath && finalPayloads.length > 0) {
+    if (!isRoomObservation && sessionKey && storePath && finalPayloads.length > 0) {
       const sourceReplyPolicy = resolveSourceReplyPolicy({
         cfg,
         sessionCtx,

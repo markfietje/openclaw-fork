@@ -27,6 +27,7 @@ import {
   buildSystemRunApprovalEnvBinding,
 } from "../../infra/system-run-approval-binding.js";
 import { resetLogger, setLoggerOverride } from "../../logging.js";
+import { annotateInputProvenancePromptText } from "../../sessions/input-provenance.js";
 import {
   DEFAULT_CHAT_HISTORY_TEXT_MAX_CHARS,
   augmentChatHistoryWithCanvasBlocks,
@@ -971,6 +972,26 @@ describe("sanitizeChatHistoryMessages", () => {
 });
 
 describe("projectRecentChatDisplayMessages", () => {
+  it("strips trusted room-observation envelopes from display text", () => {
+    const provenance = {
+      kind: "room_observation" as const,
+      sourceChannel: "slack",
+    };
+    const content = annotateInputProvenancePromptText("#42 Guest: interesting link", provenance);
+
+    const result = projectRecentChatDisplayMessages([
+      {
+        role: "user",
+        content,
+        provenance,
+        timestamp: 1,
+      },
+    ]);
+
+    expect(result[0]?.content).toBe("#42 Guest: interesting link");
+    expect(result[0]?.provenance).toEqual(provenance);
+  });
+
   it("projects empty assistant error turns as a generic safe failure", () => {
     const result = projectRecentChatDisplayMessages([
       {

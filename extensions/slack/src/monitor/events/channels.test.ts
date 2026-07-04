@@ -19,8 +19,9 @@ type SlackChannelHandler = (args: {
 function createChannelContext(params?: {
   trackEvent?: () => void;
   shouldDropMismatchedSlackEvent?: (body: unknown) => boolean;
+  overrides?: import("./system-event-test-harness.js").SlackSystemEventTestOverrides;
 }) {
-  const harness = createSlackSystemEventTestHarness();
+  const harness = createSlackSystemEventTestHarness(params?.overrides);
   if (params?.shouldDropMismatchedSlackEvent) {
     harness.ctx.shouldDropMismatchedSlackEvent = params.shouldDropMismatchedSlackEvent;
   }
@@ -83,5 +84,21 @@ describe("registerSlackChannelEvents", () => {
       sessionKey: "agent:main:main",
       contextKey: "slack:channel:created:C1",
     });
+  });
+
+  it("does not enqueue actorless channel events when requestUsers is configured", async () => {
+    const { getCreatedHandler } = createChannelContext({
+      overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+    });
+    const createdHandler = requireChannelHandler(getCreatedHandler());
+
+    await createdHandler({
+      event: {
+        channel: { id: "C1", name: "general" },
+      },
+      body: {},
+    });
+
+    expect(enqueueSystemEventMock).not.toHaveBeenCalled();
   });
 });

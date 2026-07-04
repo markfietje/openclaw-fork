@@ -58,6 +58,7 @@ export type EmbeddedAgentQueueFailureReason =
   | "not_streaming"
   | "compacting"
   | "source_reply_delivery_mode_mismatch"
+  | "steering_disabled"
   | "transcript_commit_wait_unsupported"
   | "runtime_rejected";
 
@@ -470,6 +471,13 @@ function prepareEmbeddedAgentQueueMessage(
   if (!isEmbeddedQueueHandleMessageInjectable(sessionId, handle)) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
     return { kind: "complete", outcome: createQueueFailureOutcome(sessionId, "not_streaming") };
+  }
+  if (handle.acceptsSteering === false) {
+    diag.debug(`queue message failed: sessionId=${sessionId} reason=steering_disabled`);
+    return {
+      kind: "complete",
+      outcome: createQueueFailureOutcome(sessionId, "steering_disabled"),
+    };
   }
   if (handle.isCompacting()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=compacting`);

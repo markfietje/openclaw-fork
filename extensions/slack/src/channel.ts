@@ -467,7 +467,17 @@ const slackChannelOutbound: ChannelOutboundAdapter = {
   },
   ...createAttachedChannelResultAdapter({
     channel: "slack",
-    sendText: async ({ to, text, accountId, deps, replyToId, threadId, cfg, onDeliveryResult }) => {
+    sendText: async ({
+      to,
+      text,
+      accountId,
+      deps,
+      replyToId,
+      threadId,
+      cfg,
+      onDeliveryResult,
+      outboundPayloadPolicy,
+    }) => {
       const { send, threadTsValue, tokenOverride } = await resolveSlackSendContext({
         cfg,
         accountId: accountId ?? undefined,
@@ -484,6 +494,7 @@ const slackChannelOutbound: ChannelOutboundAdapter = {
               await onDeliveryResult(attachChannelToResult("slack", result));
             }
           : undefined,
+        ...(outboundPayloadPolicy ? { outboundPayloadPolicy } : {}),
         ...(tokenOverride ? { token: tokenOverride } : {}),
       });
     },
@@ -498,6 +509,7 @@ const slackChannelOutbound: ChannelOutboundAdapter = {
       threadId,
       cfg,
       onDeliveryResult,
+      outboundPayloadPolicy,
     }) => {
       const { send, threadTsValue, tokenOverride } = await resolveSlackSendContext({
         cfg,
@@ -517,6 +529,7 @@ const slackChannelOutbound: ChannelOutboundAdapter = {
               await onDeliveryResult(attachChannelToResult("slack", result));
             }
           : undefined,
+        ...(outboundPayloadPolicy ? { outboundPayloadPolicy } : {}),
         ...(tokenOverride ? { token: tokenOverride } : {}),
       });
     },

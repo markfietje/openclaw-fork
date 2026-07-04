@@ -8,7 +8,10 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
 } from "@openclaw/normalization-core/string-coerce";
-import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
+import type {
+  SourceBoundMessagePolicy,
+  SourceReplyDeliveryMode,
+} from "../auto-reply/get-reply-options.types.js";
 import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import type { ChatType } from "../channels/chat-type.js";
 import type { InboundEventKind } from "../channels/inbound-event/kind.js";
@@ -436,6 +439,8 @@ export function createOpenClawCodingTools(options?: {
   abortSignal?: AbortSignal;
   /** Disable hook-owned diagnostics when an outer runtime owns tool diagnostics. */
   emitBeforeToolCallDiagnostics?: boolean;
+  /** Disable global before_tool_call hooks while retaining core tool policy wrappers. */
+  wrapBeforeToolCallHook?: boolean;
   /**
    * Provider of the currently selected model (used for provider-specific tool quirks).
    * Example: "anthropic", "openai", "google", "openai".
@@ -500,6 +505,8 @@ export function createOpenClawCodingTools(options?: {
   requireExplicitMessageTarget?: boolean;
   /** Visible source replies must be sent through the message tool when set to message_tool_only. */
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  /** Restrict message sends to the exact source route for this run. */
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   inboundEventKind?: InboundEventKind;
   /** If true, omit the message tool from the tool list. */
   disableMessageTool?: boolean;
@@ -1012,6 +1019,7 @@ export function createOpenClawCodingTools(options?: {
           modelHasVision: options?.modelHasVision,
           requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
           sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,
+          sourceBoundMessagePolicy: options?.sourceBoundMessagePolicy,
           inboundEventKind: options?.inboundEventKind,
           disableMessageTool: options?.disableMessageTool,
           enableHeartbeatTool,
@@ -1169,11 +1177,14 @@ export function createOpenClawCodingTools(options?: {
     allocateToolOutcomeOrdinal: options?.allocateToolOutcomeOrdinal,
   };
   const hookOptions = { emitDiagnostics: options?.emitBeforeToolCallDiagnostics };
-  const withHooks = normalized.map((tool) =>
-    isToolWrappedWithBeforeToolCallHook(tool)
-      ? rewrapToolWithBeforeToolCallHook(tool, hookContext, hookOptions)
-      : wrapToolWithBeforeToolCallHook(tool, hookContext, hookOptions),
-  );
+  const withHooks =
+    options?.wrapBeforeToolCallHook === false
+      ? normalized
+      : normalized.map((tool) =>
+          isToolWrappedWithBeforeToolCallHook(tool)
+            ? rewrapToolWithBeforeToolCallHook(tool, hookContext, hookOptions)
+            : wrapToolWithBeforeToolCallHook(tool, hookContext, hookOptions),
+        );
   options?.recordToolPrepStage?.("tool-hooks");
   const withAbort = options?.abortSignal
     ? withHooks.map((tool) => wrapToolWithAbortSignal(tool, options.abortSignal))

@@ -66,6 +66,8 @@ export function createEmbeddedRunAuthController(params: {
   attemptedThinking: Set<ThinkLevel>;
   fallbackConfigured: boolean;
   allowTransientCooldownProbe: boolean;
+  /** Core-only passive runs must not expose credentials to provider runtime hooks. */
+  skipProviderRuntimeAuth?: boolean;
   getProvider(): string;
   getModelId(): string;
   getRuntimeModel(): Model;
@@ -373,6 +375,7 @@ export function createEmbeddedRunAuthController(params: {
       agentDir: params.agentDir,
       workspaceDir: params.workspaceDir,
       lockedProfile: candidate != null && candidate === params.lockedProfileId,
+      skipProviderRuntimeHooks: params.skipProviderRuntimeAuth,
     });
   };
 
@@ -381,6 +384,10 @@ export function createEmbeddedRunAuthController(params: {
     params.setApiKeyInfo(apiKeyInfo);
     const resolvedProfileId = apiKeyInfo.profileId ?? candidate;
     if (!apiKeyInfo.apiKey) {
+      if (params.skipProviderRuntimeAuth) {
+        const runtimeModel = params.getRuntimeModel();
+        throw new MissingProviderAuthError(runtimeModel.provider, apiKeyInfo);
+      }
       if (apiKeyInfo.mode !== "aws-sdk") {
         const runtimeModel = params.getRuntimeModel();
         throw new MissingProviderAuthError(runtimeModel.provider, apiKeyInfo);
@@ -434,6 +441,13 @@ export function createEmbeddedRunAuthController(params: {
     }
     let runtimeAuthHandled = false;
     const runtimeModel = params.getRuntimeModel();
+    if (params.skipProviderRuntimeAuth) {
+      clearRuntimeAuthRefreshTimer();
+      params.authStorage.setRuntimeApiKey(runtimeModel.provider, apiKeyInfo.apiKey);
+      params.setRuntimeAuthState(null);
+      params.setLastProfileId(apiKeyInfo.profileId);
+      return;
+    }
     const preparedAuth = await prepareRuntimeAuthForModel({
       runtimeModel,
       apiKey: apiKeyInfo.apiKey,

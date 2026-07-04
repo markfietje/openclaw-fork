@@ -753,6 +753,64 @@ describe("executeSendAction", () => {
     });
   });
 
+  it("routes source-bound sends directly through core without action hooks or owner session state", async () => {
+    const prepareSendPayload = vi.fn(({ payload }) => ({
+      ...payload,
+      text: "plugin rewrite",
+    }));
+    const handleAction = vi.fn(async () => ({ content: [], details: { ok: true } }));
+    const plugin: ChannelPlugin = {
+      ...createChannelTestPluginBase({ id: "slack" }),
+      actions: {
+        describeMessageTool: () => ({ actions: ["send"] }),
+        prepareSendPayload,
+        handleAction,
+      },
+      outbound: { deliveryMode: "direct" },
+    };
+    setActivePluginRegistry(createTestRegistry([{ pluginId: "slack", plugin, source: "test" }]));
+    mocks.sendMessage.mockResolvedValue({
+      channel: "slack",
+      to: "channel:C123",
+      via: "direct",
+      mediaUrl: null,
+    });
+
+    await executeSendAction({
+      ctx: {
+        cfg: {},
+        channel: "slack",
+        params: { to: "channel:C123", message: "safe observation" },
+        dryRun: false,
+        sessionKey: "agent:main:slack:channel:C123",
+        sessionId: "owner-session-id",
+        mirror: {
+          sessionKey: "agent:main:slack:channel:C123",
+          text: "safe observation",
+        },
+        outboundPayloadPolicy: "source_bound_plain_text",
+      },
+      to: "channel:C123",
+      message: "safe observation",
+    });
+
+    expect(prepareSendPayload).not.toHaveBeenCalled();
+    expect(handleAction).not.toHaveBeenCalled();
+    expect(mocks.dispatchChannelMessageAction).not.toHaveBeenCalled();
+    expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+    const sendArgs = expectSingleCallFields(mocks.sendMessage, {
+      channel: "slack",
+      content: "safe observation",
+      requesterSessionKey: undefined,
+      mirror: undefined,
+      outboundPayloadPolicy: "source_bound_plain_text",
+    });
+    const [payload] = requireArray(sendArgs.payloads, "source-bound payloads");
+    expectFields(requireRecord(payload, "source-bound payload"), {
+      text: "safe observation",
+    });
+  });
+
   it("uses required core delivery only when the send action opts out of best-effort", async () => {
     const prepareSendPayload = vi.fn(({ payload }) => ({
       ...payload,

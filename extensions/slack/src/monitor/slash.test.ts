@@ -812,6 +812,109 @@ describe("Slack native command argument menus", () => {
     expectSingleDispatchedSlashBody("/status");
   });
 
+  it("source-binds native slash message tools to the originating channel", async () => {
+    const sourceBoundHarness = createArgMenusHarness();
+    const sourceBoundChannel = "C_SOURCE_BOUND";
+    const sourceBoundCtx = sourceBoundHarness.ctx as {
+      channelsConfig?: Record<string, { sourceBoundMessageTool?: boolean }>;
+      resolveChannelName: (channelId: string) => Promise<{ name: string; type: string }>;
+    };
+    sourceBoundCtx.channelsConfig = {
+      [sourceBoundChannel]: { sourceBoundMessageTool: true },
+    };
+    sourceBoundCtx.resolveChannelName = async () => ({ name: "source-bound", type: "channel" });
+    await registerCommands(sourceBoundHarness.ctx, sourceBoundHarness.account);
+    const handler = requireHandler(sourceBoundHarness.commands, "/agentstatus", "/agentstatus");
+    const respond = vi.fn().mockResolvedValue(undefined);
+    await handler({
+      command: createSlashCommand({
+        channel_id: sourceBoundChannel,
+        channel_name: "source-bound",
+      }),
+      ack: vi.fn().mockResolvedValue(undefined),
+      respond,
+    });
+
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    const dispatchArg = firstDispatchArg() as {
+      ctx?: Record<string, unknown>;
+      replyOptions?: { sourceBoundMessagePolicy?: Record<string, unknown> };
+    };
+    expect(dispatchArg.ctx).toMatchObject({
+      ChatId: sourceBoundChannel,
+      NativeChannelId: sourceBoundChannel,
+      OriginatingTo: "user:U1",
+    });
+    expect(dispatchArg.replyOptions?.sourceBoundMessagePolicy).toEqual({
+      mode: "source_bound",
+      channel: "slack",
+      accountId: "acct",
+      conversationId: sourceBoundChannel,
+    });
+    expect(Object.isFrozen(dispatchArg.replyOptions?.sourceBoundMessagePolicy)).toBe(true);
+
+    const [{ createMessageTool }, { buildSlackThreadingToolContext }] = await Promise.all([
+      import("../../../../src/agents/tools/message-tool.js"),
+      import("../threading-tool-context.js"),
+    ]);
+    // Agent runs replace the slash ingress target with the ephemeral reply target.
+    const agentContext = {
+      ...dispatchArg.ctx,
+      To: dispatchArg.ctx?.OriginatingTo,
+    };
+    const threadingToolContext = buildSlackThreadingToolContext({
+      cfg: {} as OpenClawConfig,
+      accountId: "acct",
+      context: agentContext as never,
+    });
+    expect(threadingToolContext).toMatchObject({
+      currentChannelId: sourceBoundChannel,
+      currentMessagingTarget: "user:U1",
+    });
+
+    const runMessageAction = vi.fn().mockResolvedValue({
+      kind: "send",
+      action: "send",
+      channel: "slack",
+      to: sourceBoundChannel,
+      handledBy: "plugin",
+      payload: {},
+      dryRun: true,
+    });
+    const tool = createMessageTool({
+      config: {} as OpenClawConfig,
+      agentAccountId: "acct",
+      currentChannelProvider: "slack",
+      ...threadingToolContext,
+      sourceBoundMessagePolicy: dispatchArg.replyOptions?.sourceBoundMessagePolicy as never,
+      getScopedChannelsCommandSecretTargets: () => ({ targetIds: new Set() }),
+      resolveCommandSecretRefsViaGateway: async ({ config }) => ({
+        resolvedConfig: config,
+        diagnostics: [],
+        targetStatesByPath: {},
+        hadUnresolvedTargets: false,
+      }),
+      runMessageAction: runMessageAction as never,
+    });
+
+    await expect(
+      tool.execute("source-bound-slash", {
+        action: "send",
+        message: "An independent observation",
+      }),
+    ).resolves.toBeDefined();
+    expect(runMessageAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "send",
+        sourceBoundMessagePolicy: dispatchArg.replyOptions?.sourceBoundMessagePolicy,
+        toolContext: expect.objectContaining({
+          currentChannelId: sourceBoundChannel,
+          currentMessagingTarget: "user:U1",
+        }),
+      }),
+    );
+  });
+
   it("dispatches the command when a static_select option is chosen", async () => {
     await runArgMenuAction(argMenuHandler, {
       action: {
@@ -1018,7 +1121,10 @@ describe("Slack native command argument menus", () => {
 
 function createPolicyHarness(overrides?: {
   groupPolicy?: "open" | "allowlist";
-  channelsConfig?: Record<string, { enabled?: boolean; requireMention?: boolean }>;
+  channelsConfig?: Record<
+    string,
+    { enabled?: boolean; requireMention?: boolean; requestUsers?: string[] }
+  >;
   channelId?: string;
   channelName?: string;
   allowFrom?: string[];
@@ -1205,6 +1311,52 @@ describe("slack slash commands channel policy", () => {
     const { respond } = await registerAndRunPolicySlash({ harness });
 
     expectChannelBlockedResponse(respond);
+  });
+
+  it("denies native commands from non-request users", async () => {
+    const harness = createPolicyHarness({
+      groupPolicy: "open",
+      channelsConfig: { C_REQUESTS: { requestUsers: ["U_OWNER"] } },
+      channelId: "C_REQUESTS",
+    });
+    const { respond } = await registerAndRunPolicySlash({
+      harness,
+      command: { user_id: "U_OTHER" },
+    });
+
+    expectUnauthorizedResponse(respond);
+  });
+
+  it("keeps legacy native-command authorization for listed request users", async () => {
+    const harness = createPolicyHarness({
+      groupPolicy: "open",
+      channelsConfig: { C_REQUESTS: { requestUsers: ["U_OWNER"] } },
+      channelId: "C_REQUESTS",
+      allowFrom: ["U_OWNER"],
+    });
+    const { respond } = await registerAndRunPolicySlash({
+      harness,
+      command: { user_id: "U_OWNER" },
+    });
+
+    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    expect(responseTexts(respond)).not.toContain("You are not authorized to use this command.");
+  });
+
+  it("does not grant command authority to listed request users", async () => {
+    const harness = createPolicyHarness({
+      groupPolicy: "open",
+      channelsConfig: { C_REQUESTS: { requestUsers: ["U_OTHER"] } },
+      channelId: "C_REQUESTS",
+      allowFrom: ["U_OWNER"],
+    });
+    const { respond } = await registerAndRunPolicySlash({
+      harness,
+      command: { user_id: "U_OTHER" },
+    });
+
+    expectUnauthorizedResponse(respond);
+    expect(dispatchMock).not.toHaveBeenCalled();
   });
 });
 

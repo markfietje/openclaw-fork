@@ -287,6 +287,7 @@ export async function resolveSlackMessageContent(params: {
   botToken: string;
   client?: SlackWebClient;
   mediaMaxBytes: number;
+  mediaDownloads?: boolean;
   resolveUserName?: (userId: string) => Promise<{ name?: string }>;
   mediaReadIdleTimeoutMs?: number;
   mediaTotalTimeoutMs?: number;
@@ -299,7 +300,7 @@ export async function resolveSlackMessageContent(params: {
   });
 
   const mediaPromise =
-    ownFiles && ownFiles.length > 0
+    params.mediaDownloads !== false && ownFiles && ownFiles.length > 0
       ? loadSlackMediaModule().then(({ resolveSlackMedia }) =>
           resolveSlackMedia({
             files: ownFiles,
@@ -321,6 +322,7 @@ export async function resolveSlackMessageContent(params: {
             client: params.client,
             token: params.botToken,
             maxBytes: params.mediaMaxBytes,
+            mediaDownloads: params.mediaDownloads,
             readIdleTimeoutMs: params.mediaReadIdleTimeoutMs,
             totalTimeoutMs: params.mediaTotalTimeoutMs,
             abortSignal: params.abortSignal,

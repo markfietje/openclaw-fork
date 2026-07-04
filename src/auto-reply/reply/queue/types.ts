@@ -18,6 +18,7 @@ import type { SkillSnapshot } from "../../../skills/types.js";
 import type {
   QueuedReplyDeliveryCorrelation,
   QueuedReplyLifecycle,
+  SourceBoundMessagePolicy,
   SourceReplyDeliveryMode,
 } from "../../get-reply-options.types.js";
 import type { OriginatingChannelType } from "../../templating.js";
@@ -60,6 +61,10 @@ export type FollowupRun = {
   currentInboundAudio?: boolean;
   /** Explicit current-turn context that should be visible for this run but not persisted as user text. */
   currentInboundContext?: CurrentInboundPromptContext;
+  /** Runtime tool cap captured from the originating turn. */
+  toolsAllow?: string[];
+  /** Source-bound message route captured from the originating turn. */
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   /** Abort signal for turns that are canceled by their source-channel admission fence. */
   abortSignal?: AbortSignal;
   deliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
@@ -147,6 +152,8 @@ export type FollowupRun = {
     ownerNumbers?: string[];
     inputProvenance?: InputProvenance;
     extraSystemPrompt?: string;
+    /** Trusted room-level policy used by the isolated passive observation prompt. */
+    roomObservationSystemPrompt?: string;
     sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
     silentReplyPromptMode?: SilentReplyPromptMode;
     extraSystemPromptStatic?: string;

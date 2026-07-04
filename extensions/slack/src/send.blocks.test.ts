@@ -222,6 +222,24 @@ describe("sendMessageSlack chunking", () => {
     expect(onDeliveryResult.mock.calls.map((call) => call[0]?.messageId)).toEqual(["m1"]);
   });
 
+  it("rejects source-bound text that would require multiple Slack posts", async () => {
+    const client = createSlackSendTestClient();
+    const cfg = {
+      channels: { slack: { botToken: "xoxb-test", textChunkLimit: 100 } },
+    };
+
+    await expect(
+      sendMessageSlack("channel:C123", "a".repeat(150), {
+        token: "xoxb-test",
+        cfg,
+        client,
+        outboundPayloadPolicy: "source_bound_plain_text",
+      }),
+    ).rejects.toThrow("must fit in exactly one message");
+
+    expect(client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
   it("preserves the first canonical response thread across chunked sends", async () => {
     clearSlackThreadParticipationCache();
     const client = createSlackSendTestClient();

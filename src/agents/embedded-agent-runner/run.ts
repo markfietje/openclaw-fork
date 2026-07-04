@@ -3,6 +3,8 @@
  */
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { sanitizeForLog } from "../../../packages/terminal-core/src/ansi.js";
 import { FAST_MODE_AUTO_PROGRESS_KIND, type ReplyPayload } from "../../auto-reply/reply-payload.js";
@@ -13,6 +15,7 @@ import { resolveStorePath } from "../../config/sessions.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../context-engine/host-compat.js";
 import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
+import { LegacyContextEngine } from "../../context-engine/legacy.js";
 import {
   resolveContextEngine,
   resolveContextEngineOwnerPluginId,
@@ -37,6 +40,7 @@ import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { resolveProviderAuthProfileId } from "../../plugins/provider-runtime.js";
 import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../process/command-queue.js";
 import type { CommandQueueEnqueueOptions } from "../../process/command-queue.types.js";
+import { isRoomObservationInputProvenance } from "../../sessions/input-provenance.js";
 import { createAgentHarnessTaskRuntimeScope } from "../../tasks/agent-harness-task-runtime-scope.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
@@ -97,6 +101,11 @@ import {
   formatFastModeAutoProgressText,
   resolveFastModeForElapsed,
 } from "../fast-mode.js";
+import {
+  canRunPassiveRoomObservationWithEmbeddedHarness,
+  canRunPassiveRoomObservationWithResolvedModel,
+  PassiveRoomObservationAdmissionError,
+} from "../harness/passive-runtime.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { selectAgentHarness } from "../harness/selection.js";
 import { LiveSessionModelSwitchError } from "../live-model-switch-error.js";
@@ -616,15 +625,62 @@ export function runEmbeddedAgent(
   const config =
     paramsInput.config ??
     (needsConfiguredDefault ? (getRuntimeConfigSnapshot() ?? undefined) : undefined);
+  const isRoomObservation = isRoomObservationInputProvenance(paramsInput.inputProvenance);
+  if (isRoomObservation) {
+    const { provider, modelId } = resolveInitialEmbeddedRunModel({
+      config,
+      agentId: paramsInput.agentId,
+      provider: paramsInput.provider,
+      model: paramsInput.model,
+    });
+    if (
+      !canRunPassiveRoomObservationWithEmbeddedHarness({
+        config,
+        provider,
+        modelId,
+        agentId: paramsInput.agentId,
+        sessionKey: paramsInput.sessionKey,
+        runtimeOverride: paramsInput.agentHarnessRuntimeOverride ?? paramsInput.agentHarnessId,
+      })
+    ) {
+      return Promise.resolve({ payloads: [], meta: { durationMs: 0 } });
+    }
+  }
   const lifecycleGeneration =
     paramsInput.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(paramsInput.runId);
-  return withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
+  const passiveSessionFile = isRoomObservation
+    ? path.join(os.tmpdir(), `openclaw-passive-room-${randomBytes(12).toString("hex")}.jsonl`)
+    : undefined;
+  const run = withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
     runEmbeddedAgentInternal({
       ...paramsInput,
       config,
       lifecycleGeneration,
+      ...(isRoomObservation
+        ? {
+            sessionFile: passiveSessionFile,
+            agentHarnessId: "openclaw",
+            agentHarnessRuntimeOverride: "openclaw",
+            modelFallbacksOverride: [],
+            skillsSnapshot: undefined,
+            images: undefined,
+            imageOrder: undefined,
+            currentInboundAudio: false,
+            currentInboundContext: undefined,
+            extraSystemPrompt: undefined,
+          }
+        : {}),
     }),
   );
+  return passiveSessionFile
+    ? run.finally(async () => {
+        await fs.unlink(passiveSessionFile).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") {
+            log.warn(`failed to remove passive room transcript: ${formatErrorMessage(error)}`);
+          }
+        });
+      })
+    : run;
 }
 
 async function runEmbeddedAgentInternal(
@@ -652,6 +708,10 @@ async function runEmbeddedAgentInternal(
     sessionKey: normalizeOptionalString(effectiveSessionKey ?? runSessionTarget.sessionKey),
     sessionFile: runSessionTarget.sessionFile,
   };
+  const isRoomObservation = isRoomObservationInputProvenance(params.inputProvenance);
+  if (isRoomObservation) {
+    params.replyOperation?.disableRestartRecovery();
+  }
   const sessionLane = resolveSessionLane(params.sessionKey?.trim() || params.sessionId);
   const globalLane = resolveGlobalLane(params.lane);
   // Outer fallback attempts defer session suspension only while another
@@ -754,6 +814,7 @@ async function runEmbeddedAgentInternal(
         sessionKey: params.sessionKey ?? existingContext?.sessionKey,
         sessionId: params.sessionId ?? existingContext?.sessionId,
         lifecycleGeneration,
+        persistSessionLifecycle: !isRoomObservation,
       });
       return withAgentRunLifecycleGeneration(lifecycleGeneration, task);
     };
@@ -974,11 +1035,13 @@ async function runEmbeddedAgentInternal(
       }
       startupStages.mark("workspace");
       notifyExecutionPhase("workspace");
-      ensureRuntimePluginsLoaded({
-        config: params.config,
-        workspaceDir: resolvedWorkspace,
-        allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
-      });
+      if (!isRoomObservation) {
+        ensureRuntimePluginsLoaded({
+          config: params.config,
+          workspaceDir: resolvedWorkspace,
+          allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+        });
+      }
       startupStages.mark("runtime-plugins");
       notifyExecutionPhase("runtime_plugins");
 
@@ -1040,7 +1103,7 @@ async function runEmbeddedAgentInternal(
         attachments: buildBeforeModelResolveAttachments(params.images),
         provider,
         modelId,
-        hookRunner,
+        hookRunner: isRoomObservation ? null : hookRunner,
         hookContext: hookCtx,
       });
       provider = hookSelection.provider;
@@ -1093,6 +1156,7 @@ async function runEmbeddedAgentInternal(
             // first generating OpenClaw models.json. This keeps one-shot model runs from
             // blocking on unrelated provider discovery.
             skipAgentDiscovery: true,
+            skipProviderRuntimeHooks: isRoomObservation,
             allowBundledStaticCatalogFallback: pluginHarnessOwnsTransport,
             preferBundledStaticCatalogTransport: pluginHarnessOwnsTransport,
             workspaceDir: resolvedWorkspace,
@@ -1108,6 +1172,9 @@ async function runEmbeddedAgentInternal(
       }
       if (!modelResolution && pluginHarnessOwnsTransport) {
         modelResolution ??= firstModelResolution;
+      }
+      if (!modelResolution && isRoomObservation) {
+        return { payloads: [], meta: { durationMs: Date.now() - started } };
       }
       if (!modelResolution) {
         await ensureOpenClawModelsJson(params.config, agentDir, {
@@ -1126,6 +1193,7 @@ async function runEmbeddedAgentInternal(
               // models that are not discoverable via agent model discovery
               // can still be resolved from the static catalog.
               allowBundledStaticCatalogFallback: true,
+              skipProviderRuntimeHooks: isRoomObservation,
             },
           );
           firstModelResolution ??= candidateResolution;
@@ -1157,6 +1225,19 @@ async function runEmbeddedAgentInternal(
           lane: globalLane,
         });
       }
+      if (
+        isRoomObservation &&
+        !canRunPassiveRoomObservationWithResolvedModel({
+          config: params.config,
+          provider,
+          model,
+        })
+      ) {
+        throw new PassiveRoomObservationAdmissionError({
+          provider,
+          model: modelId,
+        });
+      }
       let runtimeModel = model;
 
       const resolvedRuntimeModel = resolveEffectiveRuntimeModel({
@@ -1183,24 +1264,30 @@ async function runEmbeddedAgentInternal(
         !pluginHarnessOwnsTransport &&
         provider === OPENAI_PROVIDER_ID &&
         effectiveModel.api === "openai-chatgpt-responses";
-      let piExternalCliAuthScope = pluginHarnessOwnsTransport
+      let piExternalCliAuthScope = isRoomObservation
         ? { ignoreAutoPreferredProfile: false }
-        : openClawNativeCodexResponsesNeedsAuthBootstrap
-          ? {
-              providerIds: [OPENAI_PROVIDER_ID],
-              ignoreAutoPreferredProfile: false,
-            }
-          : resolveExternalCliAuthOverlayScopeFromSelection({
-              provider,
-              cfg: params.config,
-              agentId: params.agentId,
-              modelId,
-              workspaceDir: resolvedWorkspace,
-              userLockedAuthProfileId:
-                params.authProfileIdSource === "user" ? params.authProfileId : undefined,
-            });
+        : pluginHarnessOwnsTransport
+          ? { ignoreAutoPreferredProfile: false }
+          : openClawNativeCodexResponsesNeedsAuthBootstrap
+            ? {
+                providerIds: [OPENAI_PROVIDER_ID],
+                ignoreAutoPreferredProfile: false,
+              }
+            : resolveExternalCliAuthOverlayScopeFromSelection({
+                provider,
+                cfg: params.config,
+                agentId: params.agentId,
+                modelId,
+                workspaceDir: resolvedWorkspace,
+                userLockedAuthProfileId:
+                  params.authProfileIdSource === "user" ? params.authProfileId : undefined,
+              });
       let noExternalAuthStore: AuthProfileStore | undefined;
-      if (
+      if (isRoomObservation) {
+        noExternalAuthStore = ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+          allowKeychainPrompt: false,
+        });
+      } else if (
         !pluginHarnessOwnsTransport &&
         !pluginHarnessNeedsOpenClawAuthBootstrap &&
         !piExternalCliAuthScope.providerIds
@@ -1219,8 +1306,12 @@ async function runEmbeddedAgentInternal(
             params.authProfileIdSource === "user" ? params.authProfileId : undefined,
         });
       }
-      const authStore =
-        pluginHarnessOwnsTransport && !pluginHarnessNeedsOpenClawAuthBootstrap
+      const authStore = isRoomObservation
+        ? (noExternalAuthStore ??
+          ensureAuthProfileStoreWithoutExternalProfiles(agentDir, {
+            allowKeychainPrompt: false,
+          }))
+        : pluginHarnessOwnsTransport && !pluginHarnessNeedsOpenClawAuthBootstrap
           ? createEmptyAuthProfileStore()
           : pluginHarnessNeedsOpenClawAuthBootstrap
             ? ensureAuthProfileStore(agentDir, {
@@ -1367,24 +1458,25 @@ async function runEmbeddedAgentInternal(
               ),
             ),
           ];
-      const providerPreferredProfileId = lockedProfileId
-        ? undefined
-        : resolveProviderAuthProfileId({
-            provider,
-            config: params.config,
-            workspaceDir: resolvedWorkspace,
-            context: {
-              config: params.config,
-              agentDir,
-              workspaceDir: resolvedWorkspace,
+      const providerPreferredProfileId =
+        lockedProfileId || isRoomObservation
+          ? undefined
+          : resolveProviderAuthProfileId({
               provider,
-              modelId,
-              preferredProfileId,
-              lockedProfileId,
-              profileOrder,
-              authStore,
-            },
-          });
+              config: params.config,
+              workspaceDir: resolvedWorkspace,
+              context: {
+                config: params.config,
+                agentDir,
+                workspaceDir: resolvedWorkspace,
+                provider,
+                modelId,
+                preferredProfileId,
+                lockedProfileId,
+                profileOrder,
+                authStore,
+              },
+            });
       const providerOrderedProfiles =
         providerPreferredProfileId && profileOrder.includes(providerPreferredProfileId)
           ? [
@@ -1468,6 +1560,7 @@ async function runEmbeddedAgentInternal(
         attemptedThinking,
         fallbackConfigured,
         allowTransientCooldownProbe: params.allowTransientCooldownProbe === true,
+        skipProviderRuntimeAuth: isRoomObservation,
         getProvider: () => provider,
         getModelId: () => modelId,
         getRuntimeModel: () => runtimeModel,
@@ -1679,13 +1772,17 @@ async function runEmbeddedAgentInternal(
       // The embedded agent owns JSONL persistence; this marker lets the outer retry avoid
       // replaying the same inbound channel message after overflow compaction.
       let lastPersistedCurrentMessageId: string | number | undefined;
-      const onUserMessagePersisted: RunEmbeddedAgentParams["onUserMessagePersisted"] = (
+      const onUserMessagePersisted: RunEmbeddedAgentParams["onUserMessagePersisted"] = async (
         message,
       ) => {
         if (params.currentMessageId !== undefined) {
           lastPersistedCurrentMessageId = params.currentMessageId;
         }
-        params.userTurnTranscriptRecorder?.markRuntimePersisted(message);
+        if (isRoomObservation) {
+          await params.userTurnTranscriptRecorder?.persistApproved();
+        } else {
+          params.userTurnTranscriptRecorder?.markRuntimePersisted(message);
+        }
         params.onUserMessagePersisted?.(message);
       };
       const continueFromCurrentTranscript = () => {
@@ -1846,11 +1943,15 @@ async function runEmbeddedAgentInternal(
       };
       // Resolve the context engine once and reuse across retries to avoid
       // repeated initialization/connection overhead per attempt.
-      ensureContextEnginesInitialized();
-      const contextEngine = await resolveContextEngine(params.config, {
-        agentDir,
-        workspaceDir: resolvedWorkspace,
-      });
+      const contextEngine = isRoomObservation
+        ? new LegacyContextEngine()
+        : await (async () => {
+            ensureContextEnginesInitialized();
+            return await resolveContextEngine(params.config, {
+              agentDir,
+              workspaceDir: resolvedWorkspace,
+            });
+          })();
       const resolveContextEnginePluginId = () => resolveContextEngineOwnerPluginId(contextEngine);
       startupStages.mark("context-engine");
       notifyExecutionPhase("context_engine", { provider, model: modelId });
@@ -1976,7 +2077,9 @@ async function runEmbeddedAgentInternal(
           const runtimeAuthRetry = authRetryPending;
           authRetryPending = false;
           attemptedThinking.add(thinkLevel);
-          await fs.mkdir(resolvedWorkspace, { recursive: true });
+          if (!isRoomObservation) {
+            await fs.mkdir(resolvedWorkspace, { recursive: true });
+          }
           if (!startupStagesEmitted) {
             startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.workspace);
           }
@@ -2004,35 +2107,37 @@ async function runEmbeddedAgentInternal(
           if (!startupStagesEmitted) {
             startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
           }
-          const runtimePlan = buildAgentRuntimePlan({
-            provider,
-            modelId,
-            model: effectiveModel,
-            modelApi: effectiveModel.api,
-            harnessId: agentHarness.id,
-            harnessRuntime: agentHarness.id,
-            allowHarnessAuthProfileForwarding: pluginHarnessOwnsTransport,
-            authProfileProvider:
-              (lastProfileId
-                ? attemptAuthProfileStore.profiles?.[lastProfileId]?.provider
-                : undefined) ?? lastProfileId?.split(":", 1)[0],
-            authProfileMode: lastProfileId
-              ? attemptAuthProfileStore.profiles?.[lastProfileId]?.type
-              : undefined,
-            sessionAuthProfileId: lastProfileId,
-            sessionAuthProfileCandidateIds: pluginHarnessOwnsTransport
-              ? pluginHarnessForwardedProfileCandidates
-              : undefined,
-            config: params.config,
-            workspaceDir: resolvedWorkspace,
-            agentDir,
-            agentId: workspaceResolution.agentId,
-            thinkingLevel: thinkLevel,
-            extraParamsOverride: {
-              ...params.streamParams,
-              fastMode: attemptFastMode,
-            },
-          });
+          const runtimePlan = isRoomObservation
+            ? undefined
+            : buildAgentRuntimePlan({
+                provider,
+                modelId,
+                model: effectiveModel,
+                modelApi: effectiveModel.api,
+                harnessId: agentHarness.id,
+                harnessRuntime: agentHarness.id,
+                allowHarnessAuthProfileForwarding: pluginHarnessOwnsTransport,
+                authProfileProvider:
+                  (lastProfileId
+                    ? attemptAuthProfileStore.profiles?.[lastProfileId]?.provider
+                    : undefined) ?? lastProfileId?.split(":", 1)[0],
+                authProfileMode: lastProfileId
+                  ? attemptAuthProfileStore.profiles?.[lastProfileId]?.type
+                  : undefined,
+                sessionAuthProfileId: lastProfileId,
+                sessionAuthProfileCandidateIds: pluginHarnessOwnsTransport
+                  ? pluginHarnessForwardedProfileCandidates
+                  : undefined,
+                config: params.config,
+                workspaceDir: resolvedWorkspace,
+                agentDir,
+                agentId: workspaceResolution.agentId,
+                thinkingLevel: thinkLevel,
+                extraParamsOverride: {
+                  ...params.streamParams,
+                  fastMode: attemptFastMode,
+                },
+              });
           if (!startupStagesEmitted) {
             startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.runtimePlan);
             startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.dispatch);
@@ -2102,6 +2207,12 @@ async function runEmbeddedAgentInternal(
             maxRunLoopIterations: MAX_RUN_LOOP_ITERATIONS,
           });
           const rawAttempt = await runEmbeddedAttemptWithBackend({
+            ...(isRoomObservation
+              ? {
+                  passiveRoomObservationAdmission: "core-openai" as const,
+                  disableTrajectories: true,
+                }
+              : {}),
             sessionId: activeSessionId,
             sessionKey: resolvedSessionKey,
             promptCacheKey: params.promptCacheKey,
@@ -2266,6 +2377,7 @@ async function runEmbeddedAgentInternal(
             bootstrapContextRunKind: params.bootstrapContextRunKind,
             jobId: params.jobId,
             toolsAllow: params.toolsAllow,
+            sourceBoundMessagePolicy: params.sourceBoundMessagePolicy,
             cleanupBundleMcpOnRunEnd: params.cleanupBundleMcpOnRunEnd,
             disableMessageTool: params.disableMessageTool,
             forceMessageTool: params.forceMessageTool,
@@ -2461,6 +2573,12 @@ async function runEmbeddedAgentInternal(
             sessionAssistantForCandidate?.stopReason === "error"
               ? sessionAssistantForCandidate.errorMessage?.trim() || formattedAssistantErrorText
               : undefined;
+          if (
+            isRoomObservation &&
+            (preflightRecovery || promptError || assistantErrorText || timedOut)
+          ) {
+            return { payloads: [], meta: { durationMs: Date.now() - started } };
+          }
           const canRestartForLiveSwitch =
             !hasOutboundDeliveryEvidence(attempt) &&
             !attempt.didSendDeterministicApprovalPrompt &&

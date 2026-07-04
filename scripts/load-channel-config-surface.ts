@@ -185,7 +185,10 @@ export async function loadChannelConfigSurfaceModule(
     candidatePath: string,
   ): Promise<{ schema: Record<string, unknown>; uiHints?: Record<string, unknown> } | null> => {
     try {
-      const resolved = await loadViaNativeImport(candidatePath);
+      // Prefer the source-aware Jiti path so generated config metadata does not
+      // accidentally read stale package-export build output from node_modules.
+      const imported = loadViaJiti(candidatePath);
+      const resolved = resolveConfigSchemaExport(imported);
       if (resolved) {
         return resolved;
       }
@@ -195,10 +198,7 @@ export async function loadChannelConfigSurfaceModule(
     }
 
     try {
-      // Prefer the source-aware Jiti path so generated config metadata stays
-      // stable before and after build output exists in the repo.
-      const imported = loadViaJiti(candidatePath);
-      const resolved = resolveConfigSchemaExport(imported);
+      const resolved = await loadViaNativeImport(candidatePath);
       if (resolved) {
         return resolved;
       }

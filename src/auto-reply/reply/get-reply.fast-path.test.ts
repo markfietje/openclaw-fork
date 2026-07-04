@@ -68,6 +68,7 @@ registerGetReplyRuntimeOverrides(mocks);
 let getReplyFromConfig: typeof import("./get-reply.js").getReplyFromConfig;
 let resolveDefaultModelMock: typeof import("./directive-handling.defaults.js").resolveDefaultModel;
 let resolveModelRefFromStringMock: typeof import("../../agents/model-selection.js").resolveModelRefFromString;
+let resolveChannelModelOverrideMock: typeof import("../../channels/model-overrides.js").resolveChannelModelOverride;
 let loadConfigMock: typeof import("../../config/config.js").getRuntimeConfig;
 let runPreparedReplyMock: typeof import("./get-reply-run.js").runPreparedReply;
 
@@ -77,6 +78,8 @@ async function loadGetReplyRuntimeForTest() {
     await import("./directive-handling.defaults.js"));
   ({ resolveModelRefFromString: resolveModelRefFromStringMock } =
     await import("../../agents/model-selection.js"));
+  ({ resolveChannelModelOverride: resolveChannelModelOverrideMock } =
+    await import("../../channels/model-overrides.js"));
   ({ getRuntimeConfig: loadConfigMock } = await import("../../config/config.js"));
   ({ runPreparedReply: runPreparedReplyMock } = await import("./get-reply-run.js"));
 }
@@ -154,6 +157,8 @@ describe("getReplyFromConfig fast test bootstrap", () => {
     });
     vi.mocked(resolveModelRefFromStringMock).mockReset();
     vi.mocked(resolveModelRefFromStringMock).mockReturnValue(null);
+    vi.mocked(resolveChannelModelOverrideMock).mockReset();
+    vi.mocked(resolveChannelModelOverrideMock).mockReturnValue(null);
     vi.mocked(loadConfigMock).mockReset();
     vi.mocked(runPreparedReplyMock).mockReset();
     vi.mocked(loadConfigMock).mockReturnValue({});
@@ -247,6 +252,155 @@ describe("getReplyFromConfig fast test bootstrap", () => {
       sessionKey: "agent:main:slack:channel:C123",
       sessionId: "rotated-session",
       storePath: "/tmp/custom-sessions.json",
+    });
+  });
+
+  it.each([
+    ["openai", "gpt-5.5"],
+    ["anthropic", "claude-opus-4-6"],
+    ["ollama", "llama3.3"],
+    ["custom-provider", "custom-model"],
+  ])(
+    "preserves a passive channel model pin for %s/%s until runtime admission",
+    async (provider, model) => {
+      vi.stubEnv("OPENCLAW_ALLOW_SLOW_REPLY_TESTS", "1");
+      const ctx = buildGetReplyCtx({
+        Provider: "slack",
+        Surface: "slack",
+        OriginatingChannel: "slack",
+        OriginatingTo: "C123",
+        AccountId: "default",
+        NativeChannelId: "C123",
+        ChatId: "C123",
+        MessageThreadId: "171234.567",
+        ChatType: "channel",
+        SessionKey: "agent:main:slack:channel:C123",
+        From: "slack:U999",
+        To: "slack:C123",
+        RequestAuthorized: false,
+        InputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+      });
+      mocks.initSessionState.mockResolvedValueOnce(
+        createGetReplySessionState({
+          sessionCtx: { ...ctx },
+          sessionEntry: {
+            channel: "slack",
+            chatType: "channel",
+            groupId: "C123",
+          },
+          sessionKey: "agent:main:slack:channel:C123",
+          groupResolution: { channel: "slack", id: "C123" },
+          isGroup: true,
+          triggerBodyNormalized: "hello",
+          bodyStripped: "hello",
+        }),
+      );
+      vi.mocked(resolveChannelModelOverrideMock).mockReturnValueOnce({
+        channel: "slack",
+        model: `${provider}/${model}`,
+        matchKey: "C123",
+        matchSource: "direct",
+      });
+      vi.mocked(resolveModelRefFromStringMock).mockReturnValueOnce({
+        ref: { provider, model },
+      });
+      mocks.resolveReplyDirectives.mockImplementationOnce(async (input: unknown) => {
+        const route = input as { provider: string; model: string };
+        return createGetReplyContinueDirectivesResult({
+          body: "hello",
+          abortKey: "agent:main:slack:channel:C123",
+          from: "slack:U999",
+          to: "slack:C123",
+          senderId: "U999",
+          commandSource: "hello",
+          senderIsOwner: false,
+          resetHookTriggered: false,
+          provider: route.provider,
+          model: route.model,
+        });
+      });
+
+      await getReplyFromConfig(
+        ctx,
+        {
+          sourceBoundMessagePolicy: {
+            mode: "source_bound",
+            channel: "slack",
+            accountId: "default",
+            conversationId: "C123",
+            threadId: "171234.567",
+          },
+        },
+        {
+          channels: { modelByChannel: { slack: { C123: `${provider}/${model}` } } },
+        },
+      );
+
+      expect(requirePreparedReplyParams()).toMatchObject({ provider, model });
+    },
+  );
+
+  it("keeps legacy authorized channel model routing unchanged", async () => {
+    vi.stubEnv("OPENCLAW_ALLOW_SLOW_REPLY_TESTS", "1");
+    const ctx = buildGetReplyCtx({
+      Provider: "slack",
+      Surface: "slack",
+      OriginatingChannel: "slack",
+      ChatType: "channel",
+      SessionKey: "agent:main:slack:channel:C123",
+      CommandAuthorized: true,
+    });
+    mocks.initSessionState.mockResolvedValueOnce(
+      createGetReplySessionState({
+        sessionCtx: { ...ctx },
+        sessionEntry: { channel: "slack", chatType: "channel", groupId: "C123" },
+        sessionKey: "agent:main:slack:channel:C123",
+        groupResolution: { channel: "slack", id: "C123" },
+        isGroup: true,
+        triggerBodyNormalized: "hello",
+        bodyStripped: "hello",
+      }),
+    );
+    vi.mocked(resolveChannelModelOverrideMock).mockReturnValueOnce({
+      channel: "slack",
+      model: "anthropic/claude-opus-4-6",
+      matchKey: "C123",
+      matchSource: "direct",
+    });
+    vi.mocked(resolveModelRefFromStringMock).mockReturnValueOnce({
+      ref: { provider: "anthropic", model: "claude-opus-4-6" },
+    });
+    mocks.resolveReplyDirectives.mockImplementationOnce(async (input: unknown) => {
+      const route = input as { provider: string; model: string };
+      return createGetReplyContinueDirectivesResult({
+        body: "hello",
+        abortKey: "agent:main:slack:channel:C123",
+        from: "slack:U123",
+        to: "slack:C123",
+        senderId: "U123",
+        commandSource: "hello",
+        senderIsOwner: true,
+        resetHookTriggered: false,
+        provider: route.provider,
+        model: route.model,
+      });
+    });
+    mocks.handleInlineActions.mockResolvedValueOnce({
+      kind: "continue",
+      directives: {},
+      cleanedBody: "hello",
+      abortedLastRun: false,
+    });
+
+    await getReplyFromConfig(ctx, undefined, {
+      channels: {
+        modelByChannel: { slack: { C123: "anthropic/claude-opus-4-6" } },
+      },
+    });
+
+    expect(requirePreparedReplyParams()).toMatchObject({
+      provider: "anthropic",
+      model: "claude-opus-4-6",
     });
   });
 

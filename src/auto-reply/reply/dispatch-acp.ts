@@ -32,7 +32,10 @@ import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { resolveStatusTtsSnapshot } from "../../tts/status-config.js";
 import { resolveConfiguredTtsMode } from "../../tts/tts-config.js";
-import type { SourceReplyDeliveryMode } from "../get-reply-options.types.js";
+import type {
+  SourceBoundMessagePolicy,
+  SourceReplyDeliveryMode,
+} from "../get-reply-options.types.js";
 import { markReplyPayloadAsTtsSupplement } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import { createAcpReplyProjector } from "./acp-projector.js";
@@ -409,6 +412,7 @@ export async function tryDispatchAcpReply(params: {
   runId?: string;
   sessionKey?: string;
   toolsAllow?: string[];
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   images?: Array<{ data: string; mimeType: string }>;
   extractedFileImages?: ExtractedFileImage[];
   abortSignal?: AbortSignal;
@@ -560,6 +564,12 @@ export async function tryDispatchAcpReply(params: {
       throw new AcpRuntimeError(
         "ACP_DISPATCH_DISABLED",
         "ACP dispatch cannot enforce runtime toolsAllow for this session; use an embedded runtime for restricted tool policy.",
+      );
+    }
+    if (params.sourceBoundMessagePolicy !== undefined) {
+      throw new AcpRuntimeError(
+        "ACP_DISPATCH_DISABLED",
+        "ACP dispatch cannot enforce a source-bound message policy for this session; use an embedded runtime for restricted message delivery.",
       );
     }
     if (acpResolution.kind === "stale") {

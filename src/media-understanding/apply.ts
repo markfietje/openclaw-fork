@@ -537,6 +537,11 @@ export async function applyMediaUnderstanding(params: {
   activeModel?: ActiveMediaModel;
 }): Promise<ApplyMediaUnderstandingResult> {
   const { ctx, cfg } = params;
+  const suppressCommandText = ctx.RequestAuthorized === false;
+  if (suppressCommandText) {
+    ctx.CommandBody = "";
+    ctx.BodyForCommands = "";
+  }
   const mediaWorkspaceDir = ctx.MediaWorkspaceDir ?? params.workspaceDir;
   const commandCandidates = [ctx.CommandBody, ctx.RawBody, ctx.Body];
   const originalUserText =
@@ -645,16 +650,18 @@ export async function applyMediaUnderstanding(params: {
       if (audioOutputs.length > 0) {
         const transcript = formatAudioTranscripts(audioOutputs);
         ctx.Transcript = transcript;
-        if (originalUserText) {
-          ctx.CommandBody = originalUserText;
-          ctx.RawBody = originalUserText;
-        } else {
-          ctx.CommandBody = transcript;
-          ctx.RawBody = transcript;
+        if (!suppressCommandText) {
+          if (originalUserText) {
+            ctx.CommandBody = originalUserText;
+            ctx.RawBody = originalUserText;
+          } else {
+            ctx.CommandBody = transcript;
+            ctx.RawBody = transcript;
+          }
         }
         // Echo transcript back to chat before agent processing, if configured.
         const audioCfg = cfg.tools?.media?.audio;
-        if (audioCfg?.echoTranscript && transcript) {
+        if (!suppressCommandText && audioCfg?.echoTranscript && transcript) {
           await sendTranscriptEcho({
             ctx,
             cfg,
@@ -662,7 +669,7 @@ export async function applyMediaUnderstanding(params: {
             format: audioCfg.echoFormat ?? DEFAULT_ECHO_TRANSCRIPT_FORMAT,
           });
         }
-      } else if (originalUserText) {
+      } else if (originalUserText && !suppressCommandText) {
         ctx.CommandBody = originalUserText;
         ctx.RawBody = originalUserText;
       }
@@ -696,8 +703,13 @@ export async function applyMediaUnderstanding(params: {
     if (outputs.length > 0 || fileContext.blocks.length > 0) {
       finalizeInboundContext(ctx, {
         forceBodyForAgent: true,
-        forceBodyForCommands: outputs.length > 0 || fileContext.blocks.length > 0,
+        forceBodyForCommands:
+          !suppressCommandText && (outputs.length > 0 || fileContext.blocks.length > 0),
       });
+    }
+    if (suppressCommandText) {
+      ctx.CommandBody = "";
+      ctx.BodyForCommands = "";
     }
 
     return {

@@ -15,7 +15,10 @@ import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
 } from "../../../packages/gateway-protocol/src/client-info.js";
-import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
+import type {
+  SourceBoundMessagePolicy,
+  SourceReplyDeliveryMode,
+} from "../../auto-reply/get-reply-options.types.js";
 import {
   hasInboundMetadataSentinel,
   stripInboundMetadata,
@@ -59,6 +62,7 @@ import {
   resolveAllowedMessageActions,
   shouldApplyCrossContextMarker,
 } from "../../infra/outbound/outbound-policy.js";
+import { assertSourceBoundMessageText } from "../../infra/outbound/source-bound-message-policy.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { POLL_CREATION_PARAM_DEFS, SHARED_POLL_CREATION_PARAM_NAMES } from "../../poll-params.js";
@@ -866,6 +870,12 @@ const MessageToolSchema = buildMessageToolSchemaFromActions(AllMessageActions, {
   includeDeliveryPin: true,
   includeBestEffort: false,
 });
+const SourceBoundMessageToolSchema = Type.Object({
+  action: stringEnum(["send"]),
+  message: Type.String({
+    description: "Plain-text observation sent to the current source conversation and thread.",
+  }),
+});
 
 type MessageToolOptions = {
   agentAccountId?: string;
@@ -891,6 +901,7 @@ type MessageToolOptions = {
   sandboxRoot?: string;
   requireExplicitTarget?: boolean;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   inboundEventKind?: InboundEventKind;
   requesterSenderId?: string;
   senderIsOwner?: boolean;
@@ -1123,9 +1134,13 @@ function buildMessageToolDescription(options?: {
   agentId?: string;
   requireExplicitTarget?: boolean;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   requesterSenderId?: string;
   senderIsOwner?: boolean;
 }): string {
+  if (options?.sourceBoundMessagePolicy) {
+    return "Attempt at most one message to this turn's current source conversation and thread only. Omit channel, target, accountId, replyTo, and threadId; the source route is applied automatically.";
+  }
   const baseDescription = "Send/delete/manage channel messages.";
   const resolvedOptions = options ?? {};
   const messageToolDiscoveryParams = resolvedOptions.config
@@ -1192,6 +1207,71 @@ function appendMessageToolReadHint(
   return description;
 }
 
+function normalizeSourceBoundConversationId(value: unknown): string | undefined {
+  const normalized = normalizeOptionalStringifiedId(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.replace(/^channel:/iu, "");
+}
+
+function assertSourceBoundMessagePolicy(params: {
+  policy: SourceBoundMessagePolicy;
+  action: ChannelMessageActionName;
+  params: Record<string, unknown>;
+  currentChannelProvider?: string;
+  currentChannelId?: string;
+  currentMessagingTarget?: string;
+  currentAccountId?: string;
+  currentThreadId?: string;
+  currentMessageId?: string | number;
+}): void {
+  const fail = (reason: string): never => {
+    throw new Error(`Source-bound message policy denied this action: ${reason}`);
+  };
+  if (params.action !== "send") {
+    fail('only action="send" is allowed');
+  }
+  for (const field of Object.keys(params.params)) {
+    if (field !== "action" && field !== "message") {
+      fail(`explicit ${field} is not allowed; only a plain-text message may be supplied`);
+    }
+  }
+  assertSourceBoundMessageText(params.params.message);
+
+  const policyChannel = normalizeMessageChannel(params.policy.channel);
+  const currentChannel = normalizeMessageChannel(params.currentChannelProvider);
+  if (!policyChannel || currentChannel !== policyChannel) {
+    fail("the active provider does not match the source provider");
+  }
+  const policyAccountId = normalizeAccountId(params.policy.accountId);
+  const currentAccountId = normalizeAccountId(params.currentAccountId ?? "default");
+  if (currentAccountId !== policyAccountId) {
+    fail("the active account does not match the source account");
+  }
+
+  const policyConversationId = normalizeSourceBoundConversationId(params.policy.conversationId);
+  const currentConversationIds = new Set(
+    [params.currentMessagingTarget, params.currentChannelId]
+      .map(normalizeSourceBoundConversationId)
+      .filter((value): value is string => Boolean(value)),
+  );
+  if (!policyConversationId || !currentConversationIds.has(policyConversationId)) {
+    fail("the active conversation does not match the source conversation");
+  }
+
+  const policyThreadId = normalizeOptionalString(params.policy.threadId);
+  const currentThreadId = normalizeOptionalString(params.currentThreadId);
+  const currentMessageId = normalizeOptionalStringifiedId(params.currentMessageId);
+  const currentThreadIsTopLevelReplyAnchor =
+    policyThreadId === undefined &&
+    currentThreadId !== undefined &&
+    currentThreadId === currentMessageId;
+  if (!currentThreadIsTopLevelReplyAnchor && currentThreadId !== policyThreadId) {
+    fail("the active thread does not match the source thread");
+  }
+}
+
 export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   const loadConfigForTool = options?.getRuntimeConfig ?? getRuntimeConfig;
   const getScopedSecretTargetsForTool =
@@ -1199,6 +1279,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   const resolveSecretRefsForTool =
     options?.resolveCommandSecretRefsViaGateway ?? resolveCommandSecretRefsViaGateway;
   const runMessageActionForTool = options?.runMessageAction ?? runMessageAction;
+  let sourceBoundSendReserved = false;
   let generatedIdempotencyCounter = 0;
   // Poll-vote echo record lives in the session-scoped map (recentPollVoteBySession)
   // so it survives the run boundary between the vote and the follow-up text; a
@@ -1230,21 +1311,23 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           config: options?.config,
         })
       : undefined);
-  const schema = options?.config
-    ? buildMessageToolSchema({
-        cfg: options.config,
-        currentChannelProvider: effectiveCurrentChannel.currentChannelProvider,
-        currentChannelId: effectiveCurrentChannel.currentChannelId,
-        currentThreadTs,
-        currentMessageId: options.currentMessageId,
-        currentAccountId: agentAccountId,
-        sessionKey: options.agentSessionKey,
-        sessionId: options.sessionId,
-        agentId: resolvedAgentId,
-        requesterSenderId: options.requesterSenderId,
-        senderIsOwner: options.senderIsOwner,
-      })
-    : MessageToolSchema;
+  const schema = options?.sourceBoundMessagePolicy
+    ? SourceBoundMessageToolSchema
+    : options?.config
+      ? buildMessageToolSchema({
+          cfg: options.config,
+          currentChannelProvider: effectiveCurrentChannel.currentChannelProvider,
+          currentChannelId: effectiveCurrentChannel.currentChannelId,
+          currentThreadTs,
+          currentMessageId: options.currentMessageId,
+          currentAccountId: agentAccountId,
+          sessionKey: options.agentSessionKey,
+          sessionId: options.sessionId,
+          agentId: resolvedAgentId,
+          requesterSenderId: options.requesterSenderId,
+          senderIsOwner: options.senderIsOwner,
+        })
+      : MessageToolSchema;
   const description = buildMessageToolDescription({
     config: options?.config,
     currentChannel: effectiveCurrentChannel.currentChannelProvider,
@@ -1257,6 +1340,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
     agentId: resolvedAgentId,
     requireExplicitTarget: options?.requireExplicitTarget,
     sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,
+    sourceBoundMessagePolicy: options?.sourceBoundMessagePolicy,
     requesterSenderId: options?.requesterSenderId,
     senderIsOwner: options?.senderIsOwner,
   });
@@ -1273,6 +1357,21 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       }
       // Shallow-copy so we don't mutate the original event args (used for logging/dedup).
       const params = { ...(args as Record<string, unknown>) };
+      if (options?.sourceBoundMessagePolicy) {
+        assertSourceBoundMessagePolicy({
+          policy: options.sourceBoundMessagePolicy,
+          action: readStringParam(params, "action", {
+            required: true,
+          }) as ChannelMessageActionName,
+          params,
+          currentChannelProvider: effectiveCurrentChannel.currentChannelProvider,
+          currentChannelId: effectiveCurrentChannel.currentChannelId,
+          currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
+          currentAccountId: agentAccountId,
+          currentThreadId: currentThreadTs,
+          currentMessageId: options.currentMessageId,
+        });
+      }
 
       // Sanitize outbound text fields in three layers:
       //
@@ -1326,6 +1425,9 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       const action = readStringParam(params, "action", {
         required: true,
       }) as ChannelMessageActionName;
+      if (options?.sourceBoundMessagePolicy) {
+        assertSourceBoundMessageText(params.message);
+      }
       if (
         suppressedVisiblePayloadReason &&
         action === "send" &&
@@ -1353,6 +1455,18 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
             "Explicit message target required for this run. Provide target/targets (and channel when needed).",
           );
         }
+      }
+
+      if (options?.sourceBoundMessagePolicy) {
+        if (sourceBoundSendReserved) {
+          throw new Error(
+            "Source-bound message policy denied this action: this message tool instance has already attempted a send",
+          );
+        }
+        // Reserve synchronously before any async resolution or dispatch. Never
+        // release the claim after dispatch begins: a thrown result can still be
+        // an unknown delivery outcome.
+        sourceBoundSendReserved = true;
       }
 
       const gatewayOpts = readGatewayCallOptions(params);
@@ -1497,6 +1611,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           agentId: resolvedAgentId,
           sandboxRoot: options?.sandboxRoot,
           sourceReplyDeliveryMode: sourceReplySinkDeliveryMode,
+          sourceBoundMessagePolicy: options?.sourceBoundMessagePolicy,
           inboundEventKind: options?.inboundEventKind,
           inboundAudio: options?.currentInboundAudio,
           abortSignal: signal,

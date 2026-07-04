@@ -2,7 +2,7 @@
 import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
 import { dispatchSlackPluginInteractiveHandler } from "../../interactive-dispatch.js";
 import { parseSlackModalPrivateMetadata } from "../../modal-metadata.js";
-import { authorizeSlackSystemEventSender } from "../auth.js";
+import { authorizeSlackSystemEventSender, resolveSlackRoomRequestUserPolicy } from "../auth.js";
 import type { SlackMonitorContext } from "../context.js";
 import type { ModalInputSummary } from "./modal-input-summary.js";
 
@@ -327,7 +327,14 @@ async function emitSlackModalLifecycleEvent(params: {
   }
 
   if (!expectedUserId) {
-    if (pluginInteractiveData) {
+    const requestUserPolicy = await resolveSlackRoomRequestUserPolicy({
+      ctx: params.ctx,
+      channelId: sessionRouting.channelId,
+      channelType: sessionRouting.channelType,
+    });
+    // A routed room with requestUsers must bind the Slack-signed actor before
+    // any plugin callback. Preserve callback-only legacy behavior elsewhere.
+    if (pluginInteractiveData && !requestUserPolicy.configured) {
       try {
         await dispatchSlackModalPluginInteractiveHandler({
           ctx: params.ctx,

@@ -3,7 +3,7 @@ import type { App } from "@slack/bolt";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { describe, expect, it } from "vitest";
-import { resolveSlackChannelConfig } from "./channel-config.js";
+import { resolveSlackChannelConfig, resolveSlackRequestUserAccess } from "./channel-config.js";
 import { createSlackMonitorContext, normalizeSlackChannelType } from "./context.js";
 
 type SlackChannelConfigResult = ReturnType<typeof resolveSlackChannelConfig>;
@@ -101,6 +101,46 @@ describe("resolveSlackChannelConfig", () => {
     });
   });
 
+  it("resolves requestUsers with direct entries overriding wildcard defaults", () => {
+    const wildcard = resolveSlackChannelConfig({
+      channelId: "C2",
+      channels: { "*": { requestUsers: ["U_WILDCARD"] } },
+    });
+    const direct = resolveSlackChannelConfig({
+      channelId: "C1",
+      channels: {
+        "*": { requestUsers: ["U_WILDCARD"] },
+        C1: { requestUsers: ["U_DIRECT"] },
+      },
+    });
+
+    expect(wildcard?.requestUsers).toEqual(["U_WILDCARD"]);
+    expect(direct?.requestUsers).toEqual(["U_DIRECT"]);
+  });
+
+  it("resolves channel safety flags with direct entries overriding wildcard defaults", () => {
+    const wildcard = resolveSlackChannelConfig({
+      channelId: "C2",
+      channels: {
+        "*": { mediaDownloads: false, sourceBoundMessageTool: true, textCommands: false },
+      },
+    });
+    const direct = resolveSlackChannelConfig({
+      channelId: "C1",
+      channels: {
+        "*": { mediaDownloads: true, sourceBoundMessageTool: false, textCommands: true },
+        C1: { mediaDownloads: false, sourceBoundMessageTool: true, textCommands: false },
+      },
+    });
+
+    expect(wildcard?.mediaDownloads).toBe(false);
+    expect(wildcard?.sourceBoundMessageTool).toBe(true);
+    expect(wildcard?.textCommands).toBe(false);
+    expect(direct?.mediaDownloads).toBe(false);
+    expect(direct?.sourceBoundMessageTool).toBe(true);
+    expect(direct?.textCommands).toBe(false);
+  });
+
   it("uses direct match metadata when channel config exists", () => {
     const res = resolveSlackChannelConfig({
       channelId: "C1",
@@ -186,6 +226,64 @@ describe("resolveSlackChannelConfig", () => {
       matchKey: "ops-room",
       matchSource: "direct",
     });
+  });
+});
+
+describe("resolveSlackRequestUserAccess", () => {
+  it("preserves existing behavior when requestUsers is unset", () => {
+    expect(
+      resolveSlackRequestUserAccess({
+        senderId: "U_ANYONE",
+      }),
+    ).toEqual({ configured: false, allowed: true });
+  });
+
+  it("matches stable Slack user IDs and treats an empty list as deny-all", () => {
+    expect(
+      resolveSlackRequestUserAccess({
+        requestUsers: ["U_OWNER"],
+        senderId: "U_OWNER",
+      }),
+    ).toEqual({ configured: true, allowed: true });
+    expect(
+      resolveSlackRequestUserAccess({
+        requestUsers: ["U_OWNER"],
+        senderId: "U_OTHER",
+      }),
+    ).toEqual({ configured: true, allowed: false });
+    expect(
+      resolveSlackRequestUserAccess({
+        requestUsers: [],
+        senderId: "U_OWNER",
+      }),
+    ).toEqual({ configured: true, allowed: false });
+  });
+
+  it("allows every admitted sender when requestUsers contains a wildcard", () => {
+    expect(
+      resolveSlackRequestUserAccess({
+        requestUsers: ["*"],
+        senderId: "U_ANYONE",
+      }),
+    ).toEqual({ configured: true, allowed: true });
+  });
+
+  it("matches mutable names only when dangerous name matching is enabled", () => {
+    expect(
+      resolveSlackRequestUserAccess({
+        requestUsers: ["alice"],
+        senderId: "U_ALICE",
+        senderName: "alice",
+      }),
+    ).toEqual({ configured: true, allowed: false });
+    expect(
+      resolveSlackRequestUserAccess({
+        requestUsers: ["alice"],
+        senderId: "U_ALICE",
+        senderName: "alice",
+        allowNameMatching: true,
+      }),
+    ).toEqual({ configured: true, allowed: true });
   });
 });
 

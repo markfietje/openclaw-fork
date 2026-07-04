@@ -70,6 +70,8 @@ export type QueuedDeliveryPayload = {
   session?: OutboundSessionContext;
   /** Gateway caller scopes at enqueue time, preserved for recovery replay. */
   gatewayClientScopes?: readonly string[];
+  /** Replayable final-payload constraint for source-bound sends. */
+  outboundPayloadPolicy?: "source_bound_plain_text";
 };
 
 export interface QueuedDelivery extends QueuedDeliveryPayload {
@@ -98,6 +100,7 @@ export async function enqueueDelivery(
   stateDir?: string,
 ): Promise<string> {
   const id = generateSecureUuid();
+  const sourceBoundPlainText = params.outboundPayloadPolicy === "source_bound_plain_text";
   const entry: QueuedDelivery = {
     id,
     enqueuedAt: Date.now(),
@@ -114,11 +117,12 @@ export async function enqueueDelivery(
     bestEffort: params.bestEffort,
     gifPlayback: params.gifPlayback,
     forceDocument: params.forceDocument,
-    replyPayloadSendingHook: params.replyPayloadSendingHook,
+    replyPayloadSendingHook: sourceBoundPlainText ? undefined : params.replyPayloadSendingHook,
     silent: params.silent,
-    mirror: params.mirror,
-    session: params.session,
+    mirror: sourceBoundPlainText ? undefined : params.mirror,
+    session: sourceBoundPlainText ? undefined : params.session,
     gatewayClientScopes: params.gatewayClientScopes,
+    outboundPayloadPolicy: params.outboundPayloadPolicy,
     retryCount: 0,
   };
   upsertDeliveryQueueEntry({

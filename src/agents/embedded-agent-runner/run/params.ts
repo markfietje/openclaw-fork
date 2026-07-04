@@ -4,6 +4,7 @@
 import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 import type {
   PartialReplyPayload,
+  SourceBoundMessagePolicy,
   SourceReplyDeliveryMode,
 } from "../../../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../../../auto-reply/reply-payload.js";
@@ -146,6 +147,8 @@ export type RunEmbeddedAgentParams = {
   transcriptPrompt?: string;
   currentInboundEventKind?: InboundEventKind;
   currentInboundContext?: CurrentInboundPromptContext;
+  /** Trusted room-level policy used by the isolated passive observation prompt. */
+  roomObservationSystemPrompt?: string;
   images?: ImageContent[];
   imageOrder?: PromptImageOrderEntry[];
   /** Optional client-provided tools (OpenResponses hosted tools). */
@@ -184,6 +187,8 @@ export type RunEmbeddedAgentParams = {
   bootstrapContextRunKind?: BootstrapContextRunKind;
   /** Optional tool allow-list; when set, only these tools are sent to the model. */
   toolsAllow?: string[];
+  /** Restrict message sends to the exact source route for this run. */
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   /** Seen bootstrap truncation warning signatures for this session (once mode dedupe). */
   bootstrapPromptWarningSignaturesSeen?: string[];
   /** Last shown bootstrap truncation warning signature for this session. */

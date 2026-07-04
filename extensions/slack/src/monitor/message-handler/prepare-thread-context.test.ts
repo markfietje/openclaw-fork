@@ -1,7 +1,7 @@
 // Slack tests cover prepare thread context plugin behavior.
 import type { App } from "@slack/bolt";
 import { resolveEnvelopeFormatOptions } from "openclaw/plugin-sdk/channel-inbound";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { ContextVisibilityMode, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SlackMessageEvent } from "../../types.js";
 import { resolveSlackThreadContextData } from "./prepare-thread-context.js";
@@ -49,7 +49,9 @@ describe("resolveSlackThreadContextData", () => {
     repliesMessages: Array<Record<string, string>>;
     threadStarter: { text: string; userId?: string; ts?: string; botId?: string };
     allowFromLower: string[];
+    requestUsers?: Array<string | number>;
     allowNameMatching: boolean;
+    contextVisibilityMode?: ContextVisibilityMode;
   }) {
     const { storePath } = storeFixture.makeTmpStorePath();
     const replies = vi.fn().mockResolvedValue({
@@ -74,8 +76,9 @@ describe("resolveSlackThreadContextData", () => {
       storePath,
       sessionKey: "thread-session",
       allowFromLower: params.allowFromLower,
+      requestUsers: params.requestUsers,
       allowNameMatching: params.allowNameMatching,
-      contextVisibilityMode: "allowlist",
+      contextVisibilityMode: params.contextVisibilityMode ?? "allowlist",
       envelopeOptions: resolveEnvelopeFormatOptions({} as OpenClawConfig),
       effectiveDirectMedia: null,
     });
@@ -109,6 +112,133 @@ describe("resolveSlackThreadContextData", () => {
     expect(result.threadHistoryBody).not.toContain("blocked follow-up");
     expect(result.threadHistoryBody).not.toContain("current message");
     expect(replies).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits unauthorized thread starter and history on a later requestUsers-authorized turn", async () => {
+    const { result } = await resolveAllowlistedThreadContext({
+      repliesMessages: [
+        { text: "unauthorized starter secret", user: "U2", ts: "100.000" },
+        { text: "other bot secret", bot_id: "B2", ts: "100.500" },
+        { text: "unauthorized follow-up secret", user: "U2", ts: "100.700" },
+        { text: "authorized follow-up", user: "U1", ts: "100.800" },
+        { text: "current authorized turn", user: "U1", ts: "101.000" },
+      ],
+      threadStarter: {
+        text: "unauthorized starter secret",
+        userId: "U2",
+        ts: "100.000",
+      },
+      allowFromLower: [],
+      requestUsers: ["U1"],
+      allowNameMatching: false,
+    });
+
+    expect(result.threadStarterBody).toBeUndefined();
+    expect(result.threadLabel).toBe("Slack thread #general");
+    expect(result.threadHistoryBody).toContain("authorized follow-up");
+    expect(result.threadHistoryBody).not.toContain("unauthorized starter secret");
+    expect(result.threadHistoryBody).not.toContain("unauthorized follow-up secret");
+    expect(result.threadHistoryBody).not.toContain("other bot secret");
+    expect(result.threadHistoryBody).not.toContain("current authorized turn");
+  });
+
+  it("matches requestUsers by resolved name when name matching is enabled", async () => {
+    const { result } = await resolveAllowlistedThreadContext({
+      repliesMessages: [
+        { text: "Alice starter", user: "U1", ts: "100.000" },
+        { text: "Mallory follow-up", user: "U2", ts: "100.700" },
+        { text: "current message", user: "U1", ts: "101.000" },
+      ],
+      threadStarter: {
+        text: "Alice starter",
+        userId: "U1",
+        ts: "100.000",
+      },
+      allowFromLower: [],
+      requestUsers: ["alice"],
+      allowNameMatching: true,
+    });
+
+    expect(result.threadStarterBody).toBe("Alice starter");
+    expect(result.threadHistoryBody).toContain("Alice starter");
+    expect(result.threadHistoryBody).not.toContain("Mallory follow-up");
+  });
+
+  it("allows all human thread context for wildcard requestUsers but omits other bots", async () => {
+    const { result } = await resolveAllowlistedThreadContext({
+      repliesMessages: [
+        { text: "Mallory starter", user: "U2", ts: "100.000" },
+        { text: "Alice follow-up", user: "U1", ts: "100.700" },
+        { text: "other bot follow-up", bot_id: "B2", ts: "100.800" },
+        { text: "current message", user: "U1", ts: "101.000" },
+      ],
+      threadStarter: {
+        text: "Mallory starter",
+        userId: "U2",
+        ts: "100.000",
+      },
+      allowFromLower: [],
+      requestUsers: ["*"],
+      allowNameMatching: false,
+    });
+
+    expect(result.threadStarterBody).toBe("Mallory starter");
+    expect(result.threadHistoryBody).toContain("Mallory starter");
+    expect(result.threadHistoryBody).toContain("Alice follow-up");
+    expect(result.threadHistoryBody).not.toContain("other bot follow-up");
+  });
+
+  it("hard-intersects wildcard requestUsers hydration with channel users before mode=all", async () => {
+    const { result } = await resolveAllowlistedThreadContext({
+      repliesMessages: [
+        { text: "Mallory starter", user: "U2", ts: "100.000" },
+        { text: "Mallory follow-up", user: "U2", ts: "100.700" },
+        { text: "Alice follow-up", user: "U1", ts: "100.800" },
+        { text: "current message", user: "U1", ts: "101.000" },
+      ],
+      threadStarter: {
+        text: "Mallory starter",
+        userId: "U2",
+        ts: "100.000",
+      },
+      allowFromLower: ["u1"],
+      requestUsers: ["*"],
+      allowNameMatching: false,
+      contextVisibilityMode: "all",
+    });
+
+    expect(result.threadStarterBody).toBeUndefined();
+    expect(result.threadLabel).toBe("Slack thread #general");
+    expect(result.threadHistoryBody).toContain("Alice follow-up");
+    expect(result.threadHistoryBody).not.toContain("Mallory starter");
+    expect(result.threadHistoryBody).not.toContain("Mallory follow-up");
+  });
+
+  it("fails closed for an unverifiable current-bot root when requestUsers is configured", async () => {
+    const { result } = await resolveAllowlistedThreadContext({
+      repliesMessages: [
+        { text: "passive bot observation", bot_id: "B1", ts: "100.000" },
+        { text: "owner follow-up", user: "U1", ts: "100.700" },
+        { text: "other bot follow-up", bot_id: "B2", ts: "100.800" },
+        { text: "current message", user: "U1", ts: "101.000" },
+      ],
+      threadStarter: {
+        text: "passive bot observation",
+        botId: "B1",
+        ts: "100.000",
+      },
+      allowFromLower: ["u1"],
+      requestUsers: ["U1"],
+      allowNameMatching: false,
+      contextVisibilityMode: "all",
+    });
+
+    expect(result.threadStarterBody).toBeUndefined();
+    expect(result.threadLabel).toBe("Slack thread #general");
+    expect(result.threadHistoryBody).toContain("owner follow-up");
+    expect(result.threadHistoryBody).not.toContain("passive bot observation");
+    expect(result.threadHistoryBody).not.toContain("Bot (this assistant) (assistant)");
+    expect(result.threadHistoryBody).not.toContain("other bot follow-up");
   });
 
   it("filters prior current-bot replies from user-started threads on new sessions", async () => {

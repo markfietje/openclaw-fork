@@ -93,6 +93,7 @@ import {
   resolveSlackThreadTs,
 } from "../replies.js";
 import { dispatchReplyWithBufferedBlockDispatcher } from "../reply.runtime.js";
+import { buildSlackSourceBoundMessagePolicy } from "../source-bound-message-policy.js";
 import { finalizeSlackPreviewEdit } from "./preview-finalize.js";
 import { resolveSlackTimestampMs } from "./timestamp.js";
 import type { PreparedSlackMessage } from "./types.js";
@@ -1848,6 +1849,15 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   let dispatchError: unknown;
   let queuedFinal = false;
   let counts: Partial<Record<ReplyDispatchKind, number>> = {};
+  const sourceBoundMessageTool =
+    prepared.channelConfig?.sourceBoundMessageTool === true ||
+    prepared.ctxPayload.RequestAuthorized === false;
+  const rawSourceThreadId =
+    prepared.ctxPayload.MessageThreadId ?? prepared.ctxPayload.TransportThreadId;
+  const sourceThreadId =
+    typeof rawSourceThreadId === "string" || typeof rawSourceThreadId === "number"
+      ? rawSourceThreadId
+      : undefined;
   try {
     const turnResult = await dispatchChannelInboundReply({
       cfg,
@@ -1859,6 +1869,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       ctxPayload: prepared.ctxPayload,
       recordInboundSession,
       dispatchReplyWithBufferedBlockDispatcher,
+      toolsAllow: prepared.ctxPayload.RequestAuthorized === false ? ["message"] : undefined,
       dispatcherOptions: {
         ...replyPipeline,
         humanDelay: resolveHumanDelayConfig(cfg, route.agentId),
@@ -1873,6 +1884,14 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       replyOptions: {
         skillFilter: prepared.channelConfig?.skills,
         sourceReplyDeliveryMode,
+        sourceBoundMessagePolicy: sourceBoundMessageTool
+          ? buildSlackSourceBoundMessagePolicy({
+              accountId: route.accountId,
+              conversationId: message.channel,
+              threadId: sourceThreadId,
+            })
+          : undefined,
+        suppressTyping: prepared.ctxPayload.InboundEventKind === "room_event" ? true : undefined,
         hasRepliedRef,
         disableBlockStreaming,
         onModelSelected,

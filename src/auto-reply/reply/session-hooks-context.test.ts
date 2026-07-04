@@ -100,11 +100,13 @@ async function createStoredSession(params: {
   sessionId: string;
   text?: string;
   updatedAt?: number;
+  extraEntry?: Partial<SessionEntry>;
 }): Promise<{ storePath: string; transcriptPath: string }> {
   const storePath = await createStorePath(params.prefix);
   const transcriptPath = await writeTranscript(storePath, params.sessionId, params.text);
   await writeStore(storePath, {
     [params.sessionKey]: {
+      ...params.extraEntry,
       sessionId: params.sessionId,
       sessionFile: transcriptPath,
       updatedAt: params.updatedAt ?? Date.now(),
@@ -210,6 +212,87 @@ describe("session hook context wiring", () => {
     expectFields(event, { sessionKey });
     expectFields(context, { sessionKey, agentId: "main", sessionId: event?.sessionId });
   });
+
+  it("starts a fresh passive-only session when its first authorized turn reuses the session", async () => {
+    const sessionKey = "agent:main:slack:channel:passive-fresh";
+    const sessionId = "passive-fresh-session";
+    const { storePath } = await createStoredSession({
+      prefix: "openclaw-session-hook-passive-fresh",
+      sessionKey,
+      sessionId,
+      extraEntry: { passiveSessionStartPending: true },
+    });
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: { Body: "authorized follow-up", SessionKey: sessionKey },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(false);
+    expect(result.sessionId).toBe(sessionId);
+    expect(result.sessionEntry.passiveSessionStartPending).toBeUndefined();
+    expect(hookRunnerMocks.runSessionEnd).not.toHaveBeenCalled();
+    expect(hookRunnerMocks.runSessionStart).toHaveBeenCalledTimes(1);
+    const [event] = requireHookCall(hookRunnerMocks.runSessionStart, "session_start");
+    expectFields(event, { sessionId, resumedFrom: undefined });
+  });
+
+  it.each([
+    {
+      name: "daily",
+      reset: undefined,
+    },
+    {
+      name: "idle",
+      reset: { mode: "idle", idleMinutes: 30 } satisfies SessionResetConfig,
+    },
+  ])(
+    "archives but does not end or resume a passive-only session after $name rollover",
+    async ({ name, reset }) => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
+        const sessionKey = `agent:main:slack:channel:passive-${name}`;
+        const sessionId = `passive-${name}-session`;
+        const { storePath, transcriptPath } = await createStoredSession({
+          prefix: `openclaw-session-hook-passive-${name}`,
+          sessionKey,
+          sessionId,
+          updatedAt: new Date(2026, 0, 18, 3, 0, 0).getTime(),
+          extraEntry: { passiveSessionStartPending: true },
+        });
+        const cfg = {
+          session: {
+            store: storePath,
+            ...(reset ? { reset } : {}),
+          },
+        } as OpenClawConfig;
+
+        const result = await initSessionState({
+          ctx: { Body: "first authorized turn", SessionKey: sessionKey },
+          cfg,
+          commandAuthorized: true,
+        });
+
+        expect(result.isNewSession).toBe(true);
+        expect(result.sessionId).not.toBe(sessionId);
+        expect(result.previousSessionEntry?.passiveSessionStartPending).toBe(true);
+        expect(await fs.stat(transcriptPath).catch(() => null)).toBeNull();
+        const archived = (await fs.readdir(path.dirname(storePath))).filter((entry) =>
+          entry.startsWith(`${sessionId}.jsonl.reset.`),
+        );
+        expect(archived).toHaveLength(1);
+        expect(hookRunnerMocks.runSessionEnd).not.toHaveBeenCalled();
+        expect(hookRunnerMocks.runSessionStart).toHaveBeenCalledTimes(1);
+        const [event] = requireHookCall(hookRunnerMocks.runSessionStart, "session_start");
+        expectFields(event, { sessionId: result.sessionId, resumedFrom: undefined });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("passes sessionKey to session_end hook context on reset", async () => {
     const sessionKey = "agent:main:telegram:direct:123";

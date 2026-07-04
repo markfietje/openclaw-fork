@@ -11,6 +11,8 @@ export type SlackSystemEventTestOverrides = {
   allowFrom?: string[];
   channelType?: "im" | "channel";
   channelUsers?: string[];
+  requestUsers?: string[];
+  allowNameMatching?: boolean;
   reactionMode?: "off" | "own" | "all" | "allowlist";
   reactionAllowlist?: Array<string | number>;
   userNames?: Record<string, string>;
@@ -33,17 +35,19 @@ export function createSlackSystemEventTestHarness(overrides?: SlackSystemEventTe
     dmEnabled: true,
     dmPolicy: overrides?.dmPolicy ?? "open",
     defaultRequireMention: true,
-    channelsConfig: overrides?.channelUsers
-      ? {
-          C1: {
-            users: overrides.channelUsers,
-            enabled: true,
-          },
-        }
-      : undefined,
+    channelsConfig:
+      overrides?.channelUsers || overrides?.requestUsers !== undefined
+        ? {
+            C1: {
+              users: overrides.channelUsers,
+              requestUsers: overrides.requestUsers,
+              enabled: true,
+            },
+          }
+        : undefined,
     groupPolicy: "open",
     allowFrom: overrides?.allowFrom ?? [],
-    allowNameMatching: false,
+    allowNameMatching: overrides?.allowNameMatching ?? false,
     reactionMode: overrides?.reactionMode ?? "all",
     reactionAllowlist: overrides?.reactionAllowlist ?? [],
     shouldDropMismatchedSlackEvent: () => false,

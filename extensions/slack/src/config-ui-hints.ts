@@ -46,6 +46,38 @@ export const slackChannelConfigUiHints = {
     label: "Slack Allow Bot Messages",
     help: "Allow bot-authored messages to trigger Slack replies (default: false).",
   },
+  "channels.*.requestUsers": {
+    label: "Slack Channel Request Users",
+    help: "Slack user IDs eligible to create actionable requests in this channel; existing command authorization still applies. Other admitted senders remain passive room events. An empty list allows nobody; '*' allows everyone.",
+  },
+  "accounts.*.channels.*.requestUsers": {
+    label: "Slack Account Channel Request Users",
+    help: "Account-scoped Slack user IDs eligible to create actionable requests in this channel; existing command authorization still applies. Other admitted senders remain passive room events.",
+  },
+  "channels.*.mediaDownloads": {
+    label: "Slack Channel Media Downloads",
+    help: "Download Slack files and attachment media for this channel. Disable for text-only or public-data-only agents.",
+  },
+  "accounts.*.channels.*.mediaDownloads": {
+    label: "Slack Account Channel Media Downloads",
+    help: "Account-scoped switch for downloading Slack files and attachment media in this channel.",
+  },
+  "channels.*.sourceBoundMessageTool": {
+    label: "Slack Source-Bound Message Tool",
+    help: "Restrict every message-tool send in this channel to plain text in the originating conversation and thread.",
+  },
+  "accounts.*.channels.*.sourceBoundMessageTool": {
+    label: "Slack Account Source-Bound Message Tool",
+    help: "Account-scoped plain-text, originating-thread restriction for message-tool sends in this channel.",
+  },
+  "channels.*.textCommands": {
+    label: "Slack Channel Text Commands",
+    help: "Interpret slash-prefixed message text as OpenClaw or plugin commands in this channel. Disable for observational agents.",
+  },
+  "accounts.*.channels.*.textCommands": {
+    label: "Slack Account Channel Text Commands",
+    help: "Account-scoped text-command switch for this Slack channel.",
+  },
   botLoopProtection: {
     label: "Slack Bot Loop Protection",
     help: "Sliding-window guard for Slack bot-to-bot loops. Default is enabled whenever allowBots lets bot-authored messages reach dispatch.",

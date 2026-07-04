@@ -1,5 +1,8 @@
 import type { AgentMessage } from "../agents/runtime/index.js";
-import type { SourceReplyDeliveryMode } from "../auto-reply/get-reply-options.types.js";
+import type {
+  SourceBoundMessagePolicy,
+  SourceReplyDeliveryMode,
+} from "../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type {
   ReplyDispatchKind,
@@ -478,6 +481,7 @@ export type PluginHookReplyDispatchEvent = {
   runId?: string;
   sessionKey?: string;
   toolsAllow?: string[];
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   images?: Array<{ data: string; mimeType: string }>;
   inboundAudio: boolean;
   sessionTtsAuto?: TtsAutoMode;

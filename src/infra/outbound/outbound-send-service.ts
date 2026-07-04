@@ -59,6 +59,7 @@ export type OutboundSendContext = {
   mirror?: OutboundMirror;
   abortSignal?: AbortSignal;
   silent?: boolean;
+  outboundPayloadPolicy?: "source_bound_plain_text";
 };
 
 type PluginHandledResult = {
@@ -120,6 +121,7 @@ async function sendCoreMessage(params: {
     abortSignal: params.ctx.abortSignal,
     silent: params.ctx.silent,
     mediaAccess: params.ctx.mediaAccess,
+    outboundPayloadPolicy: params.ctx.outboundPayloadPolicy,
   });
 }
 
@@ -258,6 +260,26 @@ export async function executeSendAction(params: {
     audioAsVoice: params.asVoice === true,
   };
   const queuePolicy = params.bestEffort === false ? "required" : "best_effort";
+  if (params.ctx.outboundPayloadPolicy === "source_bound_plain_text") {
+    // Source-bound passive sends use the core durable adapter directly. Channel
+    // action hooks may otherwise rewrite output or receive owner session state.
+    const result = await sendCoreMessage({
+      ...params,
+      ctx: {
+        ...params.ctx,
+        sessionKey: undefined,
+        sessionId: undefined,
+        mirror: undefined,
+      },
+      queuePolicy,
+      payloads: [defaultPayload],
+    });
+    return {
+      handledBy: "core",
+      payload: result,
+      sendResult: result,
+    };
+  }
   const preparedPayload = await tryPreparePluginSendPayload({
     ctx: params.ctx,
     to: params.to,

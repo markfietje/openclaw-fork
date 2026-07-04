@@ -33,6 +33,7 @@ import {
   isSubagentSessionKey,
   resolveAgentIdFromSessionKey,
 } from "../routing/session-key.js";
+import { isRoomObservationInputProvenance } from "../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
 import {
   deliveryContextFromSession,
@@ -419,6 +420,43 @@ function resolveMainSessionResumeBlockReason(messages: unknown[]): string | null
     return "transcript tail is a stale approval-pending tool result";
   }
   return null;
+}
+
+function latestUserTurnIsRoomObservation(messages: unknown[]): boolean {
+  const latestUser = messages.toReversed().find((message) => getMessageRole(message) === "user");
+  return Boolean(
+    latestUser &&
+    typeof latestUser === "object" &&
+    isRoomObservationInputProvenance((latestUser as { provenance?: unknown }).provenance),
+  );
+}
+
+async function clearPassiveRestartRecovery(params: {
+  storePath: string;
+  sessionKey: string;
+}): Promise<void> {
+  await applyRestartRecoveryLifecycle({
+    storePath: params.storePath,
+    update: (entries) => {
+      const current = entries.find((entry) => entry.sessionKey === params.sessionKey);
+      const entry = current?.entry;
+      if (!entry) {
+        return { result: undefined };
+      }
+      entry.status = undefined;
+      entry.startedAt = undefined;
+      entry.endedAt = undefined;
+      entry.runtimeMs = undefined;
+      entry.abortedLastRun = undefined;
+      entry.restartRecoveryRuns = undefined;
+      entry.restartRecoveryDeliveryContext = undefined;
+      entry.restartRecoveryDeliveryRunId = undefined;
+      return {
+        result: undefined,
+        replacements: [{ sessionKey: params.sessionKey, entry }],
+      };
+    },
+  });
 }
 
 function buildResumeMessage(pendingFinalDeliveryText?: string | null): string {
@@ -818,6 +856,15 @@ async function recoverStore(params: {
     } catch (err) {
       log.warn(`failed to read transcript for ${sessionKey}: ${String(err)}`);
       result.failed++;
+      continue;
+    }
+
+    if (latestUserTurnIsRoomObservation(messages)) {
+      await clearPassiveRestartRecovery({
+        storePath: params.storePath,
+        sessionKey,
+      });
+      result.skipped++;
       continue;
     }
 

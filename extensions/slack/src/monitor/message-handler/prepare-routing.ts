@@ -136,8 +136,12 @@ function resolveSlackInitialAgentRoute(params: {
   isDirectMessage: boolean;
   isRoom: boolean;
 }) {
+  const normalizedCfg = normalizeSlackRouteBindingConfig(params.ctx.cfg);
   return resolveAgentRoute({
-    cfg: normalizeSlackRouteBindingConfig(params.ctx.cfg),
+    // Static cfg.bindings are pure channel-to-agent routing. Passive room
+    // observations still need that route so agent-scoped model and session
+    // state stay isolated; only stateful conversation bindings are bypassed.
+    cfg: normalizedCfg,
     channel: "slack",
     accountId: params.account.accountId,
     teamId: params.ctx.teamId || undefined,
@@ -158,6 +162,7 @@ export function resolveSlackRoutingContext(params: {
   isRoomish: boolean;
   seedTopLevelRoomThread?: boolean;
   assistantThreadTs?: string;
+  allowConversationBindings?: boolean;
 }): SlackRoutingContext {
   const {
     ctx,
@@ -169,6 +174,7 @@ export function resolveSlackRoutingContext(params: {
     isRoomish,
     seedTopLevelRoomThread,
     assistantThreadTs,
+    allowConversationBindings = true,
   } = params;
   let route = resolveSlackInitialAgentRoute({
     ctx,
@@ -223,19 +229,21 @@ export function resolveSlackRoutingContext(params: {
   const baseConversationId = resolveSlackBaseConversationId({ message, isDirectMessage });
   const runtimeBindingThreadId =
     routedThreadId ?? (isDirectMessage && isThreadReply ? threadTs : undefined);
-  const boundThreadRoute = runtimeBindingThreadId
-    ? resolveRuntimeConversationBindingRoute({
-        route,
-        conversation: {
-          channel: "slack",
-          accountId: account.accountId,
-          conversationId: runtimeBindingThreadId,
-          parentConversationId: baseConversationId,
-        },
-      })
-    : null;
-  const runtimeRoute =
-    boundThreadRoute?.boundSessionKey || boundThreadRoute?.bindingRecord
+  const boundThreadRoute =
+    allowConversationBindings && runtimeBindingThreadId
+      ? resolveRuntimeConversationBindingRoute({
+          route,
+          conversation: {
+            channel: "slack",
+            accountId: account.accountId,
+            conversationId: runtimeBindingThreadId,
+            parentConversationId: baseConversationId,
+          },
+        })
+      : null;
+  const runtimeRoute: RuntimeConversationBindingRouteResult = !allowConversationBindings
+    ? { bindingRecord: null, route }
+    : boundThreadRoute?.boundSessionKey || boundThreadRoute?.bindingRecord
       ? boundThreadRoute
       : resolveRuntimeConversationBindingRoute({
           route,
@@ -249,7 +257,7 @@ export function resolveSlackRoutingContext(params: {
   let configuredBindingSessionKey = "";
   if (runtimeRoute.boundSessionKey || runtimeRoute.bindingRecord) {
     route = runtimeRoute.route;
-  } else {
+  } else if (allowConversationBindings) {
     const configuredRoute = resolveConfiguredBindingRoute({
       cfg: ctx.cfg,
       route,

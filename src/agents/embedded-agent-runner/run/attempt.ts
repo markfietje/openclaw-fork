@@ -46,6 +46,7 @@ import { formatErrorMessage, toErrorObject } from "../../../infra/errors.js";
 import { resolveHeartbeatSummaryForAgent } from "../../../infra/heartbeat-summary.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { resolveRuntimeOsLabel } from "../../../infra/os-summary.js";
+import { isValidSourceBoundMessagePolicy } from "../../../infra/outbound/source-bound-message-policy.js";
 import { createCodexNativeWebSearchWrapper } from "../../../llm/providers/stream-wrappers/openai.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
@@ -72,7 +73,10 @@ import {
 } from "../../../plugins/provider-runtime.js";
 import { getPluginToolMeta } from "../../../plugins/tools.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
-import { annotateInterSessionPromptText } from "../../../sessions/input-provenance.js";
+import {
+  annotateInputProvenancePromptText,
+  isRoomObservationInputProvenance,
+} from "../../../sessions/input-provenance.js";
 import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transcript-only-openclaw-assistant.js";
 import { resolveSkillsPromptForRun } from "../../../skills/loading/workspace.js";
 import { resolveEmbeddedRunSkillEntries } from "../../../skills/runtime/embedded-run-entries.js";
@@ -167,6 +171,7 @@ import { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js
 import { isSignalTimeoutReason } from "../../failover-error.js";
 import { runAgentEndSideEffects } from "../../harness/agent-end-side-effects.js";
 import { runAgentHarnessBeforeAgentFinalizeHook } from "../../harness/lifecycle-hook-helpers.js";
+import { canRunPassiveRoomObservationWithResolvedModel } from "../../harness/passive-runtime.js";
 import { resolveHeartbeatPromptForSystemPrompt } from "../../heartbeat-system-prompt.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
 import {
@@ -202,7 +207,7 @@ import {
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import { sanitizeToolUseResultPairing } from "../../session-transcript-repair.js";
 import { acquireSessionWriteLock } from "../../session-write-lock.js";
-import { createAgentSession, SessionManager } from "../../sessions/index.js";
+import { createAgentSession, SessionManager, SettingsManager } from "../../sessions/index.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
 import { detectRuntimeShell } from "../../shell-utils.js";
 import { buildActiveSubagentSystemPromptAddition } from "../../subagent-active-context.js";
@@ -249,7 +254,11 @@ import {
   replaceWithEffectiveCronCreatorToolAllowlist,
   type CronCreatorToolAllowlistEntry,
 } from "../../tools/cron-tool.js";
-import { shouldAllowProviderOwnedThinkingReplay } from "../../transcript-policy.js";
+import { createMessageTool } from "../../tools/message-tool.js";
+import {
+  createCoreTranscriptPolicy,
+  shouldAllowProviderOwnedThinkingReplay,
+} from "../../transcript-policy.js";
 import { normalizeUsage, type NormalizedUsage } from "../../usage.js";
 import {
   DEFAULT_BOOTSTRAP_FILENAME,
@@ -345,6 +354,7 @@ import { abortable as abortableWithSignal } from "./abortable.js";
 import { releaseEmbeddedAttemptSessionLockForAbort } from "./attempt-abort.js";
 import { resolveAttemptWorkspaceBootstrapRouting } from "./attempt-bootstrap-routing.js";
 import { configureEmbeddedAttemptHttpRuntime } from "./attempt-http-runtime.js";
+import { buildPassiveRoomSystemPrompt } from "./attempt-room-observation.js";
 import { createEmbeddedAgentSessionWithResourceLoader } from "./attempt-session.js";
 import {
   createEmbeddedRunStageTracker,
@@ -793,6 +803,18 @@ async function loadAttemptSessionEntryAfterQuotaMaintenance(params: {
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
+  const isRoomObservation = isRoomObservationInputProvenance(params.inputProvenance);
+  if (
+    isRoomObservation &&
+    (params.passiveRoomObservationAdmission !== "core-openai" ||
+      !canRunPassiveRoomObservationWithResolvedModel({
+        config: params.config,
+        provider: params.provider,
+        model: params.model,
+      }))
+  ) {
+    throw new Error("Passive room observations require an admitted core OpenAI model");
+  }
   const resolvedWorkspace = resolveUserPath(params.workspaceDir);
   const runAbortController = new AbortController();
   configureEmbeddedAttemptHttpRuntime({ timeoutMs: params.timeoutMs });
@@ -842,15 +864,19 @@ export async function runEmbeddedAttempt(
     }
   };
 
-  await fs.mkdir(resolvedWorkspace, { recursive: true });
+  if (!isRoomObservation) {
+    await fs.mkdir(resolvedWorkspace, { recursive: true });
+  }
 
   const sandboxSessionKey =
     params.sandboxSessionKey?.trim() || params.sessionKey?.trim() || params.sessionId;
-  const sandbox = await resolveSandboxContext({
-    config: params.config,
-    sessionKey: sandboxSessionKey,
-    workspaceDir: resolvedWorkspace,
-  });
+  const sandbox = isRoomObservation
+    ? undefined
+    : await resolveSandboxContext({
+        config: params.config,
+        sessionKey: sandboxSessionKey,
+        workspaceDir: resolvedWorkspace,
+      });
   const effectiveWorkspace = sandbox?.enabled
     ? sandbox.workspaceAccess === "rw"
       ? resolvedWorkspace
@@ -863,7 +889,9 @@ export async function runEmbeddedAttempt(
     );
   }
   const effectiveCwd = sandbox?.enabled ? effectiveWorkspace : (requestedCwd ?? effectiveWorkspace);
-  await fs.mkdir(effectiveWorkspace, { recursive: true });
+  if (!isRoomObservation) {
+    await fs.mkdir(effectiveWorkspace, { recursive: true });
+  }
   let currentPluginMetadataSnapshotResolved = false;
   let currentPluginMetadataSnapshot: PluginMetadataSnapshot | undefined;
   const getCurrentAttemptPluginMetadataSnapshot = () => {
@@ -1050,50 +1078,59 @@ export async function runEmbeddedAttempt(
     } = resolveSandboxSkillRuntimeInputs({
       sandbox,
       effectiveWorkspace,
-      skillsSnapshot: params.skillsSnapshot,
+      skillsSnapshot: isRoomObservation ? undefined : params.skillsSnapshot,
     });
-    const { shouldLoadSkillEntries, skillEntries } = resolveEmbeddedRunSkillEntries({
-      workspaceDir: effectiveSkillsWorkspace,
-      config: params.config,
-      agentId: sessionAgentId,
-      eligibility: skillsEligibility,
-      skillsSnapshot: skillsSnapshotForRun,
-      workspaceOnly: loadSkillsWorkspaceOnly,
-    });
-    restoreSkillEnv = skillsSnapshotForRun
-      ? applySkillEnvOverridesFromSnapshot({
-          snapshot: skillsSnapshotForRun,
+    const { shouldLoadSkillEntries, skillEntries } = isRoomObservation
+      ? { shouldLoadSkillEntries: false, skillEntries: [] }
+      : resolveEmbeddedRunSkillEntries({
+          workspaceDir: effectiveSkillsWorkspace,
           config: params.config,
-        })
-      : applySkillEnvOverrides({
-          skills: skillEntries ?? [],
-          config: params.config,
+          agentId: sessionAgentId,
+          eligibility: skillsEligibility,
+          skillsSnapshot: skillsSnapshotForRun,
+          workspaceOnly: loadSkillsWorkspaceOnly,
         });
+    restoreSkillEnv = isRoomObservation
+      ? undefined
+      : skillsSnapshotForRun
+        ? applySkillEnvOverridesFromSnapshot({
+            snapshot: skillsSnapshotForRun,
+            config: params.config,
+          })
+        : applySkillEnvOverrides({
+            skills: skillEntries ?? [],
+            config: params.config,
+          });
     const promptSkillEntries = mapSandboxSkillEntriesForPrompt({
       entries: shouldLoadSkillEntries ? skillEntries : undefined,
       skillsWorkspaceDir: effectiveSkillsWorkspace,
       skillsPromptWorkspaceDir: effectiveSkillsPromptWorkspace,
     });
 
-    const skillsPrompt = resolveSkillsPromptForRun({
-      skillsSnapshot: skillsSnapshotForRun,
-      entries: promptSkillEntries,
-      config: params.config,
-      workspaceDir: effectiveSkillsPromptWorkspace,
-      agentId: sessionAgentId,
-      eligibility: skillsEligibility,
-    });
+    const skillsPrompt = isRoomObservation
+      ? ""
+      : resolveSkillsPromptForRun({
+          skillsSnapshot: skillsSnapshotForRun,
+          entries: promptSkillEntries,
+          config: params.config,
+          workspaceDir: effectiveSkillsPromptWorkspace,
+          agentId: sessionAgentId,
+          eligibility: skillsEligibility,
+        });
     prepStages.mark("skills");
 
     const sessionLabel = params.sessionKey ?? params.sessionId;
-    const contextInjectionMode = resolveContextInjectionMode(params.config, sessionAgentId);
+    const contextInjectionMode = isRoomObservation
+      ? "never"
+      : resolveContextInjectionMode(params.config, sessionAgentId);
     const isRawModelRun = params.modelRun === true || params.promptMode === "none";
     if (isRawModelRun && log.isEnabled("debug")) {
       log.debug(
         `raw model run enabled: modelRun=${params.modelRun === true} promptMode=${params.promptMode ?? "unset"}`,
       );
     }
-    const activeContextEngine = isRawModelRun ? undefined : params.contextEngine;
+    const activeContextEngine =
+      isRawModelRun || isRoomObservation ? undefined : params.contextEngine;
     if (activeContextEngine && activeContextEngine.info.id !== "legacy") {
       assertContextEngineHostSupport({
         contextEngine: activeContextEngine,
@@ -1143,14 +1180,18 @@ export async function runEmbeddedAttempt(
       });
     };
     const corePluginToolStages = createEmbeddedRunStageTracker();
+    const strictMessageOnly = isRoomObservation;
+    const strictMessagePolicyValid =
+      !strictMessageOnly || isValidSourceBoundMessagePolicy(params.sourceBoundMessagePolicy);
     const forceDirectMessageTool =
       params.forceMessageTool === true || params.sourceReplyDeliveryMode === "message_tool_only";
-    const toolsAllowWithForcedRuntimeTools = mergeForcedEmbeddedAttemptToolsAllow(
-      params.toolsAllow,
-      {
-        forceMessageTool: forceDirectMessageTool,
-      },
-    );
+    const toolsAllowWithForcedRuntimeTools = strictMessageOnly
+      ? strictMessagePolicyValid
+        ? ["message"]
+        : []
+      : mergeForcedEmbeddedAttemptToolsAllow(params.toolsAllow, {
+          forceMessageTool: forceDirectMessageTool,
+        });
     const toolConstructionPlan = resolveEmbeddedAttemptToolConstructionPlan({
       disableTools: params.disableTools,
       isRawModelRun,
@@ -1167,12 +1208,14 @@ export async function runEmbeddedAttempt(
         });
     const toolSearchConfig = resolveToolSearchConfig(toolSearchRuntimeConfig);
     const codeModeControlsEnabledForRun =
+      !strictMessageOnly &&
       toolsEnabled &&
       params.disableTools !== true &&
       !isRawModelRun &&
       params.toolsAllow?.length !== 0 &&
       codeModeConfig.enabled;
     const toolSearchControlsEnabledForRun =
+      !strictMessageOnly &&
       toolsEnabled &&
       params.disableTools !== true &&
       !isRawModelRun &&
@@ -1256,113 +1299,163 @@ export async function runEmbeddedAttempt(
       sandboxToolPolicy: sandbox?.tools,
       runtimeToolAllowlist: effectiveToolsAllow,
     });
-    const toolsRaw = !shouldConstructTools
-      ? []
-      : (() => {
-          const allTools = createOpenClawCodingTools({
+    const toolsRaw = strictMessageOnly
+      ? strictMessagePolicyValid
+        ? applyFinalEffectiveToolPolicy({
+            bundledTools: [
+              createMessageTool({
+                agentAccountId: params.agentAccountId,
+                agentSessionKey: sandboxSessionKey,
+                runId: params.runId,
+                sessionId: params.sessionId,
+                agentId: sessionAgentId,
+                config: params.config,
+                currentChannelId: params.currentChannelId,
+                currentMessagingTarget: params.currentMessagingTarget,
+                currentChannelProvider: resolveAttemptToolPolicyMessageProvider(params),
+                currentThreadTs: params.currentThreadTs,
+                agentThreadId: params.messageThreadId,
+                currentMessageId: params.currentMessageId,
+                currentInboundAudio: false,
+                replyToMode: params.replyToMode,
+                hasRepliedRef: params.hasRepliedRef,
+                requireExplicitTarget: false,
+                sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+                sourceBoundMessagePolicy: params.sourceBoundMessagePolicy,
+                inboundEventKind: params.currentInboundEventKind,
+                requesterSenderId: params.senderId ?? undefined,
+                senderIsOwner: false,
+              }),
+            ],
+            config: params.config,
+            sessionKey: sandboxSessionKey,
             agentId: sessionAgentId,
-            ...buildEmbeddedAttemptToolRunContext({ ...params, trace: runTrace }),
-            messageChannel: params.messageChannel,
-            chatType: params.chatType,
-            exec: {
-              ...params.execOverrides,
-              config: params.config,
-              elevated: params.bashElevated,
-            },
-            sandbox,
+            modelProvider: params.provider,
+            modelId: params.modelId,
             messageProvider: resolveAttemptToolPolicyMessageProvider(params),
             agentAccountId: params.agentAccountId,
-            messageTo: params.messageTo,
-            messageThreadId: params.messageThreadId,
             groupId: params.groupId,
             groupChannel: params.groupChannel,
             groupSpace: params.groupSpace,
-            memberRoleIds: params.memberRoleIds,
             spawnedBy: params.spawnedBy,
             senderId: params.senderId,
-            channelContext: params.channelContext,
             senderName: params.senderName,
             senderUsername: params.senderUsername,
             senderE164: params.senderE164,
-            senderIsOwner: params.senderIsOwner,
-            allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
-            sessionKey: sandboxSessionKey,
-            // When sandboxSessionKey differs from the real run session key (e.g. Telegram
-            // direct peer key vs agent:main:main), pass the live key so session_status
-            // "current" resolves to the active run session, not the stale sandbox key.
-            runSessionKey:
-              params.sessionKey && params.sessionKey !== sandboxSessionKey
-                ? params.sessionKey
-                : undefined,
-            sessionId: params.sessionId,
-            runId: params.runId,
-            approvalReviewerDeviceId: params.approvalReviewerDeviceId,
-            oneShotCliRun: params.oneShotCliRun,
-            toolSearchCatalogRef,
-            agentDir,
-            cwd: effectiveCwd,
-            workspaceDir: effectiveWorkspace,
-            // Runtime cwd can point at a task repo while bootstrap/persona files stay in the
-            // agent workspace. Spawned subagents inherit the real agent workspace, not task cwd.
-            spawnWorkspaceDir,
-            config: toolSearchRuntimeConfig,
-            abortSignal: runAbortController.signal,
-            modelProvider: params.provider,
-            modelId: params.modelId,
-            modelCompat: extractModelCompat(params.model),
-            modelApi: params.model.api,
-            modelContextWindowTokens: params.model.contextWindow,
-            modelAuthMode: resolveModelAuthMode(params.model.provider, params.config, undefined, {
-              workspaceDir: effectiveWorkspace,
-            }),
-            currentChannelId: params.currentChannelId,
-            currentMessagingTarget: params.currentMessagingTarget,
-            currentThreadTs: params.currentThreadTs,
-            currentMessageId: params.currentMessageId,
-            currentInboundAudio: params.currentInboundAudio,
-            includeCoreTools: toolConstructionPlan.includeCoreTools,
-            includeToolSearchControls: toolSearchControlsEnabledForRun,
-            toolSearchCatalogExecutor: (toolParams) => {
-              if (!toolSearchCatalogExecutor) {
-                throw new Error("Tool Search catalog executor is unavailable for this run.");
-              }
-              return toolSearchCatalogExecutor(toolParams);
-            },
-            toolConstructionPlan: toolConstructionPlan.codingToolConstructionPlan,
-            replyToMode: params.replyToMode,
-            hasRepliedRef: params.hasRepliedRef,
-            modelHasVision: params.model.input?.includes("image") ?? false,
-            requireExplicitMessageTarget:
-              params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
-            sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
-            inboundEventKind: params.currentInboundEventKind,
-            disableMessageTool: params.disableMessageTool,
-            forceMessageTool: params.forceMessageTool,
-            enableHeartbeatTool: params.enableHeartbeatTool,
-            forceHeartbeatTool: params.forceHeartbeatTool,
-            runtimeToolAllowlist: effectiveToolsAllow,
-            cronCreatorToolAllowlistRef: cronCreatorToolAllowlist,
-            authProfileStore: params.authProfileStore,
-            recordToolPrepStage: (name) => corePluginToolStages.mark(name),
-            onToolOutcome: params.onToolOutcome,
-            allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
-            skillsSnapshot: skillsSnapshotForRun,
+            senderIsOwner: false,
             conversationCapabilityProfile: runtimeCapabilityProfile,
-            onYield: (message) => {
-              yieldDetected = true;
-              yieldMessage = message;
-              queueYieldInterruptForSession?.();
-              runAbortController.abort("sessions_yield");
-              abortSessionForYield?.();
-            },
-          });
-          corePluginToolStages.mark("attempt:create-openclaw-coding-tools");
-          const filteredTools = applyEmbeddedAttemptToolsAllow(allTools, effectiveToolsAllow, {
-            toolMeta: (tool) => getPluginToolMeta(tool),
-          });
-          corePluginToolStages.mark("attempt:tools-allow");
-          return filteredTools;
-        })();
+            warn: (message) => log.warn(message),
+          })
+        : []
+      : !shouldConstructTools
+        ? []
+        : (() => {
+            const allTools = createOpenClawCodingTools({
+              agentId: sessionAgentId,
+              ...buildEmbeddedAttemptToolRunContext({ ...params, trace: runTrace }),
+              messageChannel: params.messageChannel,
+              chatType: params.chatType,
+              exec: {
+                ...params.execOverrides,
+                config: params.config,
+                elevated: params.bashElevated,
+              },
+              sandbox,
+              messageProvider: resolveAttemptToolPolicyMessageProvider(params),
+              agentAccountId: params.agentAccountId,
+              messageTo: params.messageTo,
+              messageThreadId: params.messageThreadId,
+              groupId: params.groupId,
+              groupChannel: params.groupChannel,
+              groupSpace: params.groupSpace,
+              memberRoleIds: params.memberRoleIds,
+              spawnedBy: params.spawnedBy,
+              senderId: params.senderId,
+              channelContext: params.channelContext,
+              senderName: params.senderName,
+              senderUsername: params.senderUsername,
+              senderE164: params.senderE164,
+              senderIsOwner: params.senderIsOwner,
+              allowGatewaySubagentBinding: params.allowGatewaySubagentBinding,
+              sessionKey: sandboxSessionKey,
+              // When sandboxSessionKey differs from the real run session key (e.g. Telegram
+              // direct peer key vs agent:main:main), pass the live key so session_status
+              // "current" resolves to the active run session, not the stale sandbox key.
+              runSessionKey:
+                params.sessionKey && params.sessionKey !== sandboxSessionKey
+                  ? params.sessionKey
+                  : undefined,
+              sessionId: params.sessionId,
+              runId: params.runId,
+              approvalReviewerDeviceId: params.approvalReviewerDeviceId,
+              oneShotCliRun: params.oneShotCliRun,
+              toolSearchCatalogRef,
+              agentDir,
+              cwd: effectiveCwd,
+              workspaceDir: effectiveWorkspace,
+              // Runtime cwd can point at a task repo while bootstrap/persona files stay in the
+              // agent workspace. Spawned subagents inherit the real agent workspace, not task cwd.
+              spawnWorkspaceDir,
+              config: toolSearchRuntimeConfig,
+              abortSignal: runAbortController.signal,
+              modelProvider: params.provider,
+              modelId: params.modelId,
+              modelCompat: extractModelCompat(params.model),
+              modelApi: params.model.api,
+              modelContextWindowTokens: params.model.contextWindow,
+              modelAuthMode: resolveModelAuthMode(params.model.provider, params.config, undefined, {
+                workspaceDir: effectiveWorkspace,
+              }),
+              currentChannelId: params.currentChannelId,
+              currentMessagingTarget: params.currentMessagingTarget,
+              currentThreadTs: params.currentThreadTs,
+              currentMessageId: params.currentMessageId,
+              currentInboundAudio: params.currentInboundAudio,
+              includeCoreTools: toolConstructionPlan.includeCoreTools,
+              includeToolSearchControls: toolSearchControlsEnabledForRun,
+              toolSearchCatalogExecutor: (toolParams) => {
+                if (!toolSearchCatalogExecutor) {
+                  throw new Error("Tool Search catalog executor is unavailable for this run.");
+                }
+                return toolSearchCatalogExecutor(toolParams);
+              },
+              toolConstructionPlan: toolConstructionPlan.codingToolConstructionPlan,
+              replyToMode: params.replyToMode,
+              hasRepliedRef: params.hasRepliedRef,
+              modelHasVision: params.model.input?.includes("image") ?? false,
+              requireExplicitMessageTarget:
+                params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
+              sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+              sourceBoundMessagePolicy: params.sourceBoundMessagePolicy,
+              inboundEventKind: params.currentInboundEventKind,
+              disableMessageTool: params.disableMessageTool,
+              forceMessageTool: params.forceMessageTool,
+              enableHeartbeatTool: params.enableHeartbeatTool,
+              forceHeartbeatTool: params.forceHeartbeatTool,
+              wrapBeforeToolCallHook: !isRoomObservation,
+              runtimeToolAllowlist: effectiveToolsAllow,
+              cronCreatorToolAllowlistRef: cronCreatorToolAllowlist,
+              authProfileStore: params.authProfileStore,
+              recordToolPrepStage: (name) => corePluginToolStages.mark(name),
+              onToolOutcome: params.onToolOutcome,
+              allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
+              skillsSnapshot: skillsSnapshotForRun,
+              conversationCapabilityProfile: runtimeCapabilityProfile,
+              onYield: (message) => {
+                yieldDetected = true;
+                yieldMessage = message;
+                queueYieldInterruptForSession?.();
+                runAbortController.abort("sessions_yield");
+                abortSessionForYield?.();
+              },
+            });
+            corePluginToolStages.mark("attempt:create-openclaw-coding-tools");
+            const filteredTools = applyEmbeddedAttemptToolsAllow(allTools, effectiveToolsAllow, {
+              toolMeta: (tool) => getPluginToolMeta(tool),
+            });
+            corePluginToolStages.mark("attempt:tools-allow");
+            return filteredTools;
+          })();
     prepStages.mark("core-plugin-tools");
     emitCorePluginToolStageSummary("core-plugin-tools", corePluginToolStages.snapshot());
     const bootstrapHasFileAccess = toolsEnabled && toolsRaw.some((tool) => tool.name === "read");
@@ -1395,11 +1488,17 @@ export async function runEmbeddedAttempt(
       !isHeartbeatLifecycleRunKind(params.bootstrapContextRunKind) &&
       (await hasCompletedBootstrapTurnForAttempt(params.sessionFile));
     let preloadedBootstrapFiles: WorkspaceBootstrapFile[] | undefined;
-    let bootstrapRouting =
-      shouldProbeContinuationSkip || isRawModelRun || contextInjectionMode === "never"
+    let bootstrapRouting = isRoomObservation
+      ? {
+          bootstrapMode: "none" as const,
+          includeBootstrapInSystemContext: false,
+          includeBootstrapInRuntimeContext: false,
+        }
+      : shouldProbeContinuationSkip || isRawModelRun || contextInjectionMode === "never"
         ? await resolveBootstrapRouting()
         : undefined;
     if (
+      !isRoomObservation &&
       !isRawModelRun &&
       contextInjectionMode !== "never" &&
       (bootstrapRouting === undefined || bootstrapRouting.bootstrapMode === "full")
@@ -1418,42 +1517,50 @@ export async function runEmbeddedAttempt(
     }
     bootstrapRouting ??= await resolveBootstrapRouting(preloadedBootstrapFiles);
     const bootstrapMode = bootstrapRouting.bootstrapMode;
+    const bootstrapContext = isRoomObservation
+      ? {
+          bootstrapFiles: [] as WorkspaceBootstrapFile[],
+          contextFiles: [],
+          isContinuationTurn: false,
+          shouldRecordCompletedBootstrapTurn: false,
+        }
+      : await resolveAttemptBootstrapContext({
+          // modelRun is a provider probe, not an agent turn. Keep AGENTS/BOOTSTRAP
+          // context out even when the gateway is exercising the embedded runtime.
+          contextInjectionMode: isRawModelRun ? "never" : contextInjectionMode,
+          bootstrapContextMode: params.bootstrapContextMode,
+          bootstrapContextRunKind: params.bootstrapContextRunKind ?? "default",
+          bootstrapMode,
+          sessionFile: params.sessionFile,
+          hasCompletedBootstrapTurn: hasCompletedBootstrapTurnForAttempt,
+          resolveBootstrapContextForRun: async () => {
+            const bootstrapFiles =
+              preloadedBootstrapFiles ??
+              (await resolveBootstrapFilesForRun({
+                workspaceDir: resolvedWorkspace,
+                config: params.config,
+                sessionKey: params.sessionKey,
+                sessionId: params.sessionId,
+                agentId: sessionAgentId,
+                warn: bootstrapWarn,
+                contextMode: params.bootstrapContextMode,
+                runKind: params.bootstrapContextRunKind,
+              }));
+            return {
+              bootstrapFiles,
+              contextFiles: buildBootstrapContextForFiles(bootstrapFiles, {
+                config: params.config,
+                agentId: sessionAgentId,
+                warn: bootstrapWarn,
+              }),
+            };
+          },
+        });
     const {
       bootstrapFiles: hookAdjustedBootstrapFiles,
       contextFiles: resolvedContextFiles,
       shouldRecordCompletedBootstrapTurn,
-    } = await resolveAttemptBootstrapContext({
-      // modelRun is a provider probe, not an agent turn. Keep AGENTS/BOOTSTRAP
-      // context out even when the gateway is exercising the embedded runtime.
-      contextInjectionMode: isRawModelRun ? "never" : contextInjectionMode,
-      bootstrapContextMode: params.bootstrapContextMode,
-      bootstrapContextRunKind: params.bootstrapContextRunKind ?? "default",
-      bootstrapMode,
-      sessionFile: params.sessionFile,
-      hasCompletedBootstrapTurn: hasCompletedBootstrapTurnForAttempt,
-      resolveBootstrapContextForRun: async () => {
-        const bootstrapFiles =
-          preloadedBootstrapFiles ??
-          (await resolveBootstrapFilesForRun({
-            workspaceDir: resolvedWorkspace,
-            config: params.config,
-            sessionKey: params.sessionKey,
-            sessionId: params.sessionId,
-            agentId: sessionAgentId,
-            warn: bootstrapWarn,
-            contextMode: params.bootstrapContextMode,
-            runKind: params.bootstrapContextRunKind,
-          }));
-        return {
-          bootstrapFiles,
-          contextFiles: buildBootstrapContextForFiles(bootstrapFiles, {
-            config: params.config,
-            agentId: sessionAgentId,
-            warn: bootstrapWarn,
-          }),
-        };
-      },
-    });
+    } = bootstrapContext;
     prepStages.mark("bootstrap-context");
     const remappedContextFiles = remapInjectedContextFilesToWorkspace({
       files: resolvedContextFiles,
@@ -1514,32 +1621,39 @@ export async function runEmbeddedAttempt(
       modelApi: params.model.api,
       model: params.model,
     };
-    const tools = normalizeAgentRuntimeTools({
-      runtimePlan: params.runtimePlan,
-      tools: toolsEnabled ? toolsRaw : [],
-      provider: params.provider,
-      config: params.config,
-      workspaceDir: effectiveWorkspace,
-      env: process.env,
-      modelId: params.modelId,
-      modelApi: params.model.api,
-      model: params.model,
-      runtimeHandle: getProviderRuntimeHandle(),
-      onPreNormalizationSchemaDiagnostics: (diagnostics, sourceTools) =>
-        logRuntimeToolSchemaQuarantine({
-          diagnostics,
-          tools: sourceTools,
-          runId: params.runId,
-          sessionKey: params.sessionKey,
-          sessionId: params.sessionId,
-        }),
-    });
-    const clientTools = toolsEnabled && !isRawModelRun ? params.clientTools : undefined;
-    const bundleMcpEnabled = shouldCreateBundleMcpRuntimeForAttempt({
-      toolsEnabled,
-      disableTools: params.disableTools || isRawModelRun,
-      toolsAllow: params.toolsAllow,
-    });
+    const tools = strictMessageOnly
+      ? toolsEnabled
+        ? toolsRaw
+        : []
+      : normalizeAgentRuntimeTools({
+          runtimePlan: params.runtimePlan,
+          tools: toolsEnabled ? toolsRaw : [],
+          provider: params.provider,
+          config: params.config,
+          workspaceDir: effectiveWorkspace,
+          env: process.env,
+          modelId: params.modelId,
+          modelApi: params.model.api,
+          model: params.model,
+          runtimeHandle: getProviderRuntimeHandle(),
+          onPreNormalizationSchemaDiagnostics: (diagnostics, sourceTools) =>
+            logRuntimeToolSchemaQuarantine({
+              diagnostics,
+              tools: sourceTools,
+              runId: params.runId,
+              sessionKey: params.sessionKey,
+              sessionId: params.sessionId,
+            }),
+        });
+    const clientTools =
+      toolsEnabled && !isRawModelRun && !strictMessageOnly ? params.clientTools : undefined;
+    const bundleMcpEnabled =
+      !strictMessageOnly &&
+      shouldCreateBundleMcpRuntimeForAttempt({
+        toolsEnabled,
+        disableTools: params.disableTools || isRawModelRun,
+        toolsAllow: params.toolsAllow,
+      });
     const bundleMcpSessionRuntime = bundleMcpEnabled
       ? await getOrCreateSessionMcpRuntime({
           sessionId: params.sessionId,
@@ -1557,11 +1671,13 @@ export async function runEmbeddedAttempt(
           ],
         })
       : undefined;
-    const bundleLspEnabled = shouldCreateBundleLspRuntimeForAttempt({
-      toolsEnabled,
-      disableTools: params.disableTools || isRawModelRun,
-      toolsAllow: params.toolsAllow,
-    });
+    const bundleLspEnabled =
+      !strictMessageOnly &&
+      shouldCreateBundleLspRuntimeForAttempt({
+        toolsEnabled,
+        disableTools: params.disableTools || isRawModelRun,
+        toolsAllow: params.toolsAllow,
+      });
     bundleLspRuntime = bundleLspEnabled
       ? await createBundleLspToolRuntime({
           workspaceDir: effectiveWorkspace,
@@ -1700,39 +1816,47 @@ export async function runEmbeddedAttempt(
             }
           })()
         : [];
-    const toolSearch = codeModeControlsEnabledForRun
-      ? applyCodeModeCatalog({
-          tools: [...codeModeTools, ...effectiveTools],
-          config: params.config,
-          sessionId: params.sessionId,
-          sessionKey: sandboxSessionKey,
-          agentId: sessionAgentId,
-          runId: params.runId,
-          catalogRef: toolSearchCatalogRef,
-          toolHookContext: catalogToolHookContext,
-        })
-      : toolSearchConfig.mode === "directory"
-        ? applyToolSchemaDirectoryCatalog({
-            tools: effectiveTools,
-            config: toolSearchRuntimeConfig,
+    const toolSearch = strictMessageOnly
+      ? {
+          tools: effectiveTools,
+          compacted: false,
+          catalogToolCount: 0,
+          catalogRegistered: false,
+          catalogReused: false,
+        }
+      : codeModeControlsEnabledForRun
+        ? applyCodeModeCatalog({
+            tools: [...codeModeTools, ...effectiveTools],
+            config: params.config,
             sessionId: params.sessionId,
             sessionKey: sandboxSessionKey,
             agentId: sessionAgentId,
             runId: params.runId,
             catalogRef: toolSearchCatalogRef,
             toolHookContext: catalogToolHookContext,
-            hydrateToolNames: directoryHydratedToolNames,
           })
-        : applyToolSearchCatalog({
-            tools: effectiveTools,
-            config: toolSearchRuntimeConfig,
-            sessionId: params.sessionId,
-            sessionKey: sandboxSessionKey,
-            agentId: sessionAgentId,
-            runId: params.runId,
-            catalogRef: toolSearchCatalogRef,
-            toolHookContext: catalogToolHookContext,
-          });
+        : toolSearchConfig.mode === "directory"
+          ? applyToolSchemaDirectoryCatalog({
+              tools: effectiveTools,
+              config: toolSearchRuntimeConfig,
+              sessionId: params.sessionId,
+              sessionKey: sandboxSessionKey,
+              agentId: sessionAgentId,
+              runId: params.runId,
+              catalogRef: toolSearchCatalogRef,
+              toolHookContext: catalogToolHookContext,
+              hydrateToolNames: directoryHydratedToolNames,
+            })
+          : applyToolSearchCatalog({
+              tools: effectiveTools,
+              config: toolSearchRuntimeConfig,
+              sessionId: params.sessionId,
+              sessionKey: sandboxSessionKey,
+              agentId: sessionAgentId,
+              runId: params.runId,
+              catalogRef: toolSearchCatalogRef,
+              toolHookContext: catalogToolHookContext,
+            });
     const projectedToolSearchTools = filterLocalModelLeanTools({
       tools: toolSearch.tools,
       config: params.config,
@@ -1793,80 +1917,88 @@ export async function runEmbeddedAttempt(
       toolsEnabled,
       disableTools: params.disableTools,
     });
-    logAgentRuntimeToolDiagnostics({
-      runtimePlan: params.runtimePlan,
-      tools: effectiveTools,
-      provider: params.provider,
-      config: params.config,
-      workspaceDir: effectiveWorkspace,
-      env: process.env,
-      modelId: params.modelId,
-      modelApi: params.model.api,
-      model: params.model,
-      runtimeHandle: getProviderRuntimeHandle(),
-    });
+    if (!strictMessageOnly) {
+      logAgentRuntimeToolDiagnostics({
+        runtimePlan: params.runtimePlan,
+        tools: effectiveTools,
+        provider: params.provider,
+        config: params.config,
+        workspaceDir: effectiveWorkspace,
+        env: process.env,
+        modelId: params.modelId,
+        modelApi: params.model.api,
+        model: params.model,
+        runtimeHandle: getProviderRuntimeHandle(),
+      });
+    }
 
-    const machineName = await getMachineDisplayName();
+    const machineName = isRoomObservation ? "" : await getMachineDisplayName();
     const runtimeChannel = normalizeMessageChannel(params.messageChannel ?? params.messageProvider);
-    const runtimeCapabilities = collectRuntimeChannelCapabilities({
-      cfg: params.config,
-      channel: runtimeChannel,
-      accountId: params.agentAccountId,
-    });
+    const runtimeCapabilities = isRoomObservation
+      ? []
+      : collectRuntimeChannelCapabilities({
+          cfg: params.config,
+          channel: runtimeChannel,
+          accountId: params.agentAccountId,
+        });
     const reactionGuidance =
-      runtimeChannel && params.config
+      !isRoomObservation && runtimeChannel && params.config
         ? resolveChannelReactionGuidance({
             cfg: params.config,
             channel: runtimeChannel,
             accountId: params.agentAccountId,
           })
         : undefined;
-    const sandboxInfoExecPolicy = resolveEmbeddedSandboxInfoExecPolicy({
-      config: params.config,
-      agentId: sessionAgentId,
-      sessionKey: params.sessionKey,
-      sandboxAvailable: sandbox?.enabled === true,
-      execOverrides: params.execOverrides,
-    });
-    const sandboxInfo = buildEmbeddedSandboxInfo(
-      sandbox,
-      params.bashElevated,
-      sandboxInfoExecPolicy,
-    );
-    const reasoningTagHint = isReasoningTagProvider(params.provider, {
-      config: params.config,
-      workspaceDir: effectiveWorkspace,
-      env: process.env,
-      modelId: params.modelId,
-      modelApi: params.model.api,
-      model: params.model,
-      runtimeHandle: getProviderRuntimeHandle(),
-    });
+    const sandboxInfoExecPolicy = isRoomObservation
+      ? undefined
+      : resolveEmbeddedSandboxInfoExecPolicy({
+          config: params.config,
+          agentId: sessionAgentId,
+          sessionKey: params.sessionKey,
+          sandboxAvailable: sandbox?.enabled === true,
+          execOverrides: params.execOverrides,
+        });
+    const sandboxInfo = isRoomObservation
+      ? undefined
+      : buildEmbeddedSandboxInfo(sandbox, params.bashElevated, sandboxInfoExecPolicy);
+    const reasoningTagHint = isRoomObservation
+      ? false
+      : isReasoningTagProvider(params.provider, {
+          config: params.config,
+          workspaceDir: effectiveWorkspace,
+          env: process.env,
+          modelId: params.modelId,
+          modelApi: params.model.api,
+          model: params.model,
+          runtimeHandle: getProviderRuntimeHandle(),
+        });
     // Resolve channel-specific message actions for system prompt
-    const channelActions = runtimeChannel
-      ? listChannelSupportedActions(
-          buildEmbeddedMessageActionDiscoveryInput({
+    const channelActions =
+      !isRoomObservation && runtimeChannel
+        ? listChannelSupportedActions(
+            buildEmbeddedMessageActionDiscoveryInput({
+              cfg: params.config,
+              channel: runtimeChannel,
+              currentChannelId: params.currentChannelId,
+              currentThreadTs: params.currentThreadTs,
+              currentMessageId: params.currentMessageId,
+              accountId: params.agentAccountId,
+              sessionKey: params.sessionKey,
+              sessionId: params.sessionId,
+              agentId: sessionAgentId,
+              senderId: params.senderId,
+              senderIsOwner: params.senderIsOwner,
+            }),
+          )
+        : undefined;
+    const messageToolHints =
+      !isRoomObservation && runtimeChannel
+        ? resolveChannelMessageToolHints({
             cfg: params.config,
             channel: runtimeChannel,
-            currentChannelId: params.currentChannelId,
-            currentThreadTs: params.currentThreadTs,
-            currentMessageId: params.currentMessageId,
             accountId: params.agentAccountId,
-            sessionKey: params.sessionKey,
-            sessionId: params.sessionId,
-            agentId: sessionAgentId,
-            senderId: params.senderId,
-            senderIsOwner: params.senderIsOwner,
-          }),
-        )
-      : undefined;
-    const messageToolHints = runtimeChannel
-      ? resolveChannelMessageToolHints({
-          cfg: params.config,
-          channel: runtimeChannel,
-          accountId: params.agentAccountId,
-        })
-      : undefined;
+          })
+        : undefined;
     const toolSchemaDirectoryPrompt = deferredDirectoryToolsCallable
       ? buildToolSchemaDirectoryPrompt({
           config: params.config,
@@ -1879,54 +2011,72 @@ export async function runEmbeddedAttempt(
         })
       : undefined;
 
-    const defaultModelRef = resolveDefaultModelForAgent({
-      cfg: params.config ?? {},
-      agentId: sessionAgentId,
-    });
+    const defaultModelRef = isRoomObservation
+      ? { provider: params.provider, model: params.modelId }
+      : resolveDefaultModelForAgent({
+          cfg: params.config ?? {},
+          agentId: sessionAgentId,
+        });
     const defaultModelLabel = `${defaultModelRef.provider}/${defaultModelRef.model}`;
-    const activeProcessSessions = listActiveProcessSessionReferences({
-      scopeKey: resolveProcessToolScopeKey({
-        sessionKey: sandboxSessionKey,
-        agentId: sessionAgentId,
-      }),
-    });
-    const { runtimeInfo, userTimezone, userTime, userTimeFormat } = buildSystemPromptParams({
-      config: params.config,
-      agentId: sessionAgentId,
-      workspaceDir: effectiveWorkspace,
-      cwd: effectiveCwd,
-      runtime: {
-        sessionKey: params.sessionKey,
-        sessionId: params.sessionId,
-        host: machineName,
-        os: resolveRuntimeOsLabel(),
-        arch: os.arch(),
-        node: process.version,
-        model: `${params.provider}/${params.modelId}`,
-        defaultModel: defaultModelLabel,
-        shell: detectRuntimeShell(),
-        channel: runtimeChannel,
-        chatType: params.chatType,
-        capabilities: runtimeCapabilities,
-        channelActions,
-        activeProcessSessions,
-      },
-    });
+    const activeProcessSessions = isRoomObservation
+      ? []
+      : listActiveProcessSessionReferences({
+          scopeKey: resolveProcessToolScopeKey({
+            sessionKey: sandboxSessionKey,
+            agentId: sessionAgentId,
+          }),
+        });
+    const { runtimeInfo, userTimezone, userTime, userTimeFormat } = isRoomObservation
+      ? {
+          runtimeInfo: { model: `${params.provider}/${params.modelId}` } as ReturnType<
+            typeof buildSystemPromptParams
+          >["runtimeInfo"],
+          userTimezone: "UTC",
+          userTime: "",
+          userTimeFormat: undefined,
+        }
+      : buildSystemPromptParams({
+          config: params.config,
+          agentId: sessionAgentId,
+          workspaceDir: effectiveWorkspace,
+          cwd: effectiveCwd,
+          runtime: {
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            host: machineName,
+            os: resolveRuntimeOsLabel(),
+            arch: os.arch(),
+            node: process.version,
+            model: `${params.provider}/${params.modelId}`,
+            defaultModel: defaultModelLabel,
+            shell: detectRuntimeShell(),
+            channel: runtimeChannel,
+            chatType: params.chatType,
+            capabilities: runtimeCapabilities,
+            channelActions,
+            activeProcessSessions,
+          },
+        });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
     const promptMode =
       params.promptMode ??
       (isRawModelRun ? "none" : resolvePromptModeForSession(params.sessionKey));
-    const promptSurface = resolveAgentPromptSurfaceForSessionKey(params.sessionKey);
+    const promptSurface = isRoomObservation
+      ? undefined
+      : resolveAgentPromptSurfaceForSessionKey(params.sessionKey);
 
     // When toolsAllow is set, use minimal prompt and strip skills catalog
     const effectivePromptMode = params.toolsAllow?.length ? ("minimal" as const) : promptMode;
     const effectiveSkillsPrompt = params.toolsAllow?.length ? undefined : skillsPrompt;
-    const openClawReferences = await resolveOpenClawReferencePaths({
-      workspaceDir: effectiveWorkspace,
-      argv1: process.argv[1],
-      cwd: effectiveCwd,
-      moduleUrl: import.meta.url,
-    });
+    const openClawReferences: { docsPath?: string | null; sourcePath?: string | null } =
+      isRoomObservation
+        ? {}
+        : await resolveOpenClawReferencePaths({
+            workspaceDir: effectiveWorkspace,
+            argv1: process.argv[1],
+            cwd: effectiveCwd,
+            moduleUrl: import.meta.url,
+          });
     const heartbeatPrompt = shouldInjectHeartbeatPrompt({
       config: params.config,
       agentId: sessionAgentId,
@@ -1955,84 +2105,90 @@ export async function runEmbeddedAttempt(
       agentId: sessionAgentId,
       trigger: promptContributionTrigger,
     };
-    const promptContribution =
-      params.runtimePlan?.prompt.resolveSystemPromptContribution(promptContributionContext) ??
-      resolveProviderSystemPromptContribution({
-        provider: params.provider,
-        config: params.config,
-        workspaceDir: effectiveWorkspace,
-        runtimeHandle: getProviderRuntimeHandle(),
-        context: promptContributionContext,
-      });
+    const promptContribution = isRoomObservation
+      ? undefined
+      : (params.runtimePlan?.prompt.resolveSystemPromptContribution(promptContributionContext) ??
+        resolveProviderSystemPromptContribution({
+          provider: params.provider,
+          config: params.config,
+          workspaceDir: effectiveWorkspace,
+          runtimeHandle: getProviderRuntimeHandle(),
+          context: promptContributionContext,
+        }));
 
     const bootstrapTruncationNotice = buildBootstrapPromptWarningNotice(
       bootstrapPromptWarning.lines,
     );
-    const attemptSystemPrompt = buildAttemptSystemPrompt({
-      isRawModelRun,
-      transformProviderSystemPrompt: (transformParams) =>
-        transformProviderSystemPrompt({
-          ...transformParams,
-          runtimeHandle: getProviderRuntimeHandle(),
-        }),
-      embeddedSystemPrompt: {
-        config: params.config,
-        agentId: sessionAgentId,
-        workspaceDir: effectiveWorkspace,
-        defaultThinkLevel: params.thinkLevel,
-        reasoningLevel: params.reasoningLevel ?? "off",
-        extraSystemPrompt: params.extraSystemPrompt,
-        ownerNumbers: params.ownerNumbers,
-        reasoningTagHint,
-        heartbeatPrompt,
-        skillsPrompt: effectiveSkillsPrompt,
-        docsPath: openClawReferences.docsPath ?? undefined,
-        sourcePath: openClawReferences.sourcePath ?? undefined,
-        workspaceNotes: workspaceNotes?.length ? workspaceNotes : undefined,
-        reactionGuidance,
-        promptMode: effectivePromptMode,
-        sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
-        silentReplyPromptMode: params.silentReplyPromptMode,
-        acpEnabled: isAcpRuntimeSpawnAvailable({
-          config: params.config,
-          sandboxed: sandboxInfo?.enabled === true,
-        }),
-        promptSurface,
-        nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance({
-          surface: promptSurface,
-        }),
-        runtimeInfo,
-        messageToolHints,
-        toolSchemaDirectoryPrompt,
-        sandboxInfo,
-        capabilityToolNames: [...capabilityToolNames].toSorted(),
-        tools: effectiveTools,
-        userTimezone,
-        userTime,
-        userTimeFormat,
-        contextFiles,
-        bootstrapMode,
-        bootstrapTruncationNotice,
-        includeMemorySection: !activeContextEngine || activeContextEngine.info.id === "legacy",
-        promptContribution,
-      },
-      providerTransform: {
-        provider: params.provider,
-        config: params.config,
-        workspaceDir: effectiveWorkspace,
-        context: {
-          config: params.config,
-          agentDir: params.agentDir,
-          workspaceDir: effectiveWorkspace,
-          provider: params.provider,
-          modelId: params.modelId,
-          promptMode: effectivePromptMode,
-          runtimeChannel,
-          runtimeCapabilities,
-          agentId: sessionAgentId,
-        },
-      },
-    });
+    const attemptSystemPrompt = isRoomObservation
+      ? {
+          baseSystemPrompt: buildPassiveRoomSystemPrompt(params.roomObservationSystemPrompt),
+          systemPrompt: buildPassiveRoomSystemPrompt(params.roomObservationSystemPrompt),
+        }
+      : buildAttemptSystemPrompt({
+          isRawModelRun,
+          transformProviderSystemPrompt: (transformParams) =>
+            transformProviderSystemPrompt({
+              ...transformParams,
+              runtimeHandle: getProviderRuntimeHandle(),
+            }),
+          embeddedSystemPrompt: {
+            config: params.config,
+            agentId: sessionAgentId,
+            workspaceDir: effectiveWorkspace,
+            defaultThinkLevel: params.thinkLevel,
+            reasoningLevel: params.reasoningLevel ?? "off",
+            extraSystemPrompt: params.extraSystemPrompt,
+            ownerNumbers: params.ownerNumbers,
+            reasoningTagHint,
+            heartbeatPrompt,
+            skillsPrompt: effectiveSkillsPrompt,
+            docsPath: openClawReferences.docsPath ?? undefined,
+            sourcePath: openClawReferences.sourcePath ?? undefined,
+            workspaceNotes: workspaceNotes?.length ? workspaceNotes : undefined,
+            reactionGuidance,
+            promptMode: effectivePromptMode,
+            sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+            silentReplyPromptMode: params.silentReplyPromptMode,
+            acpEnabled: isAcpRuntimeSpawnAvailable({
+              config: params.config,
+              sandboxed: sandboxInfo?.enabled === true,
+            }),
+            promptSurface,
+            nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance({
+              surface: promptSurface,
+            }),
+            runtimeInfo,
+            messageToolHints,
+            toolSchemaDirectoryPrompt,
+            sandboxInfo,
+            capabilityToolNames: [...capabilityToolNames].toSorted(),
+            tools: effectiveTools,
+            userTimezone,
+            userTime,
+            userTimeFormat,
+            contextFiles,
+            bootstrapMode,
+            bootstrapTruncationNotice,
+            includeMemorySection: !activeContextEngine || activeContextEngine.info.id === "legacy",
+            promptContribution,
+          },
+          providerTransform: {
+            provider: params.provider,
+            config: params.config,
+            workspaceDir: effectiveWorkspace,
+            context: {
+              config: params.config,
+              agentDir: params.agentDir,
+              workspaceDir: effectiveWorkspace,
+              provider: params.provider,
+              modelId: params.modelId,
+              promptMode: effectivePromptMode,
+              runtimeChannel,
+              runtimeCapabilities,
+              agentId: sessionAgentId,
+            },
+          },
+        });
     const appendPrompt = attemptSystemPrompt.systemPrompt;
     const systemPromptReport = buildSystemPromptReport({
       source: "run",
@@ -2142,14 +2298,16 @@ export async function runEmbeddedAttempt(
         .then(() => true)
         .catch(() => false);
 
-      const transcriptPolicy = resolveAttemptTranscriptPolicy({
-        runtimePlan: params.runtimePlan,
-        runtimePlanModelContext,
-        provider: params.provider,
-        modelId: params.modelId,
-        config: params.config,
-        env: process.env,
-      });
+      const transcriptPolicy = isRoomObservation
+        ? createCoreTranscriptPolicy()
+        : resolveAttemptTranscriptPolicy({
+            runtimePlan: params.runtimePlan,
+            runtimePlanModelContext,
+            provider: params.provider,
+            modelId: params.modelId,
+            config: params.config,
+            env: process.env,
+          });
       const isOpenAIResponsesApi =
         params.model.api === "openai-responses" ||
         params.model.api === "azure-openai-responses" ||
@@ -2241,13 +2399,19 @@ export async function runEmbeddedAttempt(
         });
       });
 
-      const settingsManager = createPreparedEmbeddedAgentSettingsManager({
-        cwd: effectiveCwd,
-        agentDir,
-        cfg: params.config,
-        pluginMetadataSnapshot: getCurrentAttemptPluginMetadataSnapshot(),
-        contextTokenBudget: params.contextTokenBudget,
-      });
+      const settingsManager = isRoomObservation
+        ? SettingsManager.inMemory({})
+        : createPreparedEmbeddedAgentSettingsManager({
+            cwd: effectiveCwd,
+            agentDir,
+            cfg: params.config,
+            pluginMetadataSnapshot: getCurrentAttemptPluginMetadataSnapshot(),
+            contextTokenBudget: params.contextTokenBudget,
+          });
+      if (isRoomObservation) {
+        settingsManager.setRetryEnabled(false);
+        settingsManager.setCompactionEnabled(false);
+      }
       const autoCompactionGuardArgs = {
         settingsManager,
         contextEngineInfo: activeContextEngine?.info,
@@ -2258,39 +2422,54 @@ export async function runEmbeddedAttempt(
           baseUrl: params.model.baseUrl ?? undefined,
         }),
       };
-      applyAgentAutoCompactionGuard(autoCompactionGuardArgs);
+      if (!isRoomObservation) {
+        applyAgentAutoCompactionGuard(autoCompactionGuardArgs);
+      }
 
       // Sets compaction/pruning runtime state and returns extension factories
       // that must be passed to the resource loader for the safeguard to be active.
-      const extensionFactories = buildEmbeddedExtensionFactories({
-        cfg: params.config,
-        sessionManager,
-        provider: params.provider,
-        modelId: params.modelId,
-        model: params.model,
-        runId: params.runId,
-      });
+      const extensionFactories = isRoomObservation
+        ? []
+        : buildEmbeddedExtensionFactories({
+            cfg: params.config,
+            sessionManager,
+            provider: params.provider,
+            modelId: params.modelId,
+            model: params.model,
+            runId: params.runId,
+          });
       const resourceLoader = createEmbeddedAgentResourceLoader({
         cwd: effectiveCwd,
         agentDir,
         settingsManager,
         extensionFactories,
       });
-      await resourceLoader.reload();
+      // The loader is initialized with empty resources. Reload scans project and
+      // agent directories even when context files are disabled, so passive room
+      // observations must keep the inert constructor state.
+      if (!isRoomObservation) {
+        await resourceLoader.reload();
+      }
       // DefaultResourceLoader.reload() rehydrates settings from disk and can drop OpenClaw
       // compaction overrides applied in createPreparedEmbeddedAgentSettingsManager — same
       // rehydration also restores OpenClaw runtime's auto-compaction (openclaw#75799), so re-apply
       // both guards.
-      applyAgentCompactionSettingsFromConfig({
-        settingsManager,
-        cfg: params.config,
-        contextTokenBudget: params.contextTokenBudget,
-      });
-      applyAgentAutoCompactionGuard(autoCompactionGuardArgs);
+      if (isRoomObservation) {
+        settingsManager.setCompactionEnabled(false);
+      } else {
+        applyAgentCompactionSettingsFromConfig({
+          settingsManager,
+          cfg: params.config,
+          contextTokenBudget: params.contextTokenBudget,
+        });
+        applyAgentAutoCompactionGuard(autoCompactionGuardArgs);
+      }
       prepStages.mark("session-resource-loader");
 
       // Get hook runner early so it's available when creating tools
-      const hookRunner = getGlobalHookRunner();
+      const hookRunner = isRoomObservationInputProvenance(params.inputProvenance)
+        ? undefined
+        : (getGlobalHookRunner() ?? undefined);
 
       const { customTools } = splitSdkTools({
         tools: effectiveTools,
@@ -2412,25 +2591,27 @@ export async function runEmbeddedAttempt(
             },
           )
         : [];
-      const clientToolSearch = codeModeControlsEnabledForRun
-        ? addClientToolsToCodeModeCatalog({
-            tools: clientToolDefs,
-            config: params.config,
-            sessionId: params.sessionId,
-            sessionKey: sandboxSessionKey,
-            agentId: sessionAgentId,
-            runId: params.runId,
-            catalogRef: toolSearchCatalogRef,
-          })
-        : addClientToolsToToolSearchCatalog({
-            tools: clientToolDefs,
-            config: toolSearchRuntimeConfig,
-            sessionId: params.sessionId,
-            sessionKey: sandboxSessionKey,
-            agentId: sessionAgentId,
-            runId: params.runId,
-            catalogRef: toolSearchCatalogRef,
-          });
+      const clientToolSearch = strictMessageOnly
+        ? { tools: clientToolDefs, compacted: false, catalogToolCount: 0 }
+        : codeModeControlsEnabledForRun
+          ? addClientToolsToCodeModeCatalog({
+              tools: clientToolDefs,
+              config: params.config,
+              sessionId: params.sessionId,
+              sessionKey: sandboxSessionKey,
+              agentId: sessionAgentId,
+              runId: params.runId,
+              catalogRef: toolSearchCatalogRef,
+            })
+          : addClientToolsToToolSearchCatalog({
+              tools: clientToolDefs,
+              config: toolSearchRuntimeConfig,
+              sessionId: params.sessionId,
+              sessionKey: sandboxSessionKey,
+              agentId: sessionAgentId,
+              runId: params.runId,
+              catalogRef: toolSearchCatalogRef,
+            });
       clientToolDefs = clientToolSearch.tools;
       if (clientToolSearch.compacted) {
         log.info(
@@ -2542,6 +2723,7 @@ export async function runEmbeddedAttempt(
           ...(boundaryTimezone ? { timezone: boundaryTimezone } : {}),
           ...(includeBoundaryTimestamp ? {} : { includeTimestamp: false }),
           ...(currentUserTimestampOverride ? { currentUserTimestampOverride } : {}),
+          ...(isRoomObservation ? { roomObservationTurnOnly: true } : {}),
         };
       };
       if (typeof activeSession.agent.convertToLlm === "function") {
@@ -2609,6 +2791,7 @@ export async function runEmbeddedAttempt(
         agentId: sessionAgentId,
       });
       const midTurnPrecheckEnabled =
+        !isRoomObservation &&
         params.config?.agents?.defaults?.compaction?.midTurnPrecheck?.enabled === true;
       let pendingMidTurnPrecheckRequest: MidTurnPrecheckRequest | null = null;
       const onMidTurnPrecheck = (request: MidTurnPrecheckRequest) => {
@@ -2705,39 +2888,52 @@ export async function runEmbeddedAttempt(
         removeHistoryImagePruneContextTransform();
         removeLoopContextGuard?.();
       };
-      const cacheTrace = createCacheTrace({
-        cfg: params.config,
-        env: process.env,
-        runId: params.runId,
-        sessionId: activeSession.sessionId,
-        sessionKey: params.sessionKey,
-        provider: params.provider,
-        modelId: params.modelId,
-        modelApi: params.model.api,
-        workspaceDir: params.workspaceDir,
-      });
-      const anthropicPayloadLogger = createAnthropicPayloadLogger({
-        env: process.env,
-        runId: params.runId,
-        sessionId: activeSession.sessionId,
-        sessionKey: params.sessionKey,
-        provider: params.provider,
-        modelId: params.modelId,
-        modelApi: params.model.api,
-        workspaceDir: params.workspaceDir,
-      });
-      trajectoryRecorder = createTrajectoryRuntimeRecorder({
-        cfg: params.config,
-        env: process.env,
-        runId: params.runId,
-        sessionId: activeSession.sessionId,
-        sessionKey: params.sessionKey,
-        sessionFile: params.sessionFile,
-        provider: params.provider,
-        modelId: params.modelId,
-        modelApi: params.model.api,
-        workspaceDir: params.workspaceDir,
-      });
+      // Optional diagnostics are durable prompt/response artifacts. Passive
+      // room observations must not even construct their writers.
+      const cacheTrace = isRoomObservation
+        ? null
+        : createCacheTrace({
+            cfg: params.config,
+            env: process.env,
+            runId: params.runId,
+            sessionId: activeSession.sessionId,
+            sessionKey: params.sessionKey,
+            provider: params.provider,
+            modelId: params.modelId,
+            modelApi: params.model.api,
+            workspaceDir: params.workspaceDir,
+          });
+      const anthropicPayloadLogger = isRoomObservation
+        ? null
+        : createAnthropicPayloadLogger({
+            env: process.env,
+            runId: params.runId,
+            sessionId: activeSession.sessionId,
+            sessionKey: params.sessionKey,
+            provider: params.provider,
+            modelId: params.modelId,
+            modelApi: params.model.api,
+            workspaceDir: params.workspaceDir,
+          });
+      // Passive room observations must not leave durable prompt or response
+      // artifacts. The explicit attempt flag keeps this policy visible across
+      // the backend seam; provenance is a defense-in-depth fallback for direct
+      // attempt callers.
+      const disableTrajectories = params.disableTrajectories === true || isRoomObservation;
+      trajectoryRecorder = disableTrajectories
+        ? null
+        : createTrajectoryRuntimeRecorder({
+            cfg: params.config,
+            env: process.env,
+            runId: params.runId,
+            sessionId: activeSession.sessionId,
+            sessionKey: params.sessionKey,
+            sessionFile: params.sessionFile,
+            provider: params.provider,
+            modelId: params.modelId,
+            modelApi: params.model.api,
+            workspaceDir: params.workspaceDir,
+          });
       trajectoryRecorder?.recordEvent("session.started", {
         trigger: params.trigger,
         sessionFile: params.sessionFile,
@@ -2793,41 +2989,46 @@ export async function runEmbeddedAttempt(
         ...params.streamParams,
         fastMode: params.fastMode,
       };
-      const preparedRuntimeExtraParams = params.runtimePlan?.transport.resolveExtraParams({
-        extraParamsOverride: streamExtraParamsOverride,
-        thinkingLevel: params.thinkLevel,
-        agentId: sessionAgentId,
-        workspaceDir: effectiveWorkspace,
-        model: params.model,
-        resolvedTransport,
-      });
+      const preparedRuntimeExtraParams = isRoomObservation
+        ? undefined
+        : params.runtimePlan?.transport.resolveExtraParams({
+            extraParamsOverride: streamExtraParamsOverride,
+            thinkingLevel: params.thinkLevel,
+            agentId: sessionAgentId,
+            workspaceDir: effectiveWorkspace,
+            model: params.model,
+            resolvedTransport,
+          });
       const resolvedExtraParams = resolveExtraParams({
         cfg: params.config,
         provider: params.provider,
         modelId: params.modelId,
         agentId: sessionAgentId,
       });
-      const effectiveExtraParams =
-        preparedRuntimeExtraParams ??
-        resolvePreparedExtraParams({
-          cfg: params.config,
-          provider: params.provider,
-          modelId: params.modelId,
-          extraParamsOverride: streamExtraParamsOverride,
-          thinkingLevel: params.thinkLevel,
-          agentId: sessionAgentId,
-          agentDir,
-          workspaceDir: effectiveWorkspace,
-          resolvedExtraParams,
-          model: params.model,
-          resolvedTransport,
-        });
-      const providerStreamFn = registerProviderStreamForModel({
-        model: params.model,
-        cfg: params.config,
-        agentDir,
-        workspaceDir: effectiveWorkspace,
-      });
+      const effectiveExtraParams = isRoomObservation
+        ? {}
+        : (preparedRuntimeExtraParams ??
+          resolvePreparedExtraParams({
+            cfg: params.config,
+            provider: params.provider,
+            modelId: params.modelId,
+            extraParamsOverride: streamExtraParamsOverride,
+            thinkingLevel: params.thinkLevel,
+            agentId: sessionAgentId,
+            agentDir,
+            workspaceDir: effectiveWorkspace,
+            resolvedExtraParams,
+            model: params.model,
+            resolvedTransport,
+          }));
+      const providerStreamFn = isRoomObservation
+        ? undefined
+        : registerProviderStreamForModel({
+            model: params.model,
+            cfg: params.config,
+            agentDir,
+            workspaceDir: effectiveWorkspace,
+          });
       const streamStrategy = describeEmbeddedAgentStreamStrategy({
         currentStreamFn: defaultSessionStreamFn,
         providerStreamFn,
@@ -2845,12 +3046,14 @@ export async function runEmbeddedAttempt(
         authProfileId: resolveAttemptStreamAuthProfileId(params),
         authStorage: params.authStorage,
       });
-      const providerTextTransforms = resolveProviderTextTransforms({
-        provider: params.provider,
-        config: params.config,
-        workspaceDir: effectiveWorkspace,
-        runtimeHandle: getProviderRuntimeHandle(),
-      });
+      const providerTextTransforms = isRoomObservation
+        ? undefined
+        : resolveProviderTextTransforms({
+            provider: params.provider,
+            config: params.config,
+            workspaceDir: effectiveWorkspace,
+            runtimeHandle: getProviderRuntimeHandle(),
+          });
       if (providerTextTransforms?.input?.length) {
         activeSession.agent.streamFn = wrapStreamFnTextTransforms({
           streamFn: activeSession.agent.streamFn,
@@ -2873,23 +3076,28 @@ export async function runEmbeddedAttempt(
         senderE164: params.senderE164,
       };
 
-      applyExtraParamsToAgent(
-        activeSession.agent,
-        params.config,
-        params.provider,
-        params.modelId,
-        streamExtraParamsOverride,
-        params.thinkLevel,
-        sessionAgentId,
-        effectiveWorkspace,
-        params.model,
-        agentDir,
-        resolvedTransport,
-        {
-          preparedExtraParams: effectiveExtraParams,
-          nativeWebSearchPolicyContext,
-        },
-      );
+      if (!isRoomObservation) {
+        applyExtraParamsToAgent(
+          activeSession.agent,
+          params.config,
+          params.provider,
+          params.modelId,
+          streamExtraParamsOverride,
+          params.thinkLevel,
+          sessionAgentId,
+          effectiveWorkspace,
+          params.model,
+          agentDir,
+          resolvedTransport,
+          {
+            preparedExtraParams: effectiveExtraParams,
+            nativeWebSearchPolicyContext,
+            ...(params.toolsAllow !== undefined
+              ? { nativeWebSearchAllowedByToolPolicy: false }
+              : {}),
+          },
+        );
+      }
       if (codeModeControlsEnabledForRun) {
         activeSession.agent.streamFn = createCodexNativeWebSearchWrapper(
           activeSession.agent.streamFn,
@@ -3191,7 +3399,13 @@ export async function runEmbeddedAttempt(
       );
 
       try {
-        if (isRawModelRun) {
+        if (isRoomObservation) {
+          activeSession.agent.state.messages = [];
+          cacheTrace?.recordStage("session:raw-model-run", {
+            messages: activeSession.messages,
+            system: systemPromptText,
+          });
+        } else if (isRawModelRun) {
           activeSession.agent.reset();
           setActiveSessionSystemPrompt("");
           cacheTrace?.recordStage("session:raw-model-run", {
@@ -3271,7 +3485,7 @@ export async function runEmbeddedAttempt(
             }
           }
 
-          if (params.sessionKey && params.config && !isRawModelRun) {
+          if (params.sessionKey && params.config && !isRawModelRun && !isRoomObservation) {
             // Capability guidance must include deferred OpenClaw tools without
             // interpreting arbitrary client tool names as native capabilities.
             const activeSubagentPromptAddition = buildActiveSubagentSystemPromptAddition({
@@ -3573,7 +3787,7 @@ export async function runEmbeddedAttempt(
           lifecycleGeneration: params.lifecycleGeneration,
           messageChannel: runtimeChannel,
           initialReplayState: params.initialReplayState,
-          hookRunner: getGlobalHookRunner() ?? undefined,
+          hookRunner,
           verboseLevel: params.verboseLevel,
           reasoningMode: params.reasoningLevel ?? "off",
           thinkingLevel: params.thinkLevel,
@@ -3751,6 +3965,8 @@ export async function runEmbeddedAttempt(
         isCompacting: () => subscription.isCompacting(),
         supportsTranscriptCommitWait: true,
         sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
+        acceptsSteering: !isRoomObservation,
+        restartRecoverable: !isRoomObservationInputProvenance(params.inputProvenance),
         cancel: abortActiveRunExternally,
         abort: (reason) => abortActiveRunExternally(reason),
       };
@@ -3972,17 +4188,18 @@ export async function runEmbeddedAttempt(
         };
         const promptBuildMessages =
           pruneProcessedHistoryImages(activeSession.messages) ?? activeSession.messages;
-        const hookResult = isRawModelRun
-          ? undefined
-          : await resolvePromptBuildHookResult({
-              config: params.config ?? getRuntimeConfig(),
-              prompt: params.prompt,
-              messages: promptBuildMessages,
-              hookCtx,
-              hookRunner,
-              beforeAgentStartResult: params.beforeAgentStartResult,
-              bootstrapContextRunKind: params.bootstrapContextRunKind,
-            });
+        const hookResult =
+          isRawModelRun || isRoomObservationInputProvenance(params.inputProvenance)
+            ? undefined
+            : await resolvePromptBuildHookResult({
+                config: params.config ?? getRuntimeConfig(),
+                prompt: params.prompt,
+                messages: promptBuildMessages,
+                hookCtx,
+                hookRunner,
+                beforeAgentStartResult: params.beforeAgentStartResult,
+                bootstrapContextRunKind: params.bootstrapContextRunKind,
+              });
         const promptBeforePromptBuildHooks = effectivePrompt;
         const promptBuildPrependContext = hookResult?.prependContext;
         const promptBuildAppendContext = hookResult?.appendContext;
@@ -4019,10 +4236,12 @@ export async function runEmbeddedAttempt(
               `hooks: applied prependSystemContext/appendSystemContext (${prependSystemLen}+${appendSystemLen} chars)`,
             );
           }
-          const mediaTaskSystemPromptAddition = resolveAttemptMediaTaskSystemPromptAddition({
-            sessionKey: params.sessionKey,
-            trigger: params.trigger,
-          });
+          const mediaTaskSystemPromptAddition = isRoomObservation
+            ? undefined
+            : resolveAttemptMediaTaskSystemPromptAddition({
+                sessionKey: params.sessionKey,
+                trigger: params.trigger,
+              });
           if (mediaTaskSystemPromptAddition) {
             setActiveSessionSystemPrompt(
               prependSystemPromptAddition({
@@ -4037,13 +4256,16 @@ export async function runEmbeddedAttempt(
         // suffix, not the cached prefix — otherwise an idle turn's prefix (O + identity)
         // diverges from an active media turn's prefix (O) and breaks prompt caching. Skip
         // empty prompts (raw/gateway runs) and turns with no identity line, which need none.
-        const modelAwareSystemPrompt = appendModelIdentitySystemPrompt({
-          systemPrompt:
-            buildModelIdentityPromptLine(runtimeInfo.model) && systemPromptText.trim().length > 0
-              ? ensureSystemPromptCacheBoundary(systemPromptText)
-              : systemPromptText,
-          model: runtimeInfo.model,
-        });
+        const modelAwareSystemPrompt = isRoomObservation
+          ? systemPromptText
+          : appendModelIdentitySystemPrompt({
+              systemPrompt:
+                buildModelIdentityPromptLine(runtimeInfo.model) &&
+                systemPromptText.trim().length > 0
+                  ? ensureSystemPromptCacheBoundary(systemPromptText)
+                  : systemPromptText,
+              model: runtimeInfo.model,
+            });
         if (modelAwareSystemPrompt !== systemPromptText) {
           setActiveSessionSystemPrompt(modelAwareSystemPrompt);
         }
@@ -4147,8 +4369,10 @@ export async function runEmbeddedAttempt(
         }
         // Commitment fan-out must leave parent-turn steering queued for the
         // next normal turn instead of consuming it as commitment context.
+        // Passive room observations must not inspect or mutate this private queue.
         if (
           params.sessionKey &&
+          !isRoomObservation &&
           !isRawModelRun &&
           params.bootstrapContextRunKind !== "commitment-only"
         ) {
@@ -4184,7 +4408,7 @@ export async function runEmbeddedAttempt(
         }
         const promptForModelBeforeRuntimeContextSplit = effectivePrompt;
         if (!isRawModelRun) {
-          promptForRuntimeContextSplit = annotateInterSessionPromptText(
+          promptForRuntimeContextSplit = annotateInputProvenancePromptText(
             promptForRuntimeContextSplit,
             params.inputProvenance,
           );
@@ -4244,11 +4468,11 @@ export async function runEmbeddedAttempt(
               : "runtime-event",
           });
           const promptForSession = buildCurrentInboundPrompt({
-            context: params.currentInboundContext,
+            context: isRoomObservation ? undefined : params.currentInboundContext,
             prompt: promptSubmission.prompt,
           });
           const promptForModel = buildCurrentInboundPrompt({
-            context: params.currentInboundContext,
+            context: isRoomObservation ? undefined : params.currentInboundContext,
             prompt: promptSubmission.modelPrompt ?? promptSubmission.prompt,
           });
           currentUserTimestampOverride =
@@ -4260,7 +4484,7 @@ export async function runEmbeddedAttempt(
                 }
               : undefined;
           const runtimeSystemContext = promptSubmission.runtimeSystemContext?.trim();
-          if (promptSubmission.runtimeOnly && runtimeSystemContext) {
+          if (!isRoomObservation && promptSubmission.runtimeOnly && runtimeSystemContext) {
             const runtimeSystemPrompt = composeSystemPromptWithHookContext({
               baseSystemPrompt: systemPromptText,
               appendSystemContext: runtimeSystemContext,
@@ -4440,28 +4664,29 @@ export async function runEmbeddedAttempt(
 
           // Detect and load images referenced in the visible prompt for vision-capable models.
           // Images are prompt-local only.
-          const imageResult = skipPromptSubmission
-            ? {
-                images: [],
-                detectedRefs: [],
-                loadedCount: 0,
-                skippedCount: 0,
-              }
-            : await detectAndLoadPromptImages({
-                prompt: promptSubmission.prompt,
-                workspaceDir: effectiveWorkspace,
-                model: params.model,
-                existingImages: params.images,
-                imageOrder: params.imageOrder,
-                maxBytes: MAX_IMAGE_BYTES,
-                maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
-                workspaceOnly: effectiveFsWorkspaceOnly,
-                // Enforce sandbox path restrictions when sandbox is enabled
-                sandbox:
-                  sandbox?.enabled && sandbox?.fsBridge
-                    ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
-                    : undefined,
-              });
+          const imageResult =
+            skipPromptSubmission || isRoomObservation
+              ? {
+                  images: [],
+                  detectedRefs: [],
+                  loadedCount: 0,
+                  skippedCount: 0,
+                }
+              : await detectAndLoadPromptImages({
+                  prompt: promptSubmission.prompt,
+                  workspaceDir: effectiveWorkspace,
+                  model: params.model,
+                  existingImages: params.images,
+                  imageOrder: params.imageOrder,
+                  maxBytes: MAX_IMAGE_BYTES,
+                  maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
+                  workspaceOnly: effectiveFsWorkspaceOnly,
+                  // Enforce sandbox path restrictions when sandbox is enabled
+                  sandbox:
+                    sandbox?.enabled && sandbox?.fsBridge
+                      ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
+                      : undefined,
+                });
 
           if (!skipPromptSubmission) {
             cacheTrace?.recordStage("prompt:before", {
@@ -4610,10 +4835,13 @@ export async function runEmbeddedAttempt(
           }
 
           const llmBoundaryOptionsForPrecheck =
-            boundaryTimezone || !includeBoundaryTimestamp
+            boundaryTimezone ||
+            !includeBoundaryTimestamp ||
+            isRoomObservationInputProvenance(params.inputProvenance)
               ? {
                   ...(boundaryTimezone ? { timezone: boundaryTimezone } : {}),
                   ...(includeBoundaryTimestamp ? {} : { includeTimestamp: false }),
+                  ...(isRoomObservation ? { roomObservationTurnOnly: true } : {}),
                 }
               : undefined;
           const unwindowedLlmBoundaryMessagesForPrecheck =
@@ -5280,7 +5508,10 @@ export async function runEmbeddedAttempt(
         });
         anthropicPayloadLogger?.recordUsage(messagesSnapshot, promptError);
 
-        if (!beforeAgentFinalizeRevisionReason) {
+        if (
+          !beforeAgentFinalizeRevisionReason &&
+          !isRoomObservationInputProvenance(params.inputProvenance)
+        ) {
           runAgentEndSideEffects({
             event: {
               messages: messagesSnapshot,

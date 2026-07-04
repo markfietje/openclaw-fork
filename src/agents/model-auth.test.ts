@@ -10,6 +10,13 @@ import {
   NON_ENV_SECRETREF_MARKER,
 } from "./model-auth-markers.js";
 
+const shouldDeferProviderSyntheticProfileAuthWithPluginMock = vi.hoisted(() =>
+  vi.fn(
+    (params: { context?: { resolvedApiKey?: string } }) =>
+      params.context?.resolvedApiKey === "synthetic-defer",
+  ),
+);
+
 vi.mock("../plugins/plugin-registry.js", () => ({
   loadPluginRegistrySnapshotWithMetadata: () => ({
     source: "derived",
@@ -60,9 +67,8 @@ vi.mock("../plugins/provider-runtime.js", async () => {
     ...actual,
     buildProviderMissingAuthMessageWithPlugin: () => undefined,
     resolveExternalAuthProfilesWithPlugins: () => [],
-    shouldDeferProviderSyntheticProfileAuthWithPlugin: (params: {
-      context?: { resolvedApiKey?: string };
-    }) => params.context?.resolvedApiKey === "synthetic-defer",
+    shouldDeferProviderSyntheticProfileAuthWithPlugin:
+      shouldDeferProviderSyntheticProfileAuthWithPluginMock,
     // Synthetic auth is provider-owned. Tests model local/no-key and plugin
     // config credentials without depending on real plugins.
     resolveProviderSyntheticAuthWithPlugin: (params: {
@@ -186,6 +192,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
   clearRuntimeConfigSnapshot();
+  shouldDeferProviderSyntheticProfileAuthWithPluginMock.mockClear();
 });
 
 afterEach(() => {
@@ -812,6 +819,109 @@ describe("resolveUsableCustomProviderApiKey", () => {
 });
 
 describe("resolveApiKeyForProvider", () => {
+  it("resolves passive core OpenAI credentials without provider runtime hooks", async () => {
+    const resolved = await resolveApiKeyForProvider({
+      provider: "openai",
+      modelApi: "openai-responses",
+      profileId: "openai:default",
+      skipProviderRuntimeHooks: true,
+      store: {
+        version: 1,
+        profiles: {
+          "openai:default": {
+            type: "api_key",
+            provider: "openai",
+            key: "sk-core", // pragma: allowlist secret
+          },
+        },
+      },
+    });
+
+    expectAuthFields(resolved, {
+      apiKey: "sk-core",
+      source: "profile:openai:default",
+      mode: "api-key",
+    });
+    expect(shouldDeferProviderSyntheticProfileAuthWithPluginMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects passive OpenAI provider-entry token references before resolving them", async () => {
+    await expect(
+      resolveApiKeyForProvider({
+        provider: "openai",
+        modelApi: "openai-responses",
+        skipProviderRuntimeHooks: true,
+        cfg: {
+          models: {
+            providers: {
+              openai: {
+                baseUrl: "https://api.openai.com/v1",
+                apiKey: "openai:token",
+                models: [],
+              },
+            },
+          },
+        },
+        store: {
+          version: 1,
+          profiles: {
+            "openai:token": {
+              type: "token",
+              provider: "openai",
+              token: "secret-token",
+              expires: Date.now() + 60_000,
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("passive core OpenAI runs require a static API key profile");
+    expect(shouldDeferProviderSyntheticProfileAuthWithPluginMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects passive OpenAI aws-sdk provider and profile overrides", async () => {
+    const providerConfig = {
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            auth: "aws-sdk" as const,
+            models: [],
+          },
+        },
+      },
+    };
+
+    await expect(
+      resolveApiKeyForProvider({
+        provider: "openai",
+        modelApi: "openai-responses",
+        skipProviderRuntimeHooks: true,
+        cfg: providerConfig,
+      }),
+    ).rejects.toThrow("passive core OpenAI runs require a static API key profile");
+
+    await expect(
+      resolveApiKeyForProvider({
+        provider: "openai",
+        modelApi: "openai-responses",
+        profileId: "openai:aws",
+        skipProviderRuntimeHooks: true,
+        cfg: {
+          ...providerConfig,
+          auth: {
+            profiles: {
+              "openai:aws": {
+                provider: "openai",
+                mode: "aws-sdk",
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow("passive core OpenAI runs require a static API key profile");
+    expect(shouldDeferProviderSyntheticProfileAuthWithPluginMock).not.toHaveBeenCalled();
+  });
+
   it("reuses plugin fallback auth without a models.providers entry", async () => {
     const resolved = await withoutEnv("PLUGIN_WEB_API_KEY", () =>
       resolveApiKeyForProvider({

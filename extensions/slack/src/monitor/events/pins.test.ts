@@ -122,6 +122,22 @@ describe("registerSlackPinEvents", () => {
       },
       expectedCalls: 0,
     },
+    {
+      name: "blocks channel pin events for users outside requestUsers",
+      args: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makePinEvent({ channel: "C1", user: "U_ATTACKER" }),
+      },
+      expectedCalls: 0,
+    },
+    {
+      name: "allows channel pin events for users inside requestUsers",
+      args: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makePinEvent({ channel: "C1", user: "U_OWNER" }),
+      },
+      expectedCalls: 1,
+    },
   ];
   it.each(cases)("$name", async ({ args, expectedCalls }) => {
     await runPinCase(args);

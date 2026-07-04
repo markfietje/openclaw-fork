@@ -109,6 +109,50 @@ describe("followup queue collect routing", () => {
     expect(calls[0]?.originatingChatType).toBe("channel");
   });
 
+  it("preserves matching restrictive runtime policy across a collected batch", async () => {
+    const key = `test-collect-runtime-policy-${Date.now()}`;
+    const calls: FollowupRun[] = [];
+    const done = createDeferred<void>();
+    const sourceBoundMessagePolicy = {
+      mode: "source_bound" as const,
+      channel: "slack",
+      accountId: "default",
+      conversationId: "C123",
+      threadId: "111.222",
+    };
+    const settings: QueueSettings = {
+      mode: "collect",
+      debounceMs: 0,
+      cap: 50,
+      dropPolicy: "summarize",
+    };
+    const makeRun = (prompt: string) => ({
+      ...createRun({
+        prompt,
+        originatingChannel: "slack",
+        originatingTo: "channel:C123",
+        originatingThreadId: "111.222",
+      }),
+      toolsAllow: ["message"],
+      sourceBoundMessagePolicy,
+    });
+
+    enqueueFollowupRun(key, makeRun("one"), settings);
+    enqueueFollowupRun(key, makeRun("two"), settings);
+    scheduleFollowupDrain(key, async (run) => {
+      calls.push(run);
+      done.resolve();
+    });
+    await done.promise;
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      toolsAllow: ["message"],
+      sourceBoundMessagePolicy,
+    });
+    expect(calls[0]?.prompt).toContain("[Queued messages while agent was busy]");
+  });
+
   it("collects Slack top-level messages when reply anchors are disabled", async () => {
     const key = `test-collect-slack-reply-off-${Date.now()}`;
     const calls: FollowupRun[] = [];
@@ -1100,7 +1144,7 @@ describe("followup queue collect routing", () => {
     },
   );
 
-  it("uses current run settings without dropped runtime context for split summaries", async () => {
+  it("uses current run settings while preserving trusted dropped context for split summaries", async () => {
     const key = `test-collect-overflow-current-run-${Date.now()}`;
     const calls: FollowupRun[] = [];
     const done = createDeferred<void>();
@@ -1168,7 +1212,7 @@ describe("followup queue collect routing", () => {
 
     expect(calls[0]?.run.model).toBe("current-model");
     expect(calls[0]?.abortSignal).toBeUndefined();
-    expect(calls[0]?.currentInboundContext).toBeUndefined();
+    expect(calls[0]?.currentInboundContext?.text).toBe("private runtime context");
     expect(calls[0]?.originatingChatType).toBe("direct");
     expect(calls[0]?.run.senderId).toBe("guest");
     expect(calls[0]?.run.senderIsOwner).toBe(false);
@@ -2720,7 +2764,7 @@ describe("followup queue collect routing", () => {
     expect(calls[0]?.prompt).toContain("[Queue overflow] Dropped 1 message due to cap.");
   });
 
-  it("keeps live item runtime metadata out of standalone overflow summaries", async () => {
+  it("preserves trusted policy metadata but not live lifecycle handles in overflow summaries", async () => {
     const key = `test-overflow-summary-runtime-${Date.now()}`;
     const calls: FollowupRun[] = [];
     const done = createDeferred<void>();
@@ -2745,7 +2789,16 @@ describe("followup queue collect routing", () => {
       {
         ...createRun({ prompt: "dropped ambient" }),
         currentInboundEventKind: "room_event",
+        currentInboundAudio: true,
         currentInboundContext: { text: "dropped context" },
+        toolsAllow: ["message"],
+        sourceBoundMessagePolicy: {
+          mode: "source_bound",
+          channel: "slack",
+          accountId: "default",
+          conversationId: "C123",
+          threadId: "111.222",
+        },
       },
       settings,
     );
@@ -2769,7 +2822,13 @@ describe("followup queue collect routing", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0]?.prompt).toContain("[Queue overflow] Dropped 1 message due to cap.");
     expect(calls[0]?.currentInboundEventKind).toBe("room_event");
-    expect(calls[0]?.currentInboundContext).toBeUndefined();
+    expect(calls[0]?.currentInboundAudio).toBe(true);
+    expect(calls[0]?.currentInboundContext?.text).toBe("dropped context");
+    expect(calls[0]?.toolsAllow).toEqual(["message"]);
+    expect(calls[0]?.sourceBoundMessagePolicy).toMatchObject({
+      conversationId: "C123",
+      threadId: "111.222",
+    });
     expect(calls[0]?.abortSignal).toBeUndefined();
     expect(calls[1]?.prompt).toBe("live ambient");
     expect(calls[1]?.currentInboundEventKind).toBe("room_event");
@@ -2865,7 +2924,7 @@ describe("followup queue collect routing", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0]?.prompt).toContain("[Queue overflow] Dropped 1 message due to cap.");
     expect(calls[0]?.currentInboundEventKind).toBe("room_event");
-    expect(calls[0]?.currentInboundContext).toBeUndefined();
+    expect(calls[0]?.currentInboundContext?.text).toBe("dropped context");
     expect(calls[0]?.abortSignal).toBeUndefined();
     expect(calls[1]?.prompt).toBe("live followup");
     expect(onComplete).toHaveBeenCalledTimes(1);
@@ -2920,7 +2979,9 @@ describe("followup queue collect routing", () => {
       "room_event",
     );
     expect(getExistingFollowupQueue(key)?.summarySources[0]?.queuedLifecycle).toBeUndefined();
-    expect(getExistingFollowupQueue(key)?.summarySources[0]?.currentInboundContext).toBeUndefined();
+    expect(getExistingFollowupQueue(key)?.summarySources[0]?.currentInboundContext?.text).toBe(
+      "dropped context",
+    );
 
     releaseRetry.resolve();
     await done.promise;
@@ -2929,6 +2990,7 @@ describe("followup queue collect routing", () => {
     expect(calls[1]?.prompt).toContain("[Queue overflow] Dropped 1 message due to cap.");
     expect(calls[1]?.prompt).toContain("- dropped ambient");
     expect(calls[1]?.currentInboundEventKind).toBe("room_event");
+    expect(calls[1]?.currentInboundContext?.text).toBe("dropped context");
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 });

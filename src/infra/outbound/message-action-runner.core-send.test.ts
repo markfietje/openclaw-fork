@@ -364,6 +364,35 @@ describe("runMessageAction core send routing", () => {
     expect(firstMockArg(sendText, "send text").text).toBe("[Nexus] hello world");
   });
 
+  it("rejects a source-bound response prefix that introduces a mass mention", async () => {
+    const sendText = registerSlackTextPlugin();
+
+    await expect(
+      runMessageAction({
+        cfg: {
+          channels: { slack: { enabled: true } },
+          messages: { responsePrefix: "<!here>" },
+        } as OpenClawConfig,
+        action: "send",
+        params: { message: "hello world" },
+        toolContext: {
+          currentChannelProvider: "slack",
+          currentChannelId: "channel:C123",
+        },
+        sessionKey: "agent:main:slack:channel:C123",
+        sourceReplyDeliveryMode: "message_tool_only",
+        sourceBoundMessagePolicy: {
+          mode: "source_bound",
+          channel: "slack",
+          accountId: "default",
+          conversationId: "C123",
+        },
+        dryRun: false,
+      }),
+    ).rejects.toThrow("channel-wide and user-group mentions are not allowed");
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
   it("does not double-apply responsePrefix when the text already carries it", async () => {
     const sendText = registerSlackTextPlugin();
 
@@ -654,6 +683,41 @@ describe("runMessageAction core send routing", () => {
     const mediaInput = firstMockArg(sendMedia, "send media");
     expect(mediaInput.text).toBe("");
     expect(mediaInput.mediaUrl).toBe("file:///tmp/openclaw-voice.ogg");
+  });
+
+  it("keeps source-bound sends text-only when automatic TTS is enabled", async () => {
+    const sendText = registerSlackTextPlugin();
+    ttsMocks.maybeApplyTtsToPayload.mockResolvedValueOnce({
+      mediaUrl: "file:///tmp/openclaw-voice.ogg",
+      audioAsVoice: true,
+      spokenText: "hello there",
+    });
+
+    await runMessageAction({
+      cfg: {
+        channels: { slack: { enabled: true } },
+        messages: { tts: { auto: "always" } },
+      } as OpenClawConfig,
+      action: "send",
+      params: { message: "hello there" },
+      toolContext: {
+        currentChannelProvider: "slack",
+        currentChannelId: "channel:C123",
+      },
+      sessionKey: "agent:main:slack:channel:C123",
+      sourceReplyDeliveryMode: "message_tool_only",
+      sourceBoundMessagePolicy: {
+        mode: "source_bound",
+        channel: "slack",
+        accountId: "default",
+        conversationId: "C123",
+      },
+      dryRun: false,
+    });
+
+    expect(ttsMocks.maybeApplyTtsToPayload).not.toHaveBeenCalled();
+    expect(sendText).toHaveBeenCalledOnce();
+    expect(firstMockArg(sendText, "send text").text).toBe("hello there");
   });
 
   it("forwards inbound audio context to message-tool TTS", async () => {

@@ -15,6 +15,11 @@ export async function applyLinkUnderstanding(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
 }): Promise<ApplyLinkUnderstandingResult> {
+  const suppressCommandText = params.ctx.RequestAuthorized === false;
+  if (suppressCommandText) {
+    params.ctx.CommandBody = "";
+    params.ctx.BodyForCommands = "";
+  }
   const result = await runLinkUnderstanding({
     cfg: params.cfg,
     ctx: params.ctx,
@@ -32,8 +37,12 @@ export async function applyLinkUnderstanding(params: {
 
   finalizeInboundContext(params.ctx, {
     forceBodyForAgent: true,
-    forceBodyForCommands: true,
+    forceBodyForCommands: !suppressCommandText,
   });
+  if (suppressCommandText) {
+    params.ctx.CommandBody = "";
+    params.ctx.BodyForCommands = "";
+  }
 
   return result;
 }

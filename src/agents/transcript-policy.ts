@@ -84,6 +84,11 @@ const DEFAULT_TRANSCRIPT_POLICY: TranscriptPolicy = {
   allowSyntheticToolResults: false,
 };
 
+/** Returns a detached core-only policy without consulting provider/runtime plugins. */
+export function createCoreTranscriptPolicy(): TranscriptPolicy {
+  return { ...DEFAULT_TRANSCRIPT_POLICY };
+}
+
 function isAnthropicApi(modelApi?: string | null): boolean {
   return modelApi === "anthropic-messages" || modelApi === "bedrock-converse-stream";
 }

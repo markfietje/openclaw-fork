@@ -979,6 +979,32 @@ describe("Codex app-server dynamic tool build", () => {
     });
   });
 
+  it("passes source-bound message policy into Codex dynamic tools", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const workspaceDir = path.join(tempDir, "workspace");
+    const params = createParams(sessionFile, workspaceDir);
+    params.disableTools = false;
+    params.sourceBoundMessagePolicy = {
+      mode: "source_bound",
+      channel: "slack",
+      accountId: "default",
+      conversationId: "C123",
+      threadId: "111.222",
+    };
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    const factoryOptions: unknown[] = [];
+    setOpenClawCodingToolsFactoryForTests((options) => {
+      factoryOptions.push(options);
+      return [];
+    });
+
+    await buildDynamicToolsForTest(params, workspaceDir, { sandbox: null as never });
+
+    expect(factoryOptions[0]).toMatchObject({
+      sourceBoundMessagePolicy: params.sourceBoundMessagePolicy,
+    });
+  });
+
   it("passes the approval reviewer device into Codex dynamic tools", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");

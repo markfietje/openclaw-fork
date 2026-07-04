@@ -566,4 +566,54 @@ describe("getReplyFromConfig message hooks", () => {
       ),
     ).toBe(true);
   });
+
+  it("detects URLs when command parsing is intentionally suppressed", async () => {
+    const message = "read https://example.test/passive";
+
+    await getReplyFromConfig(
+      buildCtx({
+        Body: message,
+        BodyForAgent: message,
+        RawBody: message,
+        CommandBody: "",
+        BodyForCommands: "",
+        MediaPath: undefined,
+        MediaUrl: undefined,
+        MediaPaths: undefined,
+        MediaUrls: undefined,
+        MediaTypes: undefined,
+        MediaType: undefined,
+        Sticker: undefined,
+        StickerMediaIncluded: undefined,
+      }),
+      undefined,
+      withFastReplyConfig({}),
+    );
+
+    expect(mocks.applyLinkUnderstanding).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not inspect lower-priority history text for URLs", async () => {
+    await getReplyFromConfig(
+      buildCtx({
+        Body: "History: https://example.test/old",
+        BodyForAgent: "current message",
+        RawBody: "current message",
+        CommandBody: "current message",
+        BodyForCommands: "current message",
+        MediaPath: undefined,
+        MediaUrl: undefined,
+        MediaPaths: undefined,
+        MediaUrls: undefined,
+        MediaTypes: undefined,
+        MediaType: undefined,
+        Sticker: undefined,
+        StickerMediaIncluded: undefined,
+      }),
+      undefined,
+      withFastReplyConfig({}),
+    );
+
+    expect(mocks.applyLinkUnderstanding).not.toHaveBeenCalled();
+  });
 });

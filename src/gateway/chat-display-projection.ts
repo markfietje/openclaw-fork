@@ -12,6 +12,7 @@ import { extractCanvasFromText } from "../chat/canvas-render.js";
 import {
   INTER_SESSION_PROMPT_PREFIX_BASE,
   normalizeInputProvenance,
+  stripInputProvenancePromptPrefixForDisplay,
   stripInterSessionPromptPrefixForDisplay,
 } from "../sessions/input-provenance.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
@@ -460,6 +461,23 @@ function sanitizeChatHistoryMessage(
   const entry = { ...(message as Record<string, unknown>) };
   let changed = false;
   const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
+  const provenance = normalizeInputProvenance(entry.provenance);
+  if (role === "user" && provenance?.kind === "room_observation") {
+    if ("content" in entry) {
+      const content = stripInputProvenancePromptPrefixFromContent(entry.content);
+      if (content !== entry.content) {
+        entry.content = content;
+        changed = true;
+      }
+    }
+    if (typeof entry.text === "string") {
+      const text = stripInputProvenancePromptPrefixForDisplay(entry.text);
+      if (text !== entry.text) {
+        entry.text = text;
+        changed = true;
+      }
+    }
+  }
   const preserveExactToolPayload =
     role === "toolresult" ||
     role === "tool_result" ||
@@ -1541,9 +1559,12 @@ function filterVisibleProjectedHistoryMessages(
   return changed ? visible : messages;
 }
 
-function stripInterSessionPromptPrefixFromContent(content: unknown): unknown {
+function stripPromptPrefixFromContent(
+  content: unknown,
+  stripText: (text: string) => string,
+): unknown {
   if (typeof content === "string") {
-    return stripInterSessionPromptPrefixForDisplay(content);
+    return stripText(content);
   }
   if (!Array.isArray(content)) {
     return content;
@@ -1556,9 +1577,17 @@ function stripInterSessionPromptPrefixFromContent(content: unknown): unknown {
     if (typeof record.text !== "string") {
       return block;
     }
-    const stripped = stripInterSessionPromptPrefixForDisplay(record.text);
+    const stripped = stripText(record.text);
     return stripped === record.text ? block : { ...record, text: stripped };
   });
+}
+
+function stripInputProvenancePromptPrefixFromContent(content: unknown): unknown {
+  return stripPromptPrefixFromContent(content, stripInputProvenancePromptPrefixForDisplay);
+}
+
+function stripInterSessionPromptPrefixFromContent(content: unknown): unknown {
+  return stripPromptPrefixFromContent(content, stripInterSessionPromptPrefixForDisplay);
 }
 
 function extractPromptPrefixField(text: string, field: string): string | undefined {

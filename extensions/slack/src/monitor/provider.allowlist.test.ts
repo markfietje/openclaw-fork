@@ -182,7 +182,10 @@ describe("slack startup user allowlist resolution", () => {
           dmPolicy: "allowlist",
           allowFrom: ["@global-user"],
           channels: {
-            C123: { users: ["@channel-user"] },
+            C123: {
+              users: ["@channel-user"],
+              requestUsers: ["@request-user"],
+            },
           },
         },
       },
@@ -198,7 +201,60 @@ describe("slack startup user allowlist resolution", () => {
       const globalAllowlist = resolveAllowlistCallAt(0);
       const channelAllowlist = resolveAllowlistCallAt(1);
       expect(globalAllowlist?.entries).toEqual(["@global-user"]);
-      expect(channelAllowlist?.entries).toEqual(["@channel-user"]);
+      expect(channelAllowlist?.entries).toEqual(["@channel-user", "@request-user"]);
+    } finally {
+      await stopSlackMonitor(monitor);
+    }
+  });
+
+  it("uses resolved request-user IDs for inbound request classification", async () => {
+    resetSlackTestState({
+      channels: {
+        slack: {
+          enabled: true,
+          dangerouslyAllowNameMatching: true,
+          dmPolicy: "disabled",
+          groupPolicy: "open",
+          channels: {
+            C123: {
+              requireMention: false,
+              requestUsers: ["@request-user"],
+            },
+          },
+        },
+      },
+    });
+    slackTestState.resolveSlackUserAllowlistMock.mockResolvedValueOnce([
+      {
+        input: "@request-user",
+        resolved: true,
+        id: "U_RESOLVED",
+        name: "request-user",
+      },
+    ]);
+    slackTestState.replyMock.mockResolvedValue({ text: "ok" });
+
+    const monitor = startSlackMonitor(monitorSlackProvider);
+    try {
+      const handler = await getSlackHandlerOrThrow("message");
+      await flush();
+      await flush();
+
+      await handler({
+        event: {
+          type: "message",
+          user: "U_RESOLVED",
+          text: "hello",
+          ts: "102.000",
+          channel: "C123",
+          channel_type: "channel",
+        },
+      });
+
+      const replyContext = slackTestState.replyMock.mock.calls[0]?.[0] as
+        | { InboundEventKind?: string }
+        | undefined;
+      expect(replyContext?.InboundEventKind).toBe("user_request");
     } finally {
       await stopSlackMonitor(monitor);
     }

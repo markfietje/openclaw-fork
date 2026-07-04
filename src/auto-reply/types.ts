@@ -4,6 +4,7 @@ export type {
   GetReplyOptions,
   PartialReplyPayload,
   ReplyThreadingPolicy,
+  SourceBoundMessagePolicy,
   TypingPolicy,
 } from "./get-reply-options.types.js";
 export {

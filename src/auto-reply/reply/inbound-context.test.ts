@@ -182,6 +182,30 @@ describe("inbound context contract (providers + extensions)", () => {
   }
 });
 
+describe("finalizeInboundContext request authority", () => {
+  it("hard-denies explicit command metadata when request authority is false", () => {
+    const ctx = finalizeInboundContext({
+      Body: "/status",
+      CommandBody: "/status",
+      RequestAuthorized: false,
+      CommandAuthorized: true,
+      CommandTurn: {
+        kind: "text-slash",
+        source: "text",
+        authorized: true,
+        body: "/status",
+      },
+    });
+
+    expect(ctx.RequestAuthorized).toBe(false);
+    expect(ctx.CommandAuthorized).toBe(false);
+    expect(ctx.CommandTurn).toMatchObject({
+      kind: "text-slash",
+      authorized: false,
+    });
+  });
+});
+
 describe("finalizeInboundContext supplemental projection", () => {
   it("projects supplemental facts into legacy context fields", () => {
     const ctx = finalizeInboundContext({

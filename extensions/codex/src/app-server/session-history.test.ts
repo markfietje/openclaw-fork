@@ -40,6 +40,7 @@ function messageEntry(params: {
   parentId: string | null;
   role: "user" | "assistant";
   content: string;
+  provenance?: { kind: "external_user" | "room_observation"; sourceChannel?: string };
 }) {
   return {
     type: "message",
@@ -50,6 +51,7 @@ function messageEntry(params: {
       role: params.role,
       content: params.content,
       timestamp: 1,
+      ...(params.provenance ? { provenance: params.provenance } : {}),
     },
   };
 }
@@ -177,5 +179,48 @@ describe("readCodexMirroredSessionHistoryMessages", () => {
       { role: "user", content: "visible prompt" },
       { role: "assistant", content: [{ type: "text", text: "continued answer" }] },
     ]);
+  });
+
+  it("excludes complete passive room turns from later authorized Codex history", async () => {
+    const sessionFile = await writeSession([
+      messageEntry({
+        id: "passive-user",
+        parentId: null,
+        role: "user",
+        content: "passive room instruction",
+        provenance: { kind: "room_observation", sourceChannel: "slack" },
+      }),
+      messageEntry({
+        id: "passive-assistant",
+        parentId: "passive-user",
+        role: "assistant",
+        content: "passive room reply",
+      }),
+      messageEntry({
+        id: "owner-user",
+        parentId: "passive-assistant",
+        role: "user",
+        content: "authorized owner request",
+        provenance: { kind: "external_user", sourceChannel: "slack" },
+      }),
+      messageEntry({
+        id: "owner-assistant",
+        parentId: "owner-user",
+        role: "assistant",
+        content: "authorized owner reply",
+      }),
+    ]);
+
+    const history = await readCodexMirroredSessionHistoryMessages(mirroredTarget(sessionFile));
+
+    expect(history).toHaveLength(2);
+    expect(history?.[0]).toMatchObject({
+      role: "user",
+      content: "authorized owner request",
+      provenance: { kind: "external_user", sourceChannel: "slack" },
+    });
+    expect(history?.[1]).toMatchObject({ role: "assistant" });
+    expect(JSON.stringify(history)).toContain("authorized owner reply");
+    expect(JSON.stringify(history)).not.toContain("passive room");
   });
 });

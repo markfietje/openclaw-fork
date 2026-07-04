@@ -2,7 +2,10 @@
  * Projects OpenClaw context-engine assemblies into Codex prompt text while
  * preserving safety boundaries and redacting tool payloads.
  */
-import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  stripRoomObservationTurns,
+  type AgentMessage,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import { redactSensitiveFieldValue, redactToolPayloadText } from "openclaw/plugin-sdk/logging-core";
 
 type CodexContextProjection = {
@@ -47,7 +50,9 @@ export function projectContextEngineAssemblyForCodex(params: {
   toolPayloadMode?: "elide" | "preserve";
 }): CodexContextProjection {
   const prompt = params.prompt.trim();
-  const contextMessages = dropDuplicateTrailingPrompt(params.assembledMessages, prompt);
+  const assembledMessages = stripRoomObservationTurns(params.assembledMessages);
+  const originalHistoryMessages = stripRoomObservationTurns(params.originalHistoryMessages);
+  const contextMessages = dropDuplicateTrailingPrompt(assembledMessages, prompt);
   const maxRenderedContextChars = normalizeRenderedContextMaxChars(params.maxRenderedContextChars);
   const renderedContext = renderMessagesForCodexContext(contextMessages, {
     maxTextPartChars: resolveTextPartMaxChars(maxRenderedContextChars),
@@ -72,8 +77,8 @@ export function projectContextEngineAssemblyForCodex(params: {
       : {}),
     promptText,
     ...(promptContextRange ? { promptContextRange } : {}),
-    assembledMessages: params.assembledMessages,
-    prePromptMessageCount: params.originalHistoryMessages.length,
+    assembledMessages,
+    prePromptMessageCount: originalHistoryMessages.length,
   };
 }
 

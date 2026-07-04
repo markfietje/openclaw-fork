@@ -1200,6 +1200,14 @@ describe("createFollowupRunner runtime config", () => {
         currentInboundEventKind: "room_event",
         currentInboundAudio: true,
         currentInboundContext: { text: "[OpenClaw room event]" },
+        toolsAllow: ["message"],
+        sourceBoundMessagePolicy: {
+          mode: "source_bound",
+          channel: "slack",
+          accountId: "default",
+          conversationId: "C123",
+          threadId: "111.222",
+        },
         run: {
           config: runtimeConfig,
           sessionId: "session-cli-room-event",
@@ -1220,6 +1228,11 @@ describe("createFollowupRunner runtime config", () => {
     expect(call.currentInboundAudio).toBe(true);
     expect(call.suppressNextUserMessagePersistence).toBe(true);
     expect(call.sourceReplyDeliveryMode).toBe("message_tool_only");
+    expect(call.toolsAllow).toEqual(["message"]);
+    expect(call.sourceBoundMessagePolicy).toMatchObject({
+      conversationId: "C123",
+      threadId: "111.222",
+    });
     expect(call.allowEmptyAssistantReplyAsSilent).toBe(true);
     expect(call.cliSessionId).toBe("cli-session-1");
     expect(call.cliSessionBinding).toEqual({ sessionId: "cli-session-1" });
@@ -4473,6 +4486,95 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
     persistSpy.mockRestore();
   });
 
+  it("preserves owner model and CLI binding state for queued passive observations", async () => {
+    const storePath = "/tmp/openclaw-followup-passive-observation-usage.json";
+    const sessionKey = "main";
+    const sessionEntry: SessionEntry = {
+      sessionId: "session",
+      updatedAt: Date.now(),
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      contextTokens: 200_000,
+      cliSessionIds: { "claude-cli": "owner-cli-session" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "owner-cli-session",
+          authProfileId: "anthropic:owner",
+        },
+      },
+    };
+    const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
+    FOLLOWUP_TEST_SESSION_STORES.set(storePath, sessionStore);
+    resolveQueuedReplyExecutionConfigMock.mockImplementationOnce(async (config) => config);
+    const persistSpy = vi.spyOn(sessionRunAccounting, "persistRunSessionUsage");
+    runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "passive observation complete" }],
+      meta: {
+        agentMeta: {
+          usage: { input: 100, output: 10 },
+          model: "gemini-2.5-flash",
+          provider: "google",
+          cliSessionId: "passive-cli-session",
+          cliSessionBinding: {
+            sessionId: "passive-cli-session",
+            authProfileId: "google:passive",
+          },
+        },
+      },
+    });
+
+    const runner = createFollowupRunner({
+      opts: { onBlockReply: createAsyncReplySpy() },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "openai/gpt-5.5",
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath,
+    });
+
+    await expect(
+      runner(
+        createQueuedRun({
+          run: {
+            provider: "openai",
+            model: "gpt-5.5",
+            config: {
+              agents: {
+                defaults: {
+                  models: {
+                    "openai/gpt-5.5": { agentRuntime: { id: "openclaw" } },
+                  },
+                },
+              },
+            },
+            inputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(persistSpy).not.toHaveBeenCalled();
+    expect(sessionStore[sessionKey]).toMatchObject({
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      contextTokens: 200_000,
+      cliSessionIds: { "claude-cli": "owner-cli-session" },
+      cliSessionBindings: {
+        "claude-cli": {
+          sessionId: "owner-cli-session",
+          authProfileId: "anthropic:owner",
+        },
+      },
+    });
+    expect(requireMockCallArg(runWithModelFallbackMock, 0)).toMatchObject({
+      fallbacksOverride: [],
+      skipAuthProfileRuntime: true,
+    });
+    persistSpy.mockRestore();
+  });
+
   it("does not send cross-channel payload content to dispatcher when origin routing fails", async () => {
     routeReplyMock.mockResolvedValue({
       ok: false,
@@ -4609,6 +4711,13 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
         ...queued,
         originatingChannel: "discord",
         originatingTo: "channel:C1",
+        toolsAllow: ["message"],
+        sourceBoundMessagePolicy: {
+          mode: "source_bound",
+          channel: "discord",
+          accountId: "default",
+          conversationId: "C1",
+        },
         run: {
           ...queued.run,
           sourceReplyDeliveryMode: "message_tool_only",
@@ -4619,6 +4728,11 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
     const runArg = requireMockCallArg(runEmbeddedAgentMock, 0);
     expect(runArg.sourceReplyDeliveryMode).toBe("message_tool_only");
     expect(runArg.forceMessageTool).toBe(true);
+    expect(runArg.toolsAllow).toEqual(["message"]);
+    expect(runArg.sourceBoundMessagePolicy).toMatchObject({
+      channel: "discord",
+      conversationId: "C1",
+    });
     expect(routeReplyMock).not.toHaveBeenCalled();
     expect(onBlockReply).not.toHaveBeenCalled();
   });

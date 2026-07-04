@@ -410,6 +410,7 @@ export function createAgentEventHandler({
     const omitUnscopedGlobalGoal = sessionKey === "global" && !agentId;
     const lifecyclePatch =
       evt &&
+      evt.persistSessionLifecycle !== false &&
       !isStaleLifecycleEventForSession({
         owningSessionId: evt.sessionId,
         currentSessionId: row?.sessionId,
@@ -554,6 +555,8 @@ export function createAgentEventHandler({
     }
 
     const currentRunContext = getAgentRunContext(evt.runId);
+    const persistSessionLifecycle =
+      evt.persistSessionLifecycle ?? currentRunContext?.persistSessionLifecycle;
     const activeLifecycleGeneration = resolveActiveLifecycleGenerationForRun(evt.runId);
     const currentLifecycleGeneration =
       activeLifecycleGeneration ?? currentRunContext?.lifecycleGeneration;
@@ -577,7 +580,7 @@ export function createAgentEventHandler({
       : undefined;
     const restartRecoveryState =
       opts?.restartRecoveryState ??
-      (restartRecoverySessionKey
+      (persistSessionLifecycle !== false && restartRecoverySessionKey
         ? resolveRestartRecoveryLifecycleState(
             restartRecoverySessionKey,
             restartRecoveryAgentId,
@@ -585,6 +588,7 @@ export function createAgentEventHandler({
           )
         : undefined);
     const suppressRestartRecoveryProjection =
+      persistSessionLifecycle === false ||
       opts?.suppressRestartRecoveryProjection === true ||
       Boolean(
         evt.lifecycleGeneration &&
@@ -1149,6 +1153,8 @@ export function createAgentEventHandler({
     const eventSessionKey =
       typeof evt.sessionKey === "string" && evt.sessionKey.trim() ? evt.sessionKey : undefined;
     const runContext = getAgentRunContext(evt.runId);
+    const persistSessionLifecycle =
+      evt.persistSessionLifecycle ?? runContext?.persistSessionLifecycle;
     const activeLifecycleGeneration = resolveActiveLifecycleGenerationForRun(evt.runId);
     const isControlUiVisible = runContext?.isControlUiVisible ?? true;
     const isHeartbeat = runContext?.isHeartbeat;
@@ -1163,16 +1169,22 @@ export function createAgentEventHandler({
       isChatAbortMarkerCurrent(chatRunState.abortedRuns.get(clientRunId), chatLink) ||
       isChatAbortMarkerCurrent(chatRunState.abortedRuns.get(evt.runId), chatLink);
 
-    const restartRecoveryState = restartRecoverySessionKey
-      ? resolveRestartRecoveryLifecycleState(restartRecoverySessionKey, restartRecoveryAgentId, evt)
-      : undefined;
+    const restartRecoveryState =
+      persistSessionLifecycle !== false && restartRecoverySessionKey
+        ? resolveRestartRecoveryLifecycleState(
+            restartRecoverySessionKey,
+            restartRecoveryAgentId,
+            evt,
+          )
+        : undefined;
     const suppressRestartRecoveryLifecycle =
       lifecyclePhase !== null &&
-      (Boolean(
-        evt.lifecycleGeneration &&
-        activeLifecycleGeneration &&
-        evt.lifecycleGeneration !== activeLifecycleGeneration,
-      ) ||
+      (persistSessionLifecycle === false ||
+        Boolean(
+          evt.lifecycleGeneration &&
+          activeLifecycleGeneration &&
+          evt.lifecycleGeneration !== activeLifecycleGeneration,
+        ) ||
         restartRecoveryState?.suppress === true);
     if (suppressRestartRecoveryLifecycle) {
       clearPendingTerminalLifecycleError(evt.runId, evt.lifecycleGeneration);

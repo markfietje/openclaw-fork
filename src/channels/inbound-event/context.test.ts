@@ -235,6 +235,62 @@ describe("buildChannelInboundEventContext", () => {
     expect(ctx.CommandAuthorized).toBe(false);
   });
 
+  it("maps trusted request authority and hard-denies command metadata", () => {
+    const ctx = buildChannelInboundEventContext(
+      createBaseContextParams({
+        message: {
+          rawBody: "/status",
+          commandBody: "/status",
+        },
+        access: {
+          requestAuthorized: false,
+          commands: {
+            authorized: true,
+          },
+        },
+        command: {
+          kind: "text-slash",
+          authorized: true,
+          body: "/status",
+        },
+        extra: {
+          RequestAuthorized: true,
+          CommandAuthorized: true,
+        },
+      }),
+    );
+
+    expect(ctx.RequestAuthorized).toBe(false);
+    expect(ctx.InputProvenance).toEqual({
+      kind: "room_observation",
+      sourceChannel: "test",
+    });
+    expect(ctx.CommandAuthorized).toBe(false);
+    expect(ctx.CommandTurn).toMatchObject({
+      kind: "text-slash",
+      authorized: false,
+    });
+  });
+
+  it("does not mark request-authorized channel turns as room observations", () => {
+    const ctx = buildChannelInboundEventContext(
+      createBaseContextParams({
+        access: {
+          requestAuthorized: true,
+        },
+        extra: {
+          InputProvenance: {
+            kind: "room_observation",
+            sourceChannel: "stale",
+          },
+        },
+      }),
+    );
+
+    expect(ctx.RequestAuthorized).toBe(true);
+    expect(ctx.InputProvenance).toBeUndefined();
+  });
+
   it("carries the routed agent for unscoped session keys", async () => {
     const ctx = buildChannelInboundEventContext(
       createBaseContextParams({
@@ -359,6 +415,7 @@ describe("buildChannelInboundEventContext", () => {
       }),
     );
 
+    expect(ctx.RequestAuthorized).toBeUndefined();
     expect(ctx.CommandAuthorized).toBe(true);
   });
 

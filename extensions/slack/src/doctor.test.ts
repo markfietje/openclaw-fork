@@ -41,6 +41,7 @@ describe("slack doctor", () => {
                   channels: {
                     general: {
                       users: ["bob"],
+                      requestUsers: ["carol"],
                     },
                   },
                 },
@@ -61,6 +62,44 @@ describe("slack doctor", () => {
         warning.includes("channels.slack.accounts.work.channels.general.users: bob"),
       ),
     ).toBe(true);
+    expect(
+      warnings?.some((warning) =>
+        warning.includes("channels.slack.accounts.work.channels.general.requestUsers: carol"),
+      ),
+    ).toBe(true);
+  });
+
+  it("warns that requestUsers passive observations require the legacy context engine", async () => {
+    const warnings = await Promise.resolve(
+      slackDoctor.collectMutableAllowlistWarnings?.({
+        cfg: {
+          plugins: { slots: { contextEngine: "custom-context" } },
+          channels: {
+            slack: {
+              channels: {
+                C12345678: { requestUsers: ["U12345678"] },
+              },
+            },
+          },
+        } as never,
+      }),
+    );
+
+    expect(warnings).toContain(
+      'Slack channels.*.requestUsers passive observations require plugins.slots.contextEngine to be unset or "legacy"; selected context engine "custom-context" cannot preserve request-authority provenance, so non-request-user events will be dropped.',
+    );
+
+    const wildcardWarnings = await Promise.resolve(
+      slackDoctor.collectMutableAllowlistWarnings?.({
+        cfg: {
+          plugins: { slots: { contextEngine: "custom-context" } },
+          channels: { slack: { channels: { C12345678: { requestUsers: ["*"] } } } },
+        } as never,
+      }),
+    );
+    expect(wildcardWarnings).not.toContain(
+      expect.stringContaining("passive observations require plugins.slots.contextEngine"),
+    );
   });
 
   it("warns for name-keyed allowlist channels but accepts routed ID forms (#81665)", async () => {

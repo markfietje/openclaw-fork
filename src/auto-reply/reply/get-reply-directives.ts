@@ -11,6 +11,7 @@ import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status
 import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import { isRoomObservationInputProvenance } from "../../sessions/input-provenance.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { SkillCommandSpec } from "../../skills/types.js";
 import { shouldHandleTextCommands } from "../commands-text-routing.js";
@@ -222,6 +223,76 @@ export async function resolveReplyDirectives(params: {
   const targetSessionEntry = sessionStore[sessionKey] ?? sessionEntry;
   let provider = initialProvider;
   let model = initialModel;
+
+  if (isRoomObservationInputProvenance(ctx.InputProvenance)) {
+    const commandSource =
+      sessionCtx.BodyForAgent ??
+      sessionCtx.BodyStripped ??
+      sessionCtx.Body ??
+      ctx.BodyForAgent ??
+      ctx.RawBody ??
+      ctx.Body ??
+      "";
+    const command = buildCommandContext({
+      ctx,
+      cfg,
+      agentId,
+      sessionKey,
+      isGroup,
+      triggerBodyNormalized,
+      commandAuthorized: false,
+    });
+    const directives = clearInlineDirectives(commandSource);
+    const modelState = createFastTestModelSelectionState({
+      agentCfg,
+      provider: initialProvider,
+      model: initialModel,
+    });
+    const fastMode = resolveFastModeState({
+      cfg,
+      provider: initialProvider,
+      model: initialModel,
+      agentId,
+    });
+    return {
+      kind: "continue",
+      result: {
+        commandSource,
+        command,
+        allowTextCommands: false,
+        skillCommands: [],
+        directives,
+        cleanedBody: commandSource,
+        messageProviderKey: normalizeLowercaseStringOrEmpty(
+          sessionCtx.Provider ?? ctx.Provider ?? "",
+        ),
+        elevatedEnabled: false,
+        elevatedAllowed: false,
+        elevatedFailures: [],
+        defaultActivation: defaultGroupActivation(false),
+        resolvedThinkLevel: "off",
+        resolvedFastMode: fastMode.mode,
+        resolvedFastModeAutoOnSeconds: fastMode.fastAutoOnSeconds,
+        resolvedFastModeOverride: true,
+        resolvedFastModeAutoOnSecondsOverride: true,
+        resolvedVerboseLevel: undefined,
+        resolvedReasoningLevel: "off",
+        resolvedElevatedLevel: "off",
+        execOverrides: undefined,
+        blockStreamingEnabled: false,
+        blockReplyChunking: undefined,
+        resolvedBlockStreamingBreak: "message_end",
+        provider: initialProvider,
+        model: initialModel,
+        modelState,
+        contextTokens: agentCfg?.contextTokens ?? DEFAULT_CONTEXT_TOKENS,
+        inlineStatusRequested: false,
+        directiveAck: undefined,
+        perMessageQueueMode: undefined,
+        perMessageQueueOptions: undefined,
+      },
+    };
+  }
 
   // Prefer CommandBody/RawBody (clean message without structural context) for directive parsing.
   // Keep `Body`/`BodyStripped` as the best-available prompt text (may include context).

@@ -48,6 +48,11 @@ import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/
 import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
 import { isFailoverError } from "../../agents/failover-error.js";
 import type { FastModeAutoProgressState } from "../../agents/fast-mode.js";
+import {
+  canRunPassiveRoomObservationWithEmbeddedHarness,
+  isPassiveRoomObservationAdmissionError,
+  PASSIVE_ROOM_OBSERVATION_RUNTIME_REQUIREMENT,
+} from "../../agents/harness/passive-runtime.js";
 import { resolveAgentHarnessPolicy } from "../../agents/harness/policy.js";
 import { ensureSelectedAgentHarnessPlugin } from "../../agents/harness/runtime-plugin.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
@@ -89,7 +94,10 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
 import { defaultRuntime } from "../../runtime.js";
-import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  isRoomObservationInputProvenance,
+  shouldPreserveUserFacingSessionStateForInputProvenance,
+} from "../../sessions/input-provenance.js";
 import { truncateUtf16Safe } from "../../shared/utf16-slice.js";
 import {
   isMarkdownCapableMessageChannel,
@@ -130,6 +138,7 @@ import {
   resolveQueuedReplyRuntimeConfig,
   resolveModelFallbackOptions,
   resolveRunFastModeForFallbackCandidate,
+  shouldDropRoomObservationForRuntimeConfig,
 } from "./agent-runner-utils.js";
 import type { BlockReplyPipeline } from "./block-reply-pipeline.js";
 import {
@@ -173,6 +182,9 @@ type AgentTurnTimingSummary = {
 
 const agentTurnTimingLog = createSubsystemLogger("auto-reply/agent-turn-timing");
 const agentCompactionLog = createSubsystemLogger("auto-reply/compaction");
+const passiveRoomObservationLog = createSubsystemLogger("auto-reply/passive-room");
+const PASSIVE_ROOM_OBSERVATION_CONTEXT_ENGINE_REQUIREMENT =
+  "Passive room observations require the built-in legacy context engine.";
 const CODEX_APP_SERVER_COMPACTION_BACKEND = "codex-app-server";
 const AGENT_TURN_TIMING_WARN_TOTAL_MS = 1_000;
 const AGENT_TURN_TIMING_WARN_STAGE_MS = 500;
@@ -430,6 +442,36 @@ export type AgentRunLoopResult =
   | { kind: "final"; payload: ReplyPayload };
 
 type EmbeddedAgentRunResult = Awaited<ReturnType<typeof runEmbeddedAgent>>;
+
+function reportPassiveRoomObservationRejection(params: {
+  reason: string;
+  code: "context_engine" | "runtime_model";
+  runId: string;
+  sessionKey?: string;
+  provider?: string;
+  model?: string;
+  replyOperation?: ReplyOperation;
+}): ReplyPayload {
+  const message = `${params.reason} Observation rejected before model invocation.`;
+  passiveRoomObservationLog.warn(message, {
+    code: params.code,
+    runId: params.runId,
+    sessionKey: params.sessionKey ?? "unknown",
+    provider: params.provider ?? "unknown",
+    model: params.model ?? "unknown",
+  });
+  params.replyOperation?.fail("run_failed", new Error(message));
+  return markAgentRunFailureReplyPayload({ text: `⚠️ ${message}` });
+}
+
+function rejectPassiveRoomObservation(
+  params: Parameters<typeof reportPassiveRoomObservationRejection>[0],
+): AgentRunLoopResult {
+  return {
+    kind: "final",
+    payload: reportPassiveRoomObservationRejection(params),
+  };
+}
 
 type FallbackSelectionState = Pick<
   SessionEntry,
@@ -1663,9 +1705,67 @@ async function runAgentTurnWithFallbackInternal(
           ...runnableRun,
           config: runtimeConfig,
         };
+  const isRoomObservation = isRoomObservationInputProvenance(effectiveRun.inputProvenance);
+  if (isRoomObservation) {
+    params.replyOperation?.disableRestartRecovery();
+  }
+  if (shouldDropRoomObservationForRuntimeConfig(runtimeConfig, effectiveRun.inputProvenance)) {
+    return rejectPassiveRoomObservation({
+      reason: PASSIVE_ROOM_OBSERVATION_CONTEXT_ENGINE_REQUIREMENT,
+      code: "context_engine",
+      runId: params.opts?.runId ?? crypto.randomUUID(),
+      sessionKey: params.sessionKey,
+      provider: effectiveRun.provider,
+      model: effectiveRun.model,
+      replyOperation: params.replyOperation,
+    });
+  }
   const preserveUserFacingSessionState = shouldPreserveUserFacingSessionStateForInputProvenance(
     effectiveRun.inputProvenance,
   );
+  if (isRoomObservation) {
+    const runtimeOverride = resolveSessionRuntimeOverrideForProvider({
+      provider: effectiveRun.provider,
+      entry: params.getActiveSessionEntry(),
+      cfg: runtimeConfig,
+    });
+    const selectedAuthProfile = resolveRunAuthProfile(effectiveRun, effectiveRun.provider, {
+      config: runtimeConfig,
+    });
+    const cliExecutionProvider =
+      (runtimeOverride && isCliProvider(runtimeOverride, runtimeConfig)
+        ? runtimeOverride
+        : undefined) ??
+      resolveCliRuntimeExecutionProvider({
+        provider: effectiveRun.provider,
+        cfg: runtimeConfig,
+        agentId: effectiveRun.agentId,
+        modelId: effectiveRun.model,
+        authProfileId: selectedAuthProfile.authProfileId,
+      }) ??
+      effectiveRun.provider;
+    if (
+      isCliProvider(cliExecutionProvider, runtimeConfig) ||
+      !canRunPassiveRoomObservationWithEmbeddedHarness({
+        config: runtimeConfig,
+        provider: effectiveRun.provider,
+        modelId: effectiveRun.model,
+        agentId: effectiveRun.agentId,
+        sessionKey: effectiveRun.runtimePolicySessionKey ?? params.sessionKey,
+        runtimeOverride,
+      })
+    ) {
+      return rejectPassiveRoomObservation({
+        reason: PASSIVE_ROOM_OBSERVATION_RUNTIME_REQUIREMENT,
+        code: "runtime_model",
+        runId: params.opts?.runId ?? crypto.randomUUID(),
+        sessionKey: params.sessionKey,
+        provider: effectiveRun.provider,
+        model: effectiveRun.model,
+        replyOperation: params.replyOperation,
+      });
+    }
+  }
   const resolveRunForFallbackCandidate = (provider: string, model: string): FollowupRun["run"] => {
     const probe = effectiveRun.autoFallbackPrimaryProbe;
     const isPrimaryProbeCandidate = probe && provider === probe.provider && model === probe.model;
@@ -1719,6 +1819,7 @@ async function runAgentTurnWithFallbackInternal(
       verboseLevel: params.resolvedVerboseLevel,
       isHeartbeat: params.isHeartbeat,
       isControlUiVisible: shouldSurfaceToControlUi,
+      persistSessionLifecycle: !isRoomObservation,
     });
   }
   if (isDiagnosticsEnabled(runtimeConfig)) {
@@ -1737,33 +1838,38 @@ async function runAgentTurnWithFallbackInternal(
   let replyMediaContext: ReplyMediaContext;
   let currentTurnImages: Awaited<ReturnType<typeof resolveCurrentTurnImages>>;
   try {
-    replyMediaContext =
-      params.replyMediaContext ??
-      agentTurnTiming.measureSync("reply_media_context", () =>
-        createReplyMediaContext({
+    if (isRoomObservation) {
+      replyMediaContext = { normalizePayload: async (payload) => payload };
+      currentTurnImages = {};
+    } else {
+      replyMediaContext =
+        params.replyMediaContext ??
+        agentTurnTiming.measureSync("reply_media_context", () =>
+          createReplyMediaContext({
+            cfg: runtimeConfig,
+            sessionKey: params.sessionKey,
+            workspaceDir: params.followupRun.run.workspaceDir,
+            messageProvider: params.followupRun.run.messageProvider,
+            accountId:
+              params.followupRun.originatingAccountId ?? params.followupRun.run.agentAccountId,
+            groupId: params.followupRun.run.groupId,
+            groupChannel: params.followupRun.run.groupChannel,
+            groupSpace: params.followupRun.run.groupSpace,
+            requesterSenderId: params.followupRun.run.senderId,
+            requesterSenderName: params.followupRun.run.senderName,
+            requesterSenderUsername: params.followupRun.run.senderUsername,
+            requesterSenderE164: params.followupRun.run.senderE164,
+          }),
+        );
+      currentTurnImages = await agentTurnTiming.measure("current_turn_images", () =>
+        resolveCurrentTurnImages({
+          ctx: params.sessionCtx,
           cfg: runtimeConfig,
-          sessionKey: params.sessionKey,
-          workspaceDir: params.followupRun.run.workspaceDir,
-          messageProvider: params.followupRun.run.messageProvider,
-          accountId:
-            params.followupRun.originatingAccountId ?? params.followupRun.run.agentAccountId,
-          groupId: params.followupRun.run.groupId,
-          groupChannel: params.followupRun.run.groupChannel,
-          groupSpace: params.followupRun.run.groupSpace,
-          requesterSenderId: params.followupRun.run.senderId,
-          requesterSenderName: params.followupRun.run.senderName,
-          requesterSenderUsername: params.followupRun.run.senderUsername,
-          requesterSenderE164: params.followupRun.run.senderE164,
+          images: params.followupRun.images ?? params.opts?.images,
+          imageOrder: params.followupRun.imageOrder ?? params.opts?.imageOrder,
         }),
       );
-    currentTurnImages = await agentTurnTiming.measure("current_turn_images", () =>
-      resolveCurrentTurnImages({
-        ctx: params.sessionCtx,
-        cfg: runtimeConfig,
-        images: params.followupRun.images ?? params.opts?.images,
-        imageOrder: params.followupRun.imageOrder ?? params.opts?.imageOrder,
-      }),
-    );
+    }
   } catch (error) {
     clearAgentRunContext(runId, lifecycleGeneration);
     throw error;
@@ -2180,6 +2286,7 @@ async function runAgentTurnWithFallbackInternal(
       const fallbackResult = await agentTurnTiming.measure("model_fallback", () =>
         runWithModelFallback<EmbeddedAgentRunResult>({
           ...resolveModelFallbackOptions(effectiveRun, runtimeConfig),
+          ...(isRoomObservation ? { fallbacksOverride: [], skipAuthProfileRuntime: true } : {}),
           runId,
           sessionId: params.followupRun.run.sessionId,
           lane: runLane,
@@ -2191,6 +2298,19 @@ async function runAgentTurnWithFallbackInternal(
               cfg: runtimeConfig,
             }),
           prepareAgentHarnessRuntime: async ({ provider, model, agentHarnessRuntimeOverride }) => {
+            if (
+              isRoomObservation &&
+              !canRunPassiveRoomObservationWithEmbeddedHarness({
+                config: runtimeConfig,
+                provider,
+                modelId: model,
+                agentId: params.followupRun.run.agentId,
+                sessionKey: params.followupRun.run.runtimePolicySessionKey ?? params.sessionKey,
+                runtimeOverride: agentHarnessRuntimeOverride,
+              })
+            ) {
+              return;
+            }
             await agentTurnTiming.measure("fallback_prepare_harness", () =>
               ensureSelectedAgentHarnessPlugin({
                 config: runtimeConfig,
@@ -2198,7 +2318,9 @@ async function runAgentTurnWithFallbackInternal(
                 modelId: model,
                 agentId: params.followupRun.run.agentId,
                 sessionKey: params.followupRun.run.runtimePolicySessionKey ?? params.sessionKey,
-                agentHarnessRuntimeOverride,
+                agentHarnessRuntimeOverride: isRoomObservation
+                  ? "openclaw"
+                  : agentHarnessRuntimeOverride,
                 workspaceDir: params.followupRun.run.workspaceDir,
               }),
             );
@@ -2497,7 +2619,8 @@ async function runAgentTurnWithFallbackInternal(
                     agentAccountId: params.followupRun.run.agentAccountId,
                     senderIsOwner: params.followupRun.run.senderIsOwner,
                     approvalReviewerDeviceId: params.followupRun.run.approvalReviewerDeviceId,
-                    toolsAllow: params.opts?.toolsAllow,
+                    toolsAllow: params.followupRun.toolsAllow ?? params.opts?.toolsAllow,
+                    sourceBoundMessagePolicy: params.followupRun.sourceBoundMessagePolicy,
                     disableTools: params.opts?.disableTools,
                     abortSignal: runAbortSignal,
                     onExecutionPhase: signalExecutionPhaseForTyping,
@@ -2540,6 +2663,32 @@ async function runAgentTurnWithFallbackInternal(
                   agentId: params.followupRun.run.agentId,
                   sessionKey: params.followupRun.run.runtimePolicySessionKey ?? params.sessionKey,
                 });
+            if (
+              isRoomObservation &&
+              !canRunPassiveRoomObservationWithEmbeddedHarness({
+                config: runtimeConfig,
+                provider,
+                modelId: model,
+                agentId: params.followupRun.run.agentId,
+                sessionKey: params.followupRun.run.runtimePolicySessionKey ?? params.sessionKey,
+                runtimeOverride: sessionRuntimeOverride,
+              })
+            ) {
+              return {
+                payloads: [
+                  reportPassiveRoomObservationRejection({
+                    reason: PASSIVE_ROOM_OBSERVATION_RUNTIME_REQUIREMENT,
+                    code: "runtime_model",
+                    runId,
+                    sessionKey: params.sessionKey,
+                    provider,
+                    model,
+                    replyOperation: params.replyOperation,
+                  }),
+                ],
+                meta: { durationMs: 0 },
+              };
+            }
             const embeddedRunProvider = resolveOpenAIRuntimeProvider({
               provider,
               harnessRuntime: agentHarnessPolicy.runtime,
@@ -2548,11 +2697,12 @@ async function runAgentTurnWithFallbackInternal(
               config: runtimeConfig,
               workspaceDir: params.followupRun.run.workspaceDir,
             });
-            const embeddedRunHarnessOverride =
-              sessionRuntimeOverride ??
-              (agentHarnessPolicy.runtime === "openclaw" && embeddedRunProvider !== provider
-                ? "openclaw"
-                : undefined);
+            const embeddedRunHarnessOverride = isRoomObservation
+              ? "openclaw"
+              : (sessionRuntimeOverride ??
+                (agentHarnessPolicy.runtime === "openclaw" && embeddedRunProvider !== provider
+                  ? "openclaw"
+                  : undefined));
             return (async () => {
               let attemptCompactionCount = 0;
               const lifecycleBackstop = createAgentLifecycleTerminalBackstop({
@@ -2604,6 +2754,7 @@ async function runAgentTurnWithFallbackInternal(
                     userTurnTranscriptRecorder,
                     currentInboundEventKind: params.followupRun.currentInboundEventKind,
                     currentInboundContext: params.followupRun.currentInboundContext,
+                    roomObservationSystemPrompt: params.followupRun.run.roomObservationSystemPrompt,
                     extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
                     sourceReplyDeliveryMode: params.followupRun.run.sourceReplyDeliveryMode,
                     forceMessageTool:
@@ -2632,7 +2783,10 @@ async function runAgentTurnWithFallbackInternal(
                     suppressToolErrorWarnings:
                       params.opts?.shouldSuppressToolErrorWarnings ??
                       params.opts?.suppressToolErrorWarnings,
-                    toolsAllow: params.opts?.toolsAllow,
+                    toolsAllow: isRoomObservation
+                      ? params.followupRun.toolsAllow
+                      : (params.followupRun.toolsAllow ?? params.opts?.toolsAllow),
+                    sourceBoundMessagePolicy: params.followupRun.sourceBoundMessagePolicy,
                     disableTools: params.opts?.disableTools,
                     enableHeartbeatTool: params.opts?.enableHeartbeatTool,
                     forceHeartbeatTool: params.opts?.forceHeartbeatTool,
@@ -3182,6 +3336,20 @@ async function runAgentTurnWithFallbackInternal(
       }
       break;
     } catch (err) {
+      if (isPassiveRoomObservationAdmissionError(err)) {
+        takePendingLifecycleTerminal()?.emit("error", err, {
+          fallbackExhaustedFailure: true,
+        });
+        return rejectPassiveRoomObservation({
+          reason: err.reason,
+          code: err.code,
+          runId,
+          sessionKey: params.sessionKey,
+          provider: err.provider,
+          model: err.model,
+          replyOperation: params.replyOperation,
+        });
+      }
       if (err instanceof LiveSessionModelSwitchError) {
         liveModelSwitchRetries += 1;
         if (liveModelSwitchRetries > MAX_LIVE_SWITCH_RETRIES) {

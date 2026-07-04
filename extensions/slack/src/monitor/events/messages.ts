@@ -193,6 +193,7 @@ export function registerSlackMessageEvents(params: {
         const ingressContext = await authorizeAndResolveSlackSystemEventContext({
           ctx,
           senderId: subtypeHandler.resolveSenderId(message),
+          requestUserActorId: subtypeHandler.resolveRequestUserActorId(message),
           channelId,
           channelType: subtypeHandler.resolveChannelType(message),
           eventKind: subtypeHandler.eventKind,

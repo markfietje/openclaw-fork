@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { LinkModelConfig } from "../config/types.tools.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { runCommandWithTimeout } from "../process/exec.js";
+import { applyLinkUnderstanding } from "./apply.js";
 import { runLinkUnderstanding } from "./runner.js";
 
 const mocks = vi.hoisted(() => ({
@@ -143,5 +144,27 @@ describe("runLinkUnderstanding", () => {
 
     expect(result.outputs).toEqual([]);
     expect(runCommandWithTimeout).not.toHaveBeenCalled();
+  });
+
+  it("keeps passive link summaries model-visible without restoring command text", async () => {
+    mockGuardedFetch("public launch notes");
+    const passiveCtx: MsgContext = {
+      Body: "see https://example.com/page",
+      BodyForAgent: "see https://example.com/page",
+      RawBody: "see https://example.com/page",
+      CommandBody: "",
+      BodyForCommands: "",
+      RequestAuthorized: false,
+    };
+
+    const result = await applyLinkUnderstanding({
+      cfg: cfg({ type: "cli", command: "curl" }),
+      ctx: passiveCtx,
+    });
+
+    expect(result.outputs).toEqual(["public launch notes"]);
+    expect(passiveCtx.BodyForAgent).toContain("public launch notes");
+    expect(passiveCtx.CommandBody).toBe("");
+    expect(passiveCtx.BodyForCommands).toBe("");
   });
 });

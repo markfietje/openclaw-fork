@@ -35,6 +35,7 @@ export async function admitReplyTurn(params: {
   upstreamAbortSignal?: AbortSignal;
   waitTimeoutMs?: number;
   waitForActive?: boolean;
+  restartRecoverable?: boolean;
 }): Promise<ReplyTurnAdmission> {
   let sessionId = params.sessionId;
   const waitTimeoutMs =
@@ -53,6 +54,7 @@ export async function admitReplyTurn(params: {
           resetTriggered: params.resetTriggered,
           routeThreadId: params.routeThreadId,
           upstreamAbortSignal: params.upstreamAbortSignal,
+          restartRecoverable: params.restartRecoverable,
           respectFollowupAdmissionBarrier:
             params.kind === "queued_followup" || params.kind === "heartbeat",
         }),

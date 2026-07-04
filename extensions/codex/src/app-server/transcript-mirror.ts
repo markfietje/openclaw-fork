@@ -302,6 +302,10 @@ export async function mirrorCodexAppServerTranscript(params: {
       const mirrorState = readTranscriptMirrorState(await transcript.readEvents());
       let nextMessageSeq = mirrorState.messageCount;
       for (const message of messages) {
+        const originalUserProvenance =
+          message.role === "user"
+            ? (message as unknown as { provenance?: unknown }).provenance
+            : undefined;
         const dedupeIdentity = buildMirrorDedupeIdentity(message);
         const idempotencyKey = params.idempotencyScope
           ? `${params.idempotencyScope}:${dedupeIdentity}`
@@ -330,8 +334,16 @@ export async function mirrorCodexAppServerTranscript(params: {
             ? {
                 ...(nextMessage as unknown as Record<string, unknown>),
                 idempotencyKey,
+                ...(nextMessage.role === "user" && originalUserProvenance !== undefined
+                  ? { provenance: originalUserProvenance }
+                  : {}),
               }
-            : nextMessage
+            : nextMessage.role === "user" && originalUserProvenance !== undefined
+              ? {
+                  ...(nextMessage as unknown as Record<string, unknown>),
+                  provenance: originalUserProvenance,
+                }
+              : nextMessage
         ) as AgentMessage;
         const appended = await transcript.appendMessage({
           message: messageToAppend,

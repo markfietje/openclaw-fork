@@ -14,7 +14,10 @@ import {
   readStringArrayParam,
   readStringParam,
 } from "../../agents/tools/common.js";
-import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
+import type {
+  SourceBoundMessagePolicy,
+  SourceReplyDeliveryMode,
+} from "../../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { resolveResponsePrefixTemplate } from "../../auto-reply/reply/response-prefix-template.js";
 import { normalizeChatType, type ChatType } from "../../channels/chat-type.js";
@@ -94,6 +97,7 @@ import {
 } from "./outbound-policy.js";
 import { executePollAction, executeSendAction } from "./outbound-send-service.js";
 import { ensureOutboundSessionEntry, resolveOutboundSessionRoute } from "./outbound-session.js";
+import { assertSourceBoundReplyPayload } from "./source-bound-message-policy.js";
 import { normalizeTargetForProvider } from "./target-normalization.js";
 import { resolveChannelTarget, type ResolvedMessagingTarget } from "./target-resolver.js";
 
@@ -132,6 +136,7 @@ export type RunMessageActionParams = {
   sandboxRoot?: string;
   dryRun?: boolean;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  sourceBoundMessagePolicy?: SourceBoundMessagePolicy;
   inboundEventKind?: InboundEventKind;
   inboundAudio?: boolean;
   abortSignal?: AbortSignal;
@@ -1098,62 +1103,94 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
     };
     applySendPayloadPartsToActionParams(params, sendPayload);
   }
+  if (input.sourceBoundMessagePolicy) {
+    assertSourceBoundReplyPayload(sendPayload.payload);
+  }
 
+  const sourceBoundSend = input.sourceBoundMessagePolicy !== undefined;
   const replyToIsExplicit = Boolean(readStringParam(params, "replyTo"));
+  const channelPlugin = getChannelPlugin(channel);
   resolveAndApplyOutboundReplyToId(params, {
     channel,
     toolContext: input.toolContext,
-    matchesToolContextTarget: getChannelPlugin(channel)?.threading?.matchesToolContextTarget,
+    matchesToolContextTarget: channelPlugin?.threading?.matchesToolContextTarget,
   });
-  const { resolvedThreadId, outboundRoute } = await prepareOutboundMirrorRoute({
-    cfg,
-    channel,
-    to,
-    actionParams: params,
-    accountId,
-    toolContext: input.toolContext,
-    agentId,
-    currentSessionKey: input.sessionKey,
-    dryRun,
-    resolvedTarget,
-    resolveAutoThreadId: getChannelPlugin(channel)?.threading?.resolveAutoThreadId,
-    resolveReplyTransport: getChannelPlugin(channel)?.threading?.resolveReplyTransport,
-    replyToIsExplicit,
-    resolveOutboundSessionRoute,
-    ensureOutboundSessionEntry,
-  });
+  let resolvedThreadId: string | undefined;
+  let outboundRoute: Awaited<ReturnType<typeof resolveOutboundSessionRoute>> = null;
+  if (sourceBoundSend) {
+    // Passive source-bound sends inherit only transport threading. They must not
+    // create or mutate the owner's conversation session or transcript mirror.
+    resolvedThreadId = resolveAndApplyOutboundThreadId(params, {
+      cfg,
+      to,
+      accountId,
+      toolContext: input.toolContext,
+      resolveAutoThreadId: channelPlugin?.threading?.resolveAutoThreadId,
+      resolveReplyTransport: channelPlugin?.threading?.resolveReplyTransport,
+      replyToIsExplicit,
+    });
+  } else {
+    ({ resolvedThreadId, outboundRoute } = await prepareOutboundMirrorRoute({
+      cfg,
+      channel,
+      to,
+      actionParams: params,
+      accountId,
+      toolContext: input.toolContext,
+      agentId,
+      currentSessionKey: input.sessionKey,
+      dryRun,
+      resolvedTarget,
+      resolveAutoThreadId: channelPlugin?.threading?.resolveAutoThreadId,
+      resolveReplyTransport: channelPlugin?.threading?.resolveReplyTransport,
+      replyToIsExplicit,
+      resolveOutboundSessionRoute,
+      ensureOutboundSessionEntry,
+    }));
+  }
   const resolvedReplyToId = readStringParam(params, "replyTo");
   throwIfAborted(abortSignal);
 
-  const ttsPayload = await maybeApplyTtsToMessageActionSendPayload({
-    payload: sendPayload.payload,
-    cfg,
-    channel,
-    accountId,
-    agentId,
-    sessionKey: input.sessionKey,
-    inboundAudio: input.inboundAudio,
-    dryRun,
-  });
-  if (ttsPayload !== sendPayload.payload) {
-    sendPayload = updateSendPayloadPartsFromReplyPayload(sendPayload, ttsPayload);
-    applySendPayloadPartsToActionParams(params, sendPayload);
+  if (!input.sourceBoundMessagePolicy) {
+    const ttsPayload = await maybeApplyTtsToMessageActionSendPayload({
+      payload: sendPayload.payload,
+      cfg,
+      channel,
+      accountId,
+      agentId,
+      sessionKey: input.sessionKey,
+      inboundAudio: input.inboundAudio,
+      dryRun,
+    });
+    if (ttsPayload !== sendPayload.payload) {
+      sendPayload = updateSendPayloadPartsFromReplyPayload(sendPayload, ttsPayload);
+      applySendPayloadPartsToActionParams(params, sendPayload);
+    }
+  }
+  if (input.sourceBoundMessagePolicy) {
+    assertSourceBoundReplyPayload(sendPayload.payload);
   }
   throwIfAborted(abortSignal);
+  const requesterSessionKey = sourceBoundSend ? undefined : input.sessionKey;
   const mediaAccess = resolveAgentScopedOutboundMediaAccess({
     cfg,
     agentId,
     mediaSources: collectActionMediaSourceHints(params, ctx.extraActionMediaSourceParamKeys, {
       structuredAttachments: "all",
     }),
-    sessionKey: input.sessionKey,
-    messageProvider: input.sessionKey ? undefined : channel,
-    accountId: input.sessionKey ? (input.requesterAccountId ?? accountId) : accountId,
+    sessionKey: requesterSessionKey,
+    messageProvider: requesterSessionKey ? undefined : channel,
+    accountId: requesterSessionKey ? (input.requesterAccountId ?? accountId) : accountId,
     requesterSenderId: input.requesterSenderId,
     requesterSenderName: input.requesterSenderName,
     requesterSenderUsername: input.requesterSenderUsername,
     requesterSenderE164: input.requesterSenderE164,
   });
+
+  const actionExecutionMode = channelPlugin?.actions?.resolveExecutionMode?.({ action }) ?? "local";
+  if (sourceBoundSend && actionExecutionMode === "gateway") {
+    throw new Error("Source-bound message policy requires direct channel delivery.");
+  }
 
   const gatewayPluginAction = await runGatewayPluginMessageActionOrNull({
     cfg,
@@ -1185,7 +1222,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
       channel,
       params,
       agentId,
-      sessionKey: input.sessionKey,
+      sessionKey: requesterSessionKey,
       requesterAccountId: input.requesterAccountId ?? undefined,
       requesterSenderId: input.requesterSenderId ?? undefined,
       requesterSenderName: input.requesterSenderName ?? undefined,
@@ -1194,14 +1231,14 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
       senderIsOwner: input.senderIsOwner,
       mediaAccess,
       accountId: accountId ?? undefined,
-      sessionId: input.sessionId,
+      sessionId: sourceBoundSend ? undefined : input.sessionId,
       inboundEventKind: input.inboundEventKind,
       gateway,
       toolContext: input.toolContext,
       deps: input.deps,
       dryRun,
       mirror:
-        outboundRoute && !dryRun
+        !sourceBoundSend && outboundRoute && !dryRun
           ? {
               sessionKey: outboundRoute.sessionKey,
               agentId,
@@ -1212,6 +1249,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
           : undefined,
       abortSignal,
       silent: sendPayload.silent ?? undefined,
+      outboundPayloadPolicy: input.sourceBoundMessagePolicy ? "source_bound_plain_text" : undefined,
     },
     to,
     message: sendPayload.message,

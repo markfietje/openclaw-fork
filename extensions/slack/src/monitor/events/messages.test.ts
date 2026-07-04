@@ -93,13 +93,17 @@ beforeEach(() => {
   inboundInfoSpy.mockClear();
 });
 
-function makeChangedEvent(overrides?: { channel?: string; user?: string }) {
+function makeChangedEvent(overrides?: { channel?: string; user?: string; editor?: string }) {
   const user = overrides?.user ?? "U1";
   return {
     type: "message",
     subtype: "message_changed",
     channel: overrides?.channel ?? "D1",
-    message: { ts: "123.456", user },
+    message: {
+      ts: "123.456",
+      user,
+      ...(overrides?.editor ? { edited: { user: overrides.editor } } : {}),
+    },
     previous_message: { ts: "123.450", user },
     event_ts: "123.456",
   };
@@ -225,6 +229,74 @@ describe("registerSlackMessageEvents", () => {
           channelUsers: ["U_OWNER"],
         },
         event: makeDeletedEvent({ channel: "C1", user: "U_ATTACKER" }),
+      },
+      calls: 0,
+    },
+    {
+      name: "blocks message_changed system events for users outside requestUsers",
+      input: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeChangedEvent({ channel: "C1", user: "U_ATTACKER" }),
+      },
+      calls: 0,
+    },
+    {
+      name: "allows message_changed system events for users inside requestUsers",
+      input: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeChangedEvent({ channel: "C1", user: "U_ATTACKER", editor: "U_OWNER" }),
+      },
+      calls: 1,
+    },
+    {
+      name: "does not let an allowed editor bypass channel users for message_changed",
+      input: {
+        overrides: {
+          channelType: "channel",
+          channelUsers: ["U_ALLOWED"],
+          requestUsers: ["U_OWNER"],
+        },
+        event: makeChangedEvent({
+          channel: "C1",
+          user: "U_ATTACKER",
+          editor: "U_OWNER",
+        }),
+      },
+      calls: 0,
+    },
+    {
+      name: "allows message_changed when author and editor pass their own policies",
+      input: {
+        overrides: {
+          channelType: "channel",
+          channelUsers: ["U_ALLOWED"],
+          requestUsers: ["U_OWNER"],
+        },
+        event: makeChangedEvent({ channel: "C1", user: "U_ALLOWED", editor: "U_OWNER" }),
+      },
+      calls: 1,
+    },
+    {
+      name: "blocks message_changed when the author is allowed but the editor is not",
+      input: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeChangedEvent({ channel: "C1", user: "U_OWNER", editor: "U_ATTACKER" }),
+      },
+      calls: 0,
+    },
+    {
+      name: "blocks message_changed without an editor under requestUsers",
+      input: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeChangedEvent({ channel: "C1", user: "U_OWNER" }),
+      },
+      calls: 0,
+    },
+    {
+      name: "blocks message_deleted under requestUsers because Slack omits the deleting actor",
+      input: {
+        overrides: { channelType: "channel", requestUsers: ["U_OWNER"] },
+        event: makeDeletedEvent({ channel: "C1", user: "U_OWNER" }),
       },
       calls: 0,
     },

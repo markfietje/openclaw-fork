@@ -117,6 +117,80 @@ function getMessageFromEntryForCompaction(entry: SessionTreeEntry): AgentMessage
   return getMessageFromEntry(entry);
 }
 
+function isRoomObservationUserMessage(message: AgentMessage | undefined): boolean {
+  if (message?.role !== "user") {
+    return false;
+  }
+  const provenance = (message as AgentMessage & { provenance?: unknown }).provenance;
+  return (
+    typeof provenance === "object" &&
+    provenance !== null &&
+    (provenance as { kind?: unknown }).kind === "room_observation"
+  );
+}
+
+function resolveRoomObservationTurnState(
+  entries: SessionTreeEntry[],
+  endIndexExclusive: number,
+): boolean {
+  let insideRoomObservationTurn = false;
+  for (let i = 0; i < endIndexExclusive; i += 1) {
+    const message = getMessageFromEntryForCompaction(entries[i]);
+    if (message?.role === "user") {
+      insideRoomObservationTurn = isRoomObservationUserMessage(message);
+    }
+  }
+  return insideRoomObservationTurn;
+}
+
+function locateRoomObservationTurnAt(
+  entries: SessionTreeEntry[],
+  startIndex: number,
+  endIndexInclusive: number,
+  initialInsideRoomObservationTurn: boolean,
+): { insideRoomObservationTurn: boolean; startIndex?: number } {
+  let insideRoomObservationTurn = initialInsideRoomObservationTurn;
+  let roomObservationTurnStart: number | undefined;
+  for (let i = startIndex; i <= endIndexInclusive; i += 1) {
+    const message = getMessageFromEntryForCompaction(entries[i]);
+    if (message?.role === "user") {
+      insideRoomObservationTurn = isRoomObservationUserMessage(message);
+      roomObservationTurnStart = insideRoomObservationTurn ? i : undefined;
+    }
+  }
+  return { insideRoomObservationTurn, startIndex: roomObservationTurnStart };
+}
+
+function findNextUserEntryIndex(
+  entries: SessionTreeEntry[],
+  startIndex: number,
+  endIndexExclusive: number,
+): number | undefined {
+  for (let i = startIndex; i < endIndexExclusive; i += 1) {
+    if (getMessageFromEntryForCompaction(entries[i])?.role === "user") {
+      return i;
+    }
+  }
+  return undefined;
+}
+
+function filterRoomObservationTurns(
+  messages: AgentMessage[],
+  initialInsideRoomObservationTurn: boolean,
+): { messages: AgentMessage[]; insideRoomObservationTurn: boolean } {
+  let insideRoomObservationTurn = initialInsideRoomObservationTurn;
+  const filtered: AgentMessage[] = [];
+  for (const message of messages) {
+    if (message.role === "user") {
+      insideRoomObservationTurn = isRoomObservationUserMessage(message);
+    }
+    if (!insideRoomObservationTurn) {
+      filtered.push(message);
+    }
+  }
+  return { messages: filtered, insideRoomObservationTurn };
+}
+
 /** Generated compaction data ready to be persisted as a compaction entry. */
 export interface CompactionResult<T = unknown> {
   /** Summary text that replaces compacted history in future context. */
@@ -701,7 +775,45 @@ export function prepareCompaction(
   const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
   const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
-  const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
+  const insideRoomObservationTurnAtBoundary = resolveRoomObservationTurnState(
+    pathEntries,
+    boundaryStart,
+  );
+  // A retained room-observation suffix must include its provenance-bearing user row. Generic
+  // custom/branch messages can look like turn boundaries to the cut-point planner, so derive
+  // observation state independently from the latest actual user message.
+  const roomObservationTurn = locateRoomObservationTurnAt(
+    pathEntries,
+    boundaryStart,
+    cutPoint.firstKeptEntryIndex,
+    insideRoomObservationTurnAtBoundary,
+  );
+  let firstKeptEntryIndex = cutPoint.firstKeptEntryIndex;
+  let adjustedToAuthorityBoundary = false;
+  if (roomObservationTurn.insideRoomObservationTurn) {
+    if (roomObservationTurn.startIndex !== undefined) {
+      firstKeptEntryIndex = roomObservationTurn.startIndex;
+    } else {
+      // A legacy compaction may already retain only an observation-turn suffix. Never rewind
+      // across that compaction boundary; drop the suffix at the next provenance-bearing user.
+      const nextUserEntryIndex = findNextUserEntryIndex(
+        pathEntries,
+        cutPoint.firstKeptEntryIndex + 1,
+        boundaryEnd,
+      );
+      if (nextUserEntryIndex === undefined) {
+        return err(
+          new CompactionError(
+            "invalid_session",
+            "Cannot compact a retained room-observation suffix without a provenance-bearing user boundary",
+          ),
+        );
+      }
+      firstKeptEntryIndex = nextUserEntryIndex;
+    }
+    adjustedToAuthorityBoundary = true;
+  }
+  const firstKeptEntry = pathEntries[firstKeptEntryIndex];
   if (!firstKeptEntry?.id) {
     return err(
       new CompactionError(
@@ -712,25 +824,39 @@ export function prepareCompaction(
   }
   const firstKeptEntryId = firstKeptEntry.id;
 
-  const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
-  const messagesToSummarize: AgentMessage[] = [];
+  const isSplitTurn = cutPoint.isSplitTurn && !adjustedToAuthorityBoundary;
+  const historyEnd = isSplitTurn ? cutPoint.turnStartIndex : firstKeptEntryIndex;
+  const rawMessagesToSummarize: AgentMessage[] = [];
   for (let i = boundaryStart; i < historyEnd; i++) {
     const msg = getMessageFromEntryForCompaction(pathEntries[i]);
     if (msg) {
-      messagesToSummarize.push(msg);
+      rawMessagesToSummarize.push(msg);
     }
   }
-  const turnPrefixMessages: AgentMessage[] = [];
-  if (cutPoint.isSplitTurn) {
-    for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
+  const rawTurnPrefixMessages: AgentMessage[] = [];
+  if (isSplitTurn) {
+    for (let i = cutPoint.turnStartIndex; i < firstKeptEntryIndex; i++) {
       const msg = getMessageFromEntryForCompaction(pathEntries[i]);
       if (msg) {
-        turnPrefixMessages.push(msg);
+        rawTurnPrefixMessages.push(msg);
       }
     }
   }
+  // Observation turns are never summarized. Model-written summaries replay as ordinary user
+  // messages, so allowing observation text (or assistant/tool echoes from that turn) into the
+  // summarizer could launder an untrusted observation into a future goal or instruction.
+  const historyFilter = filterRoomObservationTurns(
+    rawMessagesToSummarize,
+    insideRoomObservationTurnAtBoundary,
+  );
+  const prefixFilter = filterRoomObservationTurns(
+    rawTurnPrefixMessages,
+    historyFilter.insideRoomObservationTurn,
+  );
+  const messagesToSummarize = historyFilter.messages;
+  const turnPrefixMessages = prefixFilter.messages;
   const fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);
-  if (cutPoint.isSplitTurn) {
+  if (isSplitTurn) {
     for (const msg of turnPrefixMessages) {
       extractFileOpsFromMessage(msg, fileOps);
     }
@@ -740,7 +866,7 @@ export function prepareCompaction(
     firstKeptEntryId,
     messagesToSummarize,
     turnPrefixMessages,
-    isSplitTurn: cutPoint.isSplitTurn,
+    isSplitTurn,
     tokensBefore,
     previousSummary,
     fileOps,

@@ -686,16 +686,19 @@ export function resolveCommandAuthorization(params: {
         : senderIsOwnerByScope || Boolean(matchedCommandOwner);
   const nativeCommandAuthorized =
     commandAuthorized && isNativeCommandTurn(resolveCommandTurnContext(ctx)) && !requireOwner;
-  const isAuthorizedSender = resolveCommandSenderAuthorization({
-    commandAuthorized,
-    enforceOwnerForCommands: enforceOwner,
-    nativeCommandAuthorized,
-    isOwnerForCommands,
-    senderCandidates,
-    commandsAllowFromList,
-    providerResolutionError,
-    commandsAllowFromConfigured,
-  });
+  const isAuthorizedSender =
+    ctx.RequestAuthorized === false
+      ? false
+      : resolveCommandSenderAuthorization({
+          commandAuthorized,
+          enforceOwnerForCommands: enforceOwner,
+          nativeCommandAuthorized,
+          isOwnerForCommands,
+          senderCandidates,
+          commandsAllowFromList,
+          providerResolutionError,
+          commandsAllowFromConfigured,
+        });
 
   return {
     providerId,

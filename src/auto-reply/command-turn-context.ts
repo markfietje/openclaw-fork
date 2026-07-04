@@ -38,6 +38,7 @@ export type CommandTurnContextInput = {
   CommandTurn?: unknown;
   CommandSource?: unknown;
   CommandAuthorized?: unknown;
+  RequestAuthorized?: unknown;
   CommandBody?: unknown;
   BodyForCommands?: unknown;
   RawBody?: unknown;
@@ -152,9 +153,11 @@ function normalizeExplicitCommandTurn(
     authorized:
       resolvedKind === "normal"
         ? false
-        : typeof record.authorized === "boolean"
-          ? record.authorized
-          : input.CommandAuthorized === true,
+        : input.RequestAuthorized === false
+          ? false
+          : typeof record.authorized === "boolean"
+            ? record.authorized
+            : input.CommandAuthorized === true,
     commandName: normalizeOptionalString(record.commandName) ?? parseCommandName(body),
     body,
   });
@@ -175,7 +178,10 @@ export function resolveCommandTurnContext(input: CommandTurnContextInput): Comma
   const body = resolveCommandBody(input);
   const kind = commandTurnSourceToKind(source);
   return createCommandTurnContext(source, {
-    authorized: kind === "normal" ? false : input.CommandAuthorized === true,
+    authorized:
+      kind === "normal" || input.RequestAuthorized === false
+        ? false
+        : input.CommandAuthorized === true,
     commandName: parseCommandName(body),
     body,
   });
@@ -209,6 +215,7 @@ export function resolveCommandTurnTargetSessionKey(input: {
   CommandTurn?: CommandTurnContext;
   CommandSource?: unknown;
   CommandAuthorized?: unknown;
+  RequestAuthorized?: unknown;
   CommandBody?: unknown;
   BodyForCommands?: unknown;
   RawBody?: unknown;
@@ -216,6 +223,7 @@ export function resolveCommandTurnTargetSessionKey(input: {
   CommandTargetSessionKey?: unknown;
 }): string | undefined {
   if (
+    input.RequestAuthorized === false ||
     !isNativeCommandTurn(resolveCommandTurnContext(input)) ||
     typeof input.CommandTargetSessionKey !== "string"
   ) {

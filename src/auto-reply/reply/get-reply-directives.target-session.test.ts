@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { TemplateContext } from "../templating.js";
 import { resolveReplyDirectives } from "./get-reply-directives.js";
+import { createFastTestModelSelectionState } from "./model-selection.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 const mocks = vi.hoisted(() => ({
@@ -345,6 +346,35 @@ describe("resolveReplyDirectives", () => {
     expect(modelSelectionInput.provider).toBe("openai");
     expect(modelSelectionInput.model).toBe("gpt-4o-mini");
     expect(modelSelectionInput.hasOneTurnModelOverride).toBe(true);
+  });
+
+  it("preserves the resolved model route for passive room observations", async () => {
+    const { result } = await resolveHelloWithModelDefaults({
+      defaultThinking: "off",
+      defaultReasoning: "on",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      ctx: {
+        RequestAuthorized: false,
+        InputProvenance: { kind: "room_observation", sourceChannel: "slack" },
+      },
+    });
+
+    expectContinueResult(result, {
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      resolvedThinkLevel: "off",
+    });
+    expect(vi.mocked(createFastTestModelSelectionState)).toHaveBeenCalledWith({
+      agentCfg: {},
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+    expect(mockCallInput(mocks.resolveFastModeState)).toMatchObject({
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+    expect(mocks.createModelSelectionState).not.toHaveBeenCalled();
   });
 
   it("keeps one-turn fast mode with the resolved fast mode", async () => {

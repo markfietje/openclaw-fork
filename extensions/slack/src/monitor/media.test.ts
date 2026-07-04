@@ -884,6 +884,35 @@ describe("resolveSlackAttachmentContent", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("extracts forwarded text without downloading attachment media when disabled", async () => {
+    const result = await resolveSlackAttachmentContent({
+      attachments: [
+        {
+          is_share: true,
+          author_name: "Bob",
+          text: "Public room context",
+          image_url: "https://files.slack.com/forwarded.jpg",
+          files: [
+            {
+              id: "FPRIVATE",
+              name: "private.pdf",
+              url_private: "https://files.slack.com/private.pdf",
+            },
+          ],
+        },
+      ],
+      token: "xoxb-test-token",
+      maxBytes: 1024 * 1024,
+      mediaDownloads: false,
+    });
+
+    expect(result).toEqual({
+      text: "[Forwarded message from Bob]\nPublic room context",
+      media: [],
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it("skips forwarded image URLs on non-Slack hosts", async () => {
     const saveMediaBufferMockLocal = vi.spyOn(mediaRuntime, "saveMediaBuffer");
 

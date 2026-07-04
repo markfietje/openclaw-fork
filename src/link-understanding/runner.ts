@@ -208,7 +208,15 @@ export async function runLinkUnderstanding(params: {
     return { urls: [], outputs: [] };
   }
 
-  const message = params.message ?? params.ctx.CommandBody ?? params.ctx.RawBody ?? params.ctx.Body;
+  const message =
+    params.message ??
+    [
+      params.ctx.BodyForCommands,
+      params.ctx.CommandBody,
+      params.ctx.RawBody,
+      params.ctx.BodyForAgent,
+      params.ctx.Body,
+    ].find((candidate) => typeof candidate === "string" && candidate.length > 0);
   const links = extractLinksFromMessage(message ?? "", { maxLinks: config?.maxLinks });
   if (links.length === 0) {
     return { urls: [], outputs: [] };

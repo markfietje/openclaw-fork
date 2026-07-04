@@ -448,6 +448,13 @@ describe("createCopilotToolBridge", () => {
           messageThreadId: "1700000000.000100",
           replyToMode: "first",
           requireExplicitMessageTarget: true,
+          sourceBoundMessagePolicy: {
+            mode: "source_bound",
+            channel: "slack",
+            accountId: "acct-1",
+            conversationId: "C123",
+            threadId: "1700000000.000100",
+          },
           disableMessageTool: false,
           forceMessageTool: true,
           enableHeartbeatTool: true,
@@ -482,6 +489,13 @@ describe("createCopilotToolBridge", () => {
         messageThreadId: "1700000000.000100",
         replyToMode: "first",
         requireExplicitMessageTarget: true,
+        sourceBoundMessagePolicy: {
+          mode: "source_bound",
+          channel: "slack",
+          accountId: "acct-1",
+          conversationId: "C123",
+          threadId: "1700000000.000100",
+        },
         forceMessageTool: true,
         enableHeartbeatTool: true,
       });

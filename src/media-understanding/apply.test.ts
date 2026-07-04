@@ -440,6 +440,30 @@ describe("applyMediaUnderstanding", () => {
     expect(ctx.CommandAuthorized).toBe(false);
   });
 
+  it("does not repopulate command text when request authority is false", async () => {
+    const ctx = await createAudioCtx({
+      body: "<media:audio> /capture status",
+    });
+    ctx.RequestAuthorized = false;
+    ctx.CommandAuthorized = false;
+    ctx.CommandBody = "";
+    ctx.BodyForCommands = "";
+
+    const result = await applyMediaUnderstanding({
+      ctx,
+      cfg: createGroqAudioConfig(),
+      providers: createGroqProviders(),
+    });
+
+    expect(result.appliedAudio).toBe(true);
+    expect(ctx.Transcript).toBe("transcribed text");
+    expect(ctx.Body).toBe("[Audio]\nUser text:\n/capture status\nTranscript:\ntranscribed text");
+    expect(ctx.CommandBody).toBe("");
+    expect(ctx.BodyForCommands).toBe("");
+    expect(ctx.CommandAuthorized).toBe(false);
+    expect(ctx.RequestAuthorized).toBe(false);
+  });
+
   it("handles URL-only attachments for audio transcription", async () => {
     const ctx: MsgContext = {
       Body: "<media:audio>",

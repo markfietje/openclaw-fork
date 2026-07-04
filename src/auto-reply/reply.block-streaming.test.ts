@@ -253,4 +253,18 @@ describe("block streaming", () => {
     expect(streamPayload?.text).toBe("final");
     expect(onBlockReplyStreamMode).not.toHaveBeenCalled();
   });
+
+  it("rejects a false-only public reply call before session or runner preparation", async () => {
+    await expect(
+      getReplyFromConfig(
+        { ...createTelegramMessage("msg-passive-invalid"), RequestAuthorized: false },
+        undefined,
+        createReplyConfig(),
+      ),
+    ).rejects.toThrow("RequestAuthorized=false requires room_observation provenance");
+
+    expect(mocks.initSessionState).not.toHaveBeenCalled();
+    expect(mocks.resolveReplyDirectives).not.toHaveBeenCalled();
+    expect(mocks.runPreparedReply).not.toHaveBeenCalled();
+  });
 });

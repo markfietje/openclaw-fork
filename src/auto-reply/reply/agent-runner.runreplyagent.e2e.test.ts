@@ -180,6 +180,7 @@ function createMinimalRun(params?: {
   shouldFollowup?: boolean;
   resolvedQueueMode?: string;
   sessionCtx?: Partial<TemplateContext>;
+  followupOverrides?: Partial<Omit<FollowupRun, "run">>;
   runOverrides?: Partial<FollowupRun["run"]>;
 }) {
   const typing = createMockTypingController();
@@ -197,6 +198,7 @@ function createMinimalRun(params?: {
     prompt: "hello",
     summaryLine: "hello",
     enqueuedAt: Date.now(),
+    ...params?.followupOverrides,
     run: {
       sessionId: "session",
       sessionKey,
@@ -424,6 +426,33 @@ describe("runReplyAgent heartbeat followup guard", () => {
 
     expect(result).toBeUndefined();
     expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
+    expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("captures restrictive runtime policy when queuing behind a busy session", async () => {
+    const sourceBoundMessagePolicy = {
+      mode: "source_bound" as const,
+      channel: "slack",
+      accountId: "default",
+      conversationId: "C123",
+      threadId: "111.222",
+    };
+    const { run } = createMinimalRun({
+      isActive: true,
+      shouldFollowup: true,
+      resolvedQueueMode: "collect",
+      followupOverrides: {
+        toolsAllow: ["message"],
+        sourceBoundMessagePolicy,
+      },
+    });
+
+    await run();
+
+    expect(vi.mocked(enqueueFollowupRun).mock.calls[0]?.[1]).toMatchObject({
+      toolsAllow: ["message"],
+      sourceBoundMessagePolicy,
+    });
     expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
   });
 

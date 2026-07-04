@@ -37,6 +37,7 @@ import {
   type AuthProfileStore,
   externalCliDiscoveryForProviderAuth,
   ensureAuthProfileStore,
+  ensureAuthProfileStoreWithoutExternalProfiles,
   isConfiguredAwsSdkAuthProfileForProvider,
   isStoredCredentialCompatibleWithAuthProvider,
   listProfilesForProvider,
@@ -1000,7 +1001,11 @@ function resolveScopedAuthProfileStore(params: {
   provider: string;
   profileId?: string;
   preferredProfile?: string;
+  skipProviderRuntimeHooks?: boolean;
 }): AuthProfileStore {
+  if (params.skipProviderRuntimeHooks) {
+    return ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, { readOnly: true });
+  }
   return ensureAuthProfileStore(params.agentDir, {
     externalCli: externalCliDiscoveryForProviderAuth(params),
   });
@@ -1021,6 +1026,8 @@ export async function resolveApiKeyForProvider(params: {
   forceRefresh?: boolean;
   credentialPrecedence?: ProviderCredentialPrecedence;
   modelApi?: string;
+  /** Resolve only core config/env/static profile credentials; never invoke provider runtime hooks. */
+  skipProviderRuntimeHooks?: boolean;
 }): Promise<ResolvedProviderAuth> {
   const { provider, cfg, profileId, preferredProfile } = params;
   const agentDir = params.agentDir?.trim() || (cfg ? resolveDefaultAgentDir(cfg) : undefined);
@@ -1029,6 +1036,11 @@ export async function resolveApiKeyForProvider(params: {
   if (profileId) {
     const awsSdkProfileAuth = resolveConfiguredAwsSdkProfileAuth({ cfg, provider, profileId });
     if (awsSdkProfileAuth) {
+      if (params.skipProviderRuntimeHooks) {
+        throw new Error(
+          `Auth profile "${profileId}" uses aws-sdk auth, but passive core OpenAI runs require a static API key profile.`,
+        );
+      }
       return awsSdkProfileAuth;
     }
     const store =
@@ -1039,6 +1051,7 @@ export async function resolveApiKeyForProvider(params: {
         provider,
         profileId,
         preferredProfile,
+        skipProviderRuntimeHooks: params.skipProviderRuntimeHooks,
       });
     const configuredProfileType = store.profiles[profileId]?.type;
     if (configuredProfileType) {
@@ -1080,6 +1093,7 @@ export async function resolveApiKeyForProvider(params: {
     // profileId, so we cannot assume explicit === user-locked.
     if (
       !params.lockedProfile &&
+      !params.skipProviderRuntimeHooks &&
       shouldDeferSyntheticProfileAuth({
         cfg,
         provider,
@@ -1104,6 +1118,7 @@ export async function resolveApiKeyForProvider(params: {
       cfg,
       provider,
       preferredProfile,
+      skipProviderRuntimeHooks: params.skipProviderRuntimeHooks,
     });
     const configuredProfileOrder = resolveAuthProfileOrder({
       cfg,
@@ -1118,6 +1133,11 @@ export async function resolveApiKeyForProvider(params: {
         profileId: candidate,
       });
       if (awsSdkProfileAuth) {
+        if (params.skipProviderRuntimeHooks) {
+          throw new Error(
+            `Auth profile "${candidate}" uses aws-sdk auth, but passive core OpenAI runs require a static API key profile.`,
+          );
+        }
         return awsSdkProfileAuth;
       }
     }
@@ -1125,9 +1145,19 @@ export async function resolveApiKeyForProvider(params: {
 
   const authOverride = resolveProviderAuthOverride(cfg, provider);
   if (authOverride === "aws-sdk") {
+    if (params.skipProviderRuntimeHooks) {
+      throw new Error(
+        `Provider "${provider}" uses aws-sdk auth, but passive core OpenAI runs require a static API key profile.`,
+      );
+    }
     return resolveAwsSdkAuthInfo();
   }
   if (shouldUseImplicitAwsSdkAuth({ cfg, provider, modelApi: params.modelApi })) {
+    if (params.skipProviderRuntimeHooks) {
+      throw new Error(
+        `Provider "${provider}" uses aws-sdk auth, but passive core OpenAI runs require a static API key profile.`,
+      );
+    }
     return resolveAwsSdkAuthInfo();
   }
 
@@ -1162,7 +1192,20 @@ export async function resolveApiKeyForProvider(params: {
     cfg,
     provider,
     preferredProfile,
+    skipProviderRuntimeHooks: params.skipProviderRuntimeHooks,
   });
+  if (params.skipProviderRuntimeHooks) {
+    const providerEntryReference = resolveProviderEntryApiKeyProfileReference({
+      cfg,
+      provider,
+      store: scopedStore,
+    });
+    if (providerEntryReference.kind === "profile" && providerEntryReference.mode !== "api-key") {
+      throw new Error(
+        `Auth profile "${providerEntryReference.profileId}" uses ${providerEntryReference.mode} auth, but passive core OpenAI runs require a static API key profile.`,
+      );
+    }
+  }
   const providerEntryBinding = await resolveProviderEntryApiKeyBinding({
     cfg,
     provider,
@@ -1256,6 +1299,11 @@ export async function resolveApiKeyForProvider(params: {
         profileId: candidate,
       });
       if (awsSdkProfileAuth) {
+        if (params.skipProviderRuntimeHooks) {
+          throw new Error(
+            `Auth profile "${candidate}" uses aws-sdk auth, but passive core OpenAI runs require a static API key profile.`,
+          );
+        }
         return awsSdkProfileAuth;
       }
       const candidateType = store.profiles[candidate]?.type;
@@ -1299,6 +1347,7 @@ export async function resolveApiKeyForProvider(params: {
           continue;
         }
         if (
+          !params.skipProviderRuntimeHooks &&
           shouldDeferSyntheticProfileAuth({
             cfg,
             provider,
@@ -1359,11 +1408,13 @@ export async function resolveApiKeyForProvider(params: {
     return deferredAuthProfileResult;
   }
 
-  const syntheticLocalAuth = resolveSyntheticLocalProviderAuth({
-    cfg,
-    provider,
-    modelApi: params.modelApi,
-  });
+  const syntheticLocalAuth = params.skipProviderRuntimeHooks
+    ? null
+    : resolveSyntheticLocalProviderAuth({
+        cfg,
+        provider,
+        modelApi: params.modelApi,
+      });
   if (syntheticLocalAuth) {
     return syntheticLocalAuth;
   }
@@ -1374,12 +1425,13 @@ export async function resolveApiKeyForProvider(params: {
 
   const hasInlineConfiguredModels =
     Array.isArray(providerConfig?.models) && providerConfig.models.length > 0;
-  const owningPluginIds = !hasInlineConfiguredModels
-    ? resolveOwningPluginIdsForProviderRef({
-        provider,
-        config: cfg,
-      })
-    : undefined;
+  const owningPluginIds =
+    !params.skipProviderRuntimeHooks && !hasInlineConfiguredModels
+      ? resolveOwningPluginIdsForProviderRef({
+          provider,
+          config: cfg,
+        })
+      : undefined;
   if (owningPluginIds?.length) {
     const pluginMissingAuthMessage = buildProviderMissingAuthMessageWithPlugin({
       provider,
@@ -1579,6 +1631,7 @@ export async function getApiKeyForModel(params: {
   workspaceDir?: string;
   lockedProfile?: boolean;
   credentialPrecedence?: ProviderCredentialPrecedence;
+  skipProviderRuntimeHooks?: boolean;
 }): Promise<ResolvedProviderAuth> {
   return resolveApiKeyForProvider({
     provider: params.model.provider,
@@ -1590,6 +1643,7 @@ export async function getApiKeyForModel(params: {
     workspaceDir: params.workspaceDir,
     lockedProfile: params.lockedProfile,
     credentialPrecedence: params.credentialPrecedence,
+    skipProviderRuntimeHooks: params.skipProviderRuntimeHooks,
     modelApi: params.model.api,
   });
 }

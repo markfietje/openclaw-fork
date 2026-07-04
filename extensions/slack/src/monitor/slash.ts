@@ -37,7 +37,11 @@ import {
 } from "../interactive-replies.js";
 import { truncateSlackText } from "../truncate.js";
 import { resolveSlackCommandIngress, resolveSlackEffectiveAllowFrom } from "./auth.js";
-import { resolveSlackChannelConfig, type SlackChannelConfigResolved } from "./channel-config.js";
+import {
+  resolveSlackChannelConfig,
+  resolveSlackRequestUserAccess,
+  type SlackChannelConfigResolved,
+} from "./channel-config.js";
 import { buildSlackSlashCommandMatcher, resolveSlackSlashCommandConfig } from "./commands.js";
 import type { SlackMonitorContext } from "./context.js";
 import { normalizeSlackChannelType, resolveSlackChatType } from "./context.js";
@@ -50,6 +54,7 @@ import {
 import { escapeSlackMrkdwn } from "./mrkdwn.js";
 import { isSlackChannelAllowedByPolicy } from "./policy.js";
 import { resolveSlackRoomContextHints } from "./room-context.js";
+import { buildSlackSourceBoundMessagePolicy } from "./source-bound-message-policy.js";
 
 type SlackBlock = { type: string; [key: string]: unknown };
 
@@ -513,6 +518,21 @@ export async function registerSlackMonitorSlashCommands(params: {
 
       const sender = await ctx.resolveUserName(command.user_id);
       const senderName = sender?.name ?? command.user_name ?? command.user_id;
+      if (
+        isRoom &&
+        !resolveSlackRequestUserAccess({
+          requestUsers: channelConfig?.requestUsers,
+          senderId: command.user_id,
+          senderName,
+          allowNameMatching: ctx.allowNameMatching,
+        }).allowed
+      ) {
+        await respond({
+          text: "You are not authorized to use this command.",
+          response_type: "ephemeral",
+        });
+        return;
+      }
       const slashIngress = await resolveSlackCommandIngress({
         ctx,
         senderId: command.user_id,
@@ -671,6 +691,8 @@ export async function registerSlackMonitorSlashCommands(params: {
             ? `slack:channel:${command.channel_id}`
             : `slack:group:${command.channel_id}`,
         To: `slash:${command.user_id}`,
+        ChatId: command.channel_id,
+        NativeChannelId: command.channel_id,
         ChatType: chatType,
         ConversationLabel:
           resolveConversationLabel({
@@ -764,6 +786,13 @@ export async function registerSlackMonitorSlashCommands(params: {
         },
         replyOptions: {
           skillFilter: channelConfig?.skills,
+          sourceBoundMessagePolicy:
+            channelConfig?.sourceBoundMessageTool === true
+              ? buildSlackSourceBoundMessagePolicy({
+                  accountId: route.accountId,
+                  conversationId: command.channel_id,
+                })
+              : undefined,
           onModelSelected,
         },
       });

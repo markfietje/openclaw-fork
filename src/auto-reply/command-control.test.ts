@@ -654,6 +654,32 @@ describe("resolveCommandAuthorization", () => {
       expect(auth.isAuthorizedSender).toBe(true);
     });
 
+    it("hard-denies commands when request authority is false", () => {
+      const cfg = {
+        commands: {
+          allowFrom: {
+            "*": ["*"],
+          },
+        },
+        channels: { whatsapp: { allowFrom: ["*"] } },
+      } as OpenClawConfig;
+      const ctx = {
+        Provider: "whatsapp",
+        Surface: "whatsapp",
+        From: "whatsapp:anyuser",
+        SenderId: "anyuser",
+        RequestAuthorized: false,
+      } satisfies MsgContext;
+
+      const auth = resolveCommandAuthorization({
+        ctx,
+        cfg,
+        commandAuthorized: true,
+      });
+
+      expect(auth.isAuthorizedSender).toBe(false);
+    });
+
     it("requires owner identity before commands.allowFrom when the plugin enforces owner-only commands", () => {
       registerAllowFromPlugins(createOwnerEnforcingAllowFromPlugin("telegram", () => ["*"]));
       const cfg = {

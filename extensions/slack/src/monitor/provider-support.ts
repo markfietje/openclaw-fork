@@ -2,7 +2,11 @@
 import { asOptionalRecord as asRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { SlackChannelResolution } from "../resolve-channels.js";
 import type { SlackUserResolution } from "../resolve-users.js";
-import { formatUnknownError, waitForSlackSocketDisconnect } from "./reconnect-policy.js";
+import {
+  formatUnknownError,
+  getSocketEmitter,
+  waitForSlackSocketDisconnect,
+} from "./reconnect-policy.js";
 
 type SlackAppConstructor = typeof import("@slack/bolt").App;
 type SlackHttpReceiverConstructor = typeof import("@slack/bolt").HTTPReceiver;
@@ -186,17 +190,22 @@ export function resolveSlackBoltInterop(params: {
   throw new TypeError("Unable to resolve @slack/bolt App/HTTPReceiver exports");
 }
 
-export function publishSlackConnectedStatus(setStatus?: (next: Record<string, unknown>) => void) {
-  if (!setStatus) {
-    return;
-  }
-  const now = Date.now();
-  setStatus({
+export function publishSlackConnectedStatus(
+  setStatus?: (next: Record<string, unknown>) => void,
+  previousConnectedAt?: number,
+): number {
+  // Connection timestamps double as a generation identifier for strict health
+  // consumers. Keep them increasing even when a native reconnect completes in
+  // the same millisecond as the prior connection.
+  const connectedAt =
+    previousConnectedAt === undefined ? Date.now() : Math.max(Date.now(), previousConnectedAt + 1);
+  setStatus?.({
     connected: true,
-    lastConnectedAt: now,
+    lastConnectedAt: connectedAt,
     healthState: "healthy",
     lastError: null,
   });
+  return connectedAt;
 }
 
 export function publishSlackDisconnectedStatus(
@@ -392,15 +401,38 @@ export async function startSlackSocketAndWaitForDisconnect(params: {
   app: { start: () => unknown };
   abortSignal?: AbortSignal;
   onStarted?: () => void;
+  onSocketClose?: () => void;
+  onReconnected?: () => void;
 }) {
   const disconnectWaiter = createSlackSocketDisconnectWaiter(params.app, params.abortSignal);
+  // Native reconnects skip `disconnected`; observe `close` before start so status
+  // stays false through the gap until a later `connected` event refreshes it.
+  const emitter = getSocketEmitter(params.app);
+  let initialStartComplete = false;
+  let socketClosed = false;
+  const closeListener = () => {
+    socketClosed = true;
+    params.onSocketClose?.();
+  };
+  const connectedListener = () => {
+    const reconnected = socketClosed;
+    socketClosed = false;
+    if (initialStartComplete && reconnected) {
+      params.onReconnected?.();
+    }
+  };
+  emitter?.on("close", closeListener);
+  emitter?.on("connected", connectedListener);
   try {
     await Promise.resolve(params.app.start());
     if (params.abortSignal?.aborted) {
       disconnectWaiter.cancel();
       return null;
     }
-    params.onStarted?.();
+    initialStartComplete = true;
+    if (!socketClosed) {
+      params.onStarted?.();
+    }
     const disconnect = await disconnectWaiter.promise;
     disconnectWaiter.complete();
     return disconnect;
@@ -418,6 +450,9 @@ export async function startSlackSocketAndWaitForDisconnect(params: {
       });
     }
     throw err;
+  } finally {
+    emitter?.off("close", closeListener);
+    emitter?.off("connected", connectedListener);
   }
 }
 

@@ -202,6 +202,44 @@ describe("agents delete command", () => {
     });
   });
 
+  it("falls back to local deletion when the Gateway has a stale agent snapshot", async () => {
+    await withStateDirEnv("openclaw-agents-delete-gateway-stale-", async ({ stateDir }) => {
+      const now = Date.now();
+      const cfg: OpenClawConfig = {
+        agents: {
+          list: [
+            { id: "main", workspace: path.join(stateDir, "workspace-main") },
+            { id: "ops", workspace: path.join(stateDir, "workspace-ops") },
+          ],
+        },
+      } satisfies OpenClawConfig;
+      await arrangeAgentsDeleteTest({
+        stateDir,
+        cfg,
+        deletedAgentId: "ops",
+        sessions: {
+          "agent:ops:main": { sessionId: "sess-ops-main", updatedAt: now + 1 },
+          "agent:main:main": { sessionId: "sess-main", updatedAt: now + 2 },
+        },
+      });
+      gatewayMocks.callGateway.mockRejectedValue(
+        Object.assign(new Error('agent "ops" not found'), {
+          name: "GatewayClientRequestError",
+          gatewayCode: "INVALID_REQUEST",
+        }),
+      );
+
+      await agentsDeleteCommand({ id: "ops", force: true, json: true }, runtime);
+
+      expect(runtime.exit).not.toHaveBeenCalled();
+      expect(gatewayMocks.callGateway).toHaveBeenCalledOnce();
+      expect(configMocks.replaceConfigFile).toHaveBeenCalledOnce();
+      const output = readJsonLogs()[0];
+      expect(output?.agentId).toBe("ops");
+      expect(output?.transport).toBeUndefined();
+    });
+  });
+
   it("purges deleted agent entries from the session store", async () => {
     await withStateDirEnv("openclaw-agents-delete-", async ({ stateDir }) => {
       const now = Date.now();

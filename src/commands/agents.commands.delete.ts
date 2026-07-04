@@ -53,11 +53,25 @@ async function maybeDeleteAgentThroughGateway(params: {
       requiredMethods: ["agents.delete"],
     });
   } catch (error) {
-    if (isGatewayTransportError(error) || isGatewayCredentialsRequiredError(error)) {
+    if (
+      isGatewayTransportError(error) ||
+      isGatewayCredentialsRequiredError(error) ||
+      isGatewayAgentNotFoundForTarget(error, params.agentId)
+    ) {
       return null;
     }
     throw error;
   }
+}
+
+function isGatewayAgentNotFoundForTarget(error: unknown, agentId: string): boolean {
+  return (
+    error instanceof Error &&
+    error.name === "GatewayClientRequestError" &&
+    "gatewayCode" in error &&
+    error.gatewayCode === "INVALID_REQUEST" &&
+    error.message.includes(`agent "${agentId}" not found`)
+  );
 }
 
 export async function agentsDeleteCommand(

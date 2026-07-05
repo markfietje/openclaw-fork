@@ -3,6 +3,7 @@ summary: "Configuration, auth, discovery, and app-server reference for the Codex
 title: "Codex harness reference"
 read_when:
   - You need every Codex harness config field
+  - You need the shared user Codex home or codex_threads action contract
   - You are changing app-server transport, auth, discovery, or timeout behavior
   - You are debugging Codex harness startup, model discovery, or environment isolation
 ---
@@ -303,6 +304,22 @@ turns can use `codex_threads` to list (with an optional `search` filter),
 read, fork, rename, archive, and unarchive those threads. Fork a thread before
 continuing it in OpenClaw; independent Codex processes do not coordinate
 concurrent writers for the same thread.
+
+The `codex_threads` tool is absent unless `homeScope` is `"user"` and the
+current sender is the owner. Its action contract is:
+
+| Action      | Required fields                        | Optional fields                         | Behavior                                                                                                        |
+| ----------- | -------------------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `list`      | `action`                               | `archived`, `cursor`, `limit`, `search` | Lists interactive threads by recency. `archived` defaults to `false`; `limit` defaults to 20 and accepts 1-100. |
+| `read`      | `action`, `thread_id`                  | `include_turns`                         | Reads stored thread metadata; turns are omitted by default.                                                     |
+| `fork`      | `action`, `thread_id`                  | `attach`                                | Creates a native fork. `attach` defaults to `true` and requires an active OpenClaw session.                     |
+| `rename`    | `action`, `thread_id`, `name`          | none                                    | Updates the native thread name.                                                                                 |
+| `archive`   | `action`, `thread_id`, `confirm: true` | none                                    | Archives after confirmation; refuses the active thread bound to the current OpenClaw session.                   |
+| `unarchive` | `action`, `thread_id`                  | none                                    | Restores an archived native thread.                                                                             |
+
+Authorized non-owner chat senders can still use read-only Codex slash
+commands such as `/codex threads`. Native execution and mutating `/codex`
+commands require an owner or an `operator.admin` Gateway client.
 
 OpenClaw does not rewrite `HOME` for normal local app-server launches.
 Codex-run subprocesses such as `openclaw`, `gh`, `git`, cloud CLIs, and shell

@@ -4,6 +4,7 @@ title: "Codex harness"
 read_when:
   - You want to use the bundled Codex app-server harness
   - You need Codex harness config examples
+  - You want OpenClaw to inspect native Codex Desktop or CLI threads
   - You want Codex-only deployments to fail instead of falling back to OpenClaw
 ---
 
@@ -100,7 +101,8 @@ from current config.
 The default `appServer.homeScope: "agent"` isolates each OpenClaw agent from
 the operator's native Codex state. To let an owner inspect and manage the
 same native threads shown by Codex Desktop and the Codex CLI, opt into the
-user Codex home:
+user Codex home. Nothing changes for existing installations unless you set
+this option to `"user"`:
 
 ```json5
 {
@@ -119,6 +121,20 @@ user Codex home:
 }
 ```
 
+For a non-interactive config update, enable and verify it with:
+
+```bash
+openclaw config set plugins.entries.codex.config.appServer.homeScope '"user"' --strict-json
+openclaw config validate
+openclaw gateway restart
+openclaw config get plugins.entries.codex.config.appServer.homeScope
+```
+
+The final command should print `user`. In an existing chat, run `/new` or
+`/reset` after the restart. Then run `/codex threads` from an authorized chat
+to confirm that the app-server sees the same native thread store as Codex
+Desktop and the CLI.
+
 User-home mode requires local stdio transport. It uses `$CODEX_HOME` when
 set and `~/.codex` otherwise, including that home's native Codex auth,
 config, plugins, and thread store. OpenClaw does not inject an OpenClaw auth
@@ -130,10 +146,27 @@ OpenClaw; the fork attaches to the current OpenClaw session and stays
 visible to other native Codex clients. Archiving requires explicit
 confirmation that the thread is closed elsewhere.
 
+<Warning>
+Enable user-home mode only on a local, owner-controlled Gateway. The Gateway
+can read the native Codex account, config, plugins, and thread store.
+Authorized non-owner chat senders retain read-only Codex slash commands such
+as `/codex threads`; mutating `/codex` commands require an owner or
+`operator.admin`, and the `codex_threads` agent tool is exposed only to owner
+turns.
+</Warning>
+
 Do not resume or write the same thread concurrently from OpenClaw and
 another Codex client. Codex coordinates live writers inside one app-server
 process, not across independent Desktop, CLI, and OpenClaw processes.
 Forking is the safe coexistence path.
+
+To return to the default isolated per-agent Codex home:
+
+```bash
+openclaw config unset plugins.entries.codex.config.appServer.homeScope
+openclaw config validate
+openclaw gateway restart
+```
 
 ## Configuration
 

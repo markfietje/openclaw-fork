@@ -724,6 +724,12 @@ Assume anything under `~/.openclaw/` (or `$OPENCLAW_STATE_DIR/`) may contain sec
 | bundled plugin packages                     | Installed plugins (plus their `node_modules/`).                                                                                                                                                                                                                                                                         |
 | `sandboxes/**`                              | Tool sandbox workspaces; can accumulate copies of files read/written inside the sandbox.                                                                                                                                                                                                                                |
 
+When the shared user Codex home is enabled, authorized non-owner chat
+senders can use read-only Codex slash commands such as `/codex threads`.
+The high-risk `codex_threads` agent tool is owner-only, while mutating
+`/codex` commands require an owner or `operator.admin`. Do not enable
+`appServer.homeScope: "user"` on a multi-user Gateway.
+
 ### Credential storage map
 
 Also useful for backup decisions:

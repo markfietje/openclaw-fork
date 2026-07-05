@@ -374,7 +374,11 @@ function resolveInstallDefaultChoice(params: {
   if (updateChannel === "dev") {
     return "local";
   }
-  if (updateChannel === "stable" || updateChannel === "beta") {
+  if (
+    updateChannel === "stable" ||
+    updateChannel === "extended-stable" ||
+    updateChannel === "beta"
+  ) {
     return remoteDefault();
   }
   if (entryDefault === "local") {
@@ -1071,6 +1075,10 @@ export async function ensureOnboardingPluginInstalled(params: {
     ? resolveNpmInstallSpecsForUpdateChannel({
         spec: npmSpec,
         updateChannel,
+        officialPackageName: entry.trustedSourceLinkedOfficialInstall
+          ? parseRegistryNpmSpec(npmSpec)?.name
+          : undefined,
+        coreVersion: VERSION,
       })
     : null;
   const clawhubInstallSpec = clawhubSpecs?.installSpec ?? clawhubSpec;
@@ -1317,7 +1325,7 @@ export async function ensureOnboardingPluginInstalled(params: {
       spec: resolveNpmInstallRecordSpec({
         requestedSpec: npmSpecs?.recordSpec ?? npmInstallSpec,
         resolution: result.npmResolution,
-        pinResolvedRegistrySpec: entry.trustedSourceLinkedOfficialInstall === true,
+        pinResolvedRegistrySpec: false,
       }),
       installPath: result.targetDir,
       version: result.version,

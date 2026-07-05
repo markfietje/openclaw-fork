@@ -1006,6 +1006,32 @@ describe("plugins cli update", () => {
     expect(updateParams.updateChannel).toBeUndefined();
   });
 
+  it("passes extended-stable channel and installed core version to update --all", async () => {
+    const config = createTrackedPluginConfig({
+      pluginId: "codex",
+      spec: "@openclaw/codex",
+      resolvedName: "@openclaw/codex",
+    });
+    config.update = { channel: "extended-stable" };
+    loadConfig.mockReturnValue(config);
+    setInstalledPluginIndexInstallRecords(config.plugins?.installs ?? {});
+    updateNpmInstalledPlugins.mockResolvedValue({
+      config,
+      changed: false,
+      outcomes: [],
+    });
+
+    await runPluginsCommand(["plugins", "update", "--all"]);
+
+    expect(updateNpmInstalledPlugins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        officialPluginUpdateChannel: "extended-stable",
+        syncOfficialPluginInstalls: true,
+        coreVersion: expect.any(String),
+      }),
+    );
+  });
+
   it("writes updated config when updater reports changes", async () => {
     const cfg = {
       plugins: {

@@ -101,9 +101,9 @@ openclaw update repair --json
 Options:
 
 - `--channel <stable|extended-stable|beta|dev>`: persist the core update channel
-  before repair. For extended-stable, plugin convergence temporarily targets
-  the stable/latest plugin line. Extended-stable repair is rejected on Git
-  checkouts without changing config.
+  before repair. For extended-stable, eligible official npm plugins that follow
+  bare/default or `latest` intent target the exact installed core version.
+  Extended-stable repair is rejected on Git checkouts without changing config.
 - `--json`: print machine-readable finalization JSON.
 - `--timeout <seconds>`: timeout for repair steps (default `1800`).
 - `--yes`: skip confirmation prompts.
@@ -294,6 +294,13 @@ update can be reported as complete.
 
 If pnpm bootstrap still fails, the updater stops early with a package-manager-specific error instead of trying `npm run build` inside the checkout.
 </Note>
+
+After an extended-stable core update succeeds, post-core plugin integrity and
+convergence target eligible official npm plugins at the exact installed core
+version. For default/`latest` intent, OpenClaw does not query plugin
+`@extended-stable` or fall back to npm `latest`; it derives the package version
+from the installed core. Explicit version pins, explicit non-`latest` tags,
+third-party packages, and non-npm sources keep their existing intent.
 
 ## `--update` shorthand
 

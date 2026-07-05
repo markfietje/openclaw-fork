@@ -63,7 +63,7 @@ import {
   resolveWebSearchInstallCatalogEntry,
 } from "../../../plugins/web-search-install-catalog.js";
 import { resolveUserPath } from "../../../utils.js";
-import { VERSION } from "../../../version.js";
+import { resolveCompatibilityHostVersion, VERSION } from "../../../version.js";
 import { collectConfiguredProviderPluginIds } from "./configured-provider-plugin-installs.js";
 import {
   collectConfiguredRuntimePluginIds,
@@ -977,6 +977,10 @@ async function installCandidate(params: {
     ? resolveNpmInstallSpecsForUpdateChannel({
         spec: candidate.npmSpec,
         updateChannel: params.updateChannel,
+        officialPackageName: candidate.trustedSourceLinkedOfficialInstall
+          ? parseRegistryNpmSpec(candidate.npmSpec)?.name
+          : undefined,
+        coreVersion: resolveCompatibilityHostVersion(params.env),
       })
     : null;
   const clawhubInstallSpec = clawhubSpecs?.installSpec ?? candidate.clawhubSpec;
@@ -1006,6 +1010,7 @@ async function installCandidate(params: {
       records: params.records,
       npmInstallSpec,
       npmRecordSpec: npmSpecs?.recordSpec ?? npmInstallSpec,
+      pinResolvedRegistrySpec: false,
       packagePath: existingNpmPackagePath,
       version: existingNpmPackageVersion,
     });
@@ -1116,7 +1121,7 @@ async function installCandidate(params: {
         spec: resolveNpmInstallRecordSpec({
           requestedSpec: npmSpecs?.recordSpec ?? npmInstallSpec,
           resolution: result.npmResolution,
-          pinResolvedRegistrySpec: candidate.trustedSourceLinkedOfficialInstall === true,
+          pinResolvedRegistrySpec: false,
         }),
         installPath: result.targetDir,
         version: result.version,
@@ -1194,6 +1199,7 @@ async function adoptExistingNpmPackage(params: {
   records: Record<string, PluginInstallRecord>;
   npmInstallSpec: string;
   npmRecordSpec: string;
+  pinResolvedRegistrySpec: boolean;
   packagePath: string;
   version: string;
 }): Promise<{
@@ -1217,7 +1223,7 @@ async function adoptExistingNpmPackage(params: {
         spec: resolveNpmInstallRecordSpec({
           requestedSpec: params.npmRecordSpec,
           resolution: npmResolution,
-          pinResolvedRegistrySpec: params.candidate.trustedSourceLinkedOfficialInstall === true,
+          pinResolvedRegistrySpec: params.pinResolvedRegistrySpec,
         }),
         installPath: params.packagePath,
         installedAt: new Date().toISOString(),
@@ -1466,6 +1472,7 @@ async function repairMissingPluginInstalls(params: {
       },
       pluginIds: missingRecordedPluginIds,
       updateChannel,
+      coreVersion: resolveCompatibilityHostVersion(env),
       logger: {
         warn: (message) => warnings.push(message),
         error: (message) => warnings.push(message),

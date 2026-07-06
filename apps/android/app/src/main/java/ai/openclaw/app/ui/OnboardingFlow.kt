@@ -158,6 +158,21 @@ internal enum class OnboardingGatewayInputSource {
   Manual,
 }
 
+/**
+ * Tracks approval purpose and the one-shot initial auto-continue.
+ * Reopening Permissions after reapproval or auto-forwarding after Back recreates the loop.
+ */
+internal enum class OnboardingNodeApprovalMode {
+  BeforePermissionsAutoContinue,
+  BeforePermissions,
+  PermissionReapproval,
+}
+
+internal enum class OnboardingNodeApprovalReadyAction {
+  ShowPermissions,
+  FinishOnboarding,
+}
+
 private const val GATEWAY_CONNECT_SETTLING_MS = 2_500L
 private const val GATEWAY_CONNECT_TIMEOUT_MS = 20_000L
 private const val NODE_APPROVAL_REFRESH_OBSERVE_TIMEOUT_MS = 750L
@@ -291,9 +306,9 @@ fun OnboardingFlow(
     var recoveryNowMs by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var nodeApprovalBackStep by rememberSaveable { mutableStateOf(OnboardingStep.Recovery) }
     var permissionsBackStep by rememberSaveable { mutableStateOf(OnboardingStep.NodeApproval) }
+    var nodeApprovalMode by rememberSaveable { mutableStateOf(OnboardingNodeApprovalMode.BeforePermissions) }
     var nodeApprovalCheckRequested by rememberSaveable { mutableStateOf(false) }
     var nodeApprovalCheckRefreshStarted by rememberSaveable { mutableStateOf(false) }
-    var nodeApprovalAutoContinueEnabled by rememberSaveable { mutableStateOf(false) }
 
     OpenClawSystemBarAppearance(lightAppearance = !onboardingDark)
 
@@ -331,6 +346,19 @@ fun OnboardingFlow(
       inlineQrScannerActive = next.inlineQrScannerActive
       setupCodeEntryOpenedFromScanner = next.setupCodeEntryOpenedFromScanner
       step = next.step
+    }
+
+    fun handleNodeApprovalReady() {
+      nodeApprovalCheckRequested = false
+      nodeApprovalCheckRefreshStarted = false
+      when (nodeApprovalReadyAction(nodeApprovalMode)) {
+        OnboardingNodeApprovalReadyAction.ShowPermissions -> {
+          nodeApprovalMode = OnboardingNodeApprovalMode.BeforePermissions
+          permissionsBackStep = OnboardingStep.NodeApproval
+          step = OnboardingStep.Permissions
+        }
+        OnboardingNodeApprovalReadyAction.FinishOnboarding -> viewModel.setOnboardingCompleted(true)
+      }
     }
 
     BackHandler(
@@ -397,7 +425,7 @@ fun OnboardingFlow(
       }
     }
 
-    LaunchedEffect(step, ready, nodeApprovalCheckRequested, nodeApprovalCheckRefreshStarted, nodesDevicesRefreshing) {
+    LaunchedEffect(step, ready, nodeApprovalMode, nodeApprovalCheckRequested, nodeApprovalCheckRefreshStarted, nodesDevicesRefreshing) {
       if (
         step == OnboardingStep.NodeApproval &&
         nodeApprovalCheckCanContinue(
@@ -407,27 +435,20 @@ fun OnboardingFlow(
           ready = ready,
         )
       ) {
-        nodeApprovalCheckRequested = false
-        nodeApprovalCheckRefreshStarted = false
-        permissionsBackStep = OnboardingStep.NodeApproval
-        step = OnboardingStep.Permissions
+        handleNodeApprovalReady()
       }
     }
 
-    LaunchedEffect(step, ready, nodeCapabilityApproval, nodeApprovalAutoContinueEnabled) {
+    LaunchedEffect(step, ready, nodeCapabilityApproval, nodeApprovalMode) {
       if (
         nodeApprovalShouldAutoContinue(
           step = step,
           ready = ready,
           nodeCapabilityApproval = nodeCapabilityApproval,
-          autoContinueEnabled = nodeApprovalAutoContinueEnabled,
+          mode = nodeApprovalMode,
         )
       ) {
-        nodeApprovalCheckRequested = false
-        nodeApprovalCheckRefreshStarted = false
-        nodeApprovalAutoContinueEnabled = false
-        permissionsBackStep = OnboardingStep.NodeApproval
-        step = OnboardingStep.Permissions
+        handleNodeApprovalReady()
       }
     }
 
@@ -474,7 +495,7 @@ fun OnboardingFlow(
         OnboardingStep.NodeApproval -> {
           nodeApprovalCheckRequested = false
           nodeApprovalCheckRefreshStarted = false
-          nodeApprovalAutoContinueEnabled = true
+          nodeApprovalMode = OnboardingNodeApprovalMode.BeforePermissionsAutoContinue
           nodeApprovalBackStep = OnboardingStep.Recovery
           step = OnboardingStep.NodeApproval
         }
@@ -837,9 +858,9 @@ fun OnboardingFlow(
                 )
               nodeApprovalBackStep = reapprovalBackSteps.nodeApprovalBackStep
               permissionsBackStep = reapprovalBackSteps.permissionsBackStep
+              nodeApprovalMode = OnboardingNodeApprovalMode.PermissionReapproval
               nodeApprovalCheckRequested = false
               nodeApprovalCheckRefreshStarted = false
-              nodeApprovalAutoContinueEnabled = false
               viewModel.refreshNodesDevices()
               viewModel.refreshGatewayConnection()
               step = OnboardingStep.NodeApproval
@@ -2723,14 +2744,22 @@ internal fun nodeApprovalCheckCanContinue(
     !nodesDevicesRefreshing &&
     ready
 
+internal fun nodeApprovalReadyAction(mode: OnboardingNodeApprovalMode): OnboardingNodeApprovalReadyAction =
+  when (mode) {
+    OnboardingNodeApprovalMode.BeforePermissionsAutoContinue,
+    OnboardingNodeApprovalMode.BeforePermissions,
+    -> OnboardingNodeApprovalReadyAction.ShowPermissions
+    OnboardingNodeApprovalMode.PermissionReapproval -> OnboardingNodeApprovalReadyAction.FinishOnboarding
+  }
+
 internal fun nodeApprovalShouldAutoContinue(
   step: OnboardingStep,
   ready: Boolean,
   nodeCapabilityApproval: GatewayNodeCapabilityApproval,
-  autoContinueEnabled: Boolean,
+  mode: OnboardingNodeApprovalMode,
 ): Boolean =
   step == OnboardingStep.NodeApproval &&
-    autoContinueEnabled &&
+    mode == OnboardingNodeApprovalMode.BeforePermissionsAutoContinue &&
     ready &&
     !nodeCapabilityApprovalNeedsUserAction(nodeCapabilityApproval)
 

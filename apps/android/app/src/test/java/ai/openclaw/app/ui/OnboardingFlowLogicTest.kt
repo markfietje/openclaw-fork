@@ -639,7 +639,7 @@ class OnboardingFlowLogicTest {
         step = OnboardingStep.NodeApproval,
         ready = true,
         nodeCapabilityApproval = GatewayNodeCapabilityApproval.Approved,
-        autoContinueEnabled = true,
+        mode = OnboardingNodeApprovalMode.BeforePermissionsAutoContinue,
       ),
     )
     assertFalse(
@@ -647,7 +647,7 @@ class OnboardingFlowLogicTest {
         step = OnboardingStep.NodeApproval,
         ready = true,
         nodeCapabilityApproval = GatewayNodeCapabilityApproval.PendingApproval(null),
-        autoContinueEnabled = true,
+        mode = OnboardingNodeApprovalMode.BeforePermissionsAutoContinue,
       ),
     )
     assertFalse(
@@ -655,7 +655,7 @@ class OnboardingFlowLogicTest {
         step = OnboardingStep.Permissions,
         ready = true,
         nodeCapabilityApproval = GatewayNodeCapabilityApproval.Approved,
-        autoContinueEnabled = true,
+        mode = OnboardingNodeApprovalMode.BeforePermissionsAutoContinue,
       ),
     )
     assertFalse(
@@ -663,8 +663,32 @@ class OnboardingFlowLogicTest {
         step = OnboardingStep.NodeApproval,
         ready = true,
         nodeCapabilityApproval = GatewayNodeCapabilityApproval.Approved,
-        autoContinueEnabled = false,
+        mode = OnboardingNodeApprovalMode.BeforePermissions,
       ),
+    )
+    assertFalse(
+      nodeApprovalShouldAutoContinue(
+        step = OnboardingStep.NodeApproval,
+        ready = true,
+        nodeCapabilityApproval = GatewayNodeCapabilityApproval.Approved,
+        mode = OnboardingNodeApprovalMode.PermissionReapproval,
+      ),
+    )
+  }
+
+  @Test
+  fun nodeApprovalReadyActionFinishesPermissionReapprovalWithoutReopeningPermissions() {
+    assertEquals(
+      OnboardingNodeApprovalReadyAction.ShowPermissions,
+      nodeApprovalReadyAction(OnboardingNodeApprovalMode.BeforePermissionsAutoContinue),
+    )
+    assertEquals(
+      OnboardingNodeApprovalReadyAction.ShowPermissions,
+      nodeApprovalReadyAction(OnboardingNodeApprovalMode.BeforePermissions),
+    )
+    assertEquals(
+      OnboardingNodeApprovalReadyAction.FinishOnboarding,
+      nodeApprovalReadyAction(OnboardingNodeApprovalMode.PermissionReapproval),
     )
   }
 

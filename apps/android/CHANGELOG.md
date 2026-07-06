@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+Permission-triggered node reapproval now finishes onboarding instead of returning to Permissions and repeating the approval flow.
+
 The OpenClaw mascot now comes alive across onboarding and the app headers with the same float, blink, antenna-wiggle, and claw-snap animation as openclaw.ai.
 
 Adds read-only Cron Job details in Settings, including schedule, payload and delivery state, job ID copy, refresh, and nested back navigation.

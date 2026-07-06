@@ -946,7 +946,7 @@ describe("bundled channel entry shape guards", () => {
     const pluginDir = path.join(root, "extensions", "alpha");
     const escapedPluginDir = path.join(outsideRoot, "escape");
     const testGlobal = globalThis as typeof globalThis & {
-      __escapedBundledSourceLoaded?: boolean;
+      escapedBundledSourceLoaded?: boolean;
     };
     fs.mkdirSync(pluginsDir, { recursive: true });
     fs.mkdirSync(pluginDir, { recursive: true });
@@ -984,7 +984,7 @@ describe("bundled channel entry shape guards", () => {
     fs.writeFileSync(
       path.join(escapedPluginDir, "index.js"),
       [
-        "globalThis.__escapedBundledSourceLoaded = true;",
+        "globalThis.escapedBundledSourceLoaded = true;",
         "export default {",
         "  kind: 'bundled-channel-entry',",
         "  id: 'escape',",
@@ -1030,12 +1030,12 @@ describe("bundled channel entry shape guards", () => {
       expect(bundled.getBundledChannelPlugin("alpha")?.meta.label).toBe("Source Alpha");
       expect(bundled.getBundledChannelSetupPlugin("alpha")?.meta.label).toBe("Setup Alpha");
       expect(bundled.getBundledChannelPlugin("escape")).toBeUndefined();
-      expect(testGlobal.__escapedBundledSourceLoaded).toBeUndefined();
+      expect(testGlobal.escapedBundledSourceLoaded).toBeUndefined();
     } finally {
       restoreBundledPluginsDir(previousBundledPluginsDir);
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(outsideRoot, { recursive: true, force: true });
-      delete testGlobal.__escapedBundledSourceLoaded;
+      delete testGlobal.escapedBundledSourceLoaded;
     }
   });
 

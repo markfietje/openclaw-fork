@@ -1,4 +1,6 @@
 // Mattermost plugin module implements monitor gating behavior.
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import type { MattermostPost } from "./client.js";
 import type { ChatType, OpenClawConfig } from "./runtime-api.js";
 
 export function mapMattermostChannelTypeToChatType(channelType?: string | null): ChatType {
@@ -51,6 +53,8 @@ export type MattermostMentionGateInput = {
   oncharEnabled: boolean;
   oncharTriggered: boolean;
   canDetectMention: boolean;
+  /** True when the post replies to a thread the bot authored; bypasses the mention requirement. */
+  replyToBot?: boolean;
 };
 
 type MattermostMentionGateDecision = {
@@ -63,6 +67,7 @@ type MattermostMentionGateDecision = {
 export function evaluateMattermostMentionGate(
   params: MattermostMentionGateInput,
 ): MattermostMentionGateDecision {
+  const replyToBot = params.replyToBot === true;
   const shouldRequireMention =
     params.kind !== "direct" &&
     params.resolveRequireMention({
@@ -81,13 +86,15 @@ export function evaluateMattermostMentionGate(
     params.wasMentioned ||
     shouldBypassMention ||
     params.oncharTriggered ||
-    params.threadAlreadyEngaged === true;
+    params.threadAlreadyEngaged === true ||
+    replyToBot;
   if (
     params.oncharEnabled &&
     !params.oncharTriggered &&
     !params.wasMentioned &&
     !params.isControlCommand &&
-    params.threadAlreadyEngaged !== true
+    params.threadAlreadyEngaged !== true &&
+    !replyToBot
   ) {
     return {
       shouldRequireMention,
@@ -115,4 +122,50 @@ export function evaluateMattermostMentionGate(
     effectiveWasMentioned,
     dropReason: null,
   };
+}
+
+/**
+ * Reply-to-bot detection for Mattermost. Threads are flat: a reply carries only
+ * `root_id` (the thread root) — the legacy `parent_id` was removed from the post
+ * model — so replying "to the bot" means the bot authored the thread root. The
+ * `posted` websocket payload omits the root author, so the caller injects a
+ * fetcher that is consulted only when a thread root id is present.
+ */
+export async function resolveMattermostReplyToBot(params: {
+  threadRootId?: string;
+  botUserId: string;
+  fetchRootPost: (postId: string) => Promise<MattermostPost | null>;
+}): Promise<boolean> {
+  const rootPostId = normalizeOptionalString(params.threadRootId);
+  if (!rootPostId) {
+    return false;
+  }
+  const rootPost = await params.fetchRootPost(rootPostId);
+  return normalizeOptionalString(rootPost?.user_id) === params.botUserId;
+}
+
+/**
+ * Mention gate plus reply-to-bot fallback (parity with Slack/Telegram). The root
+ * author is absent from the websocket payload, so the (cached) fetch runs only
+ * when the base decision would drop an unmentioned reply — mentioned posts and
+ * threads already engaged via participation never trigger the lookup.
+ */
+export async function resolveMattermostMentionGateDecision(params: {
+  gate: MattermostMentionGateInput;
+  botUserId: string;
+  fetchRootPost: (postId: string) => Promise<MattermostPost | null>;
+}): Promise<MattermostMentionGateDecision> {
+  const decision = evaluateMattermostMentionGate(params.gate);
+  if (decision.dropReason === null || params.gate.wasMentioned) {
+    return decision;
+  }
+  const replyToBot = await resolveMattermostReplyToBot({
+    threadRootId: params.gate.threadRootId,
+    botUserId: params.botUserId,
+    fetchRootPost: params.fetchRootPost,
+  });
+  if (!replyToBot) {
+    return decision;
+  }
+  return evaluateMattermostMentionGate({ ...params.gate, replyToBot: true });
 }

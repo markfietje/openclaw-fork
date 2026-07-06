@@ -62,8 +62,8 @@ import {
   resolveMattermostMonitorInboundAccess,
 } from "./monitor-auth.js";
 import {
-  evaluateMattermostMentionGate,
   mapMattermostChannelTypeToChatType,
+  resolveMattermostMentionGateDecision,
   resolveMattermostTrustedChatKind,
 } from "./monitor-gating.js";
 import {
@@ -893,6 +893,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
     sendTypingIndicator,
     resolveChannelInfo,
     resolveUserInfo,
+    resolvePostInfo,
     updateModelPickerPost,
   } = createMattermostMonitorResources({
     accountId: account.accountId,
@@ -1509,21 +1510,25 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
                 threadRootId: effectiveReplyToId,
               })
             : false;
-        const mentionDecision = evaluateMattermostMentionGate({
-          kind,
-          cfg,
-          accountId: account.accountId,
-          channelId,
-          threadRootId,
-          requireMentionOverride: account.requireMention,
-          resolveRequireMention: core.channel.groups.resolveRequireMention,
-          wasMentioned,
-          threadAlreadyEngaged,
-          isControlCommand,
-          commandAuthorized,
-          oncharEnabled,
-          oncharTriggered,
-          canDetectMention,
+        const mentionDecision = await resolveMattermostMentionGateDecision({
+          gate: {
+            kind,
+            cfg,
+            accountId: account.accountId,
+            channelId,
+            threadRootId,
+            requireMentionOverride: account.requireMention,
+            resolveRequireMention: core.channel.groups.resolveRequireMention,
+            wasMentioned,
+            threadAlreadyEngaged,
+            isControlCommand,
+            commandAuthorized,
+            oncharEnabled,
+            oncharTriggered,
+            canDetectMention,
+          },
+          botUserId,
+          fetchRootPost: resolvePostInfo,
         });
         const { shouldRequireMention, shouldBypassMention } = mentionDecision;
 

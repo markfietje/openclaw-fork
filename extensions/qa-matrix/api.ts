@@ -1,10 +1,5 @@
 // Qa Matrix API module exposes the plugin public contract.
 export {
-  createMatrixQaCrablineSubstrate,
-  type MatrixQaCrablineRuntime,
-  type MatrixQaStartCrablineServer,
-} from "./src/substrate/crabline-lifecycle.runtime.js";
-export {
   createMatrixQaSubstrate,
   runMatrixQaLifecycleScenarios,
   type MatrixQaLifecycleScenarioId,

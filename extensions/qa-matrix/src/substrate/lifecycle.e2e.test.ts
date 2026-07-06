@@ -3,12 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { provisionMatrixQaRoom } from "./client.js";
-import {
-  createMatrixQaCrablineSubstrate,
-  type MatrixQaCrablineRuntime,
-} from "./crabline-lifecycle.runtime.js";
 import { runMatrixQaDifferentialProbe } from "./differential-probe.js";
-import { runMatrixQaLifecycleScenarios } from "./lifecycle.js";
+import { createMatrixQaSubstrate, runMatrixQaLifecycleScenarios } from "./lifecycle.js";
 import {
   createMatrixQaTuwunelSubstrate,
   type MatrixQaTuwunelRuntime,
@@ -76,20 +72,63 @@ describe.runIf(RUN_REAL_LIFECYCLE)("Matrix QA real substrate lifecycle", () => {
 
   it("passes all five scenarios on Crabline", async () => {
     const outputDir = await createOutputDir("crabline");
-    const { startMatrixServer } = await import("@openclaw/crabline");
-    const substrate = createMatrixQaCrablineSubstrate(
-      { outputDir },
-      { startMatrixServerImpl: startMatrixServer },
-    );
+    const { startOpenClawCrablineAdapter } = await import("@openclaw/crabline");
+    const roomId = "!matrix-qa-lifecycle:matrix.test";
+    const substrate = createMatrixQaSubstrate({
+      id: "crabline",
+      async start() {
+        const adapter = await startOpenClawCrablineAdapter({
+          channel: "matrix",
+          recorderPath: path.join(outputDir, "crabline-matrix.jsonl"),
+        });
+        if (adapter.manifest.provider !== "matrix") {
+          await adapter.close();
+          throw new Error("Crabline Matrix adapter returned a non-Matrix manifest");
+        }
+        const manifest = adapter.manifest;
+        try {
+          await adapter.probe();
+          const inbound = adapter.createInbound({
+            input: {
+              conversation: { id: roomId, kind: "group" },
+              senderId: "@lifecycle-driver:matrix.test",
+              text: "Matrix lifecycle probe",
+            },
+          });
+          const response = await fetch(inbound.providerUrl, {
+            body: JSON.stringify(inbound.providerBody),
+            headers: inbound.providerHeaders,
+            method: "POST",
+          });
+          await response.body?.cancel();
+          if (!response.ok) {
+            throw new Error(`Crabline Matrix inbound setup returned HTTP ${response.status}`);
+          }
+          return {
+            accessToken: manifest.accessToken,
+            adapter,
+            baseUrl: manifest.baseUrl,
+            roomId,
+            userId: manifest.botUserId,
+          };
+        } catch (error) {
+          await adapter.close().catch(() => {});
+          throw error;
+        }
+      },
+      async stop(runtime) {
+        await runtime.adapter.close();
+      },
+    });
 
     try {
       const results = await runMatrixQaLifecycleScenarios({
-        async probe(runtime: MatrixQaCrablineRuntime) {
+        async probe(runtime) {
           await runMatrixQaDifferentialProbe({
-            accessToken: runtime.server.manifest.accessToken,
+            accessToken: runtime.accessToken,
             baseUrl: runtime.baseUrl,
             roomId: runtime.roomId,
-            userId: runtime.server.manifest.botUserId,
+            userId: runtime.userId,
           });
         },
         substrate,

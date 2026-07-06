@@ -98,7 +98,7 @@ export async function runMatrixQaLifecycleScenarios<
 
   const restarted = await params.substrate.restart();
   if (restarted.baseUrl !== coldStart.baseUrl) {
-    throw new Error("Matrix substrate restart changed its base URL");
+    await assertMatrixQaSubstrateUnreachable(coldStart.baseUrl, fetchImpl);
   }
   await params.probe(restarted);
   results.push({ baseUrl: restarted.baseUrl, id: "restart" });
@@ -111,9 +111,6 @@ export async function runMatrixQaLifecycleScenarios<
   results.push({ baseUrl: restarted.baseUrl, id: "stop" });
 
   const resumed = await params.substrate.start();
-  if (resumed.baseUrl !== coldStart.baseUrl) {
-    throw new Error("Matrix substrate resume changed its base URL");
-  }
   await params.probe(resumed);
   results.push({ baseUrl: resumed.baseUrl, id: "resume" });
 

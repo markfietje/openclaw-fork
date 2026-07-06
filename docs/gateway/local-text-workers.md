@@ -208,7 +208,8 @@ surface that owns the wait:
 | `llm-task` plugin call         | `plugins.entries.llm-task.config.timeoutMs`         |
 
 Keep the worker prompt short enough that a timeout points to a real local model
-problem, not an oversized orchestration request.
+problem, not an oversized orchestration request that should stay with the
+hosted orchestrator.
 
 ## Sandbox and side effects
 

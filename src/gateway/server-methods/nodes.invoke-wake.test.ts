@@ -743,6 +743,43 @@ describe("node.invoke APNs wake path", () => {
     expectRecordFields(call[1], "respond payload", { ok: true, nodeId: "ios-node-reconnect" });
   });
 
+  it("preserves a connected macOS app node after unsupported system.run result", async () => {
+    const nodeSession = {
+      nodeId: "mac-app-node",
+      commands: ["system.run"],
+      platform: "macOS 26.0.0",
+      deviceFamily: "Mac",
+    };
+    const nodeRegistry = {
+      get: vi.fn(() => nodeSession),
+      invoke: vi.fn().mockResolvedValue({
+        ok: false,
+        error: {
+          code: "UNSUPPORTED",
+          message: "system.run unavailable in the macOS app node",
+        },
+      }),
+    };
+
+    const respond = await invokeNode({
+      nodeRegistry,
+      requestParams: {
+        nodeId: "mac-app-node",
+        command: "system.run",
+        params: { command: ["/bin/echo", "ok"] },
+        idempotencyKey: "idem-mac-system-run",
+      },
+    });
+
+    const call = firstRespondCall(respond);
+    expect(call[0]).toBe(false);
+    expect(call[2]?.code).toBe(ErrorCodes.UNAVAILABLE);
+    expect(call[2]?.message).toBe("UNSUPPORTED: system.run unavailable in the macOS app node");
+    expect(nodeRegistry.invoke).toHaveBeenCalledTimes(1);
+    expect(nodeRegistry.get("mac-app-node")).toBe(nodeSession);
+    expect(mocks.sendApnsBackgroundWake).not.toHaveBeenCalled();
+  });
+
   it("caps oversized reconnect wait timers", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

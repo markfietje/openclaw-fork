@@ -1496,7 +1496,6 @@ describe("package artifact reuse", () => {
     expect(qaWorkflow).toContain('(process.env.EXPECTED_SHA ?? "") !== ""');
     expect(qaWorkflow).not.toContain('"${{ inputs.expected_sha }}" !== ""');
     expect(qaWorkflow).toContain('if [[ -n "${EXPECTED_SHA}" ]]; then');
-    expect(qaWorkflow).not.toContain("github.event_name == 'workflow_call'");
     const matrixJob = workflowJob(QA_LIVE_TRANSPORTS_WORKFLOW, "run_live_matrix");
     const conditionalOpenAiSecret =
       "${{ (inputs.expected_sha != '' && inputs.matrix_provider_mode == 'live-frontier' || inputs.expected_sha == '' && github.event_name != 'workflow_dispatch') && secrets.OPENAI_API_KEY || '' }}";
@@ -1514,7 +1513,9 @@ describe("package artifact reuse", () => {
       MATRIX_ALTERNATE_MODEL:
         "${{ inputs.expected_sha != '' && inputs.matrix_alternate_model || github.event_name == 'workflow_dispatch' && 'mock-openai/gpt-5.5-alt' || env.OPENCLAW_CI_OPENAI_FALLBACK_MODEL }}",
     });
-    expect(qaWorkflow).toContain("continue-on-error: ${{ inputs.matrix_advisory }}");
+    expect(matrixJob["continue-on-error"]).toBe(
+      "${{ github.event_name == 'workflow_call' && inputs.matrix_advisory }}",
+    );
     expect(qaWorkflow).toContain("status: ${{ steps.record_status.outputs.status }}");
     expect(qaWorkflow).not.toContain('matrix_runner="legacy"');
     expect(qaWorkflow).not.toContain("run_live_matrix_sharded");

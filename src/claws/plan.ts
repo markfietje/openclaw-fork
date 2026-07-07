@@ -1,4 +1,5 @@
 // Builds the first read-only claw lifecycle plan.
+import { buildClawArtifactPreview } from "./artifacts.js";
 import {
   CLAW_PLAN_SCHEMA_VERSION,
   type ClawDiagnostic,
@@ -27,11 +28,28 @@ function entrySource(entry: ClawManifest["entries"][number]): string | undefined
 }
 
 function planKnownEntry(entry: ClawManifest["entries"][number]): ClawPlanEntry {
+  const required = entry.required ?? true;
+
+  if ("selector" in entry) {
+    const artifact = buildClawArtifactPreview(entry);
+    return {
+      id: entry.id,
+      kind: entry.kind,
+      required,
+      decision: artifact.supported ? "inspectOnly" : "blockedUnsupported",
+      target: entryTarget(entry),
+      artifact,
+      reason: artifact.supported
+        ? `This entry can be resolved by a future installer through the ${artifact.installSurface} install surface; this PR previews artifact and provenance metadata only.`
+        : "This package selector is not supported by the artifact preview and would block a future installer until rewritten.",
+    };
+  }
+
   const requiresConsent = CONSENT_KINDS.has(entry.kind);
   return {
     id: entry.id,
     kind: entry.kind,
-    required: entry.required ?? true,
+    required,
     decision: requiresConsent ? "requiresConsent" : "inspectOnly",
     target: entryTarget(entry),
     source: entrySource(entry),
@@ -60,6 +78,7 @@ export function buildClawPlan(params: {
   const entries = [...knownEntries, ...unknownEntries];
   const optionalEntries = entries.filter((entry) => !entry.required).length;
   const requiresConsent = entries.filter((entry) => entry.decision === "requiresConsent").length;
+  const unsupportedEntries = entries.filter((entry) => entry.decision === "blockedUnsupported");
 
   return {
     schemaVersion: CLAW_PLAN_SCHEMA_VERSION,
@@ -75,7 +94,8 @@ export function buildClawPlan(params: {
       requiredEntries: entries.length - optionalEntries,
       optionalEntries,
       requiresConsent,
-      unsupportedOptionalEntries: unknownEntries.length,
+      unsupportedRequiredEntries: unsupportedEntries.filter((entry) => entry.required).length,
+      unsupportedOptionalEntries: unsupportedEntries.filter((entry) => !entry.required).length,
     },
     entries,
     diagnostics: params.diagnostics ?? [],

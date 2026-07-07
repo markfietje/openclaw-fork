@@ -145,10 +145,31 @@ export type ClawReadResult =
       diagnostics: ClawDiagnostic[];
     };
 
-export type ClawPlanEntryDecision =
-  | "inspectOnly"
-  | "requiresConsent"
-  | "blockedUnsupported";
+export type ClawPlanEntryDecision = "inspectOnly" | "requiresConsent" | "blockedUnsupported";
+
+export type ClawArtifactSource = "clawhub" | "npm" | "npmPack" | "git" | "path" | "unknown";
+
+export type ClawArtifactInstallSurface = "skills" | "plugins" | "mcpServers" | "connectors";
+
+export type ClawArtifactProvenanceRecord =
+  | "skill.clawhubOrigin"
+  | "plugin.installRecord"
+  | "mcpServer.installRecord"
+  | "connector.installRecord";
+
+export type ClawArtifactPreview = {
+  source: ClawArtifactSource;
+  selector: string;
+  installSurface: ClawArtifactInstallSurface;
+  packageName?: string;
+  version?: string;
+  provenance: {
+    record: ClawArtifactProvenanceRecord;
+    requestedSpecifier: string;
+    pinning: "pinned" | "floating" | "unknown";
+  };
+  supported: boolean;
+};
 
 export type ClawPlanEntry = {
   id: string;
@@ -157,6 +178,7 @@ export type ClawPlanEntry = {
   decision: ClawPlanEntryDecision;
   target?: string;
   source?: string;
+  artifact?: ClawArtifactPreview;
   reason: string;
 };
 
@@ -174,6 +196,7 @@ export type ClawPlan = {
     requiredEntries: number;
     optionalEntries: number;
     requiresConsent: number;
+    unsupportedRequiredEntries: number;
     unsupportedOptionalEntries: number;
   };
   entries: ClawPlanEntry[];

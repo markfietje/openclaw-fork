@@ -68,7 +68,6 @@ describe("parseClawManifest", () => {
     ]);
   });
 
-
   it("fails unknown top-level manifest keys", () => {
     const result = parseClawManifest({
       ...baseManifest,
@@ -165,6 +164,254 @@ describe("parseClawManifest", () => {
 });
 
 describe("buildClawPlan", () => {
+  it("adds package artifact and provenance previews", () => {
+    const parsed = parseClawManifest({
+      ...baseManifest,
+      entries: [
+        {
+          kind: "skill",
+          id: "sec-filings",
+          selector: "clawhub:sec-filings@1.0.0",
+        },
+        {
+          kind: "plugin",
+          id: "terminal-plugin",
+          selector: "npm:@openclaw/plugin-terminal@2.0.0+build.5",
+        },
+        {
+          kind: "plugin",
+          id: "packed-plugin",
+          selector: "npm-pack:dist/plugin.tgz",
+        },
+        {
+          kind: "plugin",
+          id: "tagged-plugin",
+          selector: "npm:tagged-plugin@beta",
+        },
+        {
+          kind: "plugin",
+          id: "git-plugin",
+          selector: "git:github.com/acme/demo#0123456789abcdef0123456789abcdef01234567",
+        },
+        {
+          kind: "plugin",
+          id: "file-plugin",
+          selector: "file:///tmp/openclaw-plugin",
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      throw new Error("expected manifest to parse");
+    }
+
+    const plan = buildClawPlan({ manifest: parsed.manifest, sourcePath: "/tmp/claw.json" });
+
+    expect(plan.summary).toMatchObject({
+      totalEntries: 6,
+      unsupportedRequiredEntries: 0,
+      unsupportedOptionalEntries: 0,
+    });
+    expect(plan.entries[0]).toMatchObject({
+      id: "sec-filings",
+      decision: "inspectOnly",
+      artifact: {
+        source: "clawhub",
+        installSurface: "skills",
+        packageName: "sec-filings",
+        version: "1.0.0",
+        provenance: {
+          record: "skill.clawhubOrigin",
+          requestedSpecifier: "clawhub:sec-filings@1.0.0",
+          pinning: "pinned",
+        },
+        supported: true,
+      },
+    });
+    expect(plan.entries[1]).toMatchObject({
+      id: "terminal-plugin",
+      artifact: {
+        source: "npm",
+        installSurface: "plugins",
+        packageName: "@openclaw/plugin-terminal",
+        version: "2.0.0+build.5",
+        provenance: { record: "plugin.installRecord" },
+      },
+    });
+    expect(plan.entries[2]).toMatchObject({
+      id: "packed-plugin",
+      decision: "inspectOnly",
+      artifact: {
+        source: "npmPack",
+        selector: "npm-pack:dist/plugin.tgz",
+        installSurface: "plugins",
+        supported: true,
+      },
+    });
+    expect(plan.entries[3]).toMatchObject({
+      id: "tagged-plugin",
+      artifact: {
+        source: "npm",
+        packageName: "tagged-plugin",
+        version: "beta",
+        provenance: { pinning: "floating" },
+        supported: true,
+      },
+    });
+    expect(plan.entries[4]).toMatchObject({
+      id: "git-plugin",
+      artifact: {
+        source: "git",
+        version: "0123456789abcdef0123456789abcdef01234567",
+        provenance: { pinning: "pinned" },
+        supported: true,
+      },
+    });
+    expect(plan.entries[5]).toMatchObject({
+      id: "file-plugin",
+      artifact: {
+        source: "path",
+        selector: "file:///tmp/openclaw-plugin",
+        supported: true,
+      },
+    });
+  });
+
+  it("previews absolute local package selectors as path artifacts", () => {
+    const parsed = parseClawManifest({
+      ...baseManifest,
+      entries: [
+        {
+          kind: "plugin",
+          id: "absolute-posix-plugin",
+          selector: "/tmp/openclaw-plugin",
+        },
+        {
+          kind: "plugin",
+          id: "absolute-windows-plugin",
+          selector: "C:/tmp/openclaw-plugin",
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      throw new Error("expected manifest to parse");
+    }
+
+    const plan = buildClawPlan({ manifest: parsed.manifest });
+
+    expect(plan.summary).toMatchObject({
+      totalEntries: 2,
+      unsupportedRequiredEntries: 0,
+    });
+    expect(plan.entries.map((entry) => entry.artifact)).toEqual([
+      expect.objectContaining({
+        source: "path",
+        selector: "/tmp/openclaw-plugin",
+        installSurface: "plugins",
+        supported: true,
+      }),
+      expect.objectContaining({
+        source: "path",
+        selector: "C:/tmp/openclaw-plugin",
+        installSurface: "plugins",
+        supported: true,
+      }),
+    ]);
+  });
+
+  it("blocks trailing-at package selectors in the read-only plan", () => {
+    const parsed = parseClawManifest({
+      ...baseManifest,
+      entries: [
+        {
+          kind: "skill",
+          id: "bad-skill",
+          selector: "clawhub:demo@",
+        },
+        {
+          kind: "plugin",
+          id: "bad-plugin",
+          selector: "npm:demo@",
+        },
+        {
+          kind: "plugin",
+          id: "bad-git",
+          selector: "git:",
+        },
+        {
+          kind: "plugin",
+          id: "bad-git-plus",
+          selector: "git+",
+        },
+        {
+          kind: "plugin",
+          id: "bad-git-plus-url",
+          selector: "git+ssh://github.com/acme/demo.git",
+        },
+        {
+          kind: "plugin",
+          id: "bad-file",
+          selector: "file:",
+        },
+        {
+          kind: "plugin",
+          id: "bad-hosted-file",
+          selector: "file://example.com/demo.tgz",
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      throw new Error("expected manifest to parse");
+    }
+
+    const plan = buildClawPlan({ manifest: parsed.manifest });
+
+    expect(plan.summary).toMatchObject({ unsupportedRequiredEntries: 7 });
+    expect(plan.entries.map((entry) => entry.artifact?.supported)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it("blocks unsupported package selectors in the read-only plan", () => {
+    const parsed = parseClawManifest({
+      ...baseManifest,
+      entries: [
+        {
+          kind: "plugin",
+          id: "bad-plugin",
+          selector: "registry.example.com/plugin.tgz",
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      throw new Error("expected manifest to parse");
+    }
+
+    const plan = buildClawPlan({ manifest: parsed.manifest });
+
+    expect(plan.summary).toMatchObject({
+      unsupportedRequiredEntries: 1,
+      unsupportedOptionalEntries: 0,
+    });
+    expect(plan.entries[0]).toMatchObject({
+      decision: "blockedUnsupported",
+      artifact: { source: "unknown", supported: false },
+    });
+  });
+
   it("marks workspace and automation entries as future consent points", () => {
     const parsed = parseClawManifest({
       ...baseManifest,

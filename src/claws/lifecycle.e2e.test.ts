@@ -57,7 +57,7 @@ function parseJson(stdout: string): unknown {
 }
 
 describe("claws lifecycle cli e2e", () => {
-  it("runs inspect, plan, and dry-run apply for a local Claw manifest", async () => {
+  it("runs inspect and dry-run apply for a local Claw manifest", async () => {
     const manifestPath = "src/claws/fixtures/incident-response.claw.json";
 
     const inspect = parseJson(
@@ -67,16 +67,6 @@ describe("claws lifecycle cli e2e", () => {
       valid: true,
       manifest: { id: "incident-response", entries: expect.any(Array) },
     });
-
-    const plan = parseJson(
-      (await runOpenClaw(["claws", "plan", manifestPath, "--json"])).stdout,
-    );
-    expect(plan).toMatchObject({
-      schemaVersion: "openclaw.clawPlan.v1",
-      readOnly: true,
-      summary: { totalEntries: 5, requiresConsent: 2, unsupportedRequiredEntries: 0 },
-    });
-
     const apply = parseJson(
       (await runOpenClaw(["claws", "apply", manifestPath, "--dry-run", "--json"])).stdout,
     );
@@ -95,17 +85,15 @@ describe("claws lifecycle cli e2e", () => {
     });
   });
 
-  it("runs feed plan and feed dry-run apply from the local feed fixture", async () => {
+  it("runs feed inspect and feed dry-run apply from the local feed fixture", async () => {
     const feedPath = "src/claws/fixtures/local-claws.feed.json";
 
-    const plan = parseJson(
-      (await runOpenClaw(["claws", "feed", "plan", feedPath, "incident-response", "--json"]))
-        .stdout,
+    const inspect = parseJson(
+      (await runOpenClaw(["claws", "feed", "inspect", feedPath, "--json"])).stdout,
     );
-    expect(plan).toMatchObject({
-      schemaVersion: "openclaw.clawPlan.v1",
-      feed: { id: "local-starter-claws", entry: { id: "incident-response" } },
-      summary: { totalEntries: 5, requiresConsent: 2 },
+    expect(inspect).toMatchObject({
+      valid: true,
+      feed: { id: "local-starter-claws", entries: expect.any(Array) },
     });
 
     const apply = parseJson(

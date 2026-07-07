@@ -1,4 +1,4 @@
-// Tests for the Claws CLI inspection and read-only plan commands.
+// Tests for the Claws CLI inspection and dry-run apply commands.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,34 +129,7 @@ describe("claws cli", () => {
     });
   });
 
-  it("builds a read-only JSON plan", async () => {
-    const manifestPath = await writeManifest({
-      schemaVersion: "openclaw.claw.v1",
-      id: "starter",
-      name: "Starter",
-      version: "1.0.0",
-      entries: [
-        {
-          kind: "workspaceFile",
-          id: "soul",
-          path: "SOUL.md",
-          source: "files/SOUL.md",
-        },
-      ],
-    });
-
-    await runCli(["claws", "plan", manifestPath, "--json"]);
-
-    expect(mocks.runtime.writeJson).toHaveBeenCalledOnce();
-    expect(mocks.runtime.writeJson.mock.calls[0][0]).toMatchObject({
-      schemaVersion: "openclaw.clawPlan.v1",
-      readOnly: true,
-      summary: { totalEntries: 1, requiresConsent: 1 },
-      entries: [{ id: "soul", decision: "requiresConsent" }],
-    });
-  });
-
-  it("prints unsupported required entries in local text plans", async () => {
+  it("prints unsupported required entries in local dry-run apply previews", async () => {
     const manifestPath = await writeManifest({
       schemaVersion: "openclaw.claw.v1",
       id: "starter",
@@ -171,12 +144,12 @@ describe("claws cli", () => {
       ],
     });
 
-    await runCli(["claws", "plan", manifestPath]);
+    await runCli(["claws", "apply", manifestPath, "--dry-run"]);
 
-    expect(mocks.logs).toContain("Unsupported required entries: 1");
+    expect(mocks.logs).toContain("Blocked entries: 1");
   });
 
-  it("prints unsupported required entries in feed text plans", async () => {
+  it("prints unsupported required entries in feed dry-run apply previews", async () => {
     const feedPath = await writeFeedWorkspace({
       manifest: {
         schemaVersion: "openclaw.claw.v1",
@@ -193,9 +166,9 @@ describe("claws cli", () => {
       },
     });
 
-    await runCli(["claws", "feed", "plan", feedPath, "starter"]);
+    await runCli(["claws", "feed", "apply", feedPath, "starter", "--dry-run"]);
 
-    expect(mocks.logs).toContain("Unsupported required entries: 1");
+    expect(mocks.logs).toContain("Blocked entries: 1");
   });
 
   it("builds a dry-run JSON apply plan", async () => {
@@ -285,23 +258,6 @@ describe("claws cli", () => {
     });
   });
 
-  it("builds a read-only JSON plan from a feed entry", async () => {
-    const feedPath = await writeFeedWorkspace();
-
-    await runCli(["claws", "feed", "plan", feedPath, "starter", "--json"]);
-
-    expect(mocks.runtime.writeJson).toHaveBeenCalledOnce();
-    expect(mocks.runtime.writeJson.mock.calls[0][0]).toMatchObject({
-      schemaVersion: "openclaw.clawPlan.v1",
-      readOnly: true,
-      feed: {
-        id: "local-starters",
-        entry: { id: "starter" },
-      },
-      summary: { totalEntries: 1, requiresConsent: 1 },
-    });
-  });
-
   it("exits non-zero for invalid feed sources", async () => {
     const feedPath = await writeFeedWorkspace({
       feed: {
@@ -320,7 +276,7 @@ describe("claws cli", () => {
       },
     });
 
-    await runCli(["claws", "feed", "plan", feedPath, "starter"]);
+    await runCli(["claws", "feed", "apply", feedPath, "starter", "--dry-run"]);
 
     expect(mocks.runtime.error).toHaveBeenCalled();
     expect(mocks.errors.join("\n")).toContain("unsupported_feed_source");

@@ -67,6 +67,10 @@ describe("minimal npm extended-stable workflow", () => {
       step(parsed.jobs?.preflight_openclaw_npm, "Validate npm release request").env?.PREFLIGHT_ONLY,
     ).toBe("${{ inputs.preflight_only }}");
     expect(
+      step(parsed.jobs?.preflight_openclaw_npm, "Verify release contents").env
+        ?.OPENCLAW_NPM_RELEASE_SKIP_PACK_CHECK,
+    ).toBe("1");
+    expect(
       step(parsed.jobs?.validate_publish_request, "Validate npm release request").run,
     ).toContain("openclaw-npm-extended-stable-release.mjs validate-request");
     expect(step(parsed.jobs?.publish_openclaw_npm, "Recheck npm release request").run).toContain(

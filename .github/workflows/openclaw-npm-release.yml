@@ -232,6 +232,10 @@ jobs:
       # IF A CHECK CAN TAKE A LONG TIME, NEEDS LIVE CREDENTIALS, OR IS KNOWN TO BE FLAKY,
       # IT BELONGS IN openclaw-release-checks.yml INSTEAD OF BLOCKING npm PUBLISH.
       - name: Verify release contents
+        env:
+          # The dedicated prepared-tarball step below installs core together with
+          # its separately packed private @openclaw/ai workspace dependency.
+          OPENCLAW_NPM_RELEASE_SKIP_PACK_CHECK: "1"
         run: pnpm release:check
 
       - name: Generate dependency release evidence

@@ -53,6 +53,7 @@ import {
   resolveInstalledBinaryCommandInvocation,
   resolveInstalledBinaryPath,
 } from "./openclaw-npm-postpublish-verify.ts";
+import { shouldSkipPackedTarballValidation } from "./openclaw-npm-release-check.ts";
 import { listStaticExtensionAssetOutputs } from "./runtime-postbuild.mjs";
 import { sparkleBuildFloorsFromShortVersion, type SparkleBuildFloors } from "./sparkle-build.ts";
 import { buildCmdExeCommandLine } from "./windows-cmd-helpers.mjs";
@@ -1233,9 +1234,16 @@ async function main() {
     process.exit(1);
   }
 
-  runPackedBundledChannelEntrySmoke();
+  const skipPackedTarballValidation = shouldSkipPackedTarballValidation();
+  if (!skipPackedTarballValidation) {
+    runPackedBundledChannelEntrySmoke();
+  }
 
-  console.log("release-check: npm pack contents and bundled channel entrypoints look OK.");
+  console.log(
+    skipPackedTarballValidation
+      ? "release-check: npm pack contents look OK; packed install validation skipped."
+      : "release-check: npm pack contents and bundled channel entrypoints look OK.",
+  );
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

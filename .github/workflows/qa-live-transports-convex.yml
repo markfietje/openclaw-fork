@@ -408,7 +408,7 @@ jobs:
   run_live_matrix:
     name: Run Matrix live QA lane
     needs: [authorize_actor, validate_selected_ref]
-    if: inputs.expected_sha == '' || inputs.run_matrix
+    if: github.event_name != 'workflow_call' || inputs.run_matrix
     continue-on-error: ${{ inputs.matrix_advisory }}
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 60

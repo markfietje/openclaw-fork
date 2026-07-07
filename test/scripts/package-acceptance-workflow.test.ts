@@ -1469,7 +1469,10 @@ describe("package artifact reuse", () => {
     expect(workflowJob(QA_LIVE_TRANSPORTS_WORKFLOW, "run_mock_parity").if).toBe(
       "inputs.expected_sha == '' || inputs.run_mock_parity",
     );
-    for (const channel of ["matrix", "telegram", "discord", "whatsapp", "slack"]) {
+    expect(workflowJob(QA_LIVE_TRANSPORTS_WORKFLOW, "run_live_matrix").if).toBe(
+      "github.event_name != 'workflow_call' || inputs.run_matrix",
+    );
+    for (const channel of ["telegram", "discord", "whatsapp", "slack"]) {
       expect(workflowJob(QA_LIVE_TRANSPORTS_WORKFLOW, `run_live_${channel}`).if).toBe(
         `inputs.expected_sha == '' || inputs.run_${channel}`,
       );
@@ -1494,7 +1497,6 @@ describe("package artifact reuse", () => {
     expect(qaWorkflow).not.toContain('"${{ inputs.expected_sha }}" !== ""');
     expect(qaWorkflow).toContain('if [[ -n "${EXPECTED_SHA}" ]]; then');
     expect(qaWorkflow).not.toContain("github.event_name == 'workflow_call'");
-    expect(qaWorkflow).not.toContain("github.event_name != 'workflow_call'");
     const matrixJob = workflowJob(QA_LIVE_TRANSPORTS_WORKFLOW, "run_live_matrix");
     const conditionalOpenAiSecret =
       "${{ (inputs.expected_sha != '' && inputs.matrix_provider_mode == 'live-frontier' || inputs.expected_sha == '' && github.event_name != 'workflow_dispatch') && secrets.OPENAI_API_KEY || '' }}";

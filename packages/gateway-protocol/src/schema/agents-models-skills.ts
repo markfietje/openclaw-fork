@@ -428,6 +428,19 @@ export const SkillsDetailParamsSchema = Type.Object(
 export const SkillsSecurityVerdictsParamsSchema = Type.Object(
   {
     agentId: Type.Optional(NonEmptyString),
+    items: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            slug: NonEmptyString,
+            version: NonEmptyString,
+            ownerHandle: Type.Optional(NonEmptyString),
+          },
+          { additionalProperties: false },
+        ),
+        { maxItems: 25 },
+      ),
+    ),
   },
   { additionalProperties: false },
 );

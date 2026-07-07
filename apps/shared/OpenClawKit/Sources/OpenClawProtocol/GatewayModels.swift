@@ -7019,15 +7019,19 @@ public struct SkillsProposalRecordResult: Codable, Sendable {
 
 public struct SkillsSecurityVerdictsParams: Codable, Sendable {
     public let agentid: String?
+    public let items: [[String: AnyCodable]]?
 
     public init(
-        agentid: String? = nil)
+        agentid: String? = nil,
+        items: [[String: AnyCodable]]?)
     {
         self.agentid = agentid
+        self.items = items
     }
 
     private enum CodingKeys: String, CodingKey {
         case agentid = "agentId"
+        case items
     }
 }
 

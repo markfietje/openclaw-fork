@@ -197,6 +197,72 @@ describe("skills gateway handlers (clawhub)", () => {
     expect(JSON.stringify(response)).not.toContain('"security":');
   });
 
+  it("fetches explicit ClawHub verdicts for pre-install review without scanning installed skills", async () => {
+    fetchClawHubSkillSecurityVerdictsMock.mockResolvedValue({
+      schema: "clawhub.skill.security-verdicts.v1",
+      items: [
+        {
+          ok: true,
+          decision: "pass",
+          reasons: [],
+          requestedSlug: "calendar",
+          slug: "calendar",
+          requestedVersion: "2.0.0",
+          version: "2.0.0",
+          displayName: "Calendar",
+          publisherHandle: "openclaw",
+          publisherDisplayName: "OpenClaw",
+          securityAuditUrl:
+            "https://clawhub.ai/openclaw/skills/calendar/security-audit?version=2.0.0",
+          security: { status: "clean", passed: true },
+        },
+      ],
+    });
+
+    const { ok, response, error } = await callSkillsHandler("skills.securityVerdicts", {
+      items: [{ slug: "calendar", version: "2.0.0", ownerHandle: "openclaw" }],
+    });
+
+    expect(buildWorkspaceSkillStatusMock).not.toHaveBeenCalled();
+    expect(fetchClawHubSkillSecurityVerdictsMock).toHaveBeenCalledWith({
+      baseUrl: "https://clawhub.ai",
+      items: [{ slug: "calendar", version: "2.0.0", ownerHandle: "openclaw" }],
+      skipAuth: true,
+    });
+    expect(ok).toBe(true);
+    expect(error).toBeUndefined();
+    expect(response).toEqual({
+      schema: "openclaw.skills.security-verdicts.v1",
+      items: [
+        expect.objectContaining({
+          registry: "https://clawhub.ai",
+          ok: true,
+          decision: "pass",
+          requestedSlug: "calendar",
+          requestedVersion: "2.0.0",
+          displayName: "Calendar",
+          publisherHandle: "openclaw",
+          publisherDisplayName: "OpenClaw",
+          securityStatus: "clean",
+          securityPassed: true,
+        }),
+      ],
+    });
+  });
+
+  it("rejects oversized explicit ClawHub verdict batches", async () => {
+    const { ok, error } = await callSkillsHandler("skills.securityVerdicts", {
+      items: Array.from({ length: 26 }, (_, index) => ({
+        slug: `skill-${index}`,
+        version: "1.0.0",
+      })),
+    });
+
+    expect(ok).toBe(false);
+    expect(error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(fetchClawHubSkillSecurityVerdictsMock).not.toHaveBeenCalled();
+  });
+
   it("does not passively fetch verdicts from a non-default registry", async () => {
     buildWorkspaceSkillStatusMock.mockReturnValue({
       workspaceDir: "/tmp/workspace",

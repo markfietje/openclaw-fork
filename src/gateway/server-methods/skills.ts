@@ -30,7 +30,7 @@ import {
 import { canExecRequestNode } from "../../agents/exec-defaults.js";
 import { listAgentWorkspaceDirs } from "../../agents/workspace-dirs.js";
 import { redactConfigObject } from "../../config/redact-snapshot.js";
-import { fetchClawHubSkillDetail } from "../../infra/clawhub.js";
+import { fetchClawHubSkillDetail, resolveClawHubBaseUrl } from "../../infra/clawhub.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { updateSkillConfigEntry } from "../../skills/config/mutations.js";
@@ -244,8 +244,19 @@ export const skillsHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const report = buildRemoteAwareWorkspaceSkillStatus(resolved);
-      const targets = collectClawHubVerdictTargets(report);
+      const p = params as {
+        items?: Array<{ slug: string; version: string; ownerHandle?: string }>;
+      };
+      const explicitItems = p.items ?? [];
+      const targets =
+        explicitItems.length > 0
+          ? explicitItems.map((item) => ({
+              registry: resolveClawHubBaseUrl(),
+              slug: item.slug,
+              version: item.version,
+              ...(item.ownerHandle ? { ownerHandle: item.ownerHandle } : {}),
+            }))
+          : collectClawHubVerdictTargets(buildRemoteAwareWorkspaceSkillStatus(resolved));
       if (targets.length === 0) {
         respond(true, { schema: "openclaw.skills.security-verdicts.v1", items: [] }, undefined);
         return;

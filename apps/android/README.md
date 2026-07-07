@@ -21,6 +21,7 @@ OpenClaw Android is the officially released Google Play app. It connects to an O
 - [x] Skill Workshop settings can filter proposals, inspect proposal content, and apply/reject/quarantine drafts through Gateway RPCs
 - [x] Per-app language selection for translated resources follows Android system settings and persistence
 - [x] Cron job settings support details, run history, run now, edits, enable/disable, and deletion with admin-scoped Gateway access
+- [x] Skills settings can search installed skills, enable/disable skills, and install skills from ClawHub
 
 ## Open in Android Studio
 

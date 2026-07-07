@@ -239,6 +239,9 @@ class MainViewModel(
   val skillWorkshopNoticeText: StateFlow<String?> = runtimeState(initial = null) { it.skillWorkshopNoticeText }
   val skillWorkshopInspectingProposalId: StateFlow<String?> = runtimeState(initial = null) { it.skillWorkshopInspectingProposalId }
   val skillWorkshopMutatingProposalId: StateFlow<String?> = runtimeState(initial = null) { it.skillWorkshopMutatingProposalId }
+  val skillMutationKeys: StateFlow<Set<String>> = runtimeState(initial = emptySet()) { it.skillMutationKeys }
+  val clawHubSkillSearchState: StateFlow<GatewayClawHubSkillSearchState> =
+    runtimeState(initial = GatewayClawHubSkillSearchState()) { it.clawHubSkillSearchState }
   val nodesDevicesSummary: StateFlow<GatewayNodesDevicesSummary> =
     runtimeState(initial = GatewayNodesDevicesSummary(nodes = emptyList(), pendingDevices = emptyList(), pairedDevices = emptyList())) { it.nodesDevicesSummary }
   val nodesDevicesRefreshing: StateFlow<Boolean> = runtimeState(initial = false) { it.nodesDevicesRefreshing }
@@ -854,6 +857,41 @@ class MainViewModel(
 
   fun clearSkillWorkshopMessage() {
     ensureRuntime().clearSkillWorkshopMessage()
+  }
+
+  fun setSkillEnabled(
+    skillKey: String,
+    enabled: Boolean,
+  ) {
+    ensureRuntime().setSkillEnabled(skillKey = skillKey, enabled = enabled)
+  }
+
+  fun searchClawHubSkills(query: String) {
+    ensureRuntime().searchClawHubSkills(query)
+  }
+
+  fun reviewClawHubSkillInstall(skill: GatewayClawHubSkillSummary) {
+    ensureRuntime().reviewClawHubSkillInstall(skill)
+  }
+
+  fun dismissClawHubSkillInstallReview() {
+    ensureRuntime().dismissClawHubSkillInstallReview()
+  }
+
+  fun installClawHubSkill(
+    slug: String,
+    acknowledgeClawHubRisk: Boolean = false,
+    version: String? = null,
+  ) {
+    ensureRuntime().installClawHubSkill(
+      slug = slug,
+      acknowledgeClawHubRisk = acknowledgeClawHubRisk,
+      version = version,
+    )
+  }
+
+  fun clearClawHubSkillSearchMessage() {
+    ensureRuntime().clearClawHubSkillSearchMessage()
   }
 
   fun refreshNodesDevices() {

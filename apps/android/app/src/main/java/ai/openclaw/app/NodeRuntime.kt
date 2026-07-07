@@ -762,6 +762,12 @@ class NodeRuntime private constructor(
   private val skillWorkshopListSeq = AtomicLong(0)
   private val skillWorkshopInspectSeq = AtomicLong(0)
   private val skillWorkshopMutationSeq = AtomicLong(0)
+  private val _skillMutationKeys = MutableStateFlow<Set<String>>(emptySet())
+  val skillMutationKeys: StateFlow<Set<String>> = _skillMutationKeys.asStateFlow()
+  private val _clawHubSkillSearchState = MutableStateFlow(GatewayClawHubSkillSearchState())
+  val clawHubSkillSearchState: StateFlow<GatewayClawHubSkillSearchState> = _clawHubSkillSearchState.asStateFlow()
+  private val clawHubSkillSearchSeq = AtomicLong(0)
+  private val clawHubSkillInstallReviewSeq = AtomicLong(0)
   private val _nodesDevicesSummary =
     MutableStateFlow(
       GatewayNodesDevicesSummary(
@@ -930,6 +936,8 @@ class NodeRuntime private constructor(
     skillWorkshopListSeq.incrementAndGet()
     skillWorkshopInspectSeq.incrementAndGet()
     skillWorkshopMutationSeq.incrementAndGet()
+    _skillMutationKeys.value = emptySet()
+    _clawHubSkillSearchState.value = GatewayClawHubSkillSearchState()
     _nodesDevicesSummary.value =
       GatewayNodesDevicesSummary(
         nodes = emptyList(),
@@ -1683,6 +1691,69 @@ class NodeRuntime private constructor(
   fun clearSkillWorkshopMessage() {
     _skillWorkshopErrorText.value = null
     _skillWorkshopNoticeText.value = null
+  }
+
+  fun setSkillEnabled(
+    skillKey: String,
+    enabled: Boolean,
+  ) {
+    val normalized = skillKey.trim()
+    if (normalized.isEmpty()) return
+    scope.launch {
+      setSkillEnabledOnGateway(skillKey = normalized, enabled = enabled)
+    }
+  }
+
+  fun searchClawHubSkills(query: String) {
+    scope.launch {
+      searchClawHubSkillsFromGateway(query)
+    }
+  }
+
+  fun reviewClawHubSkillInstall(skill: GatewayClawHubSkillSummary) {
+    val normalized = skill.slug.trim()
+    if (normalized.isEmpty()) return
+    scope.launch {
+      reviewClawHubSkillInstallFromGateway(skill.copy(slug = normalized))
+    }
+  }
+
+  fun dismissClawHubSkillInstallReview() {
+    clawHubSkillInstallReviewSeq.incrementAndGet()
+    _clawHubSkillSearchState.value =
+      _clawHubSkillSearchState.value.copy(
+        installReview = null,
+        reviewingSlug = null,
+      )
+  }
+
+  fun installClawHubSkill(
+    slug: String,
+    acknowledgeClawHubRisk: Boolean = false,
+    version: String? = null,
+  ) {
+    val normalized = slug.trim()
+    if (normalized.isEmpty()) return
+    scope.launch {
+      installClawHubSkillFromGateway(
+        slug = normalized,
+        acknowledgeClawHubRisk = acknowledgeClawHubRisk,
+        version = version,
+      )
+    }
+  }
+
+  fun clearClawHubSkillSearchMessage() {
+    clawHubSkillInstallReviewSeq.incrementAndGet()
+    _clawHubSkillSearchState.value =
+      _clawHubSkillSearchState.value.copy(
+        acknowledgeSlug = null,
+        acknowledgeVersion = null,
+        installReview = null,
+        reviewingSlug = null,
+        errorText = null,
+        messageText = null,
+      )
   }
 
   fun refreshNodesDevices() {
@@ -4430,6 +4501,353 @@ class NodeRuntime private constructor(
       if (normalizedProposalId != null) put("proposalId", JsonPrimitive(normalizedProposalId))
     }
 
+  private suspend fun setSkillEnabledOnGateway(
+    skillKey: String,
+    enabled: Boolean,
+  ) {
+    val gatewayScope = captureGatewayDataScope()
+    if (gatewayScope == null || !operatorConnected) {
+      _skillsErrorText.value = "Connect the gateway to update skills."
+      return
+    }
+    publishGatewayData(gatewayScope) {
+      _skillMutationKeys.value = _skillMutationKeys.value + skillKey
+      _skillsErrorText.value = null
+    }
+    try {
+      val params =
+        buildJsonObject {
+          put("skillKey", JsonPrimitive(skillKey))
+          put("enabled", JsonPrimitive(enabled))
+        }
+      requestGatewayData(gatewayScope, "skills.update", params.toString())
+      refreshSkillsFromGateway()
+    } catch (err: CancellationException) {
+      throw err
+    } catch (_: Throwable) {
+      publishGatewayData(gatewayScope) {
+        _skillsErrorText.value = if (enabled) "Could not enable skill." else "Could not disable skill."
+      }
+    } finally {
+      publishGatewayData(gatewayScope) {
+        _skillMutationKeys.value = _skillMutationKeys.value - skillKey
+      }
+    }
+  }
+
+  private suspend fun searchClawHubSkillsFromGateway(query: String) {
+    val normalized = query.trim()
+    val searchSeq = clawHubSkillSearchSeq.incrementAndGet()
+    clawHubSkillInstallReviewSeq.incrementAndGet()
+    val gatewayScope = captureGatewayDataScope()
+    if (gatewayScope == null || !operatorConnected) {
+      _clawHubSkillSearchState.value =
+        _clawHubSkillSearchState.value.copy(
+          query = normalized,
+          searching = false,
+          errorText = "Connect the gateway to search ClawHub skills.",
+          messageText = null,
+        )
+      return
+    }
+    publishGatewayData(gatewayScope) {
+      _clawHubSkillSearchState.value =
+        _clawHubSkillSearchState.value.copy(
+          query = normalized,
+          searching = true,
+          acknowledgeSlug = null,
+          acknowledgeVersion = null,
+          installReview = null,
+          reviewingSlug = null,
+          errorText = null,
+          messageText = null,
+        )
+    }
+    try {
+      val params =
+        buildJsonObject {
+          if (normalized.isNotEmpty()) put("query", JsonPrimitive(normalized))
+          put("limit", JsonPrimitive(25))
+        }
+      val res = requestGatewayData(gatewayScope, "skills.search", params.toString())
+      val root = json.parseToJsonElement(res).asObjectOrNull()
+      val results = parseClawHubSkillSummaries(root?.get("results") as? JsonArray)
+      publishGatewayData(gatewayScope) {
+        if (clawHubSkillSearchSeq.get() == searchSeq) {
+          _clawHubSkillSearchState.value =
+            _clawHubSkillSearchState.value.copy(
+              searching = false,
+              results = results,
+              acknowledgeSlug = null,
+              acknowledgeVersion = null,
+              errorText = null,
+              messageText = if (results.isEmpty()) "No ClawHub skills matched." else null,
+            )
+        }
+      }
+    } catch (err: CancellationException) {
+      throw err
+    } catch (_: Throwable) {
+      publishGatewayData(gatewayScope) {
+        if (clawHubSkillSearchSeq.get() == searchSeq) {
+          _clawHubSkillSearchState.value =
+            _clawHubSkillSearchState.value.copy(
+              searching = false,
+              acknowledgeSlug = null,
+              acknowledgeVersion = null,
+              errorText = "Could not search ClawHub skills.",
+              messageText = null,
+            )
+        }
+      }
+    }
+  }
+
+  private suspend fun reviewClawHubSkillInstallFromGateway(skill: GatewayClawHubSkillSummary) {
+    val slug = skill.slug.trim()
+    val reviewSeq = clawHubSkillInstallReviewSeq.incrementAndGet()
+    val gatewayScope = captureGatewayDataScope()
+    if (gatewayScope == null || !operatorConnected) {
+      _clawHubSkillSearchState.value =
+        _clawHubSkillSearchState.value.copy(
+          reviewingSlug = null,
+          installReview = null,
+          errorText = "Connect the gateway to review ClawHub skills before installing.",
+          messageText = null,
+        )
+      return
+    }
+    publishGatewayData(gatewayScope) {
+      _clawHubSkillSearchState.value =
+        _clawHubSkillSearchState.value.copy(
+          reviewingSlug = slug,
+          installReview = null,
+          acknowledgeSlug = null,
+          acknowledgeVersion = null,
+          errorText = null,
+          messageText = null,
+        )
+    }
+    try {
+      val detailParams = buildJsonObject { put("slug", JsonPrimitive(slug)) }
+      val detailRoot =
+        json
+          .parseToJsonElement(requestGatewayData(gatewayScope, "skills.detail", detailParams.toString()))
+          .asObjectOrNull()
+      val skillRoot = detailRoot?.get("skill").asObjectOrNull()
+      val versionRoot = detailRoot?.get("latestVersion").asObjectOrNull()
+      val ownerRoot = detailRoot?.get("owner").asObjectOrNull()
+      val ownerHandle = ownerRoot?.get("handle").asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+      val resolvedVersion =
+        skill.version
+          ?: versionRoot?.get("version").asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+      if (resolvedVersion == null) {
+        publishGatewayData(gatewayScope) {
+          if (clawHubSkillInstallReviewSeq.get() == reviewSeq) {
+            _clawHubSkillSearchState.value =
+              _clawHubSkillSearchState.value.copy(
+                reviewingSlug = null,
+                installReview = null,
+                errorText = "ClawHub did not return an installable version for $slug.",
+                messageText = null,
+              )
+          }
+        }
+        return
+      }
+
+      var verdictError: Throwable? = null
+      val verdict =
+        try {
+          val verdictParams =
+            buildJsonObject {
+              put(
+                "items",
+                JsonArray(
+                  listOf(
+                    buildJsonObject {
+                      put("slug", JsonPrimitive(slug))
+                      put("version", JsonPrimitive(resolvedVersion))
+                      ownerHandle?.let { put("ownerHandle", JsonPrimitive(it)) }
+                    },
+                  ),
+                ),
+              )
+            }
+          val verdictRoot =
+            json
+              .parseToJsonElement(requestGatewayData(gatewayScope, "skills.securityVerdicts", verdictParams.toString()))
+              .asObjectOrNull()
+          parseClawHubSecurityVerdict((verdictRoot?.get("items") as? JsonArray)?.firstOrNull()?.asObjectOrNull())
+        } catch (err: CancellationException) {
+          throw err
+        } catch (err: Throwable) {
+          verdictError = err
+          null
+        }
+      val review =
+        GatewayClawHubInstallReview(
+          slug = slug,
+          displayName =
+            skillRoot
+              ?.get("displayName")
+              .asStringOrNull()
+              ?.trim()
+              ?.takeIf { it.isNotEmpty() }
+              ?: skill.displayName,
+          summary =
+            skillRoot
+              ?.get("summary")
+              .asStringOrNull()
+              ?.trim()
+              ?.takeIf { it.isNotEmpty() }
+              ?: skill.summary,
+          version = resolvedVersion,
+          author = clawHubReviewAuthor(ownerRoot, verdict),
+          safetyLabel = clawHubSafetyLabel(verdict),
+          safetyDetail = clawHubSafetyDetail(verdict, verdictError),
+          securityAuditUrl = verdict?.securityAuditUrl,
+          requiresRiskAcknowledgement = clawHubReviewRequiresAcknowledgement(verdict),
+          blocked = clawHubReviewBlocked(verdict),
+        )
+      publishGatewayData(gatewayScope) {
+        if (clawHubSkillInstallReviewSeq.get() == reviewSeq) {
+          _clawHubSkillSearchState.value =
+            _clawHubSkillSearchState.value.copy(
+              reviewingSlug = null,
+              installReview = review,
+              errorText = null,
+              messageText = null,
+            )
+        }
+      }
+    } catch (err: CancellationException) {
+      throw err
+    } catch (_: Throwable) {
+      publishGatewayData(gatewayScope) {
+        if (clawHubSkillInstallReviewSeq.get() == reviewSeq) {
+          _clawHubSkillSearchState.value =
+            _clawHubSkillSearchState.value.copy(
+              reviewingSlug = null,
+              installReview = null,
+              errorText = "Could not load the ClawHub audit result for $slug.",
+              messageText = null,
+            )
+        }
+      }
+    }
+  }
+
+  private suspend fun installClawHubSkillFromGateway(
+    slug: String,
+    acknowledgeClawHubRisk: Boolean,
+    version: String?,
+  ) {
+    val gatewayScope = captureGatewayDataScope()
+    if (gatewayScope == null || !operatorConnected) {
+      _clawHubSkillSearchState.value =
+        _clawHubSkillSearchState.value.copy(
+          acknowledgeSlug = null,
+          acknowledgeVersion = null,
+          errorText = "Connect the gateway to install ClawHub skills.",
+          messageText = null,
+        )
+      return
+    }
+    publishGatewayData(gatewayScope) {
+      _clawHubSkillSearchState.value =
+        _clawHubSkillSearchState.value.copy(
+          installingSlugs = _clawHubSkillSearchState.value.installingSlugs + slug,
+          acknowledgeSlug = null,
+          acknowledgeVersion = null,
+          installReview = null,
+          reviewingSlug = null,
+          errorText = null,
+          messageText = null,
+        )
+    }
+    try {
+      val params =
+        buildJsonObject {
+          put("source", JsonPrimitive("clawhub"))
+          put("slug", JsonPrimitive(slug))
+          version
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { put("version", JsonPrimitive(it)) }
+          if (acknowledgeClawHubRisk) put("acknowledgeClawHubRisk", JsonPrimitive(true))
+          put("timeoutMs", JsonPrimitive(120_000))
+        }
+      val res = requestGatewayData(gatewayScope, "skills.install", params.toString())
+      val root = json.parseToJsonElement(res).asObjectOrNull()
+      val message =
+        root
+          ?.get("message")
+          .asStringOrNull()
+          ?.trim()
+          ?.takeIf { it.isNotEmpty() }
+      val warning =
+        root
+          ?.get("warning")
+          .asStringOrNull()
+          ?.trim()
+          ?.takeIf { it.isNotEmpty() }
+      publishGatewayData(gatewayScope) {
+        _clawHubSkillSearchState.value =
+          _clawHubSkillSearchState.value.copy(
+            acknowledgeSlug = null,
+            acknowledgeVersion = null,
+            messageText = formatClawHubInstallMessage(message ?: "Installed $slug.", warning),
+            errorText = null,
+          )
+      }
+      refreshSkillsFromGateway()
+    } catch (err: CancellationException) {
+      throw err
+    } catch (err: GatewayRequestRejected) {
+      val details = err.gatewayError.details
+      val acknowledgementDetails =
+        details?.takeIf { it.clawhubTrustCode == "clawhub_risk_acknowledgement_required" }
+      publishGatewayData(gatewayScope) {
+        _clawHubSkillSearchState.value =
+          _clawHubSkillSearchState.value.copy(
+            acknowledgeSlug = if (acknowledgementDetails != null) slug else null,
+            acknowledgeVersion = acknowledgementDetails?.clawhubVersion,
+            errorText =
+              if (acknowledgementDetails != null) {
+                formatClawHubInstallMessage(
+                  "Review the ClawHub warning before installing this skill.",
+                  acknowledgementDetails.clawhubWarning,
+                )
+              } else {
+                formatClawHubInstallMessage(
+                  err.gatewayError.message.ifBlank { "Could not install $slug from ClawHub." },
+                  details?.clawhubWarning,
+                )
+              },
+            messageText = null,
+          )
+      }
+    } catch (_: Throwable) {
+      publishGatewayData(gatewayScope) {
+        _clawHubSkillSearchState.value =
+          _clawHubSkillSearchState.value.copy(
+            acknowledgeSlug = null,
+            acknowledgeVersion = null,
+            errorText = "Could not install $slug from ClawHub.",
+            messageText = null,
+          )
+      }
+    } finally {
+      publishGatewayData(gatewayScope) {
+        _clawHubSkillSearchState.value =
+          _clawHubSkillSearchState.value.copy(
+            installingSlugs = _clawHubSkillSearchState.value.installingSlugs - slug,
+          )
+      }
+    }
+  }
+
   private suspend fun refreshNodesDevicesFromGateway() {
     val gatewayScope = captureGatewayDataScope() ?: return
     val refreshGeneration = nodeApprovalRefreshGuard.begin()
@@ -5021,6 +5439,7 @@ class NodeRuntime private constructor(
           disabled = obj.boolean("disabled"),
           eligible = obj.boolean("eligible"),
           blockedByAllowlist = obj.boolean("blockedByAllowlist"),
+          blockedByAgentFilter = obj.boolean("blockedByAgentFilter"),
           bundled = obj.boolean("bundled"),
           missingCount = skillMissingCount(missing),
           installCount = (obj["install"] as? JsonArray)?.size ?: 0,
@@ -5133,6 +5552,21 @@ class NodeRuntime private constructor(
       .asStringOrNull()
       ?.trim()
       ?.takeIf { it.isNotEmpty() }
+
+  private fun parseClawHubSkillSummaries(results: JsonArray?): List<GatewayClawHubSkillSummary> =
+    results
+      ?.mapNotNull { item ->
+        val obj = item.asObjectOrNull() ?: return@mapNotNull null
+        val slug = obj["slug"].asStringOrNull()?.trim().orEmpty()
+        val displayName = obj["displayName"].asStringOrNull()?.trim().orEmpty()
+        if (slug.isEmpty() || displayName.isEmpty()) return@mapNotNull null
+        GatewayClawHubSkillSummary(
+          slug = slug,
+          displayName = displayName,
+          summary = obj["summary"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+          version = obj["version"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+        )
+      }.orEmpty()
 
   private fun skillMissingCount(missing: JsonObject?): Int = listOf("bins", "env", "config", "os").sumOf { key -> (missing?.get(key) as? JsonArray)?.size ?: 0 }
 
@@ -5741,6 +6175,158 @@ data class GatewaySkillWorkshopSupportFile(
   val content: String?,
 )
 
+private fun formatClawHubInstallMessage(
+  message: String,
+  warning: String?,
+): String = if (warning.isNullOrBlank()) message else "$message\n\n$warning"
+
+private fun parseClawHubSecurityVerdict(obj: JsonObject?): GatewayClawHubSkillSecurityVerdict? {
+  obj ?: return null
+  val requestedSlug = obj["requestedSlug"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+  val requestedVersion = obj["requestedVersion"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+  return GatewayClawHubSkillSecurityVerdict(
+    ok = obj.boolean("ok"),
+    decision = obj["decision"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    reasons = parseClawHubStringArray(obj["reasons"] as? JsonArray),
+    requestedSlug = requestedSlug,
+    requestedVersion = requestedVersion,
+    slug = obj["slug"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    version = obj["version"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    displayName = obj["displayName"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    publisherHandle = obj["publisherHandle"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    publisherDisplayName = obj["publisherDisplayName"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    securityAuditUrl = obj["securityAuditUrl"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    securityStatus = obj["securityStatus"].asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() },
+    securityPassed = obj.optionalBoolean("securityPassed"),
+  )
+}
+
+private fun parseClawHubStringArray(items: JsonArray?): List<String> =
+  items
+    ?.mapNotNull { item -> item.asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() } }
+    .orEmpty()
+
+private fun clawHubReviewAuthor(
+  ownerRoot: JsonObject?,
+  verdict: GatewayClawHubSkillSecurityVerdict?,
+): String {
+  val ownerDisplay = ownerRoot?.get("displayName").asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+  val ownerHandle = ownerRoot?.get("handle").asStringOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+  val publisherDisplay = verdict?.publisherDisplayName?.trim()?.takeIf { it.isNotEmpty() }
+  val publisherHandle = verdict?.publisherHandle?.trim()?.takeIf { it.isNotEmpty() }
+  val display = ownerDisplay ?: publisherDisplay
+  val handle = ownerHandle ?: publisherHandle
+  return when {
+    display != null && handle != null && !display.equals(handle, ignoreCase = true) -> "$display (@$handle)"
+    display != null -> display
+    handle != null -> "@$handle"
+    else -> "Unknown"
+  }
+}
+
+private fun clawHubSafetyLabel(verdict: GatewayClawHubSkillSecurityVerdict?): String {
+  verdict ?: return "Unavailable"
+  val status = verdict.securityStatus?.lowercase()
+  val decision = verdict.decision?.lowercase()
+  if (verdict.ok && decision == "pass" && verdict.securityPassed != false) {
+    return if (status == null || status == "clean") "Clean" else status.toDisplayToken()
+  }
+  return when (status) {
+    "malicious" -> "Blocked"
+    "suspicious" -> "Review required"
+    "pending", "not-run" -> "Pending"
+    else -> "Review required"
+  }
+}
+
+private fun clawHubSafetyDetail(
+  verdict: GatewayClawHubSkillSecurityVerdict?,
+  error: Throwable?,
+): String {
+  if (verdict == null) {
+    return error?.message?.trim()?.takeIf { it.isNotEmpty() }?.let { "Security audit unavailable: $it" }
+      ?: "Security audit unavailable. The gateway will re-check ClawHub before downloading."
+  }
+  val reasons = verdict.reasons.takeIf { it.isNotEmpty() }?.joinToString(", ")
+  val status = verdict.securityStatus?.trim()?.takeIf { it.isNotEmpty() }
+  val passed = verdict.securityPassed?.let { if (it) "passed" else "failed" }
+  return listOfNotNull(status?.let { "status: $it" }, passed?.let { "scan: $it" }, reasons?.let { "reasons: $it" })
+    .joinToString(" · ")
+    .ifBlank { "ClawHub returned a signed review verdict for this release." }
+}
+
+private fun clawHubReviewBlocked(verdict: GatewayClawHubSkillSecurityVerdict?): Boolean {
+  verdict ?: return false
+  val status = verdict.securityStatus?.lowercase()
+  val decision = verdict.decision?.lowercase()
+  return status == "malicious" ||
+    decision == "blocked" ||
+    verdict.reasons.any { reason ->
+      reason.contains("malicious", ignoreCase = true) || reason.contains("blocked", ignoreCase = true)
+    }
+}
+
+private fun clawHubReviewRequiresAcknowledgement(verdict: GatewayClawHubSkillSecurityVerdict?): Boolean {
+  verdict ?: return false
+  if (clawHubReviewBlocked(verdict)) return false
+  val decision = verdict.decision?.lowercase()
+  return !(verdict.ok && decision == "pass" && verdict.securityPassed != false)
+}
+
+private fun String.toDisplayToken(): String =
+  split('-', '_', ' ')
+    .filter { it.isNotBlank() }
+    .joinToString(" ") { token -> token.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() } }
+
+data class GatewayClawHubSkillSearchState(
+  val query: String = "",
+  val searching: Boolean = false,
+  val installingSlugs: Set<String> = emptySet(),
+  val results: List<GatewayClawHubSkillSummary> = emptyList(),
+  val reviewingSlug: String? = null,
+  val installReview: GatewayClawHubInstallReview? = null,
+  val acknowledgeSlug: String? = null,
+  val acknowledgeVersion: String? = null,
+  val errorText: String? = null,
+  val messageText: String? = null,
+)
+
+data class GatewayClawHubSkillSummary(
+  val slug: String,
+  val displayName: String,
+  val summary: String?,
+  val version: String?,
+)
+
+data class GatewayClawHubInstallReview(
+  val slug: String,
+  val displayName: String,
+  val summary: String?,
+  val version: String,
+  val author: String,
+  val safetyLabel: String,
+  val safetyDetail: String,
+  val securityAuditUrl: String?,
+  val requiresRiskAcknowledgement: Boolean,
+  val blocked: Boolean,
+)
+
+data class GatewayClawHubSkillSecurityVerdict(
+  val ok: Boolean,
+  val decision: String?,
+  val reasons: List<String>,
+  val requestedSlug: String,
+  val requestedVersion: String,
+  val slug: String?,
+  val version: String?,
+  val displayName: String?,
+  val publisherHandle: String?,
+  val publisherDisplayName: String?,
+  val securityAuditUrl: String?,
+  val securityStatus: String?,
+  val securityPassed: Boolean?,
+)
+
 data class GatewaySkillSummary(
   val skillKey: String,
   val name: String,
@@ -5750,6 +6336,7 @@ data class GatewaySkillSummary(
   val disabled: Boolean,
   val eligible: Boolean,
   val blockedByAllowlist: Boolean,
+  val blockedByAgentFilter: Boolean,
   val bundled: Boolean,
   val missingCount: Int,
   val installCount: Int,

@@ -116,11 +116,13 @@ export async function createMatrixQaTransportAdapter(
 ): Promise<AdapterDefinition> {
   const options = context.adapterOptions ?? {};
   const repoRoot = options.repoRoot?.trim() || process.cwd();
+  const suffix = randomUUID().slice(0, 8);
+  // Compose derives its default project name from this basename. Keep it unique so
+  // programmatic parallel suite workers cannot stop or replace another harness.
   const harness = await startMatrixQaHarness({
-    outputDir: path.join(context.outputDir, "matrix-harness"),
+    outputDir: path.join(context.outputDir, `matrix-harness-${suffix}`),
     repoRoot,
   });
-  const suffix = randomUUID().slice(0, 8);
   let provisioning: Awaited<ReturnType<typeof provisionMatrixQaRoom>>;
   try {
     provisioning = await provisionMatrixQaRoom({

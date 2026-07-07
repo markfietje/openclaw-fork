@@ -2,10 +2,12 @@
 
 export const CLAW_SCHEMA_VERSION = "openclaw.claw.v1" as const;
 export const CLAW_PLAN_SCHEMA_VERSION = "openclaw.clawPlan.v1" as const;
+export const CLAW_APPLY_PLAN_SCHEMA_VERSION = "openclaw.clawApplyPlan.v1" as const;
 export const CLAW_FEED_SCHEMA_VERSION = "openclaw.clawFeed.v1" as const;
 
 export type ClawSchemaVersion = typeof CLAW_SCHEMA_VERSION;
 export type ClawPlanSchemaVersion = typeof CLAW_PLAN_SCHEMA_VERSION;
+export type ClawApplyPlanSchemaVersion = typeof CLAW_APPLY_PLAN_SCHEMA_VERSION;
 export type ClawFeedSchemaVersion = typeof CLAW_FEED_SCHEMA_VERSION;
 
 export type ClawDiagnosticLevel = "error" | "warning";
@@ -200,5 +202,52 @@ export type ClawPlan = {
     unsupportedOptionalEntries: number;
   };
   entries: ClawPlanEntry[];
+  diagnostics: ClawDiagnostic[];
+};
+
+export type ClawApplyPlanEntryAction =
+  | "installArtifact"
+  | "writeWorkspaceFile"
+  | "writePersonaFile"
+  | "registerAutomation"
+  | "skipUnsupported";
+
+export type ClawApplyPlanEntryPhase = "artifact" | "workspace" | "automation" | "unsupported";
+
+export type ClawApplyPlanEntry = {
+  id: string;
+  kind: ClawEntryKind | string;
+  required: boolean;
+  phase: ClawApplyPlanEntryPhase;
+  action: ClawApplyPlanEntryAction;
+  target?: string;
+  source?: string;
+  consentRequired: boolean;
+  blocked: boolean;
+  provenanceRecord?:
+    | ClawArtifactProvenanceRecord
+    | "workspaceFile.installRecord"
+    | "automation.installRecord";
+  rollback: {
+    action: "uninstallArtifact" | "removeWorkspaceFile" | "disableAutomation" | "none";
+    target?: string;
+  };
+  reason: string;
+};
+
+export type ClawApplyPlan = {
+  schemaVersion: ClawApplyPlanSchemaVersion;
+  dryRun: true;
+  mutationAllowed: false;
+  claw: ClawPlan["claw"];
+  summary: {
+    totalEntries: number;
+    installActions: number;
+    consentRequired: number;
+    blockedEntries: number;
+    provenanceRecords: number;
+    rollbackActions: number;
+  };
+  entries: ClawApplyPlanEntry[];
   diagnostics: ClawDiagnostic[];
 };

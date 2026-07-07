@@ -1,5 +1,6 @@
 // Tests for openclaw.claw.v1 manifest parsing.
 import { describe, expect, it } from "vitest";
+import { buildClawApplyPlan } from "./lifecycle.js";
 import { buildClawPlan } from "./plan.js";
 import { parseClawManifest } from "./schema.js";
 
@@ -444,5 +445,155 @@ describe("buildClawPlan", () => {
       "requiresConsent",
       "requiresConsent",
     ]);
+  });
+});
+
+describe("buildClawApplyPlan", () => {
+  it("builds a dry-run lifecycle plan with provenance and rollback actions", () => {
+    const parsed = parseClawManifest({
+      ...baseManifest,
+      entries: [
+        {
+          kind: "plugin",
+          id: "terminal-plugin",
+          selector: "npm:@openclaw/plugin-terminal@2.0.0",
+        },
+        {
+          kind: "workspaceFile",
+          id: "soul",
+          path: "SOUL.md",
+          source: "files/SOUL.md",
+        },
+        {
+          kind: "schedule",
+          id: "morning-brief",
+          source: "automations/morning-brief.json",
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      throw new Error("expected manifest to parse");
+    }
+
+    const applyPlan = buildClawApplyPlan(buildClawPlan({ manifest: parsed.manifest }));
+
+    expect(applyPlan).toMatchObject({
+      schemaVersion: "openclaw.clawApplyPlan.v1",
+      dryRun: true,
+      mutationAllowed: false,
+      summary: {
+        totalEntries: 3,
+        installActions: 3,
+        consentRequired: 2,
+        blockedEntries: 0,
+        provenanceRecords: 3,
+        rollbackActions: 3,
+      },
+    });
+    expect(applyPlan.entries).toEqual([
+      expect.objectContaining({
+        id: "terminal-plugin",
+        phase: "artifact",
+        action: "installArtifact",
+        consentRequired: false,
+        provenanceRecord: "plugin.installRecord",
+        rollback: { action: "uninstallArtifact", target: "npm:@openclaw/plugin-terminal@2.0.0" },
+      }),
+      expect.objectContaining({
+        id: "soul",
+        phase: "workspace",
+        action: "writeWorkspaceFile",
+        consentRequired: true,
+        provenanceRecord: "workspaceFile.installRecord",
+        rollback: { action: "removeWorkspaceFile", target: "SOUL.md" },
+      }),
+      expect.objectContaining({
+        id: "morning-brief",
+        phase: "automation",
+        action: "registerAutomation",
+        consentRequired: true,
+        provenanceRecord: "automation.installRecord",
+        rollback: { action: "disableAutomation", target: "morning-brief" },
+      }),
+    ]);
+  });
+
+  it("skips optional unsupported entries without blocking apply", () => {
+    const parsed = parseClawManifest({
+      ...baseManifest,
+      entries: [
+        {
+          kind: "plugin",
+          id: "bad-optional-plugin",
+          selector: "registry.example.com/plugin.tgz",
+          required: false,
+        },
+        {
+          kind: "futureThing",
+          id: "future-optional",
+          required: false,
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      throw new Error("expected manifest to parse");
+    }
+
+    const applyPlan = buildClawApplyPlan(buildClawPlan({ manifest: parsed.manifest }));
+
+    expect(applyPlan.summary).toMatchObject({
+      installActions: 0,
+      blockedEntries: 0,
+      rollbackActions: 0,
+    });
+    expect(applyPlan.entries).toEqual([
+      expect.objectContaining({
+        id: "bad-optional-plugin",
+        action: "skipUnsupported",
+        blocked: false,
+      }),
+      expect.objectContaining({
+        id: "future-optional",
+        action: "skipUnsupported",
+        blocked: false,
+      }),
+    ]);
+  });
+
+  it("carries unsupported required artifacts into blocked apply actions", () => {
+    const parsed = parseClawManifest({
+      ...baseManifest,
+      entries: [
+        {
+          kind: "plugin",
+          id: "bad-plugin",
+          selector: "registry.example.com/plugin.tgz",
+        },
+      ],
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) {
+      throw new Error("expected manifest to parse");
+    }
+
+    const applyPlan = buildClawApplyPlan(buildClawPlan({ manifest: parsed.manifest }));
+
+    expect(applyPlan.summary).toMatchObject({
+      installActions: 0,
+      blockedEntries: 1,
+      rollbackActions: 0,
+    });
+    expect(applyPlan.entries[0]).toMatchObject({
+      id: "bad-plugin",
+      phase: "unsupported",
+      action: "skipUnsupported",
+      blocked: true,
+      rollback: { action: "none" },
+    });
   });
 });

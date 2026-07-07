@@ -198,6 +198,78 @@ describe("claws cli", () => {
     expect(mocks.logs).toContain("Unsupported required entries: 1");
   });
 
+  it("builds a dry-run JSON apply plan", async () => {
+    const manifestPath = await writeManifest({
+      schemaVersion: "openclaw.claw.v1",
+      id: "starter",
+      name: "Starter",
+      version: "1.0.0",
+      entries: [
+        {
+          kind: "plugin",
+          id: "example-plugin",
+          selector: "npm:@openclaw/plugin-example@1.0.0",
+        },
+        {
+          kind: "workspaceFile",
+          id: "soul",
+          path: "SOUL.md",
+          source: "files/SOUL.md",
+        },
+      ],
+    });
+
+    await runCli(["claws", "apply", manifestPath, "--dry-run", "--json"]);
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledOnce();
+    expect(mocks.runtime.writeJson.mock.calls[0][0]).toMatchObject({
+      schemaVersion: "openclaw.clawApplyPlan.v1",
+      dryRun: true,
+      mutationAllowed: false,
+      summary: { totalEntries: 2, installActions: 2, consentRequired: 1 },
+      entries: [
+        {
+          id: "example-plugin",
+          action: "installArtifact",
+          rollback: { action: "uninstallArtifact" },
+        },
+        { id: "soul", action: "writeWorkspaceFile", consentRequired: true },
+      ],
+    });
+  });
+
+  it("requires --dry-run before apply can preview lifecycle actions", async () => {
+    const manifestPath = await writeManifest({
+      schemaVersion: "openclaw.claw.v1",
+      id: "starter",
+      name: "Starter",
+      version: "1.0.0",
+      entries: [],
+    });
+
+    await runCli(["claws", "apply", manifestPath]);
+
+    expect(mocks.runtime.error).toHaveBeenCalledWith(
+      "Claw apply is dry-run only in this OpenClaw build; pass --dry-run to preview lifecycle actions.",
+    );
+    expect(mocks.runtime.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("builds a dry-run JSON apply plan from a feed entry", async () => {
+    const feedPath = await writeFeedWorkspace();
+
+    await runCli(["claws", "feed", "apply", feedPath, "starter", "--dry-run", "--json"]);
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledOnce();
+    expect(mocks.runtime.writeJson.mock.calls[0][0]).toMatchObject({
+      schemaVersion: "openclaw.clawApplyPlan.v1",
+      dryRun: true,
+      mutationAllowed: false,
+      feed: { id: "local-starters", entry: { id: "starter" } },
+      summary: { totalEntries: 1, consentRequired: 1, rollbackActions: 1 },
+    });
+  });
+
   it("prints JSON inspection for a local claw feed", async () => {
     const feedPath = await writeFeedWorkspace();
 

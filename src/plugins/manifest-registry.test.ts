@@ -2118,26 +2118,26 @@ describe("loadPluginManifestRegistry", () => {
   it("preserves qa runner descriptors from plugin manifests", () => {
     const dir = makeTempDir();
     writeManifest(dir, {
-      id: "qa-matrix",
+      id: "qa-example",
       qaRunners: [
         {
-          commandName: "matrix",
-          description: "Run the Matrix live QA lane",
+          commandName: "example",
+          description: "Run the example live QA lane",
         },
       ],
       configSchema: { type: "object" },
     });
 
     const registry = loadSingleCandidateRegistry({
-      idHint: "qa-matrix",
+      idHint: "qa-example",
       rootDir: dir,
       origin: "bundled",
     });
 
     expect(registry.plugins[0]?.qaRunners).toEqual([
       {
-        commandName: "matrix",
-        description: "Run the Matrix live QA lane",
+        commandName: "example",
+        description: "Run the example live QA lane",
       },
     ]);
   });

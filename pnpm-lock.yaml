@@ -1401,22 +1401,6 @@ importers:
         specifier: workspace:*
         version: link:../..
 
-  extensions/qa-matrix:
-    dependencies:
-      undici:
-        specifier: 8.5.0
-        version: 8.5.0
-    devDependencies:
-      '@openclaw/matrix':
-        specifier: workspace:*
-        version: link:../matrix
-      '@openclaw/plugin-sdk':
-        specifier: workspace:*
-        version: link:../../packages/plugin-sdk
-      openclaw:
-        specifier: workspace:*
-        version: link:../..
-
   extensions/qianfan:
     devDependencies:
       '@openclaw/plugin-sdk':

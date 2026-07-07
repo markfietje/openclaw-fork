@@ -16,7 +16,7 @@ regressions for real-world provider/model bugs.
 **QA stack (qa-lab, qa-channel, live transport lanes)** is documented separately:
 
 - [QA overview](/concepts/qa-e2e-automation) - architecture, command surface, scenario authoring.
-- [Matrix QA](/concepts/qa-matrix) - reference for `pnpm openclaw qa matrix`.
+- [QA Lab Matrix](/concepts/qa-live-matrix) - reference for `pnpm openclaw qa matrix`.
 - [Maturity scorecard](/maturity/scorecard) - how release QA evidence supports stability and LTS decisions.
 - [QA channel](/channels/qa-channel) - the synthetic transport plugin used by repo-backed scenarios.
 
@@ -165,13 +165,13 @@ checks keep exhaustive live/Docker soak behind `run_release_soak=true`; the
 `full` profile forces soak on. `QA-Lab - All Lanes` runs nightly on `main` and
 from manual dispatch with the mock parity lane, live Matrix lane,
 Convex-managed live Telegram lane, and Convex-managed live Discord lane as
-parallel jobs. Scheduled QA and release checks pass Matrix `--profile fast`
-explicitly, while the Matrix CLI and manual workflow input default remains
-`all`; manual dispatch can shard `all` into `transport`, `media`,
-`e2ee-smoke`, `e2ee-deep`, and `e2ee-cli` jobs. `OpenClaw Release Checks` runs
-parity plus the fast Matrix and Telegram lanes before release approval, using
-`mock-openai/gpt-5.5` for release transport checks so they stay deterministic
-and avoid normal provider-plugin startup. These live transport gateways
+parallel jobs. Scheduled QA and release checks run the canonical Matrix release
+profile through the shared live adapter. The Matrix CLI and manual workflow
+input default remain `all`; manual dispatch can select `all`, `fast`, `release`,
+or `transport` through the same unified job. `OpenClaw Release Checks` runs
+parity plus the canonical Matrix live-adapter profile and Telegram lane before release approval. Release
+transport checks use `mock-openai/gpt-5.5` so they stay deterministic and avoid
+normal provider-plugin startup. These live transport gateways
 disable memory search; memory behavior stays covered by the QA parity suites.
 
 Full release live media shards use
@@ -396,11 +396,11 @@ gh workflow run package-acceptance.yml --ref main \
   - Starts only the local AIMock provider server for direct protocol smoke
     testing.
 - `pnpm openclaw qa matrix`
-  - Runs the Matrix live QA lane against a disposable Docker-backed Tuwunel
-    homeserver. Source-checkout only - packaged installs do not ship
-    `qa-lab`.
-  - Full CLI, profile/scenario catalog, env vars, and artifact layout:
-    [Matrix QA](/concepts/qa-matrix).
+  - Selects Matrix scenarios in the shared QA Lab suite host and runs them
+    through the live adapter against a disposable Docker-backed Tuwunel
+    homeserver. Source-checkout only - packaged installs do not ship `qa-lab`.
+  - CLI profiles, lifecycle ownership, and artifact layout:
+    [QA Lab Matrix](/concepts/qa-live-matrix).
 - `pnpm openclaw qa telegram`
   - Runs the Telegram live QA lane against a real private group using the
     driver and SUT bot tokens from env.

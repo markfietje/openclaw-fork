@@ -1009,8 +1009,9 @@ sessionId})`; create, branch, continue, list, and fork flows live in their
   on their existing private credential-file boundary.
 - Matrix sync cache state moved from `bot-storage.json` to SQLite plugin
   state. Doctor imports legacy raw or wrapped sync payloads and removes the
-  source file. Active Matrix and QA Matrix clients pass a SQLite sync-store root
-  directory, not a fake `sync-store.json` or `bot-storage.json` path.
+  source file. Active Matrix and QA Lab Matrix adapter clients pass a SQLite
+  sync-store root directory, not a fake `sync-store.json` or `bot-storage.json`
+  path.
 - Matrix legacy crypto migration status moved from
   `legacy-crypto-migration.json` to SQLite plugin state. Doctor imports the
   old status file; Matrix SDK IndexedDB snapshots moved from
@@ -2029,10 +2030,7 @@ restore` validates before extraction, uses the verifier's normalized
   Matrix sync state now uses the SQLite plugin-state store directly. Active
   client/runtime contracts pass an account storage root, not a `bot-storage.json`
   path, and doctor imports legacy `bot-storage.json` into SQLite before deleting
-  the source. QA Matrix restart/destructive scenarios now mutate the SQLite sync
-  row directly instead of creating or deleting fake `bot-storage.json` files, and
-  the E2EE substrate passes a sync-store root instead of a fake
-  `sync-store.json` path.
+  the source. The QA Lab Matrix adapter passes that same sync-store root.
   Matrix storage-root selection no longer scores roots by legacy sync/thread JSON
   files; it uses durable root metadata plus real crypto state.
   The runtime SQLite session backend test suite no longer fabricates a

@@ -160,6 +160,7 @@ export type QaSuiteCommandOptions = QaScenarioRunCommandOptions & {
   preflight?: boolean;
   runtimePair?: string;
   runtimeParityTier?: string[];
+  sutAccountId?: string;
 };
 
 function normalizeQaSuiteChannelDriver(
@@ -1023,6 +1024,7 @@ export async function runQaSuiteCommand(opts: QaSuiteCommandOptions) {
             channelId: liveChannelId,
             adapterOptions: {
               repoRoot,
+              sutAccountId: opts.sutAccountId,
             },
           }
         : {}),

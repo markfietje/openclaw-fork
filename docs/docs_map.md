@@ -2734,21 +2734,16 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Reporting
   - H2: Related docs
 
-## concepts/qa-matrix.md
+## concepts/qa-live-matrix.md
 
-- Route: /concepts/qa-matrix
+- Route: /concepts/qa-live-matrix
 - Headings:
   - H2: Quick start
-  - H2: What the lane does
-  - H2: CLI
-  - H3: Common flags
-  - H3: Provider flags
   - H2: Profiles
-  - H2: Scenarios
-  - H2: Environment variables
+  - H2: CLI flags
+  - H2: Lifecycle ownership
   - H2: Output artifacts
-  - H2: Triage tips
-  - H2: Live transport contract
+  - H2: Workflow use
   - H2: Related
 
 ## concepts/queue-steering.md
@@ -6546,14 +6541,6 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Route: /plugins/reference/qa-lab
 - Headings:
   - H1: QA Lab plugin
-  - H2: Distribution
-  - H2: Surface
-
-## plugins/reference/qa-matrix.md
-
-- Route: /plugins/reference/qa-matrix
-- Headings:
-  - H1: QA Matrix plugin
   - H2: Distribution
   - H2: Surface
 

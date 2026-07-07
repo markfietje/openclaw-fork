@@ -13,7 +13,7 @@ scenario:
   docsRefs:
     - docs/channels/matrix.md
   codeRefs:
-    - extensions/qa-matrix/src/adapter.runtime.ts
+    - extensions/qa-lab/src/live-transports/matrix/adapter.runtime.ts
   execution:
     kind: flow
     channel: matrix
@@ -52,7 +52,7 @@ flow:
           value:
             expr: "`MATRIX_QA_GROUP_RELOAD_ACCEPTED_${randomUUID().slice(0, 8).toUpperCase()}`"
         - sendInbound:
-            conversation: { id: qa-matrix-room, kind: group }
+            conversation: { id: qa-lab-matrix-room, kind: group }
             senderId: observer
             senderName: QA Observer
             text:
@@ -83,7 +83,7 @@ flow:
           value:
             expr: "`MATRIX_QA_GROUP_RELOAD_REMOVED_${randomUUID().slice(0, 8).toUpperCase()}`"
         - sendInbound:
-            conversation: { id: qa-matrix-room, kind: group }
+            conversation: { id: qa-lab-matrix-room, kind: group }
             senderId: observer
             senderName: QA Observer
             text:

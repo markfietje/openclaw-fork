@@ -15,9 +15,8 @@ Pieces:
 
 - `extensions/qa-channel`: synthetic message channel with DM, channel, thread,
   reaction, edit, and delete surfaces.
-- `extensions/qa-lab`: debugger UI and QA bus for observing the transcript,
-  injecting inbound messages, and exporting a Markdown report.
-- `extensions/qa-matrix`: live-transport adapter that drives the real Matrix
+- `extensions/qa-lab`: debugger UI, QA bus, live transport adapters, and
+  transport-owned scenario profiles. Its Matrix adapter drives the real Matrix
   plugin inside a child QA gateway.
 - `qa/`: repo-backed seed assets for the kickoff task and baseline QA
   scenarios.
@@ -48,14 +47,13 @@ script aliases; both forms work.
 | `qa mock-openai`                                    | Start only the scenario-aware `mock-openai` provider server.                                                                                                                                                                                                        |
 | `qa credentials doctor` / `add` / `list` / `remove` | Manage the shared Convex credential pool.                                                                                                                                                                                                                           |
 | `qa discord`                                        | Live transport lane against a real private Discord guild channel.                                                                                                                                                                                                   |
-| `qa matrix`                                         | Live transport lane against a disposable Tuwunel homeserver. See [Matrix QA](/concepts/qa-matrix).                                                                                                                                                                  |
+| `qa matrix`                                         | QA Lab Matrix profiles against a disposable Tuwunel homeserver. See [QA Lab Matrix](/concepts/qa-live-matrix).                                                                                                                                                      |
 | `qa slack`                                          | Live transport lane against a real private Slack channel.                                                                                                                                                                                                           |
 | `qa telegram`                                       | Live transport lane against a real private Telegram group.                                                                                                                                                                                                          |
 | `qa whatsapp`                                       | Live transport lane against real WhatsApp Web accounts.                                                                                                                                                                                                             |
 | `qa mantis`                                         | Before/after verification runner for live transport bugs, with Discord status-reactions evidence, Crabbox desktop/browser smoke, and Slack-in-VNC smoke. See [Mantis](/concepts/mantis) and [Mantis Slack Desktop Runbook](/concepts/mantis-slack-desktop-runbook). |
 
-`qa matrix` is registered as a runner plugin (`extensions/qa-matrix`); every
-other lane above is built into `qa-lab` directly.
+Every lane above is built into `qa-lab` directly.
 
 ### Profile-backed `qa run`
 
@@ -131,7 +129,7 @@ when the QA Lab asset hash changes.
 
 <Note>
 Observability QA stays source-checkout only. The npm tarball intentionally
-omits QA Lab (and `qa-channel`/`qa-matrix`), so package Docker release lanes
+omits QA Lab (and `qa-channel`), so package Docker release lanes
 do not run `qa` commands. Run these from a built source checkout when
 changing diagnostics instrumentation.
 </Note>
@@ -166,12 +164,26 @@ tokens, or local paths.
 
 ### Matrix smoke lanes
 
-For a transport-real Matrix smoke lane that does not require model-provider
-credentials, run the fast profile with the deterministic mock OpenAI provider:
+Release validation runs the parity-proven canonical Matrix flows through the
+shared live adapter:
 
 ```bash
-OPENCLAW_QA_MATRIX_NO_REPLY_WINDOW_MS=3000 \
-  pnpm openclaw qa matrix --provider-mode mock-openai --profile fast --fail-fast
+pnpm openclaw qa suite \
+  --channel-driver live \
+  --channel matrix \
+  --provider-mode mock-openai \
+  --model mock-openai/gpt-5.5 \
+  --alt-model mock-openai/gpt-5.5-alt \
+  --fast
+```
+
+`qa matrix` is a focused selector over that same suite host and live adapter.
+For a transport-real smoke lane that does not require model-provider
+credentials, run the release profile with the deterministic mock OpenAI
+provider:
+
+```bash
+pnpm openclaw qa matrix --provider-mode mock-openai --profile release
 ```
 
 For the live-frontier provider lane, supply OpenAI-compatible credentials
@@ -179,33 +191,21 @@ explicitly:
 
 ```bash
 OPENCLAW_LIVE_OPENAI_KEY="${OPENAI_API_KEY}" \
-OPENCLAW_QA_MATRIX_NO_REPLY_WINDOW_MS=3000 \
-  pnpm openclaw qa matrix --provider-mode live-frontier --profile fast --fail-fast
+  pnpm openclaw qa matrix --provider-mode live-frontier --profile release
 ```
 
-The full CLI reference, profile/scenario catalog, env vars, and artifact
-layout for this lane live in [Matrix QA](/concepts/qa-matrix). At a glance: it
-provisions a disposable Tuwunel homeserver in Docker, registers temporary
-driver/SUT/observer users, runs the real Matrix plugin inside a child QA
-gateway scoped to that transport (no `qa-channel`), then writes a Markdown
-report, JSON summary, observed-events artifact, and combined output log under
-`.artifacts/qa-e2e/matrix-<timestamp>/`.
+The full CLI reference and exact profile mapping live in
+[QA Lab Matrix](/concepts/qa-live-matrix). The adapter provisions a disposable
+Tuwunel homeserver, registers temporary driver/SUT/observer users, runs the real
+Matrix plugin inside a child QA gateway, and writes the standard QA Lab suite
+report, summary, and evidence artifacts. The maintained scenarios cover channel
+baseline, allowlist hot reload, restart resume, replay dedupe, and post-restart
+room continuation.
 
-The scenarios cover transport behavior that unit tests cannot prove end to
-end: mention gating, allow-bot policies, allowlists, top-level and threaded
-replies, DM routing, reaction handling, inbound edit suppression, restart
-replay dedupe, homeserver interruption recovery, approval metadata delivery,
-media handling, and Matrix E2EE bootstrap/recovery/verification flows. The
-E2EE CLI profile also drives `openclaw matrix encryption setup` and
-verification commands through the same disposable homeserver before checking
-gateway replies.
-
-CI uses the same command surface in
-`.github/workflows/qa-live-transports-convex.yml`. Scheduled and default
-manual runs execute the fast Matrix profile with QA-provided live-frontier
-credentials, `--fast`, and `OPENCLAW_QA_MATRIX_NO_REPLY_WINDOW_MS=3000`.
-Manual `matrix_profile=all` fans out into five profile shards: `transport`,
-`media`, `e2ee-smoke`, `e2ee-deep`, and `e2ee-cli`.
+CI uses the focused selector in `.github/workflows/qa-live-transports-convex.yml`.
+Scheduled and release runs execute the canonical release scenarios. Manual
+dispatch can select `all`, `fast`, `release`, or `transport` through the same
+unified job.
 
 ### Discord Mantis scenarios
 
@@ -396,7 +396,7 @@ guest can write back through the mounted workspace.
 
 ## Discord, Slack, Telegram, and WhatsApp QA reference
 
-Matrix has a [dedicated page](/concepts/qa-matrix) because of its scenario
+Matrix has a [dedicated page](/concepts/qa-live-matrix) because of its scenario
 count and Docker-backed homeserver provisioning. Discord, Slack, Telegram,
 and WhatsApp run against pre-existing real transports, so their reference
 lives here.
@@ -1266,7 +1266,7 @@ When no candidate `--model` is passed, the character eval defaults to
 
 ## Related docs
 
-- [Matrix QA](/concepts/qa-matrix)
+- [QA Lab Matrix](/concepts/qa-live-matrix)
 - [Maturity scorecard](/maturity/scorecard)
 - [Personal agent benchmark pack](/concepts/personal-agent-benchmark-pack)
 - [QA Channel](/channels/qa-channel)

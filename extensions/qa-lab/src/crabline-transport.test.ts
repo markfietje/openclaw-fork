@@ -650,7 +650,7 @@ describe("crabline transport", () => {
           endpoints: { clientApiRoot: string };
         };
         const { response, release } = await fetchWithSsrFGuard({
-          url: `${manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(providerRoomId)}/send/m.room.message/qa-matrix-send`,
+          url: `${manifest.endpoints.clientApiRoot}/rooms/${encodeURIComponent(providerRoomId)}/send/m.room.message/qa-lab-matrix-send`,
           init: {
             body: JSON.stringify({ body: "assistant via fake matrix", msgtype: "m.text" }),
             headers: {

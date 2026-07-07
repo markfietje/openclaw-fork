@@ -148,15 +148,15 @@ describe("startOneShotDiagnosticsExporters", () => {
     vi.useFakeTimers();
     try {
       mockRegistryWithServices(["diagnostics-otel"]);
-      startPluginServices.mockResolvedValue({
-        stop: vi.fn(() => new Promise<void>(() => {})),
-      });
+      const servicesStop = vi.fn(() => new Promise<void>(() => {}));
+      startPluginServices.mockResolvedValue({ stop: servicesStop });
 
       const handle = await startOneShotDiagnosticsExporters({ config: otelEnabledConfig });
       const stopPromise = handle?.stop();
       await vi.advanceTimersByTimeAsync(10_000);
 
       await expect(stopPromise).resolves.toBeUndefined();
+      expect(servicesStop).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

@@ -482,7 +482,7 @@ function buildDisabledAppsConfigPatch(): JsonObject {
 function buildEnabledAppConfig(
   policy: {
     allowDestructiveActions: boolean;
-    destructiveApprovalMode: CodexPluginDestructiveApprovalMode;
+    destructiveApprovalMode?: CodexPluginDestructiveApprovalMode;
   },
   tools?: Record<string, boolean>,
 ): JsonObject {

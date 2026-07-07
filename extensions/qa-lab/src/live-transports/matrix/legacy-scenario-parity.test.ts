@@ -570,7 +570,8 @@ describe("retired qa-matrix scenario parity ledger", () => {
 
   it("keeps stronger current-owner coverage for every non-migrated maintained behavior", () => {
     for (const entry of LEGACY_MATRIX_SCENARIO_DISPOSITIONS) {
-      expect(entry.status === "migrated").toBe(Boolean(entry.targetId));
+      const targetId = "targetId" in entry ? entry.targetId : undefined;
+      expect(entry.status === "migrated").toBe(Boolean(targetId));
       if (entry.status !== "covered") {
         continue;
       }

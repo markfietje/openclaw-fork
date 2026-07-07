@@ -1,9 +1,15 @@
 // Runtime handlers for local Claws CLI commands.
 import { resolve } from "node:path";
+import { readClawFeedFile, readClawManifestFromFeed } from "../claws/feed.js";
 import { buildClawPlan } from "../claws/plan.js";
 import { readClawManifestFile } from "../claws/reader.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
-import type { ClawsInspectOptions, ClawsPlanOptions } from "./claws-cli.js";
+import type {
+  ClawsFeedInspectOptions,
+  ClawsFeedPlanOptions,
+  ClawsInspectOptions,
+  ClawsPlanOptions,
+} from "./claws-cli.js";
 
 type DiagnosticLike = { level: string; code: string; path: string; message: string };
 
@@ -87,5 +93,90 @@ export async function runClawsPlanCommand(
   runtime.log(`Requires consent later: ${plan.summary.requiresConsent}`);
   if (plan.summary.unsupportedOptionalEntries > 0) {
     runtime.log(`Unsupported optional entries: ${plan.summary.unsupportedOptionalEntries}`);
+  }
+}
+
+export async function runClawsFeedInspectCommand(
+  feedPath: string,
+  opts: ClawsFeedInspectOptions,
+  runtime: RuntimeEnv = defaultRuntime,
+): Promise<void> {
+  const result = await readClawFeedFile(feedPath);
+  if (!result.ok) {
+    if (opts.json) {
+      writeRuntimeJson(runtime, { valid: false, diagnostics: result.diagnostics });
+    } else {
+      runtime.error(formatDiagnostics(result.diagnostics));
+    }
+    runtime.exit(1);
+    return;
+  }
+
+  const payload = {
+    valid: true,
+    sourcePath: resolve(feedPath),
+    feed: result.feed,
+    diagnostics: result.diagnostics,
+  };
+
+  if (opts.json) {
+    writeRuntimeJson(runtime, payload);
+    return;
+  }
+
+  runtime.log(`Claw feed: ${result.feed.name} (${result.feed.id})`);
+  runtime.log(`Entries: ${result.feed.entries.length}`);
+  if (result.diagnostics.length > 0) {
+    runtime.log(formatDiagnostics(result.diagnostics));
+  }
+}
+
+export async function runClawsFeedPlanCommand(
+  feedPath: string,
+  clawId: string,
+  opts: ClawsFeedPlanOptions,
+  runtime: RuntimeEnv = defaultRuntime,
+): Promise<void> {
+  const result = await readClawManifestFromFeed({ feedPath, entryId: clawId });
+  if (!result.ok) {
+    if (opts.json) {
+      writeRuntimeJson(runtime, { valid: false, diagnostics: result.diagnostics });
+    } else {
+      runtime.error(formatDiagnostics(result.diagnostics));
+    }
+    runtime.exit(1);
+    return;
+  }
+
+  const plan = buildClawPlan({
+    manifest: result.manifest,
+    diagnostics: result.diagnostics,
+    sourcePath: result.manifestPath,
+  });
+  const payload = {
+    ...plan,
+    feed: {
+      id: result.feed.id,
+      name: result.feed.name,
+      sourcePath: resolve(feedPath),
+      entry: result.entry,
+    },
+  };
+
+  if (opts.json) {
+    writeRuntimeJson(runtime, payload);
+    return;
+  }
+
+  runtime.log(`Claw plan: ${plan.claw.name} (${plan.claw.id}@${plan.claw.version})`);
+  runtime.log(`Feed: ${result.feed.name} (${result.feed.id})`);
+  runtime.log("Read-only: true");
+  runtime.log(`Entries: ${plan.summary.totalEntries}`);
+  runtime.log(`Requires consent later: ${plan.summary.requiresConsent}`);
+  if (plan.summary.unsupportedOptionalEntries > 0) {
+    runtime.log(`Unsupported optional entries: ${plan.summary.unsupportedOptionalEntries}`);
+  }
+  if (result.diagnostics.length > 0) {
+    runtime.log(formatDiagnostics(result.diagnostics));
   }
 }

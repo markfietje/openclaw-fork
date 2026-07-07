@@ -45,38 +45,34 @@ async function writeFeedWorkspace(params?: {
   manifest?: unknown;
 }): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "openclaw-claws-cli-feed-"));
-  const manifest =
-    params?.manifest ??
-    {
-      schemaVersion: "openclaw.claw.v1",
-      id: "starter",
-      name: "Starter",
-      version: "1.0.0",
-      entries: [
-        {
-          kind: "workspaceFile",
-          id: "soul",
-          path: "SOUL.md",
-          source: "files/SOUL.md",
-        },
-      ],
-    };
-  const feed =
-    params?.feed ??
-    {
-      schemaVersion: "openclaw.clawFeed.v1",
-      id: "local-starters",
-      name: "Local Starters",
-      entries: [
-        {
-          id: "starter",
-          name: "Starter",
-          version: "1.0.0",
-          source: "starter.claw.json",
-          owner: { type: "publisher", id: "openclaw.examples" },
-        },
-      ],
-    };
+  const manifest = params?.manifest ?? {
+    schemaVersion: "openclaw.claw.v1",
+    id: "starter",
+    name: "Starter",
+    version: "1.0.0",
+    entries: [
+      {
+        kind: "workspaceFile",
+        id: "soul",
+        path: "SOUL.md",
+        source: "files/SOUL.md",
+      },
+    ],
+  };
+  const feed = params?.feed ?? {
+    schemaVersion: "openclaw.clawFeed.v1",
+    id: "local-starters",
+    name: "Local Starters",
+    entries: [
+      {
+        id: "starter",
+        name: "Starter",
+        version: "1.0.0",
+        source: "starter.claw.json",
+        owner: { type: "publisher", id: "openclaw.examples" },
+      },
+    ],
+  };
   await writeFile(join(dir, "starter.claw.json"), JSON.stringify(manifest), "utf8");
   const feedPath = join(dir, "claws.feed.json");
   await writeFile(feedPath, JSON.stringify(feed), "utf8");
@@ -158,6 +154,48 @@ describe("claws cli", () => {
       summary: { totalEntries: 1, requiresConsent: 1 },
       entries: [{ id: "soul", decision: "requiresConsent" }],
     });
+  });
+
+  it("prints unsupported required entries in local text plans", async () => {
+    const manifestPath = await writeManifest({
+      schemaVersion: "openclaw.claw.v1",
+      id: "starter",
+      name: "Starter",
+      version: "1.0.0",
+      entries: [
+        {
+          kind: "plugin",
+          id: "bad-plugin",
+          selector: "registry.example.com/plugin.tgz",
+        },
+      ],
+    });
+
+    await runCli(["claws", "plan", manifestPath]);
+
+    expect(mocks.logs).toContain("Unsupported required entries: 1");
+  });
+
+  it("prints unsupported required entries in feed text plans", async () => {
+    const feedPath = await writeFeedWorkspace({
+      manifest: {
+        schemaVersion: "openclaw.claw.v1",
+        id: "starter",
+        name: "Starter",
+        version: "1.0.0",
+        entries: [
+          {
+            kind: "plugin",
+            id: "bad-plugin",
+            selector: "registry.example.com/plugin.tgz",
+          },
+        ],
+      },
+    });
+
+    await runCli(["claws", "feed", "plan", feedPath, "starter"]);
+
+    expect(mocks.logs).toContain("Unsupported required entries: 1");
   });
 
   it("prints JSON inspection for a local claw feed", async () => {

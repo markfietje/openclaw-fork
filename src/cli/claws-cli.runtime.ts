@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { readClawFeedFile, readClawManifestFromFeed } from "../claws/feed.js";
 import { buildClawPlan } from "../claws/plan.js";
 import { readClawManifestFile } from "../claws/reader.js";
+import type { ClawPlan } from "../claws/types.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import type {
   ClawsFeedInspectOptions,
@@ -20,6 +21,18 @@ function formatDiagnostics(diagnostics: DiagnosticLike[]): string {
         `${diagnostic.level.toUpperCase()} ${diagnostic.code} ${diagnostic.path}: ${diagnostic.message}`,
     )
     .join("\n");
+}
+
+function logClawPlanSummary(plan: ClawPlan, runtime: RuntimeEnv): void {
+  runtime.log("Read-only: true");
+  runtime.log(`Entries: ${plan.summary.totalEntries}`);
+  runtime.log(`Requires consent later: ${plan.summary.requiresConsent}`);
+  if (plan.summary.unsupportedRequiredEntries > 0) {
+    runtime.log(`Unsupported required entries: ${plan.summary.unsupportedRequiredEntries}`);
+  }
+  if (plan.summary.unsupportedOptionalEntries > 0) {
+    runtime.log(`Unsupported optional entries: ${plan.summary.unsupportedOptionalEntries}`);
+  }
 }
 
 export async function runClawsInspectCommand(
@@ -88,12 +101,7 @@ export async function runClawsPlanCommand(
   }
 
   runtime.log(`Claw plan: ${plan.claw.name} (${plan.claw.id}@${plan.claw.version})`);
-  runtime.log("Read-only: true");
-  runtime.log(`Entries: ${plan.summary.totalEntries}`);
-  runtime.log(`Requires consent later: ${plan.summary.requiresConsent}`);
-  if (plan.summary.unsupportedOptionalEntries > 0) {
-    runtime.log(`Unsupported optional entries: ${plan.summary.unsupportedOptionalEntries}`);
-  }
+  logClawPlanSummary(plan, runtime);
 }
 
 export async function runClawsFeedInspectCommand(
@@ -170,12 +178,7 @@ export async function runClawsFeedPlanCommand(
 
   runtime.log(`Claw plan: ${plan.claw.name} (${plan.claw.id}@${plan.claw.version})`);
   runtime.log(`Feed: ${result.feed.name} (${result.feed.id})`);
-  runtime.log("Read-only: true");
-  runtime.log(`Entries: ${plan.summary.totalEntries}`);
-  runtime.log(`Requires consent later: ${plan.summary.requiresConsent}`);
-  if (plan.summary.unsupportedOptionalEntries > 0) {
-    runtime.log(`Unsupported optional entries: ${plan.summary.unsupportedOptionalEntries}`);
-  }
+  logClawPlanSummary(plan, runtime);
   if (result.diagnostics.length > 0) {
     runtime.log(formatDiagnostics(result.diagnostics));
   }

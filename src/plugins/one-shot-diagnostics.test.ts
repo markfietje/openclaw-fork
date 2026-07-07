@@ -64,6 +64,7 @@ describe("startOneShotDiagnosticsExporters", () => {
         config: otelEnabledConfig,
         onlyPluginIds: ["diagnostics-otel"],
         activate: false,
+        preferBuiltPluginArtifacts: true,
       }),
     );
     expect(startPluginServices).toHaveBeenCalledTimes(1);

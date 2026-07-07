@@ -40,6 +40,49 @@ async function writeManifest(value: unknown): Promise<string> {
   return path;
 }
 
+async function writeFeedWorkspace(params?: {
+  feed?: unknown;
+  manifest?: unknown;
+}): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "openclaw-claws-cli-feed-"));
+  const manifest =
+    params?.manifest ??
+    {
+      schemaVersion: "openclaw.claw.v1",
+      id: "starter",
+      name: "Starter",
+      version: "1.0.0",
+      entries: [
+        {
+          kind: "workspaceFile",
+          id: "soul",
+          path: "SOUL.md",
+          source: "files/SOUL.md",
+        },
+      ],
+    };
+  const feed =
+    params?.feed ??
+    {
+      schemaVersion: "openclaw.clawFeed.v1",
+      id: "local-starters",
+      name: "Local Starters",
+      entries: [
+        {
+          id: "starter",
+          name: "Starter",
+          version: "1.0.0",
+          source: "starter.claw.json",
+          owner: { type: "publisher", id: "openclaw.examples" },
+        },
+      ],
+    };
+  await writeFile(join(dir, "starter.claw.json"), JSON.stringify(manifest), "utf8");
+  const feedPath = join(dir, "claws.feed.json");
+  await writeFile(feedPath, JSON.stringify(feed), "utf8");
+  return feedPath;
+}
+
 async function runCli(args: string[]) {
   const program = new Command();
   program.exitOverride();
@@ -115,6 +158,63 @@ describe("claws cli", () => {
       summary: { totalEntries: 1, requiresConsent: 1 },
       entries: [{ id: "soul", decision: "requiresConsent" }],
     });
+  });
+
+  it("prints JSON inspection for a local claw feed", async () => {
+    const feedPath = await writeFeedWorkspace();
+
+    await runCli(["claws", "feed", "inspect", feedPath, "--json"]);
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledOnce();
+    expect(mocks.runtime.writeJson.mock.calls[0][0]).toMatchObject({
+      valid: true,
+      feed: {
+        id: "local-starters",
+        entries: [{ id: "starter", owner: { type: "publisher" } }],
+      },
+    });
+  });
+
+  it("builds a read-only JSON plan from a feed entry", async () => {
+    const feedPath = await writeFeedWorkspace();
+
+    await runCli(["claws", "feed", "plan", feedPath, "starter", "--json"]);
+
+    expect(mocks.runtime.writeJson).toHaveBeenCalledOnce();
+    expect(mocks.runtime.writeJson.mock.calls[0][0]).toMatchObject({
+      schemaVersion: "openclaw.clawPlan.v1",
+      readOnly: true,
+      feed: {
+        id: "local-starters",
+        entry: { id: "starter" },
+      },
+      summary: { totalEntries: 1, requiresConsent: 1 },
+    });
+  });
+
+  it("exits non-zero for invalid feed sources", async () => {
+    const feedPath = await writeFeedWorkspace({
+      feed: {
+        schemaVersion: "openclaw.clawFeed.v1",
+        id: "local-starters",
+        name: "Local Starters",
+        entries: [
+          {
+            id: "starter",
+            name: "Starter",
+            version: "1.0.0",
+            source: "https://clawhub.ai/claws/starter.json",
+            owner: { type: "publisher", id: "openclaw.examples" },
+          },
+        ],
+      },
+    });
+
+    await runCli(["claws", "feed", "plan", feedPath, "starter"]);
+
+    expect(mocks.runtime.error).toHaveBeenCalled();
+    expect(mocks.errors.join("\n")).toContain("unsupported_feed_source");
+    expect(mocks.runtime.exit).toHaveBeenCalledWith(1);
   });
 
   it("exits non-zero for invalid manifests", async () => {

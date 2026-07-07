@@ -2,9 +2,11 @@
 
 export const CLAW_SCHEMA_VERSION = "openclaw.claw.v1" as const;
 export const CLAW_PLAN_SCHEMA_VERSION = "openclaw.clawPlan.v1" as const;
+export const CLAW_FEED_SCHEMA_VERSION = "openclaw.clawFeed.v1" as const;
 
 export type ClawSchemaVersion = typeof CLAW_SCHEMA_VERSION;
 export type ClawPlanSchemaVersion = typeof CLAW_PLAN_SCHEMA_VERSION;
+export type ClawFeedSchemaVersion = typeof CLAW_FEED_SCHEMA_VERSION;
 
 export type ClawDiagnosticLevel = "error" | "warning";
 
@@ -58,6 +60,61 @@ export type ClawUnknownEntry = {
   required?: boolean;
   description?: string;
 };
+
+export type ClawFeedOwner = {
+  type: "publisher" | "clawhub" | "local";
+  id: string;
+};
+
+export type ClawFeedTrustLevel = "unknown" | "source" | "verified";
+
+export type ClawFeedEntry = {
+  id: string;
+  name: string;
+  version: string;
+  source: string;
+  publisher?: string;
+  description?: string;
+  owner?: ClawFeedOwner;
+  trust?: {
+    level: ClawFeedTrustLevel;
+  };
+};
+
+export type ClawFeed = {
+  schemaVersion: ClawFeedSchemaVersion;
+  id: string;
+  name: string;
+  publisher?: string;
+  description?: string;
+  generatedAt?: string;
+  entries: ClawFeedEntry[];
+};
+
+export type ClawFeedReadResult =
+  | {
+      ok: true;
+      feed: ClawFeed;
+      diagnostics: ClawDiagnostic[];
+    }
+  | {
+      ok: false;
+      diagnostics: ClawDiagnostic[];
+    };
+
+export type ClawFeedManifestReadResult =
+  | {
+      ok: true;
+      feed: ClawFeed;
+      entry: ClawFeedEntry;
+      manifest: ClawManifest;
+      manifestPath: string;
+      diagnostics: ClawDiagnostic[];
+    }
+  | {
+      ok: false;
+      diagnostics: ClawDiagnostic[];
+    };
 
 export type ClawManifest = {
   schemaVersion: ClawSchemaVersion;

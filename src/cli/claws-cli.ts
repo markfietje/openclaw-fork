@@ -10,6 +10,14 @@ export type ClawsPlanOptions = {
   json?: boolean;
 };
 
+export type ClawsFeedInspectOptions = {
+  json?: boolean;
+};
+
+export type ClawsFeedPlanOptions = {
+  json?: boolean;
+};
+
 export function registerClawsCli(program: Command) {
   const claws = program.command("claws").description("Inspect and plan OpenClaw Claws");
 
@@ -32,6 +40,31 @@ export function registerClawsCli(program: Command) {
       const { runClawsPlanCommand } = await import("./claws-cli.runtime.js");
       await runClawsPlanCommand(manifest, opts);
     });
+
+  const feed = claws.command("feed").description("Inspect and plan Claws from a local feed");
+
+  feed
+    .command("inspect")
+    .description("Validate and summarize a local claw feed")
+    .argument("<feed>", "Path to an openclaw.clawFeed.v1 JSON feed")
+    .option("--json", "Print JSON", false)
+    .action(async (feedPath: string, opts: ClawsFeedInspectOptions) => {
+      const { runClawsFeedInspectCommand } = await import("./claws-cli.runtime.js");
+      await runClawsFeedInspectCommand(feedPath, opts);
+    });
+
+  feed
+    .command("plan")
+    .description("Build a read-only claw lifecycle plan from a feed entry")
+    .argument("<feed>", "Path to an openclaw.clawFeed.v1 JSON feed")
+    .argument("<claw>", "Claw feed entry id")
+    .option("--json", "Print JSON", false)
+    .action(async (feedPath: string, claw: string, opts: ClawsFeedPlanOptions) => {
+      const { runClawsFeedPlanCommand } = await import("./claws-cli.runtime.js");
+      await runClawsFeedPlanCommand(feedPath, claw, opts);
+    });
+
+  applyParentDefaultHelpAction(feed);
 
   applyParentDefaultHelpAction(claws);
 }

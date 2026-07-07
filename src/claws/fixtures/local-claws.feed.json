@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "openclaw.clawFeed.v1",
+  "id": "local-starter-claws",
+  "name": "Local Starter Claws",
+  "publisher": "openclaw.examples",
+  "description": "Local feed fixture for read-only Claw discovery and planning.",
+  "generatedAt": "2026-07-07T00:00:00.000Z",
+  "entries": [
+    {
+      "id": "incident-response",
+      "name": "Incident Response",
+      "version": "1.0.0",
+      "publisher": "openclaw.examples",
+      "description": "Starter claw for triage, workspace context, and response automation.",
+      "source": "incident-response.claw.json",
+      "owner": {
+        "type": "publisher",
+        "id": "openclaw.examples"
+      },
+      "trust": {
+        "level": "source"
+      }
+    }
+  ]
+}

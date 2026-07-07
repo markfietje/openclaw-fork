@@ -23,13 +23,13 @@ import type {
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { buildMatrixQaMessageContent } from "../substrate/client.js";
+import { buildMatrixQaMessageContent } from "../../live-transports/matrix/substrate/client.js";
 import {
   findMatrixQaObservedEventMatch,
   normalizeMatrixQaObservedEvent,
-} from "../substrate/events.js";
-import type { MatrixQaObservedEvent } from "../substrate/events.js";
-import type { MatrixQaRoomEventWaitResult } from "../substrate/sync.js";
+} from "../../live-transports/matrix/substrate/events.js";
+import type { MatrixQaObservedEvent } from "../../live-transports/matrix/substrate/events.js";
+import type { MatrixQaRoomEventWaitResult } from "../../live-transports/matrix/substrate/sync.js";
 
 type MatrixQaE2eeActorId = "driver" | "observer" | `driver-${string}` | `cli-${string}`;
 

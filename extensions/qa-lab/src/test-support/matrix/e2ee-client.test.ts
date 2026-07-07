@@ -1,4 +1,4 @@
-// QA Lab tests cover e2ee client plugin behavior.
+// QA Lab tests cover Matrix e2ee client plugin behavior.
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { testing } from "./e2ee-client.js";

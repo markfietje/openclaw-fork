@@ -125,6 +125,25 @@ describe("startOneShotDiagnosticsExporters", () => {
     await expect(handle?.stop()).resolves.toBeUndefined();
   });
 
+  it("bounds a hung diagnostic-event drain before stopping services", async () => {
+    vi.useFakeTimers();
+    try {
+      mockRegistryWithServices(["diagnostics-otel"]);
+      const servicesStop = vi.fn(async () => {});
+      startPluginServices.mockResolvedValue({ stop: servicesStop });
+      waitForDiagnosticEventsDrained.mockImplementation(() => new Promise<void>(() => {}));
+
+      const handle = await startOneShotDiagnosticsExporters({ config: otelEnabledConfig });
+      const stopPromise = handle?.stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await expect(stopPromise).resolves.toBeUndefined();
+      expect(servicesStop).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds the flush with a timeout so a hung exporter cannot block exit", async () => {
     vi.useFakeTimers();
     try {

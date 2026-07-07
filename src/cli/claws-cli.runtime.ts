@@ -4,15 +4,13 @@ import { readClawFeedFile, readClawManifestFromFeed } from "../claws/feed.js";
 import { buildClawApplyPlan } from "../claws/lifecycle.js";
 import { buildClawPlan } from "../claws/plan.js";
 import { readClawManifestFile } from "../claws/reader.js";
-import type { ClawApplyPlan, ClawPlan } from "../claws/types.js";
+import type { ClawApplyPlan } from "../claws/types.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import type {
   ClawsApplyOptions,
   ClawsFeedApplyOptions,
   ClawsFeedInspectOptions,
-  ClawsFeedPlanOptions,
   ClawsInspectOptions,
-  ClawsPlanOptions,
 } from "./claws-cli.js";
 
 type DiagnosticLike = { level: string; code: string; path: string; message: string };
@@ -24,18 +22,6 @@ function formatDiagnostics(diagnostics: DiagnosticLike[]): string {
         `${diagnostic.level.toUpperCase()} ${diagnostic.code} ${diagnostic.path}: ${diagnostic.message}`,
     )
     .join("\n");
-}
-
-function logClawPlanSummary(plan: ClawPlan, runtime: RuntimeEnv): void {
-  runtime.log("Read-only: true");
-  runtime.log(`Entries: ${plan.summary.totalEntries}`);
-  runtime.log(`Requires consent later: ${plan.summary.requiresConsent}`);
-  if (plan.summary.unsupportedRequiredEntries > 0) {
-    runtime.log(`Unsupported required entries: ${plan.summary.unsupportedRequiredEntries}`);
-  }
-  if (plan.summary.unsupportedOptionalEntries > 0) {
-    runtime.log(`Unsupported optional entries: ${plan.summary.unsupportedOptionalEntries}`);
-  }
 }
 
 function logClawApplyPlanSummary(plan: ClawApplyPlan, runtime: RuntimeEnv): void {
@@ -102,37 +88,6 @@ export async function runClawsInspectCommand(
   if (result.diagnostics.length > 0) {
     runtime.log(formatDiagnostics(result.diagnostics));
   }
-}
-
-export async function runClawsPlanCommand(
-  manifestPath: string,
-  opts: ClawsPlanOptions,
-  runtime: RuntimeEnv = defaultRuntime,
-): Promise<void> {
-  const result = await readClawManifestFile(manifestPath);
-  if (!result.ok) {
-    if (opts.json) {
-      writeRuntimeJson(runtime, { valid: false, diagnostics: result.diagnostics });
-    } else {
-      runtime.error(formatDiagnostics(result.diagnostics));
-    }
-    runtime.exit(1);
-    return;
-  }
-
-  const plan = buildClawPlan({
-    manifest: result.manifest,
-    diagnostics: result.diagnostics,
-    sourcePath: resolve(manifestPath),
-  });
-
-  if (opts.json) {
-    writeRuntimeJson(runtime, plan);
-    return;
-  }
-
-  runtime.log(`Claw plan: ${plan.claw.name} (${plan.claw.id}@${plan.claw.version})`);
-  logClawPlanSummary(plan, runtime);
 }
 
 export async function runClawsApplyCommand(
@@ -202,51 +157,6 @@ export async function runClawsFeedInspectCommand(
 
   runtime.log(`Claw feed: ${result.feed.name} (${result.feed.id})`);
   runtime.log(`Entries: ${result.feed.entries.length}`);
-  if (result.diagnostics.length > 0) {
-    runtime.log(formatDiagnostics(result.diagnostics));
-  }
-}
-
-export async function runClawsFeedPlanCommand(
-  feedPath: string,
-  clawId: string,
-  opts: ClawsFeedPlanOptions,
-  runtime: RuntimeEnv = defaultRuntime,
-): Promise<void> {
-  const result = await readClawManifestFromFeed({ feedPath, entryId: clawId });
-  if (!result.ok) {
-    if (opts.json) {
-      writeRuntimeJson(runtime, { valid: false, diagnostics: result.diagnostics });
-    } else {
-      runtime.error(formatDiagnostics(result.diagnostics));
-    }
-    runtime.exit(1);
-    return;
-  }
-
-  const plan = buildClawPlan({
-    manifest: result.manifest,
-    diagnostics: result.diagnostics,
-    sourcePath: result.manifestPath,
-  });
-  const payload = {
-    ...plan,
-    feed: {
-      id: result.feed.id,
-      name: result.feed.name,
-      sourcePath: resolve(feedPath),
-      entry: result.entry,
-    },
-  };
-
-  if (opts.json) {
-    writeRuntimeJson(runtime, payload);
-    return;
-  }
-
-  runtime.log(`Claw plan: ${plan.claw.name} (${plan.claw.id}@${plan.claw.version})`);
-  runtime.log(`Feed: ${result.feed.name} (${result.feed.id})`);
-  logClawPlanSummary(plan, runtime);
   if (result.diagnostics.length > 0) {
     runtime.log(formatDiagnostics(result.diagnostics));
   }

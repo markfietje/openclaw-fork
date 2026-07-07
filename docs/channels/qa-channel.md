@@ -91,7 +91,7 @@ Builds the QA site, starts the Docker-backed gateway + QA Lab stack, and prints 
 ## Related
 
 - [QA overview](/concepts/qa-e2e-automation) - overall stack, transport adapters, scenario authoring
-- [QA Lab Matrix](/concepts/qa-live-matrix) - live adapter and focused profiles that drive a real channel through the shared suite host
+- [QA overview](/concepts/qa-e2e-automation#matrix-smoke-lanes) - Matrix live adapter and focused profiles that drive a real channel through the shared suite host
 - [Pairing](/channels/pairing)
 - [Groups](/channels/groups)
 - [Channels overview](/channels)

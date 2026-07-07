@@ -1447,7 +1447,7 @@ describe("package artifact reuse", () => {
     }
   });
 
-  it("routes release Matrix through the canonical QA Lab selector", () => {
+  it("routes release Matrix through the QA Lab selector", () => {
     const releaseWorkflow = readFileSync(RELEASE_CHECKS_WORKFLOW, "utf8");
     const qaWorkflow = readFileSync(".github/workflows/qa-live-transports-convex.yml", "utf8");
     const releaseJob = workflowJob(RELEASE_CHECKS_WORKFLOW, "qa_live_release_checks");

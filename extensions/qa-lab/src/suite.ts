@@ -457,31 +457,33 @@ async function runScenarioDefinition(
       {
         name: execution.summary ?? scenario.title,
         run: async () => {
-          let timeout: NodeJS.Timeout | undefined;
-          const result = await Promise.race([
+          const run = () =>
             runTransportScenario({
               config: execution.config ?? {},
               gateway: env.gateway,
               outputDir: env.outputDir,
               scenarioId: scenario.id,
               timeoutMs: execution.timeoutMs,
-            }),
-            new Promise<never>((_, reject) => {
-              timeout = setTimeout(
-                () =>
-                  reject(
-                    new Error(
-                      `transport scenario ${scenario.id} timed out after ${execution.timeoutMs}ms`,
-                    ),
-                  ),
-                execution.timeoutMs,
-              );
-            }),
-          ]).finally(() => {
-            if (timeout) {
-              clearTimeout(timeout);
-            }
-          });
+            });
+          const result =
+            env.transport.scenarioTimeoutOwner === "adapter"
+              ? await run()
+              : await new Promise<Awaited<ReturnType<typeof runTransportScenario>>>(
+                  (resolve, reject) => {
+                    const timeout = setTimeout(
+                      () =>
+                        reject(
+                          new Error(
+                            `transport scenario ${scenario.id} timed out after ${execution.timeoutMs}ms`,
+                          ),
+                        ),
+                      execution.timeoutMs,
+                    );
+                    void run()
+                      .then(resolve, reject)
+                      .finally(() => clearTimeout(timeout));
+                  },
+                );
           return (
             result.details ??
             (result.artifacts ? JSON.stringify(result.artifacts, null, 2) : undefined)

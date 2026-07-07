@@ -11,7 +11,7 @@ scenario:
       Matrix-specific assertions.
   docsRefs:
     - docs/channels/matrix.md
-    - docs/concepts/qa-live-matrix.md
+    - docs/concepts/qa-e2e-automation.md
   codeRefs:
     - extensions/qa-lab/src/live-transports/matrix/scenarios/scenario-runtime.ts
   execution:
@@ -34,4 +34,3 @@ scenario:
               - sut
             name: Matrix QA Membership Room
             requireMention: true
-

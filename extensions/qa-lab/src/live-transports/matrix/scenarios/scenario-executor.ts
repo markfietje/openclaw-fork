@@ -1,4 +1,4 @@
-// QA Lab Matrix scenarios execute transport-owned behavior through the canonical suite host.
+// QA Lab Matrix scenarios execute transport-owned behavior through the shared suite host.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";

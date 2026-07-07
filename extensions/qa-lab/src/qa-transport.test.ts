@@ -23,6 +23,7 @@ describe("createQaStateBackedTransportAdapter", () => {
       accountId: "sut",
       requiredPluginIds: [],
       scenarioRetryCount: 0,
+      scenarioTimeoutOwner: "adapter",
       supportedActions: [],
       resetTransport,
       sendInbound: async (input) => state.addInboundMessage(input),
@@ -42,6 +43,7 @@ describe("createQaStateBackedTransportAdapter", () => {
 
     expect(resetTransport).toHaveBeenCalledOnce();
     expect(adapter.scenarioRetryCount).toBe(0);
+    expect(adapter.scenarioTimeoutOwner).toBe("adapter");
     expect(state.getSnapshot().messages).toHaveLength(0);
   });
 });

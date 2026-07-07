@@ -450,9 +450,9 @@ default is the fast release path. Use explicit profiles:
 
 - `--profile fast|release`: focused release-critical scenarios
 - `--profile transport|all`: every maintained Matrix scenario
-- repeated `--scenario <id>` flags: explicit canonical scenario selection
+- repeated `--scenario <id>` flags: explicit scenario selection
 
-The selector delegates to the canonical QA Lab suite host through the Matrix
+The selector delegates to the shared QA Lab suite host through the Matrix
 live adapter. `QA-Lab - All Lanes` and `OpenClaw Release Checks` use that same
 unified job and standard QA Lab artifacts.
 

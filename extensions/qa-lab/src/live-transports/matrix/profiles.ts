@@ -236,7 +236,9 @@ export function resolveMatrixQaScenarioIds(params: {
   profile?: string;
   scenarioIds?: readonly string[];
 }): string[] {
-  if (params.scenarioIds && params.scenarioIds.length > 0) return [...params.scenarioIds];
+  if (params.scenarioIds && params.scenarioIds.length > 0) {
+    return [...params.scenarioIds];
+  }
   const profile = params.profile?.trim() || "all";
   if (!(profile in MATRIX_QA_PROFILE_SCENARIO_IDS)) {
     throw new Error(

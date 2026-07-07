@@ -6,7 +6,7 @@ on:
   workflow_call:
     outputs:
       matrix_status:
-        description: Canonical Matrix release profile status
+        description: Matrix release profile status
         value: ${{ jobs.run_live_matrix.outputs.status }}
     inputs:
       ref:

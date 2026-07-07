@@ -5,7 +5,7 @@ import { readQaScenarioById } from "../../scenario-catalog.js";
 
 type LegacyMatrixScenarioDisposition = {
   category:
-    | "canonical-replacement"
+    | "qa-lab-replacement"
     | "native-e2ee"
     | "native-lifecycle-approval"
     | "portable-flow-current-adapter"
@@ -349,7 +349,7 @@ const LEGACY_MATRIX_SCENARIO_DISPOSITIONS = [
   },
   {
     legacyId: "matrix-mention-gating",
-    category: "canonical-replacement",
+    category: "qa-lab-replacement",
     status: "migrated",
     targetId: "channel-mention-gating",
   },
@@ -412,7 +412,7 @@ const LEGACY_MATRIX_SCENARIO_DISPOSITIONS = [
   },
   {
     legacyId: "matrix-allowlist-block",
-    category: "canonical-replacement",
+    category: "qa-lab-replacement",
     status: "migrated",
     targetId: "channel-sender-allowlist",
   },
@@ -557,7 +557,7 @@ describe("retired qa-matrix scenario migration ledger", () => {
     expect(new Set(legacyIds).size).toBe(94);
   });
 
-  it("keeps every completed migration attached to a canonical QA Lab scenario", () => {
+  it("keeps every completed migration attached to a QA Lab scenario", () => {
     const migrated = LEGACY_MATRIX_SCENARIO_DISPOSITIONS.filter(
       (entry) => entry.status === "migrated",
     );
@@ -568,7 +568,7 @@ describe("retired qa-matrix scenario migration ledger", () => {
     }
   });
 
-  it("now attaches every legacy behavior to a canonical QA Lab scenario", () => {
+  it("now attaches every legacy behavior to a QA Lab scenario", () => {
     for (const entry of LEGACY_MATRIX_SCENARIO_DISPOSITIONS) {
       const targetId = "targetId" in entry && entry.targetId ? entry.targetId : entry.legacyId;
       expect(readQaScenarioById(targetId).id, entry.legacyId).toBe(targetId);

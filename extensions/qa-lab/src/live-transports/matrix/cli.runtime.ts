@@ -1,4 +1,4 @@
-// Qa Lab Matrix delegates CLI profile selection into the canonical suite host.
+// QA Lab Matrix delegates CLI profile selection into the shared suite host.
 import { runQaSuiteCommand } from "../../cli.runtime.js";
 import { normalizeQaProviderMode } from "../../run-config.js";
 import type { LiveTransportQaCommandOptions } from "../shared/live-transport-cli.js";

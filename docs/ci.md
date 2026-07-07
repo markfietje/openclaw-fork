@@ -510,7 +510,7 @@ QA Lab has dedicated CI lanes outside the main smart-scoped workflow. Agentic pa
 
 Release checks run Matrix and Telegram live transport lanes with the deterministic mock provider and mock-qualified models (`mock-openai/gpt-5.5` and `mock-openai/gpt-5.5-alt`) so the channel contract is isolated from live model latency and normal provider-plugin startup. The live transport gateway disables memory search because QA parity covers memory behavior separately; provider connectivity is covered by the separate live model, native provider, and Docker provider suites.
 
-Scheduled and release Matrix gates use the canonical QA Lab suite host and live adapter with the release scenarios. The CLI default and manual workflow input remain `all`; manual dispatch selects `all`, `fast`, `release`, or `transport` in the same unified job. There is no Matrix-only runner or sharded execution path.
+Scheduled and release Matrix gates use the shared QA Lab suite host and live adapter with the release scenarios. The CLI default and manual workflow input remain `all`; manual dispatch selects `all`, `fast`, `release`, or `transport` in the same unified job. There is no Matrix-only runner or sharded execution path.
 
 `OpenClaw Release Checks` also runs the release-critical QA Lab lanes before release approval; its QA parity gate runs the candidate and baseline packs as parallel lane jobs, then downloads both artifacts into a small report job for the final parity comparison.
 

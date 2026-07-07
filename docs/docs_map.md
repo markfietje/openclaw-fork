@@ -2745,18 +2745,6 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H2: Reporting
   - H2: Related docs
 
-## concepts/qa-live-matrix.md
-
-- Route: /concepts/qa-live-matrix
-- Headings:
-  - H2: Quick start
-  - H2: Profiles
-  - H2: CLI flags
-  - H2: Lifecycle ownership
-  - H2: Output artifacts
-  - H2: Workflow use
-  - H2: Related
-
 ## concepts/queue-steering.md
 
 - Route: /concepts/queue-steering

@@ -47,13 +47,11 @@ script aliases; both forms work.
 | `qa mock-openai`                                    | Start only the scenario-aware `mock-openai` provider server.                                                                                                                                                                                                        |
 | `qa credentials doctor` / `add` / `list` / `remove` | Manage the shared Convex credential pool.                                                                                                                                                                                                                           |
 | `qa discord`                                        | Live transport lane against a real private Discord guild channel.                                                                                                                                                                                                   |
-| `qa matrix`                                         | QA Lab Matrix profiles against a disposable Tuwunel homeserver. See [QA Lab Matrix](/concepts/qa-live-matrix).                                                                                                                                                      |
+| `qa matrix`                                         | QA Lab Matrix profiles against a disposable Tuwunel homeserver through the shared live adapter.                                                                                                                                                                     |
 | `qa slack`                                          | Live transport lane against a real private Slack channel.                                                                                                                                                                                                           |
 | `qa telegram`                                       | Live transport lane against a real private Telegram group.                                                                                                                                                                                                          |
 | `qa whatsapp`                                       | Live transport lane against real WhatsApp Web accounts.                                                                                                                                                                                                             |
 | `qa mantis`                                         | Before/after verification runner for live transport bugs, with Discord status-reactions evidence, Crabbox desktop/browser smoke, and Slack-in-VNC smoke. See [Mantis](/concepts/mantis) and [Mantis Slack Desktop Runbook](/concepts/mantis-slack-desktop-runbook). |
-
-Every lane above is built into `qa-lab` directly.
 
 ### Profile-backed `qa run`
 
@@ -164,7 +162,7 @@ tokens, or local paths.
 
 ### Matrix smoke lanes
 
-Release validation runs the parity-proven canonical Matrix flows through the
+Release validation runs the parity-proven Matrix flows through the
 shared live adapter:
 
 ```bash
@@ -194,16 +192,40 @@ OPENCLAW_LIVE_OPENAI_KEY="${OPENAI_API_KEY}" \
   pnpm openclaw qa matrix --provider-mode live-frontier --profile release
 ```
 
-The full CLI reference and exact profile mapping live in
-[QA Lab Matrix](/concepts/qa-live-matrix). The adapter provisions a disposable
-Tuwunel homeserver, registers temporary driver/SUT/observer users, runs the real
-Matrix plugin inside a child QA gateway, and writes the standard QA Lab suite
-report, summary, and evidence artifacts. The maintained scenarios cover channel
-baseline, allowlist hot reload, restart resume, replay dedupe, and post-restart
-room continuation.
+The adapter provisions a disposable Tuwunel homeserver, registers temporary
+driver/SUT/observer users, runs the real Matrix plugin inside a child QA gateway,
+and writes the standard QA Lab suite report, summary, and evidence artifacts.
+There is no separate Matrix runner, scenario catalog, artifact format, or
+compatibility fallback.
+
+| Profile      | Count | Use                                                                                  |
+| ------------ | ----: | ------------------------------------------------------------------------------------ |
+| `release`    |     2 | Release-critical chat and allowlist hot-reload proof                                 |
+| `fast`       |    11 | Short transport, policy, approval, thread, and E2EE smoke                            |
+| `transport`  |    50 | Messaging, rooms, DMs, threads, streaming, approvals, policy, restart, and sync      |
+| `media`      |     7 | Inbound media, generated images, voice preflight, and encrypted media                |
+| `e2ee-smoke` |     8 | Encrypted messaging, bootstrap, recovery-key lifecycle, restart, and redaction       |
+| `e2ee-deep`  |    18 | Destructive crypto-state, backup, device, verification, and recovery behavior        |
+| `e2ee-cli`   |     9 | Account setup, encryption setup, recovery keys, multi-account, and self-verification |
+| `all`        |    92 | Every default legacy Matrix scenario; excludes the two explicit-only stress cases    |
+
+All 94 legacy scenario ids resolve through QA Lab. The default `all` profile
+preserves the old 92-scenario selection, while `matrix-room-block-streaming`
+and `subagent-thread-spawn` remain explicit-only. Repeat `--scenario <id>` to
+bypass profile selection. `--provider-mode` defaults to `live-frontier`; CI
+passes `mock-openai` explicitly. `--fail-fast` stops after the first failure,
+and Matrix scenarios remain sequential.
+
+Matrix-specific scenario timeout values still bound the operation they were
+defined for, including no-reply windows and lifecycle waits; the adapter owns
+those timeout semantics instead of applying the same value as a whole-scenario
+deadline. Matrix scenarios declare zero automatic retries, matching the old
+runner. Only the bounded stale-config-hash recovery retry remains. The adapter
+calls the child Gateway for Matrix actions, so the bundled Matrix plugin remains
+the behavior owner.
 
 CI uses the focused selector in `.github/workflows/qa-live-transports-convex.yml`.
-Scheduled and release runs execute the canonical release scenarios. Manual
+Scheduled and release runs execute the release scenarios. Manual
 dispatch can select `all`, `fast`, `release`, or `transport` through the same
 unified job.
 
@@ -396,10 +418,9 @@ guest can write back through the mounted workspace.
 
 ## Discord, Slack, Telegram, and WhatsApp QA reference
 
-Matrix has a [dedicated page](/concepts/qa-live-matrix) because of its scenario
-count and Docker-backed homeserver provisioning. Discord, Slack, Telegram,
-and WhatsApp run against pre-existing real transports, so their reference
-lives here.
+Discord, Slack, Telegram, and WhatsApp run against pre-existing real
+transports. Matrix uses the same QA Lab host but provisions its disposable
+homeserver through the Matrix adapter.
 
 ### Shared CLI flags
 
@@ -1269,7 +1290,6 @@ When no candidate `--model` is passed, the character eval defaults to
 
 ## Related docs
 
-- [QA Lab Matrix](/concepts/qa-live-matrix)
 - [Maturity scorecard](/maturity/scorecard)
 - [Personal agent benchmark pack](/concepts/personal-agent-benchmark-pack)
 - [QA Channel](/channels/qa-channel)

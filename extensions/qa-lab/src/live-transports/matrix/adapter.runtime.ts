@@ -278,6 +278,7 @@ export async function createMatrixQaTransportAdapter(
     accountId,
     requiredPluginIds: ["matrix"],
     scenarioRetryCount: 0,
+    scenarioTimeoutOwner: "adapter",
     supportedActions: ["delete", "edit", "react"],
     assertTransportHealthy() {
       if (pollingError) {

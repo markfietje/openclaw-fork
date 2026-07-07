@@ -360,6 +360,7 @@ export function createQaStateBackedTransportAdapter(
     ...(params.scenarioRetryCount !== undefined
       ? { scenarioRetryCount: params.scenarioRetryCount }
       : {}),
+    ...(params.scenarioTimeoutOwner ? { scenarioTimeoutOwner: params.scenarioTimeoutOwner } : {}),
     ...(params.runScenario ? { runScenario: params.runScenario } : {}),
     ...(params.cleanup ? { cleanup: params.cleanup } : {}),
   });

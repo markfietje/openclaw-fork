@@ -265,7 +265,7 @@ async function waitForMatrixQaNonEmptyRoomKeyRestore(params: {
   timeoutMs: number;
 }) {
   const startedAt = Date.now();
-  let last: Awaited<ReturnType<MatrixQaE2eeScenarioClient["restoreRoomKeyBackup"]>> | null = null;
+  let last: { imported: number; total: number } | null = null;
   while (Date.now() - startedAt < params.timeoutMs) {
     const restored = await params.client.restoreRoomKeyBackup({
       recoveryKey: params.recoveryKey,

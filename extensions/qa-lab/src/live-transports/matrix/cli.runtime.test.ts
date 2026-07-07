@@ -1,4 +1,4 @@
-// Qa Lab Matrix tests cover CLI delegation into the canonical suite host.
+// QA Lab Matrix tests cover CLI delegation into the shared suite host.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const runQaSuiteCommand = vi.hoisted(() => vi.fn());

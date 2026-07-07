@@ -10,12 +10,12 @@ import { matrixQaAdapterFactory, matrixQaCliRegistration } from "./cli.js";
 import { MATRIX_QA_ALL_SCENARIO_IDS } from "./profiles.js";
 
 describe("QA Lab Matrix CLI registration", () => {
-  it("keeps every canonical Matrix profile scenario on the live adapter", () => {
+  it("keeps every Matrix profile scenario on the live adapter", () => {
     expect(matrixQaAdapterFactory.scenarioIds).toEqual(MATRIX_QA_ALL_SCENARIO_IDS);
     expect(matrixQaAdapterFactory.scenarioIds).toHaveLength(92);
   });
 
-  it("exposes only canonical QA Lab selector flags", () => {
+  it("exposes only QA Lab selector flags", () => {
     const qa = new Command();
     matrixQaCliRegistration.register(qa);
     const matrix = qa.commands.find((command) => command.name() === "matrix");

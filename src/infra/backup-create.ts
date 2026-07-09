@@ -1,10 +1,11 @@
 // Creates backup archives while filtering volatile runtime state.
 import { randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { pipeline } from "node:stream/promises";
 import { resolveDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { loadSqliteVecExtension } from "../../packages/memory-host-sdk/src/engine-storage.js";
 import {
@@ -146,6 +147,20 @@ function sleep(ms: number): Promise<void> {
 }
 
 export type BackupTarRetryLogger = (message: string) => void;
+
+async function writeArchiveStreamToFile(params: {
+  archivePath: string;
+  archiveStream: AsyncIterable<Uint8Array> | NodeJS.ReadableStream;
+}): Promise<void> {
+  // Own both stream lifecycles so a tar read error closes the output handle
+  // before retry cleanup touches the partial archive.
+  // Exclusive creation guarantees the 0600 mode belongs to a fresh inode and
+  // refuses a pre-existing temp path instead of following a symlink.
+  await pipeline(
+    params.archiveStream,
+    createWriteStream(params.archivePath, { flags: "wx", mode: 0o600 }),
+  );
+}
 
 async function writeTarArchiveWithRetry(params: {
   tempArchivePath: string;
@@ -837,9 +852,8 @@ export async function createBackupArchive(
         // cumulative skip counts across attempts instead of the final one.
         skippedVolatileCount = 0;
         unexpectedSqliteSourcePaths.length = 0;
-        await tar.c(
+        const archiveStream = tar.c(
           {
-            file: tempArchivePath,
             gzip: true,
             portable: true,
             preservePaths: true,
@@ -860,6 +874,10 @@ export async function createBackupArchive(
             ...result.assets.map((asset) => asset.sourcePath),
           ],
         );
+        await writeArchiveStreamToFile({
+          archivePath: tempArchivePath,
+          archiveStream,
+        });
         const unexpectedSqliteSourcePath = unexpectedSqliteSourcePaths[0];
         if (unexpectedSqliteSourcePath) {
           throw new Error(

@@ -477,7 +477,9 @@ async function refreshRemoteNodeBinsUncoalesced(params: {
 }) {
   const readinessDelayMs = params.readinessDelayMs ?? 0;
   if (readinessDelayMs > 0) {
-    await new Promise<void>((resolve) => setTimeout(resolve, readinessDelayMs));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, readinessDelayMs);
+    });
   }
   if (!remoteRegistry) {
     return;

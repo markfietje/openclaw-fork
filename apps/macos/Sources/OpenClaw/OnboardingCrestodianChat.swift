@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import OpenClawIPC
 import SwiftUI
 
 /// Onboarding talks to Crestodian over the gateway `crestodian.chat` RPC.

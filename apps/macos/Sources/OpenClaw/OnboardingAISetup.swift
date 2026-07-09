@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import OpenClawIPC
 import SwiftUI
 
 /// Structured "Connect your AI" onboarding step.

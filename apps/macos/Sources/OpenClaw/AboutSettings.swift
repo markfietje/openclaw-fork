@@ -117,9 +117,7 @@ struct AboutSettings: View {
 
     private var buildTimestamp: String? {
         guard
-            let raw =
-            (Bundle.main.object(forInfoDictionaryKey: "OpenClawBuildTimestamp") as? String) ??
-            (Bundle.main.object(forInfoDictionaryKey: "OpenClawBuildTimestamp") as? String)
+            let raw = Bundle.main.object(forInfoDictionaryKey: "OpenClawBuildTimestamp") as? String
         else { return nil }
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime]
@@ -134,12 +132,7 @@ struct AboutSettings: View {
 
     private var gitCommit: String {
         (Bundle.main.object(forInfoDictionaryKey: "OpenClawGitCommit") as? String) ??
-            (Bundle.main.object(forInfoDictionaryKey: "OpenClawGitCommit") as? String) ??
             "unknown"
-    }
-
-    private var bundleID: String {
-        Bundle.main.bundleIdentifier ?? "unknown"
     }
 
     private var buildSuffix: String {

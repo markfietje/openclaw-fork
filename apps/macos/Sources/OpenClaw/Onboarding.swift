@@ -2,7 +2,6 @@ import AppKit
 import Observation
 import OpenClawChatUI
 import OpenClawDiscovery
-import OpenClawIPC
 import SwiftUI
 
 enum UIStrings {

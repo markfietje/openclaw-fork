@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { NodeRegistry } from "../../gateway/node-registry.js";
 import { getSkillsSnapshotVersion, resetSkillsRefreshForTest } from "./refresh.js";
@@ -56,6 +56,8 @@ function recordRemoteMacWithSystemWhich(nodeId: string): void {
 describe("skills-remote", () => {
   afterEach(() => {
     setSkillsRemoteRegistry(null);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("removes disconnected nodes from remote skill eligibility", () => {
@@ -455,6 +457,145 @@ describe("skills-remote", () => {
 
       await Promise.all([first, second]);
       expect(invokeCount).toBe(1);
+    } finally {
+      removeRemoteNodeInfo(nodeId);
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses a successful probe after reconnect and invalidates the skills snapshot", async () => {
+    await resetSkillsRefreshForTest();
+    const nodeId = `node-${randomUUID()}`;
+    const bin = `bin-${randomUUID()}`;
+    const { cfg, workspaceDir } = createRemoteSkillWorkspace(bin);
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    let invokeCount = 0;
+    try {
+      setSkillsRemoteRegistry({
+        listConnected: () => [],
+        get: () => undefined,
+        invoke: async () => {
+          invokeCount += 1;
+          return { ok: true, payload: { bins: [bin] } };
+        },
+      } as unknown as NodeRegistry);
+      recordRemoteMacWithSystemWhich(nodeId);
+      await refreshRemoteNodeBins({
+        nodeId,
+        platform: "darwin",
+        commands: ["system.run", "system.which"],
+        cfg,
+      });
+
+      removeRemoteNodeInfo(nodeId);
+      recordRemoteMacWithSystemWhich(nodeId);
+      const beforeRestore = getSkillsSnapshotVersion(workspaceDir);
+      nowSpy.mockReturnValue(1_000_000 + 60_000);
+      await refreshRemoteNodeBins({
+        nodeId,
+        platform: "darwin",
+        commands: ["system.run", "system.which"],
+        cfg,
+      });
+
+      expect(invokeCount).toBe(1);
+      expect(getRemoteSkillEligibility()?.hasBin(bin)).toBe(true);
+      expect(getSkillsSnapshotVersion(workspaceDir)).toBeGreaterThan(beforeRestore);
+
+      nowSpy.mockReturnValue(1_000_000 + 30 * 60 * 1000);
+      await refreshRemoteNodeBins({
+        nodeId,
+        platform: "darwin",
+        commands: ["system.run", "system.which"],
+        cfg,
+      });
+      expect(invokeCount).toBe(2);
+    } finally {
+      removeRemoteNodeInfo(nodeId);
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("backs off failures but probes immediately when required bins change", async () => {
+    const nodeId = `node-${randomUUID()}`;
+    const firstBin = `bin-${randomUUID()}`;
+    const secondBin = `bin-${randomUUID()}`;
+    const { cfg, workspaceDir } = createRemoteSkillWorkspace(firstBin);
+    vi.spyOn(Date, "now").mockReturnValue(2_000_000);
+    let invokeCount = 0;
+    try {
+      setSkillsRemoteRegistry({
+        listConnected: () => [],
+        get: () => undefined,
+        invoke: async () => {
+          invokeCount += 1;
+          return { ok: false, error: { code: "TIMEOUT", message: "node invoke timed out" } };
+        },
+      } as unknown as NodeRegistry);
+      recordRemoteMacWithSystemWhich(nodeId);
+      const refresh = () =>
+        refreshRemoteNodeBins({
+          nodeId,
+          platform: "darwin",
+          commands: ["system.run", "system.which"],
+          cfg,
+        });
+
+      await refresh();
+      await refresh();
+      expect(invokeCount).toBe(1);
+
+      fs.writeFileSync(
+        path.join(workspaceDir, "remote-skill", "SKILL.md"),
+        [
+          "---",
+          "name: remote-skill",
+          "description: Needs remote bins",
+          `metadata: { "openclaw": { "os": ["darwin"], "requires": { "bins": ["${firstBin}", "${secondBin}"] } } }`,
+          "---",
+          "# Remote Skill",
+          "",
+        ].join("\n"),
+      );
+      await refresh();
+      expect(invokeCount).toBe(2);
+    } finally {
+      removeRemoteNodeInfo(nodeId);
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for connect readiness before connectivity preflight and bin probing", async () => {
+    vi.useFakeTimers();
+    const nodeId = `node-${randomUUID()}`;
+    const bin = `bin-${randomUUID()}`;
+    const { cfg, workspaceDir } = createRemoteSkillWorkspace(bin);
+    const checkConnectivity = vi.fn(async () => ({ ok: true as const }));
+    const invoke = vi.fn(async () => ({ ok: true as const, payload: { bins: [bin] } }));
+    try {
+      setSkillsRemoteRegistry({
+        listConnected: () => [],
+        get: () => undefined,
+        checkConnectivity,
+        invoke,
+      } as unknown as NodeRegistry);
+      recordRemoteMacWithSystemWhich(nodeId);
+
+      const refresh = refreshRemoteNodeBins({
+        nodeId,
+        platform: "darwin",
+        commands: ["system.run", "system.which"],
+        cfg,
+        readinessDelayMs: 5_000,
+      });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(checkConnectivity).not.toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await refresh;
+      expect(checkConnectivity).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledTimes(1);
     } finally {
       removeRemoteNodeInfo(nodeId);
       fs.rmSync(workspaceDir, { recursive: true, force: true });

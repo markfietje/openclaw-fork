@@ -2129,6 +2129,9 @@ export function attachGatewayWsMessageHandler(params: GatewayWsMessageHandlerPar
             deviceFamily: nodeSession.deviceFamily,
             commands: nodeSession.commands,
             cfg: getRuntimeConfig(),
+            // The node socket is registered before macOS app command handlers finish warming.
+            // Delay only the connect-time probe; later skill refreshes use the live session.
+            readinessDelayMs: 5_000,
           }).catch((err: unknown) =>
             logGateway.warn(
               `remote bin probe failed for ${nodeSession.nodeId}: ${formatForLog(err)}`,

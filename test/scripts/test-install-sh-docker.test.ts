@@ -1,6 +1,8 @@
 // Test Install Sh Docker tests cover test install sh docker script behavior.
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
@@ -15,6 +17,7 @@ const BUN_GLOBAL_ASSERTIONS_PATH = "scripts/e2e/lib/bun-global-install/assertion
 const INSTALL_SMOKE_WORKFLOW_PATH = ".github/workflows/install-smoke.yml";
 const RELEASE_CHECKS_WORKFLOW_PATH = ".github/workflows/openclaw-release-checks.yml";
 const LIVE_E2E_WORKFLOW_PATH = ".github/workflows/openclaw-live-and-e2e-checks-reusable.yml";
+const INSTALL_E2E_RUNNER_PATH = "scripts/docker/install-sh-e2e/run.sh";
 
 class ScriptExit extends Error {
   constructor(readonly status: number) {
@@ -93,7 +96,53 @@ function runDefaultSmokePlatform(env: Record<string, string>, hostArch: string):
   return result.stdout;
 }
 
+function extractInstallE2eAgentJsonParser(): string {
+  const script = readFileSync(INSTALL_E2E_RUNNER_PATH, "utf8");
+  const match = script.match(
+    /node - <<'NODE' "\$out_json"\n([\s\S]*?)\nNODE\n\}\n\nRUN_AGENT_TURN_BG_PID/u,
+  );
+  if (!match) {
+    throw new Error("install E2E agent JSON parser was not found");
+  }
+  return match[1];
+}
+
+function normalizeInstallE2eAgentOutput(output: string) {
+  const root = mkdtempSync(join(tmpdir(), "openclaw-install-e2e-agent-output-"));
+  const outputPath = join(root, "agent.json");
+  writeFileSync(outputPath, output, "utf8");
+  try {
+    const result = spawnSync(process.execPath, ["-", outputPath], {
+      encoding: "utf8",
+      input: extractInstallE2eAgentJsonParser(),
+    });
+    return {
+      output: readFileSync(outputPath, "utf8"),
+      status: result.status,
+      stderr: result.stderr,
+    };
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+}
+
 describe("test-install-sh-docker", () => {
+  it("normalizes agent JSON when structured lifecycle diagnostics follow the result", () => {
+    const payload = {
+      result: {
+        payloads: [{ text: "LEFT=RED RIGHT=GREEN" }],
+      },
+      replayInvalid: true,
+    };
+    const result = normalizeInstallE2eAgentOutput(
+      `${JSON.stringify(payload, null, 2)}\n[agent] ${JSON.stringify({ stopReason: "stop" })}\n`,
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.output)).toEqual(payload);
+  });
+
   it("defaults ARM hosts to native arm64 while keeping x64 CI on amd64", () => {
     expect(runDefaultSmokePlatform({ CI: "true" }, "aarch64")).toBe("linux/arm64");
     expect(runDefaultSmokePlatform({ GITHUB_ACTIONS: "true" }, "x86_64")).toBe("linux/amd64");

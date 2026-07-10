@@ -6,6 +6,13 @@ import {
   ClawAddMutationError,
 } from "../claws/add.js";
 import { assertExperimentalClawsEnabled } from "../claws/experimental.js";
+import {
+  applyClawRemovePlan,
+  buildClawRemovePlan,
+  CLAW_REMOVE_RESULT_SCHEMA_VERSION,
+  ClawRemoveError,
+  readClawStatus,
+} from "../claws/lifecycle-state.js";
 import { buildClawAddPlan } from "../claws/lifecycle.js";
 import { preflightClawPackage } from "../claws/packages.js";
 import { readClawInstallRecord } from "../claws/provenance.js";
@@ -23,7 +30,12 @@ import {
   resolveCronJobsStorePath,
 } from "../cron/store.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
-import type { ClawsAddOptions, ClawsInspectOptions } from "./claws-cli.js";
+import type {
+  ClawsAddOptions,
+  ClawsInspectOptions,
+  ClawsRemoveOptions,
+  ClawsStatusOptions,
+} from "./claws-cli.js";
 
 type DiagnosticLike = { level: string; code: string; path: string; message: string };
 
@@ -91,6 +103,21 @@ function failNonDryRun(opts: ClawsAddOptions, runtime: RuntimeEnv): boolean {
       ok: false,
       error: { code, message },
     });
+  } else {
+    runtime.error(message);
+  }
+  runtime.exit(1);
+  return true;
+}
+
+function requireRemoveConsent(opts: ClawsRemoveOptions, runtime: RuntimeEnv): boolean {
+  if (opts.dryRun || opts.yes) {
+    return false;
+  }
+  const message =
+    "Claw remove requires explicit consent; pass --dry-run to preview or --yes to remove owned state.";
+  if (opts.json) {
+    writeRuntimeJson(runtime, { ok: false, error: { code: "consent_required", message } });
   } else {
     runtime.error(message);
   }
@@ -276,6 +303,87 @@ export async function runClawsAddCommand(
     runtime.log(`Status: ${addResult.status}`);
   }
   if (addResult.status !== "complete") {
+    runtime.exit(1);
+  }
+}
+
+export async function runClawsStatusCommand(
+  target: string | undefined,
+  opts: ClawsStatusOptions,
+  runtime: RuntimeEnv = defaultRuntime,
+): Promise<void> {
+  assertExperimentalClawsEnabled();
+  const status = await readClawStatus(target);
+  if (opts.json) {
+    writeRuntimeJson(runtime, status);
+  } else {
+    logExperimentalWarning(runtime);
+    runtime.log(`Installed Claws: ${status.summary.claws}`);
+    for (const record of status.records) {
+      runtime.log(
+        `${record.install.agentId}: ${record.install.claw.name}@${record.install.claw.version} (${record.install.status})`,
+      );
+      runtime.log(
+        `  Agent: ${record.agentState}; files: ${record.workspaceFiles.length}; packages: ${record.packages.length}`,
+      );
+    }
+  }
+  if (target && status.records.length === 0) {
+    runtime.exit(1);
+  }
+}
+
+export async function runClawsRemoveCommand(
+  target: string,
+  opts: ClawsRemoveOptions,
+  runtime: RuntimeEnv = defaultRuntime,
+): Promise<void> {
+  assertExperimentalClawsEnabled();
+  if (requireRemoveConsent(opts, runtime)) {
+    return;
+  }
+  const plan = await buildClawRemovePlan(target);
+  if (opts.dryRun || plan.blockers.length > 0) {
+    if (opts.json) {
+      writeRuntimeJson(runtime, plan);
+    } else {
+      logExperimentalWarning(runtime);
+      runtime.log(`Remove actions: ${plan.actions.length}`);
+      if (plan.blockers.length > 0) {
+        runtime.error(plan.blockers.map((blocker) => blocker.message).join("\n"));
+      }
+    }
+    if (plan.blockers.length > 0) {
+      runtime.exit(1);
+    }
+    return;
+  }
+  try {
+    const result = await applyClawRemovePlan(plan);
+    if (opts.json) {
+      writeRuntimeJson(runtime, result);
+    } else {
+      logExperimentalWarning(runtime);
+      runtime.log(`Removed agent: ${result.agentId}`);
+      runtime.log(`Status: ${result.status}`);
+      runtime.log(`Package references released: ${result.packageRefsReleased}`);
+    }
+    if (result.status !== "complete") {
+      runtime.exit(1);
+    }
+  } catch (error) {
+    const code = error instanceof ClawRemoveError ? error.code : "remove_failed";
+    const message = error instanceof Error ? error.message : String(error);
+    if (opts.json) {
+      writeRuntimeJson(runtime, {
+        schemaVersion: CLAW_REMOVE_RESULT_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        status: "failed",
+        error: { code, message },
+      });
+    } else {
+      runtime.error(message);
+    }
     runtime.exit(1);
   }
 }

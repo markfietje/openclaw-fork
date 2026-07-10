@@ -64,8 +64,13 @@
 /docs/reference/secretref-user-supplied-credentials-matrix.json @openclaw/openclaw-secops
 
 # Release workflow and its supporting release-path checks.
+/.github/release-delta-policies/ @openclaw/openclaw-release-managers
 /.github/workflows/openclaw-npm-release.yml @openclaw/openclaw-release-managers
+/.github/workflows/release-delta-evidence.yml @openclaw/openclaw-release-managers
 /docs/reference/RELEASING.md @openclaw/openclaw-release-managers
+/scripts/lib/canonical-json.mjs @openclaw/openclaw-release-managers
+/scripts/lib/release-delta-evidence.mjs @openclaw/openclaw-release-managers
 /scripts/openclaw-npm-publish.sh @openclaw/openclaw-release-managers
 /scripts/openclaw-npm-release-check.ts @openclaw/openclaw-release-managers
+/scripts/release-delta-evidence.mjs @openclaw/openclaw-release-managers
 /scripts/release-check.ts @openclaw/openclaw-release-managers

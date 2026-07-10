@@ -24,6 +24,8 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   fails, the parent cancels the remaining child matrix and prints the failed
   job summary. Inspect that first red job instead of waiting for unrelated
   matrix tails.
+- Cross-SHA reuse requires a successful `Release Delta Evidence` artifact.
+  The manifest is read-only evidence, never publish authorization.
 - In a sparse worktree or Testbox source sync, first confirm `package.json`,
   `pnpm-lock.yaml`, and every source path the selected check reads. If any are
   absent, that checkout cannot validate a release dependency or Docker lane:
@@ -61,6 +63,39 @@ ambient env only when it was already intentionally injected for this release.
 The script prints only provider status and HTTP class, never tokens.
 The Anthropic check performs a tiny message completion so exhausted or
 non-billable credentials fail before the expensive release matrix.
+
+## Delta Evidence
+
+The v1 workflow is deliberately limited to beta candidates whose only changed
+path is `CHANGELOG.md`. Use `.github/workflows/release-delta-evidence.yml` only
+with a reviewed policy under `.github/release-delta-policies/`. Pass exact run,
+job, and artifact ids. The workflow verifies:
+
+- the policy source is an ancestor of the exact target branch tip
+- every linear delta commit has valid GitHub signature verification
+- allowed changed paths plus deterministic diff, tree, and filtered-tree hashes
+- source Full Release Validation through the existing strict v3 validator
+- exact Full Release Validation lane-selection inputs and blocking performance
+  controls
+- fresh evidence for impacted gates and direct source evidence only for
+  unaffected gates
+- trusted-main lineage for FRV/generic workflows, release-ref candidate identity
+  for npm gates, and exact successful first-attempt run/job/artifact tuples
+- bounded archives whose complete member inventory matches policy
+
+`CHANGELOG.md` may be excluded from product-tree equivalence, but it ships in
+the root npm tarball. A changelog delta therefore requires a fresh exact-target
+root-package gate even when product, Docker, performance, install, and provider
+evidence remains reusable. The manifest computes `rawRootTarballEqual` for
+audit only. It derives the root and dependency package set from each
+`preflight-manifest.json`, verifies release tag/SHA/version/dist-tag and every
+tarball hash, rejects unlisted `.tgz` members, and requires dependency bytes to
+match between source and target.
+
+The manifest has `publicationPerformed: false`. Publish workflows must not
+accept it as permission to mutate tags, registries, releases, or images. Until
+a consumer is separately reviewed, keep the run-and-attempt-scoped upload as an
+operator evidence artifact.
 
 ## Dispatch
 

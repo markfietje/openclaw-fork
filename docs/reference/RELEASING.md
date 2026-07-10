@@ -357,6 +357,29 @@ the same `release/*`
 ref and rerun group supersede in-progress ones automatically. Pass
 `reuse_evidence=false` to force a fresh full run.
 
+For reviewed cross-SHA reuse, `Release Delta Evidence` v1 accepts only a beta
+candidate whose exact delta is `CHANGELOG.md`. Dispatch it from trusted `main`
+with the exact target branch tip, a checked-in policy under
+`.github/release-delta-policies/`, and exact run, job, and artifact ids. Its
+canonical manifest records the signed commit chain, changed paths, diff and
+tree hashes, strict source Full Release Validation result and exact
+lane-selection inputs, source/fresh gate decisions, complete bounded artifact
+inventories, and reuse rationale. FRV and generic gates must come from
+trusted-main ancestry; source and target npm gates must execute on the release
+ref at the exact candidate SHA. Immutable artifact reads bind the exact run,
+first attempt, name, digest, size, workflow path, and workflow SHA. The manifest is
+evidence only and always records
+`publicationPerformed: false`; no publish workflow consumes it by default.
+
+A `CHANGELOG.md`-only delta may keep the filtered product tree byte-identical,
+so policy can reuse unaffected product, Docker, performance, install, and live
+provider gates. The root npm package is different because `CHANGELOG.md` is
+packed. Its root-package gate must run fresh on the exact target SHA, the
+manifest computes `rawRootTarballEqual` for audit only, and each npm artifact's
+`preflight-manifest.json` must bind the exact release tag, candidate SHA,
+package version, npm dist-tag, and complete `.tgz` package set. Dependency
+package hashes and sizes must remain identical.
+
 For bounded recovery, pass `rerun_group` to the umbrella. `all` is the real release-candidate run, `ci` runs only the normal CI child, `plugin-prerelease` runs only the release-only plugin child, `release-checks` runs every release box, and the narrower release groups are `install-smoke`, `cross-os`, `live-e2e`, `package`, `qa`, `qa-parity`, `qa-live`, and `npm-telegram`. Focused `npm-telegram` reruns require `release_package_spec` or `npm_telegram_package_spec`; full/all runs use the canonical package Telegram E2E inside Package Acceptance. Focused cross-OS reruns can add `cross_os_suite_filter=windows/packaged-upgrade` or another OS/suite filter. QA release-check failures block normal release validation, including required OpenClaw dynamic tool drift in the standard tier. Tideclaw alpha runs may still treat non-package-safety release-check lanes as advisory. With `release_profile=beta`, the `Run repo/live E2E validation` live-provider suites are advisory (warnings, not blockers); stable and full profiles keep them blocking. When `live_suite_filter` explicitly requests a gated QA live lane such as Discord, WhatsApp, or Slack, the matching `OPENCLAW_RELEASE_QA_*_LIVE_CI_ENABLED` repo variable must be enabled; otherwise input capture fails instead of silently skipping the lane.
 
 ### Vitest

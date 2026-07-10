@@ -1,0 +1,149 @@
+name: Release Delta Evidence
+
+run-name: Release Delta Evidence ${{ inputs.target_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact target branch tip to evaluate
+        required: true
+        type: string
+      policy_path:
+        description: Policy under .github/release-delta-policies/
+        required: true
+        type: string
+      evidence_runs_json:
+        description: Exact gate run, job, and artifact ids as JSON
+        required: true
+        type: string
+
+concurrency:
+  group: release-delta-evidence-${{ inputs.target_sha }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  TARGET_SHA: ${{ inputs.target_sha }}
+  POLICY_PATH: ${{ inputs.policy_path }}
+  WORKFLOW_SHA: ${{ github.workflow_sha }}
+  PRODUCER_ARTIFACT_NAME: release-delta-evidence-${{ inputs.target_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  produce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Validate inputs
+        env:
+          EVIDENCE_RUNS_JSON: ${{ inputs.evidence_runs_json }}
+          WORKFLOW_REF: ${{ github.ref }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "openclaw/openclaw" ]]
+          [[ "$WORKFLOW_REF" == "refs/heads/main" ]]
+          [[ "$RUN_ATTEMPT" == "1" ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$POLICY_PATH" =~ ^\.github/release-delta-policies/[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]]
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/release-delta-evidence.yml@refs/heads/main"
+          [[ "$GITHUB_WORKFLOW_REF" == "$expected_workflow_ref" ]]
+          producer_workflow_path="${GITHUB_WORKFLOW_REF#${GITHUB_REPOSITORY}/}"
+          producer_workflow_path="${producer_workflow_path%@*}"
+          [[ "$producer_workflow_path" == ".github/workflows/release-delta-evidence.yml" ]]
+          printf 'PRODUCER_WORKFLOW_PATH=%s\n' "$producer_workflow_path" >> "$GITHUB_ENV"
+          node -e 'JSON.parse(process.env.EVIDENCE_RUNS_JSON)'
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24.15.0
+
+      - name: Verify trusted workflow checkout
+        run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
+
+      - name: Fetch target commit
+        run: git fetch --no-tags origin "$TARGET_SHA"
+
+      - name: Write exact evidence bindings
+        env:
+          EVIDENCE_RUNS_JSON: ${{ inputs.evidence_runs_json }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          const value = JSON.parse(process.env.EVIDENCE_RUNS_JSON);
+          writeFileSync(process.env.RUNNER_TEMP + "/release-delta-runs.json", JSON.stringify(value));
+          NODE
+
+      - name: Create canonical delta manifest
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-delta-evidence.mjs create \
+            --repo "$GITHUB_REPOSITORY" \
+            --policy "$POLICY_PATH" \
+            --target-sha "$TARGET_SHA" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --producer-run-id "$GITHUB_RUN_ID" \
+            --producer-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --producer-workflow-path "$PRODUCER_WORKFLOW_PATH" \
+            --producer-workflow-ref "$GITHUB_REF" \
+            --producer-artifact-name "$PRODUCER_ARTIFACT_NAME" \
+            --evidence-runs "$RUNNER_TEMP/release-delta-runs.json" \
+            --output "$RUNNER_TEMP/release-delta-evidence.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Reverify current GitHub evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-delta-evidence.mjs verify \
+            --repo "$GITHUB_REPOSITORY" \
+            --policy "$POLICY_PATH" \
+            --target-sha "$TARGET_SHA" \
+            --workflow-sha "$WORKFLOW_SHA" \
+            --producer-run-id "$GITHUB_RUN_ID" \
+            --producer-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --producer-workflow-path "$PRODUCER_WORKFLOW_PATH" \
+            --producer-workflow-ref "$GITHUB_REF" \
+            --producer-artifact-name "$PRODUCER_ARTIFACT_NAME" \
+            --manifest "$RUNNER_TEMP/release-delta-evidence.json"
+
+      - name: Write manifest digest
+        run: |
+          printf '%s  %s\n' \
+            '${{ steps.create.outputs.manifest_sha256 }}' \
+            'release-delta-evidence.json' \
+            > "$RUNNER_TEMP/release-delta-evidence.sha256"
+
+      - name: Stage read-only delta evidence
+        env:
+          EVIDENCE_ARTIFACT_DIR: ${{ runner.temp }}/release-delta-evidence-artifact
+        run: |
+          set -euo pipefail
+          rm -rf "$EVIDENCE_ARTIFACT_DIR"
+          mkdir -p "$EVIDENCE_ARTIFACT_DIR"
+          cp -- "$RUNNER_TEMP/release-delta-evidence.json" "$EVIDENCE_ARTIFACT_DIR/"
+          cp -- "$RUNNER_TEMP/release-delta-evidence.sha256" "$EVIDENCE_ARTIFACT_DIR/"
+          cp -- "$POLICY_PATH" "$EVIDENCE_ARTIFACT_DIR/release-delta-policy.json"
+
+      - name: Upload read-only delta evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.PRODUCER_ARTIFACT_NAME }}
+          archive: true
+          if-no-files-found: error
+          retention-days: 30
+          path: ${{ runner.temp }}/release-delta-evidence-artifact

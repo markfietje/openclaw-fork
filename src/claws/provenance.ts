@@ -140,6 +140,21 @@ export function readClawInstallRecord(
   return row ? rowToInstall(row) : undefined;
 }
 
+export function readClawInstallRecords(
+  options: OpenClawStateDatabaseOptions = {},
+): PersistedClawInstall[] {
+  const database = openOpenClawStateDatabase(options);
+  const rows = database.db
+    .prepare(
+      `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
+              manifest_path, integrity, agent_id, workspace, agent_config_digest,
+              status, added_at_ms, updated_at_ms
+         FROM claw_installs
+        ORDER BY agent_id`,
+    )
+    .all() as InstallRow[];
+  return rows.map(rowToInstall);
+}
 export const CLAW_PACKAGE_REF_SCHEMA_VERSION = "openclaw.clawPackageRef.v1" as const;
 export type ClawPackageRefStatus = "pending" | "complete";
 export type ClawPackageOwnership = "claw-installed" | "preexisting";

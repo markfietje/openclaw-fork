@@ -45,6 +45,7 @@ const state = vi.hoisted(() => ({
   kickstartFailuresRemaining: 0,
   disableError: "",
   disableCode: 1,
+  disableChangesStateOnFailure: false,
   disabledOverride: null as "disabled" | "enabled" | null,
   printDisabledError: "",
   printDisabledCode: 1,
@@ -283,6 +284,9 @@ vi.mock("./exec-file.js", () => ({
     }
     if (call[0] === "disable") {
       if (state.disableError) {
+        if (state.disableChangesStateOnFailure) {
+          state.disabledOverride = "disabled";
+        }
         return { stdout: "", stderr: state.disableError, code: state.disableCode };
       }
       state.disabledOverride = "disabled";
@@ -438,6 +442,7 @@ beforeEach(() => {
   state.kickstartFailuresRemaining = 0;
   state.disableError = "";
   state.disableCode = 1;
+  state.disableChangesStateOnFailure = false;
   state.disabledOverride = null;
   state.printDisabledError = "";
   state.printDisabledCode = 1;
@@ -1597,6 +1602,25 @@ describe("launchd install", () => {
     expect(
       state.launchctlCallTimes[rollbackEnableIndex]! - state.launchctlCallTimes[firstBootoutIndex]!,
     ).toBeGreaterThan(LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS * 1_000);
+  });
+
+  it("rolls back the prior override when launchctl disable reports failure", async () => {
+    const env = createDefaultLaunchdEnv();
+    state.disableError = "disable denied";
+    state.disableChangesStateOnFailure = true;
+
+    await expect(
+      runStopLaunchAgentWithFakeTimers({ env, stdout: new PassThrough(), quiesce: true }),
+    ).rejects.toThrow("launchctl disable failed: disable denied");
+
+    expect(launchctlCommandNames()).toEqual([
+      "print",
+      "print-disabled",
+      "disable",
+      "enable",
+      "print",
+    ]);
+    expect(state.disabledOverride).toBe("enabled");
   });
 
   it("re-enables LaunchAgent when quiescence cannot prove its port was released", async () => {

@@ -27,6 +27,7 @@ Docs: https://docs.openclaw.ai
 ### Fixes
 
 - **Agent abort cleanup:** serialize prompt lock reacquisition with terminal cleanup so canceled embedded runs do not self-contend on session locks for up to 60 seconds.
+- **Managed Gateway update interruption:** quiesce persistent launchd and Scheduled Task state before package replacement, keep update signals in cleanup-owning processes, and restore the prior service state after interruption or restart failure so updates cannot strand or respawn the Gateway during mutation. Fixes #103447. (#103537)
 - **Chutes OAuth deadlines:** bound token exchange, profile lookup, and refresh requests, and keep issued tokens when optional userinfo enrichment stalls. (#102026) Thanks @Alix-007.
 - **Control UI workspace avatars:** inline validated agent avatar files in bootstrap and identity responses so Personal card images render without unauthenticated avatar-route requests, while preserving configured emoji precedence. (#102892, #97602) Thanks @LZY3538.
 - **Exec safe-bin flags:** auto-approve curated read-only boolean flags for default stdin-only filters while keeping unknown flags, tail follow/retry modes, file operands, and custom profiles fail-closed. (#88953) Thanks @yetval.

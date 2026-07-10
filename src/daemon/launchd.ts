@@ -1112,12 +1112,11 @@ async function quiesceLaunchAgentOrThrow(params: {
       disabled: initialDisabledOverride.state === "disabled",
     },
   });
-  const disable = await execLaunchctl(["disable", params.serviceTarget]);
-  if (disable.code !== 0) {
-    throw new Error(`launchctl disable failed: ${formatLaunchctlResultDetail(disable)}`);
-  }
-
   try {
+    const disable = await execLaunchctl(["disable", params.serviceTarget]);
+    if (disable.code !== 0) {
+      throw new Error(`launchctl disable failed: ${formatLaunchctlResultDetail(disable)}`);
+    }
     let lastState: LaunchAgentProbeResult | null = null;
     await requestLaunchAgentBootoutForQuiescence(params.serviceTarget);
     let bootoutAttempts = 1;

@@ -3836,11 +3836,15 @@ describe("update-cli", () => {
       serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
 
       let releaseStop: (() => void) | undefined;
+      const restoreAfterUpdateFailure = vi.fn(async () => {});
       serviceStop.mockImplementationOnce(
         async () =>
-          await new Promise<void>((resolve) => {
-            releaseStop = resolve;
-          }),
+          await new Promise<{ restoreAfterUpdateFailure: () => Promise<void> } | undefined>(
+            (resolve) => {
+              releaseStop = () =>
+                resolve(expectsLaunchAgentQuiesce ? { restoreAfterUpdateFailure } : undefined);
+            },
+          ),
       );
 
       try {
@@ -3873,9 +3877,264 @@ describe("update-cli", () => {
       expect(stopOrder).toBeLessThan(installOrder);
       const stopCall = serviceStop.mock.calls[0]?.[0] as { quiesce?: boolean } | undefined;
       expect(stopCall?.quiesce).toBe(expectsLaunchAgentQuiesce ? true : undefined);
+      expect(restoreAfterUpdateFailure).not.toHaveBeenCalled();
       expect(runRestartScript).toHaveBeenCalledWith("/tmp/openclaw-restart-test.sh");
     },
   );
+
+  it("coalesces mixed signals and restores LaunchAgent state while quiescence is pending", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const processOnSpy = vi.spyOn(process, "on");
+    const processOffSpy = vi.spyOn(process, "off");
+    const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const restoreAfterUpdateFailure = vi.fn(async () => {});
+    let finishStop: (() => void) | undefined;
+    mockPackageInstallStatus(createCaseDir("openclaw-update-quiesce-sigint"));
+    serviceReadCommand.mockResolvedValue({
+      programArguments: ["openclaw", "gateway", "run"],
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    serviceStop.mockImplementationOnce(
+      async () =>
+        await new Promise<{ restoreAfterUpdateFailure: () => Promise<void> }>((resolve) => {
+          finishStop = () => resolve({ restoreAfterUpdateFailure });
+        }),
+    );
+
+    try {
+      const updatePromise = updateCommand({ yes: true });
+      await vi.waitFor(() => expect(serviceStop).toHaveBeenCalledOnce());
+      const signalCallIndex = processOnSpy.mock.calls.findIndex(([event]) => event === "SIGINT");
+      const signalListener = processOnSpy.mock.calls[signalCallIndex]?.[1];
+      const secondSignalListener = processOnSpy.mock.calls.find(
+        ([event]) => event === "SIGTERM",
+      )?.[1];
+      if (
+        typeof signalListener !== "function" ||
+        typeof secondSignalListener !== "function" ||
+        !finishStop
+      ) {
+        throw new Error("expected armed signal recovery and pending LaunchAgent quiescence");
+      }
+      expect(
+        requireValue(
+          processOnSpy.mock.invocationCallOrder[signalCallIndex],
+          "SIGINT recovery listener order",
+        ),
+      ).toBeLessThan(
+        requireValue(serviceStop.mock.invocationCallOrder[0], "LaunchAgent stop order"),
+      );
+
+      signalListener();
+      secondSignalListener();
+      expect(restoreAfterUpdateFailure).not.toHaveBeenCalled();
+      expect(packageInstallCommandCall()).toBeUndefined();
+      finishStop();
+      await updatePromise;
+
+      expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
+      expect(packageInstallCommandCall()).toBeUndefined();
+      expect(runRestartScript).not.toHaveBeenCalled();
+      expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
+      await vi.waitFor(() => {
+        expect(processExitSpy).toHaveBeenCalledOnce();
+        expect(processExitSpy).toHaveBeenCalledWith(130);
+      });
+      expect(processOffSpy).toHaveBeenCalledWith("SIGINT", signalListener);
+      expect(processOffSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
+    } finally {
+      platformSpy.mockRestore();
+      processOnSpy.mockRestore();
+      processOffSpy.mockRestore();
+      processExitSpy.mockRestore();
+    }
+  });
+
+  it("surfaces a rejecting LaunchAgent rollback after signal during quiescence", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const processOnSpy = vi.spyOn(process, "on");
+    const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const rollbackFailure = new Error("launchd rollback failed");
+    const restoreAfterUpdateFailure = vi.fn(async () => {
+      throw rollbackFailure;
+    });
+    let finishStop: (() => void) | undefined;
+    mockPackageInstallStatus(createCaseDir("openclaw-update-quiesce-rollback-failure"));
+    serviceReadCommand.mockResolvedValue({ programArguments: ["openclaw", "gateway", "run"] });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    serviceStop.mockImplementationOnce(
+      async () =>
+        await new Promise<{ restoreAfterUpdateFailure: () => Promise<void> }>((resolve) => {
+          finishStop = () => resolve({ restoreAfterUpdateFailure });
+        }),
+    );
+
+    try {
+      const updatePromise = updateCommand({ yes: true });
+      await vi.waitFor(() => expect(serviceStop).toHaveBeenCalledOnce());
+      const signalListener = processOnSpy.mock.calls.find(([event]) => event === "SIGINT")?.[1];
+      if (typeof signalListener !== "function" || !finishStop) {
+        throw new Error("expected armed SIGINT recovery and pending LaunchAgent quiescence");
+      }
+      signalListener();
+      finishStop();
+
+      await updatePromise;
+      expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
+      expect(packageInstallCommandCall()).toBeUndefined();
+      expect(defaultRuntime.error).toHaveBeenCalledWith(
+        expect.stringContaining("launchd rollback failed"),
+      );
+      expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+    } finally {
+      platformSpy.mockRestore();
+      processOnSpy.mockRestore();
+      processExitSpy.mockRestore();
+    }
+  });
+
+  it("finishes package mutation, then rolls LaunchAgent state back on SIGTERM before restart", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const processOnSpy = vi.spyOn(process, "on");
+    const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const restoreAfterUpdateFailure = vi.fn(async () => {});
+    let finishInstall: (() => void) | undefined;
+    mockPackageInstallStatus(createCaseDir("openclaw-update-package-sigterm"));
+    serviceReadCommand.mockResolvedValue({
+      programArguments: ["openclaw", "gateway", "run"],
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    serviceStop.mockResolvedValueOnce({ restoreAfterUpdateFailure });
+    vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
+      if (argv[0] === "npm" && argv[1] === "i" && argv[2] === "-g") {
+        return await new Promise((resolve) => {
+          finishInstall = () =>
+            resolve({
+              stdout: "",
+              stderr: "",
+              code: 0,
+              signal: null,
+              killed: false,
+              termination: "exit" as const,
+            });
+        });
+      }
+      return {
+        stdout: "",
+        stderr: "",
+        code: 0,
+        signal: null,
+        killed: false,
+        termination: "exit",
+      };
+    });
+
+    try {
+      const updatePromise = updateCommand({ yes: true });
+      await vi.waitFor(() => expect(packageInstallCommandCall()).toBeDefined());
+      const signalListener = processOnSpy.mock.calls.find(([event]) => event === "SIGTERM")?.[1];
+      if (typeof signalListener !== "function" || !finishInstall) {
+        throw new Error("expected armed SIGTERM recovery and pending package mutation");
+      }
+
+      signalListener();
+      expect(restoreAfterUpdateFailure).not.toHaveBeenCalled();
+      expect(processExitSpy).not.toHaveBeenCalled();
+      expect(runRestartScript).not.toHaveBeenCalled();
+      finishInstall();
+      await updatePromise;
+
+      expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
+      expect(runRestartScript).not.toHaveBeenCalled();
+      expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
+      await vi.waitFor(() => expect(processExitSpy).toHaveBeenCalledWith(143));
+      expect(
+        requireValue(
+          restoreAfterUpdateFailure.mock.invocationCallOrder[0],
+          "LaunchAgent rollback order",
+        ),
+      ).toBeLessThan(
+        requireValue(processExitSpy.mock.invocationCallOrder[0], "SIGTERM process exit order"),
+      );
+    } finally {
+      platformSpy.mockRestore();
+      processOnSpy.mockRestore();
+      processExitSpy.mockRestore();
+    }
+  });
+
+  it("finishes fresh post-core work, then rolls LaunchAgent state back before restart", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const processOnSpy = vi.spyOn(process, "on");
+    const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const restoreAfterUpdateFailure = vi.fn(async () => {});
+    const { root } = setupUpdatedRootRefresh();
+    mockPackageInstallStatus(root);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    serviceStop.mockResolvedValueOnce({ restoreAfterUpdateFailure });
+    let finishPostCore: (() => void) | undefined;
+    spawn.mockImplementationOnce(() => {
+      const child = new EventEmitter() as EventEmitter & {
+        once: EventEmitter["once"];
+      };
+      finishPostCore = () => child.emit("exit", 0, null);
+      return child;
+    });
+
+    try {
+      const updatePromise = updateCommand({ yes: true });
+      await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+      const signalListener = processOnSpy.mock.calls.find(([event]) => event === "SIGINT")?.[1];
+      if (typeof signalListener !== "function" || !finishPostCore) {
+        throw new Error("expected armed SIGINT recovery and pending post-core process");
+      }
+
+      signalListener();
+      expect(restoreAfterUpdateFailure).not.toHaveBeenCalled();
+      expect(runRestartScript).not.toHaveBeenCalled();
+      finishPostCore();
+      await updatePromise;
+
+      expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
+      expect(runRestartScript).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(processExitSpy).toHaveBeenCalledWith(130));
+    } finally {
+      platformSpy.mockRestore();
+      processOnSpy.mockRestore();
+      processExitSpy.mockRestore();
+    }
+  });
+
+  it("disarms LaunchAgent signal rollback after a successful restart", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const processOnSpy = vi.spyOn(process, "on");
+    const processOffSpy = vi.spyOn(process, "off");
+    const restoreAfterUpdateFailure = vi.fn(async () => {});
+    mockPackageInstallStatus(createCaseDir("openclaw-update-signal-disarm"));
+    serviceReadCommand.mockResolvedValue({
+      programArguments: ["openclaw", "gateway", "run"],
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    serviceStop.mockResolvedValueOnce({ restoreAfterUpdateFailure });
+
+    try {
+      await updateCommand({ yes: true });
+      expect(restoreAfterUpdateFailure).not.toHaveBeenCalled();
+      expect(runRestartScript).toHaveBeenCalledWith("/tmp/openclaw-restart-test.sh");
+      expect(processOnSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function));
+      expect(processOnSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
+      expect(processOffSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function));
+      expect(processOffSpy).toHaveBeenCalledWith("SIGTERM", expect.any(Function));
+    } finally {
+      platformSpy.mockRestore();
+      processOnSpy.mockRestore();
+      processOffSpy.mockRestore();
+    }
+  });
 
   it("leaves Darwin quiescence rollback to the LaunchAgent owner", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
@@ -3966,6 +4225,27 @@ describe("update-cli", () => {
     expect(serviceRestart).not.toHaveBeenCalled();
   });
 
+  it("uses the LaunchAgent rollback when fresh post-core startup throws", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const restoreAfterUpdateFailure = vi.fn(async () => {});
+    const { root } = setupUpdatedRootRefresh();
+    mockPackageInstallStatus(root);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    serviceStop.mockResolvedValueOnce({ restoreAfterUpdateFailure });
+    spawn.mockImplementationOnce(() => {
+      throw new Error("post-core spawn failed");
+    });
+
+    try {
+      await expect(updateCommand({ yes: true })).rejects.toThrow("post-core spawn failed");
+    } finally {
+      platformSpy.mockRestore();
+    }
+
+    expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
+    expect(runRestartScript).not.toHaveBeenCalled();
+  });
+
   it("uses the LaunchAgent rollback when current-process plugin convergence fails", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const restoreAfterUpdateFailure = vi.fn(async () => {});
@@ -3998,6 +4278,28 @@ describe("update-cli", () => {
     expect(serviceStop).toHaveBeenCalledWith(expect.objectContaining({ quiesce: true }));
     expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
     expect(serviceRestart).not.toHaveBeenCalled();
+    expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("uses the LaunchAgent rollback when the updated Gateway restart fails", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const restoreAfterUpdateFailure = vi.fn(async () => {});
+    mockPackageInstallStatus(createCaseDir("openclaw-update-restart-failure"));
+    serviceReadCommand.mockResolvedValue({
+      programArguments: ["openclaw", "gateway", "run"],
+    });
+    serviceLoaded.mockResolvedValue(true);
+    serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    serviceStop.mockResolvedValueOnce({ restoreAfterUpdateFailure });
+    runRestartScript.mockRejectedValueOnce(new Error("restart failed"));
+
+    try {
+      await updateCommand({ yes: true });
+    } finally {
+      platformSpy.mockRestore();
+    }
+
+    expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
     expect(defaultRuntime.exit).toHaveBeenCalledWith(1);
   });
 
@@ -4183,7 +4485,7 @@ describe("update-cli", () => {
       expect(packageInstallCommandCall()).toBeUndefined();
       expect(defaultRuntime.exit).not.toHaveBeenCalledWith(1);
       await vi.waitFor(() => {
-        expect(processExitSpy).toHaveBeenCalledTimes(2);
+        expect(processExitSpy).toHaveBeenCalledOnce();
         expect(processExitSpy).toHaveBeenCalledWith(130);
       });
       platformSpy.mockRestore();
@@ -4191,6 +4493,126 @@ describe("update-cli", () => {
       processExitSpy.mockRestore();
     },
   );
+
+  it.each([
+    { suspended: true, expectedTaskRestores: 1 },
+    { suspended: false, expectedTaskRestores: 0 },
+  ])(
+    "restores a stopped Windows Gateway after signal when task suspension is $suspended",
+    async ({ suspended, expectedTaskRestores }) => {
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+      const processOnSpy = vi.spyOn(process, "on");
+      const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+      let finishStop: (() => void) | undefined;
+      mockPackageInstallStatus(createCaseDir("openclaw-update-windows-stop-signal"));
+      serviceReadCommand.mockResolvedValue({
+        programArguments: ["openclaw", "gateway", "run"],
+        environment: {
+          OPENCLAW_SERVICE_MARKER: "openclaw",
+          OPENCLAW_SERVICE_KIND: "gateway",
+        },
+      });
+      serviceLoaded.mockResolvedValue(true);
+      serviceReadRuntime.mockResolvedValue({ status: "running", state: "running", pid: 4242 });
+      suspendScheduledTaskAutoStartForUpdate.mockResolvedValue(suspended);
+      serviceStop.mockImplementationOnce(
+        async () =>
+          await new Promise<void>((resolve) => {
+            finishStop = resolve;
+          }),
+      );
+
+      try {
+        const updatePromise = updateCommand({ yes: true });
+        await vi.waitFor(() => expect(serviceStop).toHaveBeenCalledOnce());
+        const signalListeners = processOnSpy.mock.calls
+          .filter(([event]) => event === "SIGINT")
+          .map(([, listener]) => listener)
+          .filter(
+            (listener): listener is (...args: unknown[]) => void => typeof listener === "function",
+          );
+        if (signalListeners.length === 0 || !finishStop) {
+          throw new Error("expected armed SIGINT recovery and pending Windows service stop");
+        }
+
+        for (const listener of signalListeners) {
+          listener();
+        }
+        expect(serviceRestart).not.toHaveBeenCalled();
+        expect(packageInstallCommandCall()).toBeUndefined();
+        finishStop();
+        await updatePromise;
+
+        expect(resumeScheduledTaskAutoStartAfterUpdate).toHaveBeenCalledTimes(expectedTaskRestores);
+        expect(serviceRestart).toHaveBeenCalledOnce();
+        expect(packageInstallCommandCall()).toBeUndefined();
+        await vi.waitFor(() => expect(processExitSpy).toHaveBeenCalledExactlyOnceWith(130));
+        if (suspended) {
+          expect(
+            requireValue(
+              resumeScheduledTaskAutoStartAfterUpdate.mock.invocationCallOrder[0],
+              "Scheduled Task restore order",
+            ),
+          ).toBeLessThan(
+            requireValue(serviceRestart.mock.invocationCallOrder[0], "service restart order"),
+          );
+        }
+        expect(
+          requireValue(serviceRestart.mock.invocationCallOrder[0], "service restart order"),
+        ).toBeLessThan(
+          requireValue(processExitSpy.mock.invocationCallOrder[0], "signal exit order"),
+        );
+      } finally {
+        platformSpy.mockRestore();
+        processOnSpy.mockRestore();
+        processExitSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ["SIGTERM", 143],
+    ["SIGHUP", 129],
+    ["SIGQUIT", 131],
+  ] as const)("restores a stopped Linux Gateway before %s exit", async (signal, exitCode) => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    const processOnSpy = vi.spyOn(process, "on");
+    const processExitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    let finishStop: (() => void) | undefined;
+    mockPackageInstallStatus(createCaseDir("openclaw-update-linux-stop-signal"));
+    serviceReadCommand.mockResolvedValue({ programArguments: ["openclaw", "gateway", "run"] });
+    serviceReadRuntime.mockResolvedValue({ status: "running", state: "running", pid: 4242 });
+    serviceStop.mockImplementationOnce(
+      async () =>
+        await new Promise<void>((resolve) => {
+          finishStop = resolve;
+        }),
+    );
+
+    try {
+      const updatePromise = updateCommand({ yes: true });
+      await vi.waitFor(() => expect(serviceStop).toHaveBeenCalledOnce());
+      const signalListener = processOnSpy.mock.calls.find(([event]) => event === signal)?.[1];
+      if (typeof signalListener !== "function" || !finishStop) {
+        throw new Error(`expected armed ${signal} recovery and pending Linux service stop`);
+      }
+      signalListener();
+      expect(serviceRestart).not.toHaveBeenCalled();
+      finishStop();
+      await updatePromise;
+
+      expect(serviceRestart).toHaveBeenCalledOnce();
+      expect(packageInstallCommandCall()).toBeUndefined();
+      await vi.waitFor(() => expect(processExitSpy).toHaveBeenCalledExactlyOnceWith(exitCode));
+      expect(
+        requireValue(serviceRestart.mock.invocationCallOrder[0], "service restart order"),
+      ).toBeLessThan(requireValue(processExitSpy.mock.invocationCallOrder[0], "signal exit order"));
+    } finally {
+      platformSpy.mockRestore();
+      processOnSpy.mockRestore();
+      processExitSpy.mockRestore();
+    }
+  });
 
   it.each(["running", "stopped"] as const)(
     "guards a %s Windows Scheduled Task during a no-restart package update",
@@ -4453,6 +4875,8 @@ describe("update-cli", () => {
     });
     serviceLoaded.mockResolvedValue(true);
     serviceReadRuntime.mockResolvedValue({ status: "stopped", state: "stopped" });
+    const restoreAfterUpdateFailure = vi.fn(async () => {});
+    serviceStop.mockResolvedValueOnce({ restoreAfterUpdateFailure });
     const preparations = mockGitUpdateAfterMutation(
       makeOkUpdateResult({
         mode: "git",
@@ -4473,6 +4897,7 @@ describe("update-cli", () => {
     expect(preparations).toEqual([
       { allowGatewayServiceRepair: true, allowGatewayActivation: true },
     ]);
+    expect(restoreAfterUpdateFailure).toHaveBeenCalledOnce();
   });
 
   it("stops a managed gateway rooted at the package install when switching package installs to dev", async () => {

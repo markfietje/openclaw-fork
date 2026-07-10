@@ -134,6 +134,45 @@ describe("entry compile cache", () => {
     expect(plan?.detachForProcessTree).toBe(false);
   });
 
+  it.each([
+    ["command", ["update", "--yes"]],
+    ["alias", ["--profile", "release", "--update", "--yes"]],
+  ] as const)(
+    "does not put the update %s behind a source compile-cache wrapper",
+    async (_label, args) => {
+      const root = makeTempDir(tempDirs, "openclaw-compile-cache-update-");
+      const entryFile = path.join(root, "dist", "entry.js");
+      await fs.mkdir(path.join(root, "src"), { recursive: true });
+      await fs.writeFile(path.join(root, "src", "entry.ts"), "export {};\n", "utf8");
+
+      expect(
+        buildOpenClawCompileCacheRespawnPlan({
+          currentFile: entryFile,
+          env: { NODE_COMPILE_CACHE: "/tmp/openclaw-cache" },
+          execPath: "/usr/bin/node",
+          installRoot: root,
+          argv: ["/usr/bin/node", entryFile, ...args],
+        }),
+      ).toBeUndefined();
+    },
+  );
+
+  it("honors explicit no-respawn for a non-update compile-cache plan", async () => {
+    const root = makeTempDir(tempDirs, "openclaw-compile-cache-no-respawn-");
+    const entryFile = path.join(root, "dist", "entry.js");
+    await fs.mkdir(path.join(root, "src"), { recursive: true });
+    await fs.writeFile(path.join(root, "src", "entry.ts"), "export {};\n", "utf8");
+
+    expect(
+      buildOpenClawCompileCacheRespawnPlan({
+        currentFile: entryFile,
+        env: { NODE_COMPILE_CACHE: "/tmp/openclaw-cache", OPENCLAW_NO_RESPAWN: "1" },
+        installRoot: root,
+        argv: ["node", entryFile, "status"],
+      }),
+    ).toBeUndefined();
+  });
+
   it("keeps bare-root no-cache respawn plans attached to the terminal", async () => {
     const root = makeTempDir(tempDirs, "openclaw-compile-cache-root-");
     const entryFile = path.join(root, "dist", "entry.js");
@@ -191,6 +230,22 @@ describe("entry compile cache", () => {
     });
   });
 
+  it("does not wrap an affected Windows Node 24 update", () => {
+    const root = makeTempDir(tempDirs, "openclaw-compile-cache-update-win24-");
+    const entryFile = path.join(root, "dist", "entry.js");
+
+    expect(
+      buildOpenClawCompileCacheRespawnPlan({
+        currentFile: entryFile,
+        env: { NODE_COMPILE_CACHE: "/tmp/openclaw-cache" },
+        installRoot: root,
+        argv: ["node", entryFile, "--update"],
+        nodeVersion: "24.14.0",
+        platform: "win32",
+      }),
+    ).toBeUndefined();
+  });
+
   it("does not respawn source checkouts twice", async () => {
     const root = makeTempDir(tempDirs, "openclaw-compile-cache-respawn-once-");
     await fs.mkdir(path.join(root, "src"), { recursive: true });
@@ -236,8 +291,7 @@ describe("entry compile cache", () => {
       {
         stdio: "inherit",
         env: { NODE_DISABLE_COMPILE_CACHE: "1" },
-        detached:
-          process.platform !== "win32" && !(process.stdin.isTTY || process.stdout.isTTY),
+        detached: process.platform !== "win32" && !(process.stdin.isTTY || process.stdout.isTTY),
       },
     );
     const [bridgeChild, bridgeOptions] = requireFirstMockCall(

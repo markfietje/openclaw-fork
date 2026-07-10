@@ -126,6 +126,7 @@ export function buildThreadingToolContext(params: {
   const currentMessageId = isRestartSentinelContinuation
     ? sessionCtx.ReplyToId
     : (sessionCtx.CurrentMessageId ?? sessionCtx.MessageSidFull ?? sessionCtx.MessageSid);
+  let replyToMode = sessionCtx.ReplyToMode;
   const originProvider = resolveOriginMessageProvider({
     originatingChannel: sessionCtx.OriginatingChannel,
     provider: sessionCtx.Provider,
@@ -148,21 +149,19 @@ export function buildThreadingToolContext(params: {
   const provider = normalizeChannelId(rawProvider) ?? normalizeAnyChannelId(rawProvider);
   // Fallback for unrecognized/plugin channels (e.g., iMessage before plugin registry init)
   const threading = provider ? getChannelPlugin(provider)?.threading : undefined;
-  const replyToMode =
-    sessionCtx.ReplyToMode ??
-    resolveReplyToMode(
-      config,
-      provider ?? (rawProvider as ChannelId),
-      sessionCtx.AccountId,
-      sessionCtx.ChatType,
-    );
+  replyToMode ??= resolveReplyToMode(
+    config,
+    provider ?? (rawProvider as ChannelId),
+    sessionCtx.AccountId,
+    sessionCtx.ChatType,
+  );
   if (!threading?.buildToolContext) {
     return {
       currentChannelId: normalizeOptionalString(originTo),
       currentChannelProvider: provider ?? (rawProvider as ChannelId),
       currentMessageId,
       replyToMode,
-      hasRepliedRef,
+      hasRepliedRef: hasRepliedRef ?? (replyToMode === "first" ? { value: false } : undefined),
     };
   }
   const context =
@@ -187,13 +186,18 @@ export function buildThreadingToolContext(params: {
     }) ?? {};
   const hasAdapterCurrentMessageId = Object.hasOwn(context, "currentMessageId");
   const hasAdapterReplyToMode = Object.hasOwn(context, "replyToMode");
+  const effectiveReplyToMode = hasAdapterReplyToMode ? context.replyToMode : replyToMode;
   return {
     ...context,
     currentChannelProvider: provider!, // guaranteed non-null since threading exists
     // Some providers expose only thread resources as reply targets; explicit
     // `undefined` means the adapter rejected the generic message-id fallback.
     currentMessageId: hasAdapterCurrentMessageId ? context.currentMessageId : currentMessageId,
-    replyToMode: hasAdapterReplyToMode ? context.replyToMode : replyToMode,
+    replyToMode: effectiveReplyToMode,
+    hasRepliedRef:
+      context.hasRepliedRef ??
+      hasRepliedRef ??
+      (effectiveReplyToMode === "first" ? { value: false } : undefined),
   };
 }
 

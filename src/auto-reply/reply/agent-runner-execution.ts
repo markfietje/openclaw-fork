@@ -1487,6 +1487,7 @@ async function runAgentTurnWithFallbackInternal(
   commitTerminalOutcome: () => void,
 ): Promise<AgentRunLoopResult> {
   const TRANSIENT_HTTP_RETRY_DELAY_MS = 2_500;
+  const hasRepliedRef = params.opts?.hasRepliedRef ?? { value: false };
   let didLogHeartbeatStrip = false;
   let autoCompactionCount = 0;
   // Track payloads sent directly (not via pipeline) during tool flush to avoid duplicates.
@@ -2028,7 +2029,7 @@ async function runAgentTurnWithFallbackInternal(
               const cliThreadingContext = buildThreadingToolContext({
                 sessionCtx: params.sessionCtx,
                 config: runtimeConfig,
-                hasRepliedRef: params.opts?.hasRepliedRef,
+                hasRepliedRef,
               });
               const cliToolSummaryTracker = createCliToolSummaryTracker({
                 detailMode: params.toolProgressDetail,
@@ -2168,6 +2169,7 @@ async function runAgentTurnWithFallbackInternal(
                       cliCurrentThreadId != null ? String(cliCurrentThreadId) : undefined,
                     currentMessageId: cliThreadingContext.currentMessageId,
                     replyToMode: cliThreadingContext.replyToMode,
+                    hasRepliedRef: cliThreadingContext.hasRepliedRef,
                     currentInboundAudio: hasInboundAudio(params.sessionCtx),
                     agentAccountId: params.followupRun.run.agentAccountId,
                     senderIsOwner: params.followupRun.run.senderIsOwner,
@@ -2199,7 +2201,7 @@ async function runAgentTurnWithFallbackInternal(
                 run: { ...candidateRun, ...candidateFastMode },
                 replyRoute: params.followupRun,
                 sessionCtx: params.sessionCtx,
-                hasRepliedRef: params.opts?.hasRepliedRef,
+                hasRepliedRef,
                 provider,
                 runId,
                 promptCacheKey: params.opts?.promptCacheKey,

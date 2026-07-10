@@ -41,6 +41,7 @@ type McpLoopbackScopeParams = {
   currentThreadTs: string | undefined;
   currentMessageId: string | number | undefined;
   replyToMode?: ReplyToMode;
+  hasRepliedRef?: { value: boolean };
   currentInboundAudio: boolean | undefined;
   accountId: string | undefined;
   inboundEventKind: InboundEventKind | undefined;
@@ -108,7 +109,10 @@ export class McpLoopbackToolCache {
       return cached;
     }
 
-    const next = resolveMcpLoopbackScopedTools(params);
+    const next = resolveMcpLoopbackScopedTools({
+      ...params,
+      hasRepliedRef: params.hasRepliedRef ?? { value: false },
+    });
     const nextEntry: CachedScopedTools = {
       agentId: next.agentId,
       tools: next.tools,

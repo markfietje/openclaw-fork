@@ -128,6 +128,7 @@ export type RunCliAgentParams = {
   currentThreadTs?: string;
   currentMessageId?: string | number;
   replyToMode?: ReplyToMode;
+  hasRepliedRef?: { value: boolean };
   currentInboundAudio?: boolean;
   agentAccountId?: string;
   /** Sender identity for channel-originated runs when available. */

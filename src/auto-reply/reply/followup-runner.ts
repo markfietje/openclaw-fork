@@ -761,6 +761,7 @@ export function createFollowupRunner(params: {
               goalContextSessionEntry,
             );
       const runId = crypto.randomUUID();
+      const hasRepliedRef = { value: false };
       const shouldSurfaceToControlUi = isInternalMessageChannel(
         resolveOriginMessageProvider({
           originatingChannel: queued.originatingChannel,
@@ -1269,6 +1270,8 @@ export function createFollowupRunner(params: {
                         ? String(queued.originatingThreadId)
                         : undefined,
                     currentMessageId: followupCurrentMessageId,
+                    replyToMode: queued.originatingReplyToMode,
+                    hasRepliedRef,
                     agentAccountId: run.agentAccountId,
                     senderIsOwner: run.senderIsOwner,
                     disableTools: opts?.disableTools,
@@ -1322,6 +1325,8 @@ export function createFollowupRunner(params: {
                     ? String(queued.originatingThreadId)
                     : undefined,
                 currentMessageId: followupCurrentMessageId,
+                replyToMode: queued.originatingReplyToMode,
+                hasRepliedRef,
                 groupId: run.groupId,
                 groupChannel: run.groupChannel,
                 groupSpace: run.groupSpace,

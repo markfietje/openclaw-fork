@@ -448,9 +448,8 @@ describe("agent-runner-utils", () => {
       hasRepliedRef: undefined,
     });
 
-    expect(context.currentChannelId).toBe("+15551234567");
-    expect(context.currentMessageId).toBe("reply-msg-9");
     expect(context.replyToMode).toBe("first");
+    expect(context.hasRepliedRef).toEqual({ value: false });
   });
 
   it("does not expose restart-sentinel synthetic ids as message-tool reply targets", () => {

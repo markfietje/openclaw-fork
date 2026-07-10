@@ -57,6 +57,7 @@ export function resolveGatewayScopedTools(params: {
   currentThreadTs?: string;
   currentMessageId?: string | number;
   replyToMode?: ReplyToMode;
+  hasRepliedRef?: { value: boolean };
   currentInboundAudio?: boolean;
   clientCaps?: string[];
   accountId?: string;
@@ -197,6 +198,7 @@ export function resolveGatewayScopedTools(params: {
     currentThreadTs: params.currentThreadTs ?? params.agentThreadId,
     currentMessageId: params.currentMessageId,
     replyToMode: params.replyToMode,
+    hasRepliedRef: params.hasRepliedRef,
     currentInboundAudio: params.currentInboundAudio,
     sessionId: params.sessionId,
     onYield: params.onYield,

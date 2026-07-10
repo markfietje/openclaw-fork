@@ -23,6 +23,7 @@ export type McpLoopbackToolCallStart = Pick<McpLoopbackToolCallResult, "toolName
 
 type McpLoopbackToolCallCapture = {
   generation: number;
+  hasRepliedRef?: { value: boolean };
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -43,6 +44,12 @@ export type McpLoopbackRequestCaptureHandle = {
   capture: McpLoopbackToolCallCapture;
   classified: boolean;
   finished: boolean;
+};
+
+type McpLoopbackYieldContext = {
+  cacheKey: string;
+  hasRepliedRef?: { value: boolean };
+  onYield: (message: string) => Promise<void>;
 };
 
 export type McpLoopbackToolCallCaptureHandle = {
@@ -80,6 +87,7 @@ function notifyMcpLoopbackToolCallCaptureActivity(capture: McpLoopbackToolCallCa
 /** Start loopback tool-call result capture for one serialized CLI invocation. */
 export function beginMcpLoopbackToolCallCapture(params: {
   captureKey: string;
+  hasRepliedRef?: { value: boolean };
   onYield?: (message: string) => Promise<void> | void;
   onRequestStart?: () => void;
   onRequestClassified?: () => void;
@@ -99,6 +107,7 @@ export function beginMcpLoopbackToolCallCapture(params: {
   nextToolCallCaptureGeneration += 1;
   toolCallCaptures.set(captureKey, {
     generation: nextToolCallCaptureGeneration,
+    hasRepliedRef: params.hasRepliedRef,
     onYield: params.onYield,
     onRequestStart: params.onRequestStart,
     onRequestClassified: params.onRequestClassified,
@@ -116,13 +125,14 @@ export function beginMcpLoopbackToolCallCapture(params: {
 /** Resolve yield state bound to the request's admitted CLI capture generation. */
 export function resolveMcpLoopbackYieldContext(
   captureHandle: McpLoopbackRequestCaptureHandle | undefined,
-): { cacheKey: string; onYield: (message: string) => Promise<void> } | undefined {
+): McpLoopbackYieldContext | undefined {
   const capture = captureHandle?.capture;
   if (!capture?.onYield) {
     return undefined;
   }
   return {
     cacheKey: String(capture.generation),
+    hasRepliedRef: capture.hasRepliedRef,
     onYield: async (message: string) => {
       await capture.onYield?.(message);
     },

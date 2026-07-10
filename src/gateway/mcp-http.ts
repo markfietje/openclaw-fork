@@ -240,6 +240,7 @@ export async function startMcpLoopbackServer(port = 0): Promise<{
           currentThreadTs: requestContext.currentThreadTs,
           currentMessageId: requestContext.currentMessageId,
           replyToMode: requestContext.replyToMode,
+          hasRepliedRef: yieldContext?.hasRepliedRef,
           currentInboundAudio: requestContext.currentInboundAudio,
           accountId: requestContext.accountId,
           inboundEventKind: requestContext.inboundEventKind,

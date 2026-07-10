@@ -1040,6 +1040,7 @@ export async function executePreparedCliRun(
           };
           beginMcpLoopbackToolCallCapture({
             captureKey: gatewayCaptureKey,
+            hasRepliedRef: params.hasRepliedRef,
             onYield: () => {
               yielded = true;
             },

@@ -1571,10 +1571,14 @@ describe("executePreparedCliRun supervisor output capture", () => {
 
   it("records sessions_yield through the serialized MCP capture", async () => {
     const context = buildPreparedCliRunContext({ output: "text", provider: "google-gemini-cli" });
+    context.params.hasRepliedRef = { value: false };
     context.mcpDeliveryCapture = true;
     supervisorSpawnMock.mockImplementationOnce(async (...args: unknown[]) => {
       const input = args[0] as SupervisorSpawnInput;
       const captureHandle = markMcpLoopbackRequestStarted(input.env?.OPENCLAW_MCP_CLI_CAPTURE_KEY);
+      expect(resolveMcpLoopbackYieldContext(captureHandle)?.hasRepliedRef).toBe(
+        context.params.hasRepliedRef,
+      );
       await resolveMcpLoopbackYieldContext(captureHandle)?.onYield("waiting on subagents");
       markMcpLoopbackRequestFinished(captureHandle);
       input.onStdout?.("yield acknowledged");

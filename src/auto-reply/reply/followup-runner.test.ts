@@ -1309,6 +1309,7 @@ describe("createFollowupRunner runtime config", () => {
         originatingTo: "telegram:-100123:topic:42",
         originatingThreadId: "42",
         originatingReplyToId: "reply-42",
+        originatingReplyToMode: "first",
         messageId: "queued-message-1",
         run: {
           config: runtimeConfig,
@@ -1341,6 +1342,7 @@ describe("createFollowupRunner runtime config", () => {
     expect(call.currentChannelId).toBe("telegram:-100123:topic:42");
     expect(call.currentThreadTs).toBe("42");
     expect(call.currentMessageId).toBe("reply-42");
+    expect(call.replyToMode).toBe("first");
     expect(call.senderId).toBe("sender-42");
     expect(call.senderIsOwner).toBe(true);
     expect(call).toMatchObject({
@@ -6051,6 +6053,7 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
       messageId: "current-msg-1",
       currentMessageId: "reply-msg-1",
       originatingReplyToId: "quoted-parent-1",
+      originatingReplyToMode: "all",
       run: {
         config: {
           channels: { discord: { replyToMode: "all" } },
@@ -6062,6 +6065,9 @@ describe("createFollowupRunner messaging delivery and dedupe", () => {
 
     await runner(queued);
 
+    expect(requireLastMockCallArg(runEmbeddedAgentMock, "run embedded agent").replyToMode).toBe(
+      "all",
+    );
     expect(routeReplyMock).toHaveBeenCalledTimes(3);
     const startRoute = requireMockCallArg(routeReplyMock, 0);
     const endRoute = requireMockCallArg(routeReplyMock, 1);

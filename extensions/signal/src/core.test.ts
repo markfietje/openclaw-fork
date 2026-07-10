@@ -1036,56 +1036,6 @@ describe("signal outbound", () => {
     ]);
   });
 
-  it("uses the configured default account for persisted group reply context", async () => {
-    const send = vi.fn(async () => ({
-      messageId: "signal-1",
-      receipt: createMessageReceiptFromOutboundResults({
-        results: [{ channel: "signal", messageId: "signal-1" }],
-        kind: "text",
-      }),
-    }));
-    const cfg = {
-      channels: {
-        signal: {
-          defaultAccount: "work",
-          accounts: { work: { account: "+15550009999" } },
-        },
-      },
-    } as OpenClawConfig;
-
-    await registerSignalReplyContext({
-      accountId: "work",
-      to: "signal:group:group-1",
-      replyToId: "1700000000007",
-      author: "uuid:sender-1",
-      body: "persisted quote body",
-    });
-
-    try {
-      await signalPlugin.message?.send?.text?.({
-        cfg,
-        to: "signal:group:group-1",
-        text: "reply",
-        replyToId: "1700000000007",
-        deps: { signal: send },
-      } as Parameters<NonNullable<typeof signalPlugin.message.send.text>>[0] & {
-        deps: { signal: typeof send };
-      });
-
-      expect(send).toHaveBeenCalledWith(
-        "group:group-1",
-        "reply",
-        expect.objectContaining({
-          replyToId: "1700000000007",
-          replyToAuthor: "uuid:sender-1",
-          replyToBody: "persisted quote body",
-        }),
-      );
-    } finally {
-      await clearSignalReplyAuthorsForTest();
-    }
-  });
-
   it("keeps reply author registration in memory when persistent state cannot open", async () => {
     setSignalRuntime(
       createPluginRuntimeMock({

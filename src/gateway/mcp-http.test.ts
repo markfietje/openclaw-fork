@@ -50,6 +50,7 @@ type ScopedToolsCall = {
   currentThreadTs?: string;
   currentMessageId?: string | number;
   replyToMode?: string;
+  hasRepliedRef?: { value: boolean };
   currentInboundAudio?: boolean;
   inboundEventKind?: string;
   sourceReplyDeliveryMode?: string;
@@ -1090,12 +1091,14 @@ describe("mcp loopback server", () => {
 
   it("caps loopback tool cache cardinality by evicting oldest contexts", () => {
     const cache = new McpLoopbackToolCache();
+    const replyState = { value: false };
     const baseParams = {
       accountId: undefined,
       cfg: { session: { mainKey: "main" } } as never,
       currentChannelId: "telegram:chat123",
       currentInboundAudio: undefined,
       currentMessageId: undefined,
+      hasRepliedRef: replyState,
       currentThreadTs: "thread-1",
       inboundEventKind: "room_event",
       messageProvider: "telegram",
@@ -1111,12 +1114,15 @@ describe("mcp loopback server", () => {
       });
     }
     expect(resolveGatewayScopedToolsMock).toHaveBeenCalledTimes(257);
+    expect(getScopedToolsCall(0).hasRepliedRef).toBe(replyState);
+    replyState.value = true;
 
     cache.resolve({
       ...baseParams,
       currentMessageId: "message-0",
     });
     expect(resolveGatewayScopedToolsMock).toHaveBeenCalledTimes(258);
+    expect(getScopedToolsCall(257).hasRepliedRef).toBe(replyState);
 
     cache.resolve({
       ...baseParams,

@@ -42,7 +42,7 @@ import { signalMessageActions } from "./message-actions.js";
 import { looksLikeSignalTargetId, normalizeSignalMessagingTarget } from "./normalize.js";
 import { resolveSignalOutboundTarget } from "./outbound-session.js";
 import { resolveSignalReactionLevel } from "./reaction-level.js";
-import { resolveSignalReplyAuthorWithPersistence } from "./reply-authors.js";
+import { resolveSignalReplyContextWithPersistence } from "./reply-authors.js";
 import { signalSetupAdapter } from "./setup-core.js";
 import {
   createSignalPluginBase,
@@ -109,6 +109,7 @@ async function sendSignalOutbound(params: {
   const { send, maxBytes } = await resolveSignalSendContext(params);
   const to = resolveSignalSendTarget(params);
   const replyOptions = await resolveSignalReplyOptions({
+    cfg: params.cfg,
     to,
     accountId: params.accountId,
     replyToId: params.replyToId,
@@ -136,26 +137,33 @@ function resolveDirectSignalReplyAuthor(to: string): string | undefined {
 }
 
 function resolveSignalReplyOptions(params: {
+  cfg: Parameters<typeof resolveSignalAccount>[0]["cfg"];
   to: string;
   accountId?: string | null;
   replyToId?: string | null;
-}): Promise<{ replyToId: string; replyToAuthor?: string } | Record<string, never>> {
+}): Promise<
+  { replyToId: string; replyToAuthor?: string; replyToBody?: string } | Record<string, never>
+> {
   const replyToId = normalizeOptionalString(params.replyToId);
   if (!replyToId) {
     return Promise.resolve({});
   }
-  const directAuthor = resolveDirectSignalReplyAuthor(params.to);
-  if (directAuthor) {
-    return Promise.resolve({ replyToId, replyToAuthor: directAuthor });
-  }
-  return resolveSignalReplyAuthorWithPersistence({
+  const accountId = resolveSignalAccount({
+    cfg: params.cfg,
     accountId: params.accountId,
+  }).accountId;
+  return resolveSignalReplyContextWithPersistence({
+    accountId,
     to: params.to,
     replyToId,
-  }).then((replyToAuthor) => ({
-    replyToId,
-    ...(replyToAuthor ? { replyToAuthor } : {}),
-  }));
+  }).then((persistedContext) => {
+    const replyToAuthor = persistedContext?.author ?? resolveDirectSignalReplyAuthor(params.to);
+    return {
+      replyToId,
+      ...(replyToAuthor ? { replyToAuthor } : {}),
+      ...(persistedContext?.body ? { replyToBody: persistedContext.body } : {}),
+    };
+  });
 }
 
 function inferSignalTargetChatType(rawTo: string) {
@@ -322,6 +330,7 @@ async function sendFormattedSignalText(ctx: {
     ctx.abortSignal?.throwIfAborted();
     const replyToId = nextReplyToId();
     const replyOptions = await resolveSignalReplyOptions({
+      cfg: ctx.cfg,
       to,
       accountId: ctx.accountId,
       replyToId,
@@ -379,6 +388,7 @@ async function sendFormattedSignalMedia(ctx: {
     styles: [],
   };
   const replyOptions = await resolveSignalReplyOptions({
+    cfg: ctx.cfg,
     to,
     accountId: ctx.accountId,
     replyToId: ctx.replyToId,

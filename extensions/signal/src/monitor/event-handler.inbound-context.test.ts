@@ -1,5 +1,6 @@
 // Signal tests cover event handler.inbound context plugin behavior.
 import { expectChannelInboundContextContract as expectInboundContextContract } from "openclaw/plugin-sdk/channel-contract-testing";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SignalReactionMessage } from "./event-handler.types.js";
@@ -7,7 +8,7 @@ vi.useRealTimers();
 const [
   { createBaseSignalEventHandlerDeps, createSignalReceiveEvent },
   { createSignalEventHandler },
-  { clearSignalReplyAuthorsForTest, resolveSignalReplyAuthorWithPersistence },
+  { clearSignalReplyAuthorsForTest, resolveSignalReplyContextWithPersistence },
 ] = await Promise.all([
   import("./event-handler.test-harness.js"),
   import("./event-handler.js"),
@@ -145,7 +146,7 @@ describe("signal createSignalEventHandler inbound context", () => {
   it("passes a finalized MsgContext to dispatchInboundMessage", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({
-        cfg: { messages: { inbound: { debounceMs: 0 } } } as any,
+        cfg: { messages: { inbound: { debounceMs: 0 } } } as OpenClawConfig,
         historyLimit: 0,
       }),
     );
@@ -171,7 +172,7 @@ describe("signal createSignalEventHandler inbound context", () => {
   it("normalizes direct chat To/OriginatingTo targets to canonical Signal ids", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({
-        cfg: { messages: { inbound: { debounceMs: 0 } } } as any,
+        cfg: { messages: { inbound: { debounceMs: 0 } } } as OpenClawConfig,
         historyLimit: 0,
       }),
     );
@@ -222,7 +223,7 @@ describe("signal createSignalEventHandler inbound context", () => {
   it("records group message reply authors for Signal native reply lookup", async () => {
     const handler = createSignalEventHandler(
       createBaseSignalEventHandlerDeps({
-        cfg: { messages: { inbound: { debounceMs: 0 } } } as any,
+        cfg: { messages: { inbound: { debounceMs: 0 } } } as OpenClawConfig,
         historyLimit: 0,
       }),
     );
@@ -241,12 +242,12 @@ describe("signal createSignalEventHandler inbound context", () => {
     );
 
     await expect(
-      resolveSignalReplyAuthorWithPersistence({
+      resolveSignalReplyContextWithPersistence({
         accountId: "default",
         to: "group:g1",
         replyToId: "1700000000002",
       }),
-    ).resolves.toBe("+15550002222");
+    ).resolves.toEqual({ author: "+15550002222", body: "hello group" });
   });
 
   it.each([
@@ -324,12 +325,12 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(context.ReplyToId).toBe("1700000000002");
     expect(context.Timestamp).toBe(1700000000999);
     await expect(
-      resolveSignalReplyAuthorWithPersistence({
+      resolveSignalReplyContextWithPersistence({
         accountId: "default",
         to: "+15550002222",
         replyToId: "1700000000002",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ author: "+15550002222", body: "edited hello" });
   });
 
   it("preserves the last debounced message body for native reply quote metadata", async () => {
@@ -1993,6 +1994,16 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(context.MediaPaths).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(context.MediaUrls).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(context.MediaTypes).toEqual(["image/jpeg", "application/octet-stream"]);
+    await expect(
+      resolveSignalReplyContextWithPersistence({
+        accountId: "default",
+        to: "+15550001111",
+        replyToId: "1700000000000",
+      }),
+    ).resolves.toEqual({
+      author: "+15550001111",
+      body: "[1 image + 1 document attached]",
+    });
   });
 
   it("marks failed attachment downloads unavailable without a phantom media placeholder", async () => {

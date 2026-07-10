@@ -42,7 +42,7 @@ const [
   { createBaseSignalEventHandlerDeps, createSignalReceiveEvent },
   { createSignalEventHandler },
   { renderSignalMentions },
-  { clearSignalReplyAuthorsForTest, resolveSignalReplyAuthorWithPersistence },
+  { clearSignalReplyAuthorsForTest, resolveSignalReplyContextWithPersistence },
 ] = await Promise.all([
   import("./event-handler.test-harness.js"),
   import("./event-handler.js"),
@@ -190,12 +190,12 @@ describe("signal mention gating", () => {
     await handler(makeGroupEvent({ message: "hello from alice" }));
 
     await expect(
-      resolveSignalReplyAuthorWithPersistence({
+      resolveSignalReplyContextWithPersistence({
         accountId: "default",
         to: "group:g1",
         replyToId: "1700000000000",
       }),
-    ).resolves.toBe("+15550001111");
+    ).resolves.toEqual({ author: "+15550001111", body: "hello from alice" });
   });
 
   it("records edited target reply authors for skipped group messages", async () => {
@@ -218,12 +218,12 @@ describe("signal mention gating", () => {
 
     expect(capturedCtx).toBeUndefined();
     await expect(
-      resolveSignalReplyAuthorWithPersistence({
+      resolveSignalReplyContextWithPersistence({
         accountId: "default",
         to: "group:g1",
         replyToId: "1700000000000",
       }),
-    ).resolves.toBe("+15550001111");
+    ).resolves.toEqual({ author: "+15550001111", body: "edited without mention" });
   });
 
   it("records attachment placeholder in pending history for skipped attachment-only group messages", async () => {

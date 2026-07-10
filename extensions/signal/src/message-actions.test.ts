@@ -87,7 +87,14 @@ describe("signalMessageActions", () => {
     });
   });
 
-  it("leaves canonical Signal send reply targets on the core path", () => {
+  it.each([
+    { name: "ordinary", params: {} },
+    { name: "canonical reply", params: { replyTo: "explicit-1" } },
+  ])("keeps $name Signal presentation payloads on the core path", ({ params }) => {
+    const payload = {
+      text: "threaded",
+      presentation: { blocks: [{ type: "text" as const, text: "rich body" }] },
+    };
     const prepared = signalMessageActions.prepareSendPayload?.({
       ctx: {
         channel: "signal",
@@ -96,17 +103,18 @@ describe("signalMessageActions", () => {
         params: {
           to: "+15551234567",
           message: "threaded",
-          replyTo: "explicit-1",
+          ...params,
         },
       },
       to: "+15551234567",
-      payload: { text: "threaded" },
-      replyToId: "explicit-1",
+      payload,
+      ...(params.replyTo ? { replyToId: params.replyTo } : {}),
     });
-    expect(prepared).toBeNull();
+    expect(prepared).toBe(payload);
   });
 
-  it("prefers Signal replyToId aliases over canonical replyTo fields", () => {
+  it("keeps canonical replyTo fields ahead of Signal replyToId aliases", () => {
+    const payload = { text: "threaded" };
     const prepared = signalMessageActions.prepareSendPayload?.({
       ctx: {
         channel: "signal",
@@ -120,13 +128,10 @@ describe("signalMessageActions", () => {
         },
       },
       to: "+15551234567",
-      payload: { text: "threaded" },
+      payload,
       replyToId: "explicit-1",
     });
-    expect(prepared).toMatchObject({
-      text: "threaded",
-      replyToId: "alias-1",
-    });
+    expect(prepared).toBe(payload);
   });
 
   it("lets Signal replyToId aliases override ambient core reply targets", () => {

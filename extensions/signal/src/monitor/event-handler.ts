@@ -1138,6 +1138,8 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
         to: signalTo,
         replyToId: messageId,
         author: senderRecipient,
+        body: pendingBodyText,
+        sourceTimestamp: inboundTimestamp,
       });
       if (replyToId && replyToId !== messageId) {
         await registerSignalReplyAuthorForInboundMessage({
@@ -1145,6 +1147,8 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
           to: signalTo,
           replyToId,
           author: senderRecipient,
+          body: pendingBodyText,
+          sourceTimestamp: inboundTimestamp,
         });
       }
       const signalGroupPolicy = resolveChannelGroupPolicy({
@@ -1276,21 +1280,23 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     }
 
     const senderName = envelope.sourceName ?? senderDisplay;
-    if (isGroup) {
+    await registerSignalReplyAuthorForInboundMessage({
+      accountId: deps.accountId,
+      to: signalTo,
+      replyToId: messageId,
+      author: senderRecipient,
+      body: bodyText,
+      sourceTimestamp: inboundTimestamp,
+    });
+    if (replyToId && replyToId !== messageId) {
       await registerSignalReplyAuthorForInboundMessage({
         accountId: deps.accountId,
         to: signalTo,
-        replyToId: messageId,
+        replyToId,
         author: senderRecipient,
+        body: bodyText,
+        sourceTimestamp: inboundTimestamp,
       });
-      if (replyToId && replyToId !== messageId) {
-        await registerSignalReplyAuthorForInboundMessage({
-          accountId: deps.accountId,
-          to: signalTo,
-          replyToId,
-          author: senderRecipient,
-        });
-      }
     }
     await debouncer.enqueue({
       senderName,

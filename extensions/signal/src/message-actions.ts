@@ -107,6 +107,9 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
     if (normalizeOptionalString(payload.replyToId)) {
       return payload;
     }
+    if (normalizeOptionalString(ctx.params.replyTo)) {
+      return payload;
+    }
     const replyToIdAlias = normalizeOptionalString(ctx.params.replyToId);
     if (replyToIdAlias) {
       return {
@@ -114,10 +117,7 @@ export const signalMessageActions: ChannelMessageActionAdapter = {
         replyToId: replyToIdAlias,
       };
     }
-    if (normalizeOptionalString(ctx.params.replyTo)) {
-      return null;
-    }
-    return null;
+    return payload;
   },
 
   handleAction: async ({ action, params, cfg, accountId, toolContext }) => {

@@ -563,22 +563,25 @@ copy_ui_xml() {
 text_center() {
   local needle="$1"
   local occurrence="${2:-0}"
+  local match_mode="${3:-contains}"
   copy_ui_xml proof-output/openclaw-ui.xml >/dev/null 2>&1 || true
-  python3 - "$needle" "$occurrence" proof-output/openclaw-ui.xml <<'PY'
+  python3 - "$needle" "$occurrence" "$match_mode" proof-output/openclaw-ui.xml <<'PY'
 import html
 import re
 import sys
 from pathlib import Path
 needle = sys.argv[1]
 occurrence = sys.argv[2]
-xml = Path(sys.argv[3]).read_text(encoding='utf-8', errors='ignore')
+match_mode = sys.argv[3]
+xml = Path(sys.argv[4]).read_text(encoding='utf-8', errors='ignore')
 matches = []
 for node in re.findall(r'<node\b[^>]*/?>', xml):
     text_match = re.search(r'text="([^"]*)"', node)
     desc_match = re.search(r'content-desc="([^"]*)"', node)
     text = html.unescape(text_match.group(1) if text_match else '')
     desc = html.unescape(desc_match.group(1) if desc_match else '')
-    if needle not in text and needle not in desc:
+    matched = (text == needle or desc == needle) if match_mode == 'exact' else (needle in text or needle in desc)
+    if not matched:
         continue
     bounds = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
     if not bounds:
@@ -593,6 +596,26 @@ index = -1 if occurrence == 'last' else int(occurrence)
 x, y, _, _ = matches[index]
 print(x, y)
 PY
+}
+
+tap_exact_text() {
+  local needle="$1"
+  local fallback_coords="${2:-}"
+  local coords=""
+  if coords="$(text_center "$needle" 0 exact 2>/dev/null)" && [ -n "$coords" ]; then
+    echo "[proof] tap exact '${needle}' at ${coords}" | tee -a proof-output/capture.log
+    adb shell input tap $coords
+    sleep 1
+    return 0
+  fi
+  if [ -n "$fallback_coords" ]; then
+    echo "[proof] tap exact fallback '${needle}' at ${fallback_coords}" | tee -a proof-output/capture.log
+    adb shell input tap $fallback_coords
+    sleep 1
+    return 0
+  fi
+  echo "Unable to find exact UI text: ${needle}" >&2
+  return 1
 }
 
 tap_text() {
@@ -682,6 +705,42 @@ finish_interaction_record() {
   wait "${RECORD_PID}" || true
   timeout 20 adb pull "$remote" "$local_path" >/dev/null
   RECORD_PID=""
+}
+
+assert_fixture_download_count() {
+  local slug="$1"
+  local expected="$2"
+  local label="$3"
+  python3 - "$slug" "$expected" "$label" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+slug, expected, label = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+events = [json.loads(line) for line in Path('proof-output/clawhub-fixture.jsonl').read_text().splitlines() if line.strip()]
+actual = sum(1 for event in events if event.get('event') == 'download' and event.get('slug') == slug)
+if actual != expected:
+    raise SystemExit(f'{label}: download count for {slug} was {actual}, expected {expected}')
+Path(f'proof-output/{label}-download-count.txt').write_text(f'slug={slug}\nexpected={expected}\nactual={actual}\n')
+PY
+}
+
+replace_installed_filter() {
+  local current_text="$1"
+  local replacement_input="$2"
+  local expected_title="$3"
+  for _ in $(seq 1 12); do
+    if wait_for_text "$current_text" 1; then break; fi
+    adb shell input swipe 540 700 540 2100 500 || true
+    sleep 1
+  done
+  wait_for_text "$current_text" 30
+  tap_exact_text "$current_text"
+  adb shell input keyevent 123
+  for _ in $(seq 1 40); do adb shell input keyevent 67; done
+  adb shell input text "$replacement_input"
+  adb shell input keyevent 4 || true
+  wait_for_text "$expected_title" 60
 }
 
 start_real_gateway
@@ -830,24 +889,14 @@ record_screen /sdcard/openclaw-clawhub-review-dialog.mp4 proof-output/clawhub-re
 # Clean path: record the real confirm action, Gateway download/install, success message, and
 # the installed-skill refresh that follows the successful RPC.
 start_interaction_record /sdcard/openclaw-clean-install.mp4 20
-tap_text "Install" "812 1750"
+tap_exact_text "Install"
 wait_for_text "Installed proof-clean-skill@1.2.3" 120
 capture_png /sdcard/openclaw-08-clean-installed.png proof-output/08-clean-install-success.png
 copy_ui_xml proof-output/08-clean-install-success-ui.xml
 finish_interaction_record /sdcard/openclaw-clean-install.mp4 proof-output/clean-install-and-refresh.mp4
 
-# Clear the installed-skills filter and prove that the refreshed list contains the installed skill.
-tap_text "zzzzzzzz" "350 830"
-adb shell input keyevent 123
-for _ in $(seq 1 8); do adb shell input keyevent 67; done
-adb shell input text 'proof%sclean'
-adb shell input keyevent 4 || true
-for _ in $(seq 1 8); do
-  if wait_for_text "$PROOF_SKILL_TITLE" 2; then break; fi
-  adb shell input swipe 540 700 540 1950 500 || true
-  sleep 1
-done
-wait_for_text "$PROOF_SKILL_TITLE" 60
+# Clear the installed-skills filter and prove that the refreshed installed section contains the skill.
+replace_installed_filter "zzzzzzzz" "proof%sclean" "$PROOF_SKILL_TITLE"
 capture_png /sdcard/openclaw-09-clean-refresh.png proof-output/09-clean-post-install-refresh.png
 copy_ui_xml proof-output/09-clean-post-install-refresh-ui.xml
 
@@ -862,12 +911,18 @@ tap_install_for_skill "$REVIEW_SKILL_TITLE"
 wait_for_text "Acknowledge and install" 120
 capture_png /sdcard/openclaw-10-review-required.png proof-output/10-review-required-dialog.png
 copy_ui_xml proof-output/10-review-required-dialog-ui.xml
+assert_fixture_download_count "proof-review-skill" 0 "review-before-ack"
 start_interaction_record /sdcard/openclaw-review-install.mp4 20
-tap_text "Acknowledge and install" "740 1760"
+tap_exact_text "Acknowledge and install"
 wait_for_text "Installed proof-review-skill@1.2.3" 120
 capture_png /sdcard/openclaw-11-review-installed.png proof-output/11-review-required-install-success.png
 copy_ui_xml proof-output/11-review-required-install-success-ui.xml
 finish_interaction_record /sdcard/openclaw-review-install.mp4 proof-output/review-required-install-and-refresh.mp4
+
+# Prove the post-install refresh for the acknowledged review path in the installed section.
+replace_installed_filter "proof clean" "proof%sreview" "$REVIEW_SKILL_TITLE"
+capture_png /sdcard/openclaw-12-review-refresh.png proof-output/12-review-required-post-install-refresh.png
+copy_ui_xml proof-output/12-review-required-post-install-refresh-ui.xml
 
 # Exercise the malicious path. The dialog itself must expose only Close; no Install or
 # acknowledgement action is permitted and the fixture must observe zero downloads.
@@ -879,9 +934,20 @@ done
 wait_for_text "$MALICIOUS_SKILL_TITLE" 60
 tap_install_for_skill "$MALICIOUS_SKILL_TITLE"
 wait_for_text "This release is blocked by ClawHub and will not be downloaded." 120
-capture_png /sdcard/openclaw-12-malicious-blocked.png proof-output/12-malicious-blocked.png
-copy_ui_xml proof-output/12-malicious-blocked-ui.xml
+capture_png /sdcard/openclaw-13-malicious-blocked.png proof-output/13-malicious-blocked.png
+copy_ui_xml proof-output/13-malicious-blocked-ui.xml
 record_screen /sdcard/openclaw-malicious-blocked.mp4 proof-output/malicious-blocked.mp4 8
+assert_fixture_download_count "proof-malicious-skill" 0 "malicious-ui-blocked"
+
+if run_openclaw_gateway_call skills.install \
+    --params '{"source":"clawhub","slug":"proof-malicious-skill","version":"1.2.3","acknowledgeClawHubRisk":true,"timeoutMs":20000}' \
+    --timeout 30000 \
+    --json > proof-output/malicious-gateway-install.json 2> proof-output/malicious-gateway-install.err; then
+  echo "Malicious Gateway install unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -Eqi 'blocked|malicious|clawhub_download_blocked' proof-output/malicious-gateway-install.err
+assert_fixture_download_count "proof-malicious-skill" 0 "malicious-gateway-rejected"
 
 python3 - <<'PY'
 from pathlib import Path
@@ -892,7 +958,8 @@ checks = {
     '09-clean-post-install-refresh-ui.xml': ['Proof Clean Skill'],
     '10-review-required-dialog-ui.xml': ['Proof Review Skill', 'Review required', 'Acknowledge and install'],
     '11-review-required-install-success-ui.xml': ['Installed proof-review-skill@1.2.3'],
-    '12-malicious-blocked-ui.xml': ['Proof Malicious Skill', 'Blocked', 'This release is blocked by ClawHub and will not be downloaded.', 'Close'],
+    '12-review-required-post-install-refresh-ui.xml': ['Proof Review Skill'],
+    '13-malicious-blocked-ui.xml': ['Proof Malicious Skill', 'Blocked', 'This release is blocked by ClawHub and will not be downloaded.', 'Close'],
     'gateway-skills-search.json': ['Proof Clean Skill', 'proof-clean-skill'],
     'gateway-skills-verdict.json': ['clean', 'securityAuditUrl'],
     'clawhub-fixture.jsonl': ['/api/v1/search', '/api/v1/skills/-/security-verdicts'],
@@ -906,7 +973,7 @@ for rel, needles in checks.items():
 if missing:
     raise SystemExit('Missing expected proof evidence: ' + ', '.join(missing))
 
-blocked = Path('proof-output/12-malicious-blocked-ui.xml').read_text(encoding='utf-8', errors='ignore')
+blocked = Path('proof-output/13-malicious-blocked-ui.xml').read_text(encoding='utf-8', errors='ignore')
 if 'Acknowledge and install' in blocked or 'text="Install"' in blocked:
     raise SystemExit('Malicious dialog exposed an install action')
 PY
@@ -953,6 +1020,12 @@ Key media:
 - 04-installed-filter-no-matches.png
 - 06-real-clawhub-search-results.png
 - 07-real-clawhub-review-dialog.png
+- 08-clean-install-success.png
+- 09-clean-post-install-refresh.png
+- 10-review-required-dialog.png
+- 11-review-required-install-success.png
+- 12-review-required-post-install-refresh.png
+- 13-malicious-blocked.png
 - clawhub-results.mp4
 - clawhub-review-dialog.mp4
 - clean-install-and-refresh.mp4
@@ -998,6 +1071,9 @@ PY
 printf '%s\n' \
   latest-head.txt README.md artifact-manifest.txt proof-media-sha256.txt \
   proof-media-metadata.json fixture-events.json gateway-proof-summary.json fixture-startup.txt \
+  capture.log clawhub-fixture.jsonl review-before-ack-download-count.txt \
+  malicious-ui-blocked-download-count.txt malicious-gateway-rejected-download-count.txt \
+  malicious-gateway-install.json malicious-gateway-install.err \
   > proof-output/artifact-manifest.txt
 find proof-output -maxdepth 1 -type f \( -name '*.png' -o -name '*.mp4' -o -name '*-ui.xml' \) -printf '%f\n' \
   | sort >> proof-output/artifact-manifest.txt

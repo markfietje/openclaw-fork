@@ -211,6 +211,11 @@ jobs:
             proof-output/device-pair-list.err
             proof-output/device-pair-approve-*.json
             proof-output/device-pair-approve-*.err
+            proof-output/capture.log
+            proof-output/clawhub-fixture.jsonl
+            proof-output/*-download-count.txt
+            proof-output/malicious-gateway-install.json
+            proof-output/malicious-gateway-install.err
             proof-output/*-ui.xml
             proof-output/*.png
             proof-output/*.mp4

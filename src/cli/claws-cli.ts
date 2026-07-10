@@ -17,6 +17,7 @@ export type ClawsAddOptions = {
 
 export type ClawsStatusOptions = { json?: boolean };
 export type ClawsRemoveOptions = { dryRun?: boolean; yes?: boolean; json?: boolean };
+export type ClawsExportOptions = { out: string; json?: boolean };
 
 export function registerClawsCli(program: Command) {
   if (!isExperimentalClawsEnabled()) {
@@ -68,6 +69,17 @@ export function registerClawsCli(program: Command) {
     .action(async (target: string, opts: ClawsRemoveOptions) => {
       const { runClawsRemoveCommand } = await import("./claws-cli.runtime.js");
       await runClawsRemoveCommand(target, opts);
+    });
+
+  claws
+    .command("export")
+    .description("Export portable state for one installed Claw agent")
+    .argument("<agent>", "Final id of the installed Claw agent")
+    .requiredOption("--out <path>", "New package directory to create")
+    .option("--json", "Print JSON", false)
+    .action(async (agent: string, opts: ClawsExportOptions) => {
+      const { runClawsExportCommand } = await import("./claws-cli.runtime.js");
+      await runClawsExportCommand(agent, opts);
     });
 
   applyParentDefaultHelpAction(claws);

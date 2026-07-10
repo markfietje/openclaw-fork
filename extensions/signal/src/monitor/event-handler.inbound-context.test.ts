@@ -331,6 +331,13 @@ describe("signal createSignalEventHandler inbound context", () => {
         replyToId: "1700000000002",
       }),
     ).resolves.toEqual({ author: "+15550002222", body: "edited hello" });
+    await expect(
+      resolveSignalReplyContextWithPersistence({
+        accountId: "default",
+        to: "+15550002222",
+        replyToId: "1700000000999",
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("preserves the last debounced message body for native reply quote metadata", async () => {

@@ -1137,21 +1137,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       await registerSignalReplyContext({
         accountId: deps.accountId,
         to: signalTo,
-        replyToId: messageId,
+        replyToId,
         author: senderRecipient,
         body: pendingBodyText,
         sourceTimestamp: inboundTimestamp,
       });
-      if (replyToId && replyToId !== messageId) {
-        await registerSignalReplyContext({
-          accountId: deps.accountId,
-          to: signalTo,
-          replyToId,
-          author: senderRecipient,
-          body: pendingBodyText,
-          sourceTimestamp: inboundTimestamp,
-        });
-      }
       const signalGroupPolicy = resolveChannelGroupPolicy({
         cfg: deps.cfg,
         channel: "signal",
@@ -1284,21 +1274,11 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     await registerSignalReplyContext({
       accountId: deps.accountId,
       to: signalTo,
-      replyToId: messageId,
+      replyToId,
       author: senderRecipient,
       body: bodyText,
       sourceTimestamp: inboundTimestamp,
     });
-    if (replyToId && replyToId !== messageId) {
-      await registerSignalReplyContext({
-        accountId: deps.accountId,
-        to: signalTo,
-        replyToId,
-        author: senderRecipient,
-        body: bodyText,
-        sourceTimestamp: inboundTimestamp,
-      });
-    }
     await debouncer.enqueue({
       senderName,
       senderDisplay,

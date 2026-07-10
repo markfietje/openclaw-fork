@@ -224,6 +224,13 @@ describe("signal mention gating", () => {
         replyToId: "1700000000000",
       }),
     ).resolves.toEqual({ author: "+15550001111", body: "edited without mention" });
+    await expect(
+      resolveSignalReplyContextWithPersistence({
+        accountId: "default",
+        to: "group:g1",
+        replyToId: "1700000000999",
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("records attachment placeholder in pending history for skipped attachment-only group messages", async () => {

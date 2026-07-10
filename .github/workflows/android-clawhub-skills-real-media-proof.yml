@@ -202,6 +202,7 @@ jobs:
             proof-output/proof-media-metadata.json
             proof-output/fixture-events.json
             proof-output/gateway-proof-summary.json
+            proof-output/fixture-startup.txt
             proof-output/*-ui.xml
             proof-output/*.png
             proof-output/*.mp4

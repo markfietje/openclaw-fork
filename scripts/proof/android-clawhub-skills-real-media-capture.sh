@@ -139,7 +139,6 @@ for slug, title in {
 PY
   cat > proof-output/clawhub-fixture-server.py <<'PY'
 import json
-import os
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -298,22 +297,37 @@ class Handler(BaseHTTPRequestHandler):
         log("access", message=format % args)
 
 if __name__ == "__main__":
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     log("listening", port=PORT)
     server.serve_forever()
 PY
-  python3 proof-output/clawhub-fixture-server.py > proof-output/clawhub-mock.log 2>&1 &
+  python3 -m py_compile proof-output/clawhub-fixture-server.py
+  python3 -u proof-output/clawhub-fixture-server.py > proof-output/clawhub-mock.log 2>&1 &
   CLAW_HUB_PID="$!"
   for attempt in $(seq 1 40); do
-    if curl -fsS "http://127.0.0.1:${CLAW_HUB_PORT}/api/v1/search?q=proof&limit=3" > proof-output/clawhub-search-smoke.json; then
+    if curl -fsS --max-time 2 "http://127.0.0.1:${CLAW_HUB_PORT}/api/v1/search?q=proof&limit=3" > proof-output/clawhub-search-smoke.json 2> proof-output/clawhub-health.err; then
+      printf 'fixture_pid=running\nfixture_health=ok\n' > proof-output/fixture-startup.txt
       return 0
     fi
     if ! kill -0 "${CLAW_HUB_PID}" >/dev/null 2>&1; then
+      {
+        echo "fixture_pid=exited"
+        echo "fixture_log:"
+        sed -n '1,120p' proof-output/clawhub-mock.log
+      } > proof-output/fixture-startup.txt
       echo "ClawHub fixture exited before becoming healthy" >&2
       return 1
     fi
     sleep 1
   done
+  {
+    echo "fixture_pid=running"
+    echo "fixture_health=timeout"
+    echo "fixture_log:"
+    sed -n '1,120p' proof-output/clawhub-mock.log
+    echo "health_error:"
+    sed -n '1,40p' proof-output/clawhub-health.err
+  } > proof-output/fixture-startup.txt
   echo "Timed out waiting for ClawHub fixture" >&2
   return 1
 }

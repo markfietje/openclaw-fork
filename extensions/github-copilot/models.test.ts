@@ -416,14 +416,12 @@ describe("github-copilot token", () => {
   it("fetches and stores token when cache is missing", async () => {
     jsonStoreMocks.loadJsonFile.mockReturnValue(undefined);
 
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchImpl = vi.fn().mockResolvedValue(
+      makeResponse(200, {
         token: "fresh;proxy-ep=https://proxy.contoso.test;",
         expires_at: Math.floor(Date.now() / 1000) + 3600,
       }),
-    });
+    );
 
     const res = await resolveCopilotApiToken({
       githubToken: "gh",
@@ -567,11 +565,7 @@ describe("fetchCopilotModelCatalog", () => {
   };
 
   it("maps Copilot /models entries to ModelDefinitionConfig with real context windows", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => sampleApiResponse,
-    });
+    const fetchImpl = vi.fn().mockResolvedValue(makeResponse(200, sampleApiResponse));
 
     const out = await fetchCopilotModelCatalog({
       copilotApiToken: "tid=test",
@@ -642,11 +636,7 @@ describe("fetchCopilotModelCatalog", () => {
   });
 
   it("strips trailing slash from baseUrl when building the /models URL", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ data: [] }),
-    });
+    const fetchImpl = vi.fn().mockResolvedValue(makeResponse(200, { data: [] }));
 
     await fetchCopilotModelCatalog({
       copilotApiToken: "tid=test",
@@ -658,10 +648,8 @@ describe("fetchCopilotModelCatalog", () => {
   });
 
   it("dedupes by id when API returns duplicates", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchImpl = vi.fn().mockResolvedValue(
+      makeResponse(200, {
         data: [
           {
             id: "gpt-5.5",
@@ -683,7 +671,7 @@ describe("fetchCopilotModelCatalog", () => {
           },
         ],
       }),
-    });
+    );
 
     const out = await fetchCopilotModelCatalog({
       copilotApiToken: "tid=test",
@@ -696,10 +684,8 @@ describe("fetchCopilotModelCatalog", () => {
   });
 
   it("falls back from malformed live token limits", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchImpl = vi.fn().mockResolvedValue(
+      makeResponse(200, {
         data: [
           {
             id: "gpt-bad-window",
@@ -727,7 +713,7 @@ describe("fetchCopilotModelCatalog", () => {
           },
         ],
       }),
-    });
+    );
 
     const out = await fetchCopilotModelCatalog({
       copilotApiToken: "tid=test",
@@ -749,11 +735,7 @@ describe("fetchCopilotModelCatalog", () => {
   });
 
   it("throws on non-2xx HTTP responses so the caller can fall back to the static catalog", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 401,
-      json: async () => ({}),
-    });
+    const fetchImpl = vi.fn().mockResolvedValue(makeResponse(401, {}));
 
     await expect(
       fetchCopilotModelCatalog({
@@ -766,11 +748,7 @@ describe("fetchCopilotModelCatalog", () => {
 
   it("throws provider-owned errors for malformed successful /models payloads", async () => {
     for (const payload of [[], { data: {} }, { data: [null] }]) {
-      const fetchImpl = vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => payload,
-      });
+      const fetchImpl = vi.fn().mockResolvedValue(makeResponse(200, payload));
 
       await expect(
         fetchCopilotModelCatalog({

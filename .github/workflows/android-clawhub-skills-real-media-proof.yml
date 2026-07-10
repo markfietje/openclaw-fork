@@ -206,6 +206,7 @@ jobs:
             proof-output/fixture-events.json
             proof-output/gateway-proof-summary.json
             proof-output/fixture-startup.txt
+            proof-output/gateway-skills-*.err
             proof-output/*-ui.xml
             proof-output/*.png
             proof-output/*.mp4

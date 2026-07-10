@@ -469,15 +469,15 @@ start_real_gateway() {
   run_openclaw_gateway_call skills.search \
     --params '{"query":"proof","limit":3}' \
     --timeout 20000 \
-    --json > proof-output/gateway-skills-search.json
+    --json > proof-output/gateway-skills-search.json 2> proof-output/gateway-skills-search.err
   run_openclaw_gateway_call skills.detail \
     --params '{"slug":"proof-clean-skill"}' \
     --timeout 20000 \
-    --json > proof-output/gateway-skills-detail.json
-  run_openclaw_gateway_call skills.securityVerdicts \
-    --params '{"items":[{"slug":"proof-clean-skill","version":"1.2.3","ownerHandle":"openclaw"}]}' \
+    --json > proof-output/gateway-skills-detail.json 2> proof-output/gateway-skills-detail.err
+  run_openclaw_gateway_call skills.securityReview \
+    --params '{"slug":"proof-clean-skill","version":"1.2.3","ownerHandle":"openclaw"}' \
     --timeout 20000 \
-    --json > proof-output/gateway-skills-verdict.json
+    --json > proof-output/gateway-skills-verdict.json 2> proof-output/gateway-skills-verdict.err
 
   python3 - <<'PY'
 from pathlib import Path
@@ -718,7 +718,7 @@ capture_png /sdcard/openclaw-06-clawhub-results.png proof-output/06-real-clawhub
 copy_ui_xml proof-output/06-clawhub-results-ui.xml
 record_screen /sdcard/openclaw-clawhub-results.mp4 proof-output/clawhub-results.mp4 6
 
-# Open the install review dialog. This is a real UI flow through skills.detail + skills.securityVerdicts.
+# Open the install review dialog. This is a real UI flow through skills.detail + skills.securityReview.
 tap_text "Install" "905 1930" "last"
 wait_for_text "$REVIEW_TITLE" 120
 capture_png /sdcard/openclaw-07-clawhub-review-dialog.png proof-output/07-real-clawhub-review-dialog.png
@@ -752,7 +752,7 @@ cat > proof-output/README.md <<EOF
 - Runner: GitHub-hosted ubuntu-24.04 + Android emulator API 35
 - App launch mode: normal Android launcher; screenshot mode disabled
 - Gateway path: Android Settings → Skills → ClawHub search → ClawHub install review dialog
-- RPC evidence: skills.search, skills.detail, skills.securityVerdicts via a temporary OpenClaw Gateway started from this checkout
+- RPC evidence: skills.search, skills.detail, skills.securityReview via a temporary OpenClaw Gateway started from this checkout
 - ClawHub fixture: local ClawHub-compatible HTTP service inside this Actions run, logged in clawhub-fixture.jsonl
 
 Key media:

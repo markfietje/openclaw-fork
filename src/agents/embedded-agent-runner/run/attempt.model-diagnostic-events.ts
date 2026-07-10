@@ -1,3 +1,4 @@
+import { isContextOverflow } from "@openclaw/ai/internal/runtime";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 /**
  * Emits diagnostic model-call events around embedded-agent stream functions.
@@ -28,7 +29,6 @@ import {
 } from "../../../infra/diagnostic-trace-context.js";
 import { emitDiagnosticsTimelineEvent } from "../../../infra/diagnostics-timeline.js";
 import type { AssistantMessage } from "../../../llm/types.js";
-import { isContextOverflow } from "../../../llm/utils/overflow.js";
 import { markDiagnosticRunProgress } from "../../../logging/diagnostic-run-activity.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import type {

@@ -269,6 +269,8 @@ function observeModelCallTerminalFields(state: ModelCallObservationState, value:
     const outputToolCalls = content?.filter(
       (block) => isRecord(block) && block.type === "toolCall",
     ).length;
+    // Keep this signal identical to runtime recovery classification. Prompt utilization is
+    // reported separately and may use richer provider usage than the recovery fallback.
     const contextOverflowDetected =
       value.role === "assistant"
         ? isContextOverflow(value as unknown as AssistantMessage, state.contextWindowTokens)

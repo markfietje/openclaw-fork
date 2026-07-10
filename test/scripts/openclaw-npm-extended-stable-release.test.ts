@@ -250,34 +250,44 @@ describe("extended-stable npm release request", () => {
       ...valid,
       bypassExtendedStableGuard: true,
       preflightOnly: true,
-      releaseTag: "v2026.6.11",
-      packageVersion: "2026.6.11",
+      releaseTag: sha,
+      npmWorkflowRef: "refs/heads/dev/throwaway-2026.0.33-v6.8",
+      extendedStableBranchSha: "",
       mainPackageVersion: "",
     };
     expect(validateExtendedStableNpmReleaseRequest(bypassed)).toEqual({
       extendedStable: true,
-      releaseVersion: "2026.6.11",
+      releaseVersion: "2026.6.33",
       extendedStableBranch: "extended-stable/2026.6.33",
       bypassExtendedStableGuard: true,
     });
     expect(() =>
-      validateExtendedStableNpmReleaseRequest({ ...bypassed, packageVersion: "2026.6.12" }),
-    ).toThrow(/package version mismatch/u);
+      validateExtendedStableNpmReleaseRequest({
+        ...bypassed,
+        packageVersion: "2026.6.33-beta.1",
+      }),
+    ).toThrow(/exact final vYYYY\.M\.P release tag/u);
     expect(() =>
       validateExtendedStableNpmReleaseRequest({
         ...bypassed,
         npmWorkflowRef: "refs/heads/dev/extended-stable-publish-test",
       }),
-    ).toThrow(/workflow ref mismatch/u);
+    ).toThrow(/requires workflow ref/u);
     expect(() =>
       validateExtendedStableNpmReleaseRequest({
         ...bypassed,
-        extendedStableBranchSha: "b".repeat(40),
+        checkoutSha: "b".repeat(40),
       }),
-    ).toThrow(/branch tip SHAs must match/u);
+    ).toThrow(/must match the checked-out commit/u);
     expect(() =>
       validateExtendedStableNpmReleaseRequest({ ...bypassed, preflightOnly: false }),
-    ).toThrow(/only for validation-only preflight/u);
+    ).toThrow(/requires validation-only preflight with a full commit SHA/u);
+    expect(() =>
+      validateExtendedStableNpmReleaseRequest({
+        ...bypassed,
+        releaseTag: "v2026.6.33",
+      }),
+    ).toThrow(/requires validation-only preflight with a full commit SHA/u);
   });
 
   it("rejects bypass on a regular npm release request", () => {

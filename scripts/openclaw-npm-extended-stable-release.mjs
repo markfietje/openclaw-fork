@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { parseReleaseVersion } from "./lib/npm-publish-plan.mjs";
 
 const SUPPORTED_DIST_TAGS = new Set(["alpha", "beta", "latest", "extended-stable"]);
+const THROWAWAY_REHEARSAL_REF = "refs/heads/dev/throwaway-2026.0.33-v6.8";
 
 export function parseExtendedStableGuardBypass(value = "") {
   if (value === "" || value === "false") {
@@ -74,8 +75,15 @@ export function validateExtendedStableNpmReleaseRequest(request) {
   requireExtendedStableBypassTag(request.npmDistTag, bypassExtendedStableGuard);
   const shaPreflight =
     request.preflightOnly === true && /^[0-9a-f]{40}$/iu.test(request.releaseTag);
-  if (bypassExtendedStableGuard && request.preflightOnly !== true) {
-    throw new Error("Extended-stable guard bypass is allowed only for validation-only preflight.");
+  if (bypassExtendedStableGuard && !shaPreflight) {
+    throw new Error(
+      "Extended-stable guard bypass requires validation-only preflight with a full commit SHA.",
+    );
+  }
+  if (bypassExtendedStableGuard && request.npmWorkflowRef !== THROWAWAY_REHEARSAL_REF) {
+    throw new Error(
+      `Extended-stable guard bypass requires workflow ref ${THROWAWAY_REHEARSAL_REF}.`,
+    );
   }
   if (shaPreflight) {
     if (!/^[0-9a-f]{40}$/iu.test(request.checkoutSha)) {

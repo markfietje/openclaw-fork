@@ -26,6 +26,52 @@ export type PersistedClawInstall = {
   updatedAtMs: number;
 };
 
+type InstallRow = {
+  schema_version: string;
+  source_kind: "package" | "development";
+  claw_name: string;
+  claw_version: string;
+  package_root: string;
+  manifest_path: string;
+  integrity_kind: "artifact" | "development-snapshot";
+  integrity: string;
+  source_byte_length: number | bigint;
+  manifest_schema_version: number | bigint;
+  plan_integrity: string;
+  agent_id: string;
+  workspace: string;
+  agent_config_digest: string;
+  agent_owned_paths_json: string;
+  status: ClawInstallStatus;
+  added_at_ms: number | bigint;
+  updated_at_ms: number | bigint;
+};
+
+function rowToInstall(row: InstallRow): PersistedClawInstall {
+  return {
+    schemaVersion: CLAW_INSTALL_RECORD_SCHEMA_VERSION,
+    claw: {
+      kind: row.source_kind,
+      name: row.claw_name,
+      version: row.claw_version,
+      packageRoot: row.package_root,
+      manifestPath: row.manifest_path,
+      integrityKind: row.integrity_kind,
+      integrity: row.integrity,
+      byteLength: Number(row.source_byte_length),
+    },
+    manifestSchemaVersion: Number(row.manifest_schema_version) as ClawAddPlan["manifestSchemaVersion"],
+    planIntegrity: row.plan_integrity,
+    agentId: row.agent_id,
+    workspace: row.workspace,
+    agentConfigDigest: row.agent_config_digest,
+    agentOwnedPaths: JSON.parse(row.agent_owned_paths_json) as string[],
+    status: row.status,
+    addedAtMs: Number(row.added_at_ms),
+    updatedAtMs: Number(row.updated_at_ms),
+  };
+}
+
 function digestAgentConfig(plan: ClawAddPlan): string {
   return `sha256:${createHash("sha256").update(stableStringify(plan.agent.config)).digest("hex")}`;
 }
@@ -105,6 +151,45 @@ export function updateClawInstallRecordStatus(
       agentId,
     );
   }, options);
+}
+
+export function readClawInstallRecord(
+  agentId: string,
+  options: OpenClawStateDatabaseOptions = {},
+): PersistedClawInstall | undefined {
+  const database = openOpenClawStateDatabase(options);
+  // sqlite-allow-raw: read-only Claw install lookup with a closed agent-id filter.
+  const row = database.db
+    .prepare(
+      `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
+              manifest_path, integrity_kind, integrity, source_byte_length,
+              manifest_schema_version, plan_integrity, agent_id, workspace,
+              agent_config_digest, agent_owned_paths_json, status, added_at_ms,
+              updated_at_ms
+         FROM claw_installs
+        WHERE agent_id = ?`,
+    )
+    .get(agentId) as InstallRow | undefined;
+  return row ? rowToInstall(row) : undefined;
+}
+
+export function readClawInstallRecords(
+  options: OpenClawStateDatabaseOptions = {},
+): PersistedClawInstall[] {
+  const database = openOpenClawStateDatabase(options);
+  // sqlite-allow-raw: read-only Claw install inventory ordered by stable agent id.
+  const rows = database.db
+    .prepare(
+      `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
+              manifest_path, integrity_kind, integrity, source_byte_length,
+              manifest_schema_version, plan_integrity, agent_id, workspace,
+              agent_config_digest, agent_owned_paths_json, status, added_at_ms,
+              updated_at_ms
+         FROM claw_installs
+        ORDER BY agent_id`,
+    )
+    .all() as InstallRow[];
+  return rows.map(rowToInstall);
 }
 
 const CLAW_PACKAGE_REF_SCHEMA_VERSION = "openclaw.clawPackageRef.v1" as const;

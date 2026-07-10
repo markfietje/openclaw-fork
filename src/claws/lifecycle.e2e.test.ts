@@ -194,6 +194,47 @@ describe("claws lifecycle cli e2e", () => {
     );
   });
 
+  it("reports and removes a Claw-created agent through plan-first lifecycle commands", async () => {
+    const added = await runOpenClaw([
+      "claws",
+      "add",
+      "src/claws/fixtures/workspace-agent.claw.json",
+      "--yes",
+      "--json",
+    ]);
+    const status = await runOpenClaw(["claws", "status", "workspace-agent", "--json"], {
+      stateDir: added.stateDir,
+    });
+    expect(parseJson(status.stdout)).toMatchObject({
+      schemaVersion: "openclaw.clawStatus.v1",
+      summary: { claws: 1, driftedFiles: 0 },
+      records: [{ install: { agentId: "workspace-agent" }, agentState: "present" }],
+    });
+
+    const preview = await runOpenClaw(
+      ["claws", "remove", "workspace-agent", "--dry-run", "--json"],
+      { stateDir: added.stateDir },
+    );
+    expect(parseJson(preview.stdout)).toMatchObject({
+      schemaVersion: "openclaw.clawRemovePlan.v1",
+      mutationAllowed: false,
+      agentId: "workspace-agent",
+      blockers: [],
+    });
+
+    const removed = await runOpenClaw(["claws", "remove", "workspace-agent", "--yes", "--json"], {
+      stateDir: added.stateDir,
+    });
+    expect(parseJson(removed.stdout)).toMatchObject({
+      schemaVersion: "openclaw.clawRemoveResult.v1",
+      status: "complete",
+      agentId: "workspace-agent",
+      agentRemoved: true,
+    });
+    const config = JSON.parse(await readFile(join(added.stateDir, "openclaw.json"), "utf8"));
+    expect(config.agents.list).toEqual([]);
+  });
+
   it("blocks mutation when declared components need later lifecycle slices", async () => {
     const preview = await runOpenClaw(["claws", "add", manifestPath, "--dry-run", "--json"], {
       expectFailure: true,

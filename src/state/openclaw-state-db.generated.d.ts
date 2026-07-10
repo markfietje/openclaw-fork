@@ -234,6 +234,17 @@ export interface ClawInstalls {
   workspace: string;
 }
 
+export interface ClawMcpServerRefs {
+  agent_id: string;
+  config_digest: string;
+  created_at_ms: number;
+  error: string | null;
+  name: string;
+  schema_version: string;
+  status: string;
+  updated_at_ms: number;
+}
+
 export interface ClawPackageRefs {
   agent_id: string;
   claw_name: string;
@@ -1087,6 +1098,7 @@ export interface DB {
   channel_pairing_requests: ChannelPairingRequests;
   claw_cron_refs: ClawCronRefs;
   claw_installs: ClawInstalls;
+  claw_mcp_server_refs: ClawMcpServerRefs;
   claw_package_refs: ClawPackageRefs;
   clawhub_promotion_claims: ClawhubPromotionClaims;
   clawhub_promotions_feed_state: ClawhubPromotionsFeedState;

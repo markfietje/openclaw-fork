@@ -29,6 +29,7 @@ import {
 import { agentsDeleteCommand } from "../commands/agents.commands.delete.js";
 // Runtime handlers for experimental local Claws commands.
 import { loadConfig } from "../config/config.js";
+import { redactSensitiveArgv } from "../config/redact-argv.js";
 import {
   defaultRuntime,
   writeRuntimeJson,
@@ -65,6 +66,21 @@ function logClawAddPlanSummary(plan: ClawAddPlan, runtime: RuntimeEnv): void {
   runtime.log(`Actions: ${plan.summary.totalActions}`);
   runtime.log(`Packages: ${plan.summary.packageActions}`);
   runtime.log(`MCP servers: ${plan.summary.mcpServerActions}`);
+  for (const action of plan.actions.filter((candidate) => candidate.kind === "mcpServer")) {
+    const server = action.details as Record<string, unknown> | undefined;
+    const target =
+      typeof server?.url === "string"
+        ? server.url
+        : typeof server?.command === "string"
+          ? redactSensitiveArgv([
+              server.command,
+              ...(Array.isArray(server.args)
+                ? server.args.filter((arg): arg is string => typeof arg === "string")
+                : []),
+            ]).join(" ")
+          : "invalid declaration";
+    runtime.log(`  MCP ${action.id}: ${target}`);
+  }
   runtime.log(`Cron jobs: ${plan.summary.cronJobActions}`);
   if (plan.summary.blockedActions > 0) {
     runtime.log(`Blocked actions: ${plan.summary.blockedActions}`);
@@ -271,7 +287,7 @@ export async function runClawsStatusCommand(
         `${record.install.agentId}: ${record.install.claw.name}@${record.install.claw.version} (${record.install.status})`,
       );
       runtime.log(
-        `  Agent: ${record.agentState}; files: ${record.workspaceFiles.length}; packages: ${record.packages.length}`,
+        `  Agent: ${record.agentState}; files: ${record.workspaceFiles.length}; packages: ${record.packages.length}; MCP: ${record.mcpServers.length}; cron: ${record.cronJobs.length}`,
       );
     }
   }

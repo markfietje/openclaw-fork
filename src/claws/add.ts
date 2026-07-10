@@ -13,6 +13,11 @@ import {
   type ClawCronGateway,
   type PersistedClawCronRef,
 } from "./cron.js";
+import {
+  ClawMcpInstallError,
+  installClawMcpServers,
+  type PersistedClawMcpServerRef,
+} from "./mcp.js";
 import { ClawPackageInstallError, installClawPackages } from "./packages.js";
 import {
   persistClawInstallRecord,
@@ -53,6 +58,7 @@ export type ClawAddResult = {
   configCommitted: boolean;
   workspaceFiles: PersistedClawWorkspaceFile[];
   packages: PersistedClawPackageRef[];
+  mcpServers: PersistedClawMcpServerRef[];
   cronJobs: PersistedClawCronRef[];
   installRecord?: PersistedClawInstall;
   error?: {
@@ -65,7 +71,9 @@ export type ClawAddResult = {
 function hasUnsupportedMutationActions(plan: ClawAddPlan): boolean {
   return plan.actions.some(
     (action) =>
-      !["agent", "workspace", "workspaceFile", "package", "cronJob"].includes(action.kind),
+      !["agent", "workspace", "workspaceFile", "package", "mcpServer", "cronJob"].includes(
+        action.kind,
+      ),
   );
 }
 
@@ -76,6 +84,7 @@ function partialResult(params: {
   configCommitted: boolean;
   workspaceFiles?: PersistedClawWorkspaceFile[];
   packages?: PersistedClawPackageRef[];
+  mcpServers?: PersistedClawMcpServerRef[];
   cronJobs?: PersistedClawCronRef[];
   error: ClawAddResult["error"];
   nowMs?: number;
@@ -92,6 +101,7 @@ function partialResult(params: {
     configCommitted: params.configCommitted,
     workspaceFiles: params.workspaceFiles ?? [],
     packages: params.packages ?? [],
+    mcpServers: params.mcpServers ?? [],
     cronJobs: params.cronJobs ?? [],
     installRecord: {
       ...params.installRecord,
@@ -111,6 +121,7 @@ export async function applyClawAddPlan(
     createWorkspaceFiles?: typeof createClawWorkspaceFiles;
     runtime?: RuntimeEnv;
     installPackages?: typeof installClawPackages;
+    installMcpServers?: typeof installClawMcpServers;
     installCronJobs?: typeof installClawCronJobs;
     cronGateway?: Pick<ClawCronGateway, "add" | "list">;
     nowMs?: number;
@@ -122,7 +133,7 @@ export async function applyClawAddPlan(
   if (hasUnsupportedMutationActions(plan)) {
     throw new ClawAddMutationError(
       "unsupported_components",
-      "This build can add agent settings, workspace files, packages, and cron jobs; declared MCP servers require a later lifecycle slice.",
+      "This build cannot add one or more declared Claw component kinds.",
     );
   }
 
@@ -259,6 +270,33 @@ export async function applyClawAddPlan(
     });
   }
 
+  const installMcpServers = options.installMcpServers ?? installClawMcpServers;
+  let mcpServers: PersistedClawMcpServerRef[] = [];
+  try {
+    mcpServers = await installMcpServers(plan, options);
+  } catch (error) {
+    const mcpError =
+      error instanceof ClawMcpInstallError
+        ? error
+        : new ClawMcpInstallError(
+            "mcp_install_failed",
+            error instanceof Error ? error.message : String(error),
+            mcpServers,
+          );
+    updateRecord(plan.agent.finalId, "partial", options);
+    return partialResult({
+      plan,
+      installRecord,
+      workspaceCreated: true,
+      configCommitted: true,
+      workspaceFiles,
+      packages,
+      mcpServers: mcpError.mcpServers,
+      error: { code: mcpError.code, message: mcpError.message },
+      nowMs: options.nowMs,
+    });
+  }
+
   const installCronJobs = options.installCronJobs ?? installClawCronJobs;
   let cronJobs: PersistedClawCronRef[] = [];
   try {
@@ -280,6 +318,7 @@ export async function applyClawAddPlan(
       configCommitted: true,
       workspaceFiles,
       packages,
+      mcpServers,
       cronJobs: cronError.cronJobs,
       error: { code: cronError.code, message: cronError.message },
       nowMs: options.nowMs,
@@ -296,6 +335,7 @@ export async function applyClawAddPlan(
       configCommitted: true,
       workspaceFiles,
       packages,
+      mcpServers,
       cronJobs,
       error: { code: "provenance_failed", message: (error as Error).message },
       nowMs: options.nowMs,
@@ -313,6 +353,7 @@ export async function applyClawAddPlan(
     workspaceCreated: true,
     configCommitted: true,
     packages,
+    mcpServers,
     cronJobs,
     workspaceFiles,
     installRecord: {

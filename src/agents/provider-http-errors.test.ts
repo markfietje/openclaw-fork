@@ -9,6 +9,7 @@ import {
   ProviderHttpError,
   readProviderBinaryResponse,
   readProviderJsonResponse,
+  readProviderTextResponse,
 } from "./provider-http-errors.js";
 
 function createStreamingBinaryResponse(params: {
@@ -32,6 +33,33 @@ function createStreamingBinaryResponse(params: {
     response: new Response(stream, {
       status: 200,
       headers: { "Content-Type": "audio/mpeg" },
+    }),
+    getReadCount: () => reads,
+  };
+}
+
+function createStreamingTextResponse(params: {
+  chunkCount: number;
+  chunkSize: number;
+  contentType: string;
+  byte: string;
+}): { response: Response; getReadCount: () => number } {
+  let reads = 0;
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (reads >= params.chunkCount) {
+        controller.close();
+        return;
+      }
+      reads += 1;
+      controller.enqueue(encoder.encode(params.byte.repeat(params.chunkSize)));
+    },
+  });
+  return {
+    response: new Response(stream, {
+      status: 200,
+      headers: { "Content-Type": params.contentType },
     }),
     getReadCount: () => reads,
   };
@@ -175,6 +203,38 @@ describe("provider error utils", () => {
     await expect(readProviderJsonResponse(response, "Provider catalog failed")).rejects.toThrow(
       "Provider catalog failed: malformed JSON response",
     );
+  });
+
+  it("caps successful JSON responses instead of buffering oversized bodies", async () => {
+    const streamed = createStreamingTextResponse({
+      chunkCount: 20,
+      chunkSize: 1024,
+      contentType: "application/json",
+      byte: "a",
+    });
+
+    await expect(
+      readProviderJsonResponse(streamed.response, "Provider catalog failed", {
+        maxBytes: 2048,
+      }),
+    ).rejects.toThrow("Provider catalog failed: JSON response exceeds 2048 bytes");
+    expect(streamed.getReadCount()).toBeLessThan(20);
+  });
+
+  it("caps successful text responses instead of buffering oversized bodies", async () => {
+    const streamed = createStreamingTextResponse({
+      chunkCount: 20,
+      chunkSize: 1024,
+      contentType: "text/plain",
+      byte: "x",
+    });
+
+    await expect(
+      readProviderTextResponse(streamed.response, "Provider text failed", {
+        maxBytes: 2048,
+      }),
+    ).rejects.toThrow("Provider text failed: text response exceeds 2048 bytes");
+    expect(streamed.getReadCount()).toBeLessThan(20);
   });
 
   it("caps successful binary responses instead of buffering oversized bodies", async () => {

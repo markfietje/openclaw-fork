@@ -1,5 +1,5 @@
 /** Tests Chutes OAuth token exchange and refresh HTTP flows. */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { withFetchPreconnect } from "../test-utils/fetch-mock.js";
 import {
   CHUTES_TOKEN_ENDPOINT,

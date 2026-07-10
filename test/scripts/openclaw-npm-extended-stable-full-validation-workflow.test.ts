@@ -23,7 +23,10 @@ function stepRun(path: string, jobName: string, stepName: string): string {
   return step.run;
 }
 
-function runReleaseChecksTrustedRefGuard(workflowRef: string): ReturnType<typeof spawnSync> {
+function runReleaseChecksTrustedRefGuard(
+  workflowRef: string,
+  releaseRef = "extended-stable/2026.6.33",
+): ReturnType<typeof spawnSync> {
   const guard = stepRun(
     releaseChecksPath,
     "resolve_target",
@@ -33,7 +36,7 @@ function runReleaseChecksTrustedRefGuard(workflowRef: string): ReturnType<typeof
     encoding: "utf8",
     env: {
       ...process.env,
-      RELEASE_REF: "extended-stable/2026.6.33",
+      RELEASE_REF: releaseRef,
       WORKFLOW_REF: workflowRef,
     },
   });
@@ -106,5 +109,14 @@ describe("extended-stable Full Release Validation workflow", () => {
       expect(result.status, invalid).not.toBe(0);
       expect(result.stderr).toContain("extended-stable/YYYY.M.33");
     }
+  });
+
+  it("accepts the exact throwaway branch only with a full target SHA", () => {
+    const workflowRef = "refs/heads/dev/throwaway-2026.0.33-v6.8";
+    expect(runReleaseChecksTrustedRefGuard(workflowRef, "a".repeat(40)).status).toBe(0);
+
+    const rejected = runReleaseChecksTrustedRefGuard(workflowRef, "dev/throwaway-2026.0.33-v6.8");
+    expect(rejected.status).not.toBe(0);
+    expect(rejected.stderr).toContain("at a full SHA");
   });
 });

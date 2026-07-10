@@ -175,7 +175,11 @@ function resolveSandboxBrowserRefreshDelayMs(res: Response): number | undefined 
   return SANDBOX_BROWSER_REFRESH_RETRY_AFTER_SECONDS * 1000;
 }
 
-function isSandboxBrowserReconnectError(err: unknown): boolean {
+type SandboxBrowserReconnectFailure = "preconnect" | "ambiguous";
+
+function classifySandboxBrowserReconnectFailure(
+  err: unknown,
+): SandboxBrowserReconnectFailure | null {
   const error =
     (typeof err === "object" || typeof err === "function") && err !== null
       ? (err as { cause?: unknown; code?: unknown })
@@ -184,20 +188,29 @@ function isSandboxBrowserReconnectError(err: unknown): boolean {
     typeof error?.cause === "object" && error.cause !== null
       ? (error.cause as { code?: unknown })
       : undefined;
-  const codes = [error?.code, cause?.code];
-  if (
-    codes.some((code) =>
-      typeof code === "string"
-        ? ["ECONNREFUSED", "ECONNRESET", "EPIPE", "UND_ERR_SOCKET"].includes(code.toUpperCase())
-        : false,
-    )
-  ) {
-    return true;
+  const codes = [error?.code, cause?.code]
+    .filter((code): code is string => typeof code === "string")
+    .map((code) => code.toUpperCase());
+  if (codes.includes("ECONNREFUSED")) {
+    return "preconnect";
+  }
+  if (codes.some((code) => ["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"].includes(code))) {
+    return "ambiguous";
   }
   const message = normalizeLowercaseStringOrEmpty(
     `${normalizeErrorMessage(err)} ${cause === undefined ? "" : normalizeErrorMessage(cause)}`,
   );
-  return /connection (?:refused|reset)|socket hang up|fetch failed/.test(message);
+  if (/\b(?:connection refused|econnrefused)\b/.test(message)) {
+    return "preconnect";
+  }
+  return /connection reset|socket hang up|fetch failed/.test(message) ? "ambiguous" : null;
+}
+
+function allowsAmbiguousBrowserReconnectRetry(method: string | undefined): boolean {
+  // A reset can happen after a mutation was dispatched. Only reads are safe
+  // to replay when the transport cannot prove the request stayed pre-connect.
+  const normalized = normalizeLowercaseStringOrEmpty(method) || "get";
+  return normalized === "get" || normalized === "head";
 }
 
 async function waitForSandboxBrowserRetry(ms: number, signal: AbortSignal): Promise<void> {
@@ -382,6 +395,7 @@ async function fetchHttpJson<T>(
   }
 
   const t = setTimeout(() => ctrl.abort(new Error("timed out")), timeoutMs);
+  const allowAmbiguousReconnectRetry = allowsAmbiguousBrowserReconnectRetry(init.method);
   let refreshRetryArmed = false;
   try {
     while (true) {
@@ -399,7 +413,11 @@ async function fetchHttpJson<T>(
           release = guarded.release;
           res = guarded.response;
         } catch (err) {
-          if (!refreshRetryArmed || ctrl.signal.aborted || !isSandboxBrowserReconnectError(err)) {
+          const reconnectFailure = classifySandboxBrowserReconnectFailure(err);
+          const reconnectRetryAllowed =
+            reconnectFailure === "preconnect" ||
+            (reconnectFailure === "ambiguous" && allowAmbiguousReconnectRetry);
+          if (!refreshRetryArmed || ctrl.signal.aborted || !reconnectRetryAllowed) {
             throw err;
           }
           await waitForSandboxBrowserRetry(SANDBOX_BROWSER_RECONNECT_RETRY_MS, ctrl.signal);

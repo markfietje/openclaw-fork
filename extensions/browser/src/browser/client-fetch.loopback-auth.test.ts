@@ -599,10 +599,10 @@ describe("fetchBrowserJson loopback auth", () => {
     expect(ssrfMocks.release).toHaveBeenCalledTimes(2);
   });
 
-  it("retries a reconnect-class error only after a valid refresh marker", async () => {
+  it("retries an ambiguous reconnect for a read only after a valid refresh marker", async () => {
     mocks.getBridgeAuthForPort.mockReturnValue({ token: "bridge-token" });
     const reconnect = new TypeError("fetch failed", {
-      cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+      cause: Object.assign(new Error("socket reset after response"), { code: "UND_ERR_SOCKET" }),
     });
     const fetchMock = vi
       .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
@@ -628,6 +628,76 @@ describe("fetchBrowserJson loopback auth", () => {
       { ok: true },
     );
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries a pre-connect failure for a POST after a valid refresh marker", async () => {
+    mocks.getBridgeAuthForPort.mockReturnValue({ token: "bridge-token" });
+    const refused = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+    });
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        new Response("refreshing", {
+          status: 503,
+          headers: {
+            [SANDBOX_BROWSER_REFRESH_HEADER]: SANDBOX_BROWSER_REFRESH_VALUE,
+            "Retry-After": "0",
+          },
+        }),
+      )
+      .mockRejectedValueOnce(refused)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchBrowserJson<{ ok: boolean }>("http://127.0.0.1:18888/act", {
+        method: "POST",
+        body: JSON.stringify({ kind: "click" }),
+      }),
+    ).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not replay a POST after an ambiguous reconnect failure", async () => {
+    mocks.getBridgeAuthForPort.mockReturnValue({ token: "bridge-token" });
+    const resetAfterDispatch = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("socket reset after request dispatch"), {
+        code: "UND_ERR_SOCKET",
+      }),
+    });
+    const fetchMock = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        new Response("refreshing", {
+          status: 503,
+          headers: {
+            [SANDBOX_BROWSER_REFRESH_HEADER]: SANDBOX_BROWSER_REFRESH_VALUE,
+            "Retry-After": "0",
+          },
+        }),
+      )
+      .mockRejectedValueOnce(resetAfterDispatch)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ duplicated: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchBrowserJson("http://127.0.0.1:18888/act", {
+        method: "POST",
+        body: JSON.stringify({ kind: "click" }),
+      }),
+    ).rejects.toThrow("Can't reach the OpenClaw browser control service");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it.each([

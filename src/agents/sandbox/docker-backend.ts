@@ -68,7 +68,7 @@ function createDockerSandboxBackendHandle(params: {
     capabilities: {
       browser: true,
     },
-    async buildExecSpec({ command, workdir, env, usePty }) {
+    async buildExecSpec({ command, workdir, env, usePty, signal }) {
       const argv = [
         "docker",
         ...buildDockerExecArgs({
@@ -79,7 +79,7 @@ function createDockerSandboxBackendHandle(params: {
           tty: usePty,
         }),
       ];
-      const activity = await acquireSandboxActivity(params.containerName);
+      const activity = await acquireSandboxActivity(params.containerName, signal);
       return {
         argv,
         env: process.env,

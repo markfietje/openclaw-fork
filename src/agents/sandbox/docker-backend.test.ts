@@ -2,6 +2,7 @@
 // handling for sandbox and browser containers.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { createDeferred } from "../../shared/deferred.js";
 import { withSandboxIdleMutation } from "./activity.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
 
@@ -224,5 +225,52 @@ describe("docker sandbox backend manager", () => {
     });
     await mutation;
     expect(mutated).toHaveBeenCalledOnce();
+  });
+
+  it("aborts exec activity while a sandbox mutation is pending", async () => {
+    dockerMocks.ensureSandboxContainer.mockResolvedValue("sandbox-abortable");
+    const cfg = resolveSandboxConfigForAgent(createConfig(), "coder");
+    const backend = await createDockerSandboxBackend({
+      sessionKey: "agent:coder:main",
+      scopeKey: "agent:coder:main",
+      workspaceDir: "/tmp/workspace",
+      agentWorkspaceDir: "/tmp/workspace",
+      cfg,
+    });
+    const mutationStarted = createDeferred();
+    const finishMutation = createDeferred();
+    const mutation = withSandboxIdleMutation("sandbox-abortable", async () => {
+      mutationStarted.resolve();
+      await finishMutation.promise;
+    });
+    await mutationStarted.promise;
+
+    try {
+      const controller = new AbortController();
+      const queuedExec = backend.buildExecSpec({
+        command: "echo queued",
+        env: {},
+        usePty: false,
+        signal: controller.signal,
+      });
+      controller.abort();
+
+      await expect(queuedExec).rejects.toMatchObject({ name: "AbortError" });
+    } finally {
+      finishMutation.resolve();
+      await mutation;
+    }
+
+    const next = await backend.buildExecSpec({
+      command: "echo next",
+      env: {},
+      usePty: false,
+    });
+    await backend.finalizeExec?.({
+      status: "completed",
+      exitCode: 0,
+      timedOut: false,
+      token: next.finalizeToken,
+    });
   });
 });

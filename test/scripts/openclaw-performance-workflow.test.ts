@@ -18,6 +18,11 @@ type WorkflowJob = {
 };
 
 type Workflow = {
+  on?: {
+    workflow_dispatch?: {
+      inputs?: Record<string, { default?: unknown }>;
+    };
+  };
   jobs?: Record<string, WorkflowJob>;
 };
 
@@ -39,6 +44,18 @@ describe("OpenClaw performance workflow", () => {
 
     expect(workflow).toContain(`default: ${kovaRef}`);
     expect(workflow).toContain(`inputs.kova_ref || '${kovaRef}'`);
+  });
+
+  it("keeps manual rehearsal reports artifact-only by default", () => {
+    const workflow = readWorkflow();
+    const detect = findStep("Detect clawgrit report token");
+    const prepare = findStep("Prepare clawgrit reports checkout");
+    const publish = findStep("Publish to clawgrit reports");
+
+    expect(workflow.on?.workflow_dispatch?.inputs?.publish_reports?.default).toBe(false);
+    expect(detect.if).toContain("inputs.publish_reports == true");
+    expect(prepare.if).toContain("inputs.publish_reports == true");
+    expect(publish.if).toContain("inputs.publish_reports == true");
   });
 
   it("uses the clawgrit reports token for every report repo push path", () => {

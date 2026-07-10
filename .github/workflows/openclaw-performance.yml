@@ -40,6 +40,11 @@ on:
         required: false
         default: false
         type: boolean
+      publish_reports:
+        description: Publish completed reports to openclaw/clawgrit-reports
+        required: false
+        default: false
+        type: boolean
       kova_ref:
         description: openclaw/Kova Git ref to install
         required: false
@@ -131,7 +136,7 @@ jobs:
 
       - name: Detect clawgrit report token
         id: clawgrit
-        if: steps.lane.outputs.run == 'true'
+        if: ${{ steps.lane.outputs.run == 'true' && (github.event_name == 'schedule' || inputs.publish_reports == true) }}
         env:
           CLAWGRIT_REPORTS_TOKEN: ${{ secrets.CLAWGRIT_REPORTS_TOKEN }}
         shell: bash
@@ -562,7 +567,7 @@ jobs:
 
       - name: Prepare clawgrit reports checkout
         id: clawgrit_reports
-        if: ${{ steps.kova.outputs.report_json != '' && steps.clawgrit.outputs.present == 'true' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_reports == true) && steps.kova.outputs.report_json != '' && steps.clawgrit.outputs.present == 'true' }}
         env:
           CLAWGRIT_REPORTS_TOKEN: ${{ secrets.CLAWGRIT_REPORTS_TOKEN }}
         shell: bash
@@ -585,7 +590,7 @@ jobs:
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish to clawgrit reports
-        if: ${{ steps.kova.outputs.report_json != '' && steps.clawgrit.outputs.present == 'true' && steps.clawgrit_reports.outputs.ready == 'true' }}
+        if: ${{ (github.event_name == 'schedule' || inputs.publish_reports == true) && steps.kova.outputs.report_json != '' && steps.clawgrit.outputs.present == 'true' && steps.clawgrit_reports.outputs.ready == 'true' }}
         env:
           CLAWGRIT_REPORTS_TOKEN: ${{ secrets.CLAWGRIT_REPORTS_TOKEN }}
         shell: bash

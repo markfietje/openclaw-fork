@@ -949,14 +949,25 @@ copy_ui_xml proof-output/13-malicious-blocked-ui.xml
 record_screen /sdcard/openclaw-malicious-blocked.mp4 proof-output/malicious-blocked.mp4 8
 assert_fixture_download_count "proof-malicious-skill" 0 "malicious-ui-blocked"
 
-if run_openclaw_gateway_call skills.install \
-    --params '{"source":"clawhub","slug":"proof-malicious-skill","version":"1.2.3","acknowledgeClawHubRisk":true,"timeoutMs":20000}' \
-    --timeout 30000 \
-    --json > proof-output/malicious-gateway-install.json 2> proof-output/malicious-gateway-install.err; then
-  echo "Malicious Gateway install unexpectedly succeeded" >&2
-  exit 1
-fi
-grep -Eqi 'blocked|malicious|clawhub_download_blocked' proof-output/malicious-gateway-install.err
+run_openclaw_gateway_call skills.install \
+  --params '{"source":"clawhub","slug":"proof-malicious-skill","version":"1.2.3","acknowledgeClawHubRisk":true,"timeoutMs":20000}' \
+  --timeout 30000 \
+  --json > proof-output/malicious-gateway-install.json 2> proof-output/malicious-gateway-install.err || true
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+payload = json.loads(Path('proof-output/malicious-gateway-install.json').read_text())
+error = payload.get('error') if isinstance(payload, dict) else None
+details = error.get('details') if isinstance(error, dict) else None
+if payload.get('ok') is not False:
+    raise SystemExit('Malicious Gateway install unexpectedly returned ok != false')
+if not isinstance(details, dict) or details.get('clawhubTrustCode') != 'clawhub_download_blocked':
+    raise SystemExit(f'Missing clawhub_download_blocked response: {payload!r}')
+message = str(error.get('message') or '')
+if 'install was not started' not in message:
+    raise SystemExit(f'Missing explicit no-install message: {message!r}')
+PY
 assert_fixture_download_count "proof-malicious-skill" 0 "malicious-gateway-rejected"
 
 python3 - <<'PY'

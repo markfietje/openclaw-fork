@@ -7,6 +7,12 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
+import {
+  ClawCronInstallError,
+  installClawCronJobs,
+  type ClawCronGateway,
+  type PersistedClawCronRef,
+} from "./cron.js";
 import { ClawPackageInstallError, installClawPackages } from "./packages.js";
 import {
   persistClawInstallRecord,
@@ -48,6 +54,7 @@ type ClawAddResult = {
   configCommitted: boolean;
   workspaceFiles: PersistedClawWorkspaceFile[];
   packages: PersistedClawPackageRef[];
+  cronJobs: PersistedClawCronRef[];
   installRecord?: PersistedClawInstall;
   error?: {
     code: string;
@@ -58,7 +65,8 @@ type ClawAddResult = {
 
 function hasUnsupportedMutationActions(plan: ClawAddPlan): boolean {
   return plan.actions.some(
-    (action) => !["agent", "workspace", "workspaceFile", "package"].includes(action.kind),
+    (action) =>
+      !["agent", "workspace", "workspaceFile", "package", "cronJob"].includes(action.kind),
   );
 }
 
@@ -69,6 +77,7 @@ function partialResult(params: {
   configCommitted: boolean;
   workspaceFiles?: PersistedClawWorkspaceFile[];
   packages?: PersistedClawPackageRef[];
+  cronJobs?: PersistedClawCronRef[];
   error: ClawAddResult["error"];
   nowMs?: number;
 }): ClawAddResult {
@@ -85,6 +94,7 @@ function partialResult(params: {
     configCommitted: params.configCommitted,
     workspaceFiles: params.workspaceFiles ?? [],
     packages: params.packages ?? [],
+    cronJobs: params.cronJobs ?? [],
     installRecord: {
       ...params.installRecord,
       status: "partial",
@@ -104,6 +114,8 @@ export async function applyClawAddPlan(
     createWorkspaceFiles?: typeof createClawWorkspaceFiles;
     runtime?: RuntimeEnv;
     installPackages?: typeof installClawPackages;
+    installCronJobs?: typeof installClawCronJobs;
+    cronGateway?: Pick<ClawCronGateway, "add">;
     nowMs?: number;
   } = {},
 ): Promise<ClawAddResult> {
@@ -113,7 +125,7 @@ export async function applyClawAddPlan(
   if (hasUnsupportedMutationActions(plan)) {
     throw new ClawAddMutationError(
       "unsupported_components",
-      "This build can add agent settings, workspace files, and declared packages; MCP servers and cron jobs require later lifecycle slices.",
+      "This build can add agent settings, workspace files, packages, and cron jobs; declared MCP servers require a later lifecycle slice.",
     );
   }
   if (options.consentPlanIntegrity !== plan.planIntegrity) {
@@ -272,6 +284,33 @@ export async function applyClawAddPlan(
     });
   }
 
+  const installCronJobs = options.installCronJobs ?? installClawCronJobs;
+  let cronJobs: PersistedClawCronRef[] = [];
+  try {
+    cronJobs = await installCronJobs(plan, { ...options, gateway: options.cronGateway });
+  } catch (error) {
+    const cronError =
+      error instanceof ClawCronInstallError
+        ? error
+        : new ClawCronInstallError(
+            "cron_install_failed",
+            error instanceof Error ? error.message : String(error),
+            cronJobs,
+          );
+    updateRecord(plan.agent.finalId, "partial", options);
+    return partialResult({
+      plan,
+      installRecord,
+      workspaceCreated: true,
+      configCommitted: true,
+      workspaceFiles,
+      packages,
+      cronJobs: cronError.cronJobs,
+      error: { code: cronError.code, message: cronError.message },
+      nowMs: options.nowMs,
+    });
+  }
+
   try {
     updateRecord(plan.agent.finalId, "complete", options);
   } catch (error) {
@@ -282,6 +321,7 @@ export async function applyClawAddPlan(
       configCommitted: true,
       workspaceFiles,
       packages,
+      cronJobs,
       error: { code: "provenance_failed", message: (error as Error).message },
       nowMs: options.nowMs,
     });
@@ -299,6 +339,7 @@ export async function applyClawAddPlan(
     workspaceCreated: true,
     configCommitted: true,
     packages,
+    cronJobs,
     workspaceFiles,
     installRecord: {
       ...installRecord,

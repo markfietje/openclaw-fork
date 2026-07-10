@@ -27,7 +27,6 @@ type ClawAddPlanContext = {
   existingAgentIds?: Iterable<string>;
   existingWorkspacePaths?: Iterable<string>;
   existingMcpServerNames?: Iterable<string>;
-  existingCronJobIds?: Iterable<string>;
   packagePreflight?: (
     pkg: ClawPackage,
   ) => Promise<{ ok: boolean; action?: "install" | "reuse"; code?: string; message?: string }>;
@@ -324,18 +323,7 @@ export async function buildClawAddPlan(params: {
     });
   }
 
-  const existingCronJobIds = new Set(context.existingCronJobIds ?? []);
   for (const job of params.manifest.cronJobs) {
-    const blocked = existingCronJobIds.has(job.id);
-    if (blocked) {
-      blockers.push(
-        blocker(
-          "cron_job_collision",
-          `$.cronJobs.${job.id}`,
-          `Cron job ${JSON.stringify(job.id)} already exists and will not be overwritten.`,
-        ),
-      );
-    }
     actions.push({
       kind: "cronJob",
       id: job.id,

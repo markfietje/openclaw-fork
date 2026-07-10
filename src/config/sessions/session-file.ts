@@ -16,6 +16,8 @@ export async function resolveAndPersistSessionFile(params: {
   fallbackSessionFile?: string;
   activeSessionKey?: string;
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
+  /** Allow persistence while the caller owns this store's writer lane. */
+  reentrant?: boolean;
 }): Promise<{ sessionFile: string; sessionEntry: SessionEntry }> {
   const { sessionId, sessionKey, sessionStore, storePath } = params;
   const now = Date.now();
@@ -53,10 +55,11 @@ export async function resolveAndPersistSessionFile(params: {
           ...persistedEntry,
         };
       },
-      params.activeSessionKey || params.maintenanceConfig
+      params.activeSessionKey || params.maintenanceConfig || params.reentrant
         ? {
             ...(params.activeSessionKey ? { activeSessionKey: params.activeSessionKey } : {}),
             ...(params.maintenanceConfig ? { maintenanceConfig: params.maintenanceConfig } : {}),
+            ...(params.reentrant ? { reentrant: true } : {}),
           }
         : undefined,
     );

@@ -34,6 +34,7 @@ import { resolveAndPersistSessionFile } from "../../config/sessions/session-file
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import { resolveMaintenanceConfigFromInput } from "../../config/sessions/store-maintenance.js";
 import { loadSessionStore, updateSessionStore } from "../../config/sessions/store.js";
+import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import { parseSessionThreadInfoFast } from "../../config/sessions/thread-info.js";
 import {
   DEFAULT_RESET_TRIGGERS,
@@ -234,27 +235,28 @@ function resolveBoundConversationSessionKey(params: {
   return binding.targetSessionKey;
 }
 
-export async function initSessionState(params: {
+export type InitSessionStateParams = {
   ctx: MsgContext;
   cfg: OpenClawConfig;
   commandAuthorized: boolean;
-}): Promise<SessionInitResult> {
-  const { ctx, cfg, commandAuthorized } = params;
-  // Heartbeat, cron-event, and exec-event runs should NEVER trigger session
-  // resets or conversation binding retargeting. These are automated system
-  // events, not user interactions that should affect session continuity.
-  // See #58409 for details on silent session reset bug.
+};
+
+type InitSessionStateContext = {
+  agentId: string;
+  conversationBindingContext: ReturnType<typeof resolveSessionConversationBindingContext>;
+  isSystemEvent: boolean;
+  sessionCtxForState: MsgContext;
+  storePath: string;
+};
+
+function resolveInitSessionStateContext(params: InitSessionStateParams): InitSessionStateContext {
+  const { ctx, cfg } = params;
   const isSystemEvent =
     ctx.Provider === "heartbeat" || ctx.Provider === "cron-event" || ctx.Provider === "exec-event";
   const conversationBindingContext = isSystemEvent
     ? null
     : resolveSessionConversationBindingContext(cfg, ctx);
-  // Native slash commands (Telegram/Discord/Slack) are delivered on a separate
-  // "slash session" key, but should mutate the target chat session.
   const commandTargetSessionKey = resolveCommandTurnTargetSessionKey(ctx);
-  // Native slash/menu commands can arrive on a transport-specific "slash session"
-  // while explicitly targeting an existing chat session. Honor that explicit target
-  // before any binding lookup so command-side mutations land on the intended session.
   const targetSessionKey =
     commandTargetSessionKey ??
     resolveBoundConversationSessionKey({
@@ -266,19 +268,44 @@ export async function initSessionState(params: {
     targetSessionKey && targetSessionKey !== ctx.SessionKey
       ? { ...ctx, SessionKey: targetSessionKey }
       : ctx;
-  const sessionCfg = cfg.session;
-  const maintenanceConfig = resolveMaintenanceConfigFromInput(sessionCfg?.maintenance);
-  const mainKey = normalizeMainKey(sessionCfg?.mainKey);
   const agentId = resolveSessionAgentId({
     sessionKey: sessionCtxForState.SessionKey,
     config: cfg,
   });
+  return {
+    agentId,
+    conversationBindingContext,
+    isSystemEvent,
+    sessionCtxForState,
+    storePath: resolveStorePath(cfg.session?.store, { agentId }),
+  };
+}
+
+export async function initSessionState(params: InitSessionStateParams): Promise<SessionInitResult> {
+  const context = resolveInitSessionStateContext(params);
+  // Initialization reads, identity decisions, and persistence must share the
+  // writer lane or concurrent turns can overwrite each other's session state.
+  return await runExclusiveSessionStoreWrite(
+    context.storePath,
+    async () => await initSessionStateLocked(params, context),
+  );
+}
+
+async function initSessionStateLocked(
+  params: InitSessionStateParams,
+  context: InitSessionStateContext,
+): Promise<SessionInitResult> {
+  const { ctx, cfg, commandAuthorized } = params;
+  const { agentId, conversationBindingContext, isSystemEvent, sessionCtxForState, storePath } =
+    context;
+  const sessionCfg = cfg.session;
+  const maintenanceConfig = resolveMaintenanceConfigFromInput(sessionCfg?.maintenance);
+  const mainKey = normalizeMainKey(sessionCfg?.mainKey);
   const groupResolution = resolveGroupSessionKey(sessionCtxForState) ?? undefined;
   const resetTriggers = sessionCfg?.resetTriggers?.length
     ? sessionCfg.resetTriggers
     : DEFAULT_RESET_TRIGGERS;
   const sessionScope = sessionCfg?.scope ?? "per-sender";
-  const storePath = resolveStorePath(sessionCfg?.store, { agentId });
   const ingressTimingEnabled = process.env.OPENCLAW_DEBUG_INGRESS_TIMING === "1";
 
   // CRITICAL: Skip cache to ensure fresh data when resolving session identity.
@@ -797,6 +824,7 @@ export async function initSessionState(params: {
     fallbackSessionFile,
     activeSessionKey: sessionKey,
     maintenanceConfig,
+    reentrant: true,
   });
   sessionEntry = resolvedSessionFile.sessionEntry;
   if (isNewSession) {
@@ -837,6 +865,7 @@ export async function initSessionState(params: {
     {
       activeSessionKey: sessionKey,
       maintenanceConfig,
+      reentrant: true,
       onWarn: (warning) =>
         deliverSessionMaintenanceWarning({
           cfg,

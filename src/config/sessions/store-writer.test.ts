@@ -5,6 +5,7 @@ import {
   getSessionStoreWriterQueueSizeForTest,
   withSessionStoreWriterForTest,
 } from "./store.js";
+import { runExclusiveSessionStoreWrite } from "./store-writer.js";
 
 const createDeferred = <T>() => {
   let resolve: ((value: T | PromiseLike<T>) => void) | undefined;
@@ -48,6 +49,67 @@ describe("session store writer", () => {
     await Promise.all([first, second]);
 
     expect(order).toEqual(["first:start", "first:end", "second"]);
+    expect(getSessionStoreWriterQueueSizeForTest()).toBe(0);
+  });
+
+  it("runs nested writes for the active store without requeueing behind itself", async () => {
+    const storePath = "/tmp/openclaw-store.json";
+    const order: string[] = [];
+
+    const result = await runExclusiveSessionStoreWrite(storePath, async () => {
+      order.push("outer:start");
+      const nested = await runExclusiveSessionStoreWrite(
+        storePath,
+        async () => {
+          order.push("inner");
+          return "nested-result";
+        },
+        { reentrant: true },
+      );
+      order.push("outer:end");
+      return nested;
+    });
+
+    expect(result).toBe("nested-result");
+    expect(order).toEqual(["outer:start", "inner", "outer:end"]);
+    expect(getSessionStoreWriterQueueSizeForTest()).toBe(0);
+  });
+
+  it("does not leak active writer state to async children after the writer returns", async () => {
+    const storePath = "/tmp/openclaw-store.json";
+    const order: string[] = [];
+    const childReleased = createDeferred<void>();
+    let child: Promise<string> = Promise.resolve("not-started");
+
+    await runExclusiveSessionStoreWrite(storePath, async () => {
+      child = (async () => {
+        await childReleased.promise;
+        return await runExclusiveSessionStoreWrite(storePath, async () => {
+          order.push("child");
+          return "child-result";
+        });
+      })();
+    });
+
+    const blockerStarted = createDeferred<void>();
+    const blockerReleased = createDeferred<void>();
+    const blocker = runExclusiveSessionStoreWrite(storePath, async () => {
+      order.push("blocker:start");
+      blockerStarted.resolve();
+      await blockerReleased.promise;
+      order.push("blocker:end");
+    });
+    await blockerStarted.promise;
+
+    childReleased.resolve();
+    await Promise.resolve();
+    expect(order).toEqual(["blocker:start"]);
+
+    blockerReleased.resolve();
+    await Promise.all([blocker, child]);
+
+    expect(order).toEqual(["blocker:start", "blocker:end", "child"]);
+    expect(await child).toBe("child-result");
     expect(getSessionStoreWriterQueueSizeForTest()).toBe(0);
   });
 

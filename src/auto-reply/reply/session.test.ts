@@ -10,6 +10,8 @@ import {
 import * as bootstrapCache from "../../agents/bootstrap-cache.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { loadSessionStore, updateSessionStore } from "../../config/sessions/store.js";
+import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.ts";
 import {
   testing as sessionBindingTesting,
@@ -376,6 +378,99 @@ beforeEach(() => {
 afterEach(async () => {
   resetSystemEventsForTest();
   await sessionMcpTesting.resetSessionMcpRuntimeManager();
+});
+
+describe("initSessionState serialized initialization", () => {
+  it("waits for the session writer before reading persisted identity", async () => {
+    const storePath = await createStorePath("openclaw-session-init-race-");
+    const sessionKey = "agent:main:telegram:chat:42";
+    await writeSessionStoreFast(storePath, {
+      [sessionKey]: {
+        sessionId: "existing-session",
+        updatedAt: Date.now(),
+      },
+    });
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    let markWriterStarted = () => {};
+    const writerStarted = new Promise<void>((resolve) => {
+      markWriterStarted = resolve;
+    });
+    let releaseWriter = () => {};
+    const writerReleased = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const heldWriter = runExclusiveSessionStoreWrite(storePath, async () => {
+      markWriterStarted();
+      await writerReleased;
+    });
+    await writerStarted;
+
+    const turns = Array.from({ length: 8 }, (_, index) =>
+      initSessionState({
+        ctx: {
+          Body: `turn ${index}`,
+          SessionKey: sessionKey,
+        },
+        cfg,
+        commandAuthorized: true,
+      }),
+    );
+
+    releaseWriter();
+    await heldWriter;
+
+    const results = await Promise.all(turns);
+    expect(results).toHaveLength(8);
+    expect(new Set(results.map((result) => result.sessionId))).toEqual(
+      new Set(["existing-session"]),
+    );
+  });
+
+  it("preserves same-session metadata queued behind initialization", async () => {
+    const storePath = await createStorePath("openclaw-session-init-metadata-");
+    const sessionKey = "agent:main:telegram:chat:42";
+    await writeSessionStoreFast(storePath, {
+      [sessionKey]: {
+        sessionId: "existing-session",
+        updatedAt: Date.now(),
+      },
+    });
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    let markWriterStarted = () => {};
+    const writerStarted = new Promise<void>((resolve) => {
+      markWriterStarted = resolve;
+    });
+    let releaseWriter = () => {};
+    const writerReleased = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const heldWriter = runExclusiveSessionStoreWrite(storePath, async () => {
+      markWriterStarted();
+      await writerReleased;
+    });
+    await writerStarted;
+
+    const initialized = initSessionState({
+      ctx: { Body: "turn", SessionKey: sessionKey },
+      cfg,
+      commandAuthorized: true,
+    });
+    const metadataUpdated = updateSessionStore(storePath, (store) => {
+      const entry = store[sessionKey];
+      if (!entry) {
+        throw new Error("expected existing session entry");
+      }
+      store[sessionKey] = { ...entry, contextTokens: 321 };
+    });
+
+    releaseWriter();
+    await Promise.all([heldWriter, initialized, metadataUpdated]);
+
+    expect(loadSessionStore(storePath, { skipCache: true })[sessionKey]).toMatchObject({
+      contextTokens: 321,
+      sessionId: "existing-session",
+    });
+  });
 });
 describe("initSessionState thread forking", () => {
   it("forks a new session from the parent session file", async () => {

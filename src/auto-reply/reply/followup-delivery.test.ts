@@ -81,7 +81,7 @@ describe("resolveFollowupDeliveryPayloads", () => {
   it("preserves transcript ownership when stripping heartbeat text", () => {
     const replyState = { value: false };
     const payload = setReplyPayloadMetadata(
-      { text: "HEARTBEAT_OK still working" },
+      { text: "HEARTBEAT_OK still working", replyToId: "explicit", replyToTag: true },
       { assistantTranscriptOwned: true },
     );
 
@@ -95,12 +95,13 @@ describe("resolveFollowupDeliveryPayloads", () => {
 
     expect(getReplyPayloadMetadata(resolved ?? {})).toEqual({
       assistantTranscriptOwned: true,
+      replyToIdExplicit: true,
       replyDelivery: {
         replyToMode: "first",
       },
     });
-    expect(resolved?.replyToId).toBe("queued-message");
-    expect(replyState.value).toBe(true);
+    expect(resolved?.replyToId).toBe("explicit");
+    expect(replyState.value).toBe(false);
   });
 
   it("uses the captured reply policy instead of reloading changed config", () => {

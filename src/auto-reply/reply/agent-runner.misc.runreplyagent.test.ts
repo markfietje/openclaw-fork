@@ -1006,8 +1006,8 @@ describe("runReplyAgent auto-compaction token update", () => {
 });
 
 describe("runReplyAgent block streaming", () => {
-  it("coalesces duplicate text_end block replies", async () => {
-    const onBlockReply = vi.fn();
+  it("treats a suppressed coalesced block as undelivered", async () => {
+    const onBlockReply = vi.fn(() => false);
     runEmbeddedAgentMock.mockImplementationOnce(async (params) => {
       const block = params.onBlockReply as ((payload: { text?: string }) => void) | undefined;
       block?.({ text: "Hello" });
@@ -1037,6 +1037,7 @@ describe("runReplyAgent block streaming", () => {
         sessionFile: "/tmp/session.jsonl",
         workspaceDir: "/tmp",
         config: {
+          channels: { discord: { replyToMode: "first" } },
           agents: {
             defaults: {
               blockStreamingCoalesce: {
@@ -1092,10 +1093,7 @@ describe("runReplyAgent block streaming", () => {
 
     expect(onBlockReply).toHaveBeenCalledTimes(1);
     expect((firstMockCallArg(onBlockReply, "block reply") as { text?: string }).text).toBe("Hello");
-    // The block pipeline streamed "Hello" but never sent "Final message",
-    // so the unsent text-only final is preserved (not dropped).
-    expect(result).toBeDefined();
-    expect((result as { text?: string }).text).toBe("Final message");
+    expect(result).toMatchObject({ text: "Final message", replyToId: "msg" });
   });
 
   it("returns the final payload when onBlockReply times out", async () => {

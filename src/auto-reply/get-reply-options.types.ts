@@ -153,7 +153,10 @@ export type GetReplyOptions = {
    * delivery drains. Useful for channels that need to rotate preview state at
    * block boundaries without waiting for transport acks. */
   onBlockReplyQueued?: (payload: ReplyPayload, context?: BlockReplyContext) => Promise<void> | void;
-  onBlockReply?: (payload: ReplyPayload, context?: BlockReplyContext) => Promise<void> | void;
+  onBlockReply?: (
+    payload: ReplyPayload,
+    context?: BlockReplyContext,
+  ) => Promise<boolean | void> | boolean | void;
   onToolResult?: (payload: ReplyPayload) => Promise<void> | void;
   /** Called when a tool phase starts/updates, before summary payloads are emitted. */
   onToolStart?: (payload: {

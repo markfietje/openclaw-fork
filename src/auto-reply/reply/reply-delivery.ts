@@ -72,7 +72,10 @@ export function normalizeReplyPayloadDirectives(params: {
 }
 
 async function sendDirectBlockReply(params: {
-  onBlockReply: (payload: ReplyPayload, context?: BlockReplyContext) => Promise<void> | void;
+  onBlockReply: (
+    payload: ReplyPayload,
+    context?: BlockReplyContext,
+  ) => Promise<boolean | void> | boolean | void;
   directlySentBlockKeys: Set<string>;
   directlySentBlockPayloads: Array<ReplyPayload | undefined>;
   trackingPayload: ReplyPayload;
@@ -89,7 +92,10 @@ async function sendDirectBlockReply(params: {
 
 /** Creates the handler used for assistant block replies during streaming/tool phases. */
 export function createBlockReplyDeliveryHandler(params: {
-  onBlockReply: (payload: ReplyPayload, context?: BlockReplyContext) => Promise<void> | void;
+  onBlockReply: (
+    payload: ReplyPayload,
+    context?: BlockReplyContext,
+  ) => Promise<boolean | void> | boolean | void;
   currentMessageId?: string;
   replyThreading?: ReplyThreadingPolicy;
   normalizeStreamingText: (payload: ReplyPayload) => { text?: string; skip: boolean };

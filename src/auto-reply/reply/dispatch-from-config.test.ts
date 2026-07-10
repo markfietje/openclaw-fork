@@ -10408,8 +10408,11 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     });
 
     // Trigger a block reply — delivery should be suppressed
-    await requireBlockReplyHandler(capturedOnBlockReply)({ text: "streaming chunk" });
+    const delivered = await requireBlockReplyHandler(capturedOnBlockReply)({
+      text: "streaming chunk",
+    });
     expect(dispatcher.sendBlockReply).not.toHaveBeenCalled();
+    expect(delivered).toBe(false);
   });
 
   it("delivers replies normally when sendPolicy is allow", async () => {

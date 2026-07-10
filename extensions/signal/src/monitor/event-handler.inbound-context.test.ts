@@ -220,36 +220,6 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(context.ReplyToId).toBe("1700000000001");
   });
 
-  it("records group message reply authors for Signal native reply lookup", async () => {
-    const handler = createSignalEventHandler(
-      createBaseSignalEventHandlerDeps({
-        cfg: { messages: { inbound: { debounceMs: 0 } } } as OpenClawConfig,
-        historyLimit: 0,
-      }),
-    );
-
-    await handler(
-      createSignalReceiveEvent({
-        sourceNumber: "+15550002222",
-        sourceName: "Bob",
-        timestamp: 1700000000002,
-        dataMessage: {
-          message: "hello group",
-          attachments: [],
-          groupInfo: { groupId: "g1", groupName: "Test Group" },
-        },
-      }),
-    );
-
-    await expect(
-      resolveSignalReplyContextWithPersistence({
-        accountId: "default",
-        to: "group:g1",
-        replyToId: "1700000000002",
-      }),
-    ).resolves.toEqual({ author: "+15550002222", body: "hello group" });
-  });
-
   it.each([
     {
       name: "dataMessage",

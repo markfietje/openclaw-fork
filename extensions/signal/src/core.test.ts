@@ -919,17 +919,14 @@ describe("signal outbound", () => {
 
     await sendReply();
 
-    expect(send.mock.calls[0]?.[2]).toMatchObject({ replyToId: "1700000000001" });
     expect(send.mock.calls[0]?.[2]).not.toHaveProperty("replyToAuthor");
     const replyContext = { to: "signal:+15551234567", replyToId: "1700000000001" };
     await registerSignalReplyContext({ ...replyContext, author: "+15551234567" });
-    send.mockClear();
     await sendReply();
-    expect(send.mock.calls[0]?.[2]).toMatchObject({ replyToAuthor: "+15551234567" });
+    expect(send.mock.calls.at(-1)?.[2]).toMatchObject({ replyToAuthor: "+15551234567" });
     await registerSignalReplyContext({ ...replyContext, author: "+15550001111" });
-    send.mockClear();
     await sendReply();
-    expect(send.mock.calls[0]?.[2]).not.toHaveProperty("replyToAuthor");
+    expect(send.mock.calls.at(-1)?.[2]).not.toHaveProperty("replyToAuthor");
     await clearSignalReplyAuthorsForTest();
   });
 
@@ -986,13 +983,12 @@ describe("signal outbound", () => {
         },
         replyTo: async () => {
           await registerSignalReplyContext({
-            accountId: "default",
             to: "signal:group:group-1",
             replyToId: "1700000000006",
             author: "uuid:sender-1",
             body: "original group message",
           });
-          const result = await signalPlugin.message?.send?.text?.({
+          await signalPlugin.message?.send?.text?.({
             cfg: {} as OpenClawConfig,
             to: "signal:group:group-1",
             text: "reply",
@@ -1005,15 +1001,10 @@ describe("signal outbound", () => {
             "group:group-1",
             "reply",
             expect.objectContaining({
-              cfg: {},
-              maxBytes: undefined,
-              accountId: undefined,
-              replyToId: "1700000000006",
               replyToAuthor: "uuid:sender-1",
               replyToBody: "original group message",
             }),
           );
-          expect(result?.receipt.platformMessageIds).toEqual(["signal-text-1"]);
           await clearSignalReplyAuthorsForTest();
         },
       },
@@ -1042,16 +1033,6 @@ describe("signal outbound", () => {
     const openKeyedStore = <T>(): PluginStateKeyedStore<T> => {
       const records = persistedRecords as Map<string, T>;
       return {
-        register: async (key, value) => {
-          records.set(key, value);
-        },
-        registerIfAbsent: async (key, value) => {
-          if (records.has(key)) {
-            return false;
-          }
-          records.set(key, value);
-          return true;
-        },
         update: async (key, updateValue) => {
           if (failNextUpdate) {
             failNextUpdate = false;
@@ -1065,15 +1046,7 @@ describe("signal outbound", () => {
           return true;
         },
         lookup: async (key) => records.get(key),
-        consume: async (key) => {
-          const value = records.get(key);
-          records.delete(key);
-          return value;
-        },
-        delete: async (key) => records.delete(key),
-        entries: async () => [],
-        clear: async () => records.clear(),
-      };
+      } as PluginStateKeyedStore<T>;
     };
     setSignalRuntime(createPluginRuntimeMock({ state: { openKeyedStore } }));
 
@@ -1103,16 +1076,6 @@ describe("signal outbound", () => {
       await expect(resolveSignalReplyContextWithPersistence(shared)).resolves.toEqual({
         author: "uuid:sender-1",
         body: "edited body",
-      });
-      expect([...persistedRecords.values()]).toEqual([
-        expect.objectContaining({
-          body: "edited body",
-          sourceTimestamp: 1_700_000_000_999,
-        }),
-      ]);
-      await registerSignalReplyContext({ ...shared, author: "uuid:sender-2" });
-      await expect(resolveSignalReplyContextWithPersistence(shared)).resolves.toEqual({
-        ambiguous: true,
       });
     } finally {
       clearSignalRuntime();

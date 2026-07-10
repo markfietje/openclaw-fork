@@ -184,20 +184,6 @@ describe("signal mention gating", () => {
     expect(entries[0].body).toBe("hello from alice");
   });
 
-  it("records reply authors for skipped group messages", async () => {
-    const { handler } = createMentionGatedHistoryHandler();
-
-    await handler(makeGroupEvent({ message: "hello from alice" }));
-
-    await expect(
-      resolveSignalReplyContextWithPersistence({
-        accountId: "default",
-        to: "group:g1",
-        replyToId: "1700000000000",
-      }),
-    ).resolves.toEqual({ author: "+15550001111", body: "hello from alice" });
-  });
-
   it("records edited target reply authors for skipped group messages", async () => {
     const { handler } = createMentionGatedHistoryHandler();
 

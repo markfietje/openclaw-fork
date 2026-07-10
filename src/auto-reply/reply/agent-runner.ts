@@ -1398,10 +1398,11 @@ export async function runReplyAgent(params: {
           replyToChannel,
           deliveryState,
         );
-        await onBlockReply(filter(payload), context);
-        if (!context?.abortSignal?.aborted) {
+        const delivered = await onBlockReply(filter(payload), context);
+        if (delivered !== false && !context?.abortSignal?.aborted) {
           replyState.value = deliveryState.value;
         }
+        return delivered;
       }
     : undefined;
   const cfg = followupRun.run.config;

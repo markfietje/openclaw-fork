@@ -2008,15 +2008,15 @@ export async function dispatchReplyFromConfig(
     abortSignal?: AbortSignal,
     mirror?: boolean,
     kind: ReplyDispatchKind = "tool",
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     // Keep the runtime guard explicit because this helper is called from nested
     // reply callbacks where TypeScript cannot narrow shouldRouteToOriginating.
     if (!routeReplyRuntime || !routeReplyChannel || !routeReplyTo) {
-      return;
+      return false;
     }
     const effectiveAbortSignal = abortSignal ?? getDispatchAbortSignal();
     if (effectiveAbortSignal?.aborted) {
-      return;
+      return false;
     }
     const result = await routeReplyToOriginating(payload, {
       abortSignal: effectiveAbortSignal,
@@ -2026,6 +2026,7 @@ export async function dispatchReplyFromConfig(
     if (result && !result.ok) {
       logVerbose(`dispatch-from-config: route-reply failed: ${result.error ?? "unknown error"}`);
     }
+    return result ? isRoutedReplyDelivered(result) : false;
   };
 
   const deliverBindingPayload = async (
@@ -3591,7 +3592,7 @@ export async function dispatchReplyFromConfig(
                     markProgress();
                     const run = async () => {
                       if (isDispatchOperationAborted()) {
-                        return;
+                        return false;
                       }
                       if (
                         payload.isReasoning !== true &&
@@ -3603,17 +3604,17 @@ export async function dispatchReplyFromConfig(
                       // Buffered commentary preceded this block; deliver it first.
                       await flushPendingCommentaryProgress();
                       if (suppressDelivery) {
-                        return;
+                        return false;
                       }
                       // Durable reasoning is a channel-owned lane; generic channels
                       // keep the historical suppression unless they explicitly opt in.
                       if (payload.isReasoning === true && !reasoningPayloadsEnabled) {
-                        return;
+                        return false;
                       }
                       // Durable commentary is a channel-owned lane; generic channels keep the
                       // historical suppression unless they explicitly opt in.
                       if (payload.isCommentary === true && !commentaryPayloadsEnabled) {
-                        return;
+                        return false;
                       }
                       // Accumulate block text for TTS generation after streaming.
                       // Exclude status notices — they are informational UI signals
@@ -3653,7 +3654,7 @@ export async function dispatchReplyFromConfig(
                             })()
                           : payload;
                       if (!hasOutboundReplyContent(visiblePayload, { trimText: true })) {
-                        return;
+                        return false;
                       }
                       // Channels that keep a live draft preview may need to rotate their
                       // preview state at the logical block boundary before queued block
@@ -3673,7 +3674,7 @@ export async function dispatchReplyFromConfig(
                         );
                       }
                       if (isDispatchOperationAborted()) {
-                        return;
+                        return false;
                       }
                       const ttsPayload =
                         payload.isReasoning === true || payload.isCommentary === true
@@ -3690,22 +3691,22 @@ export async function dispatchReplyFromConfig(
                             });
                       const normalizedPayload = await normalizeReplyMediaPayload(ttsPayload);
                       if (isDispatchOperationAborted()) {
-                        return;
+                        return false;
                       }
                       if (shouldRouteToOriginating) {
-                        await sendPayloadAsync(
+                        return await sendPayloadAsync(
                           normalizedPayload,
                           context?.abortSignal,
                           false,
                           "block",
                         );
-                      } else {
-                        markInboundDedupeReplayUnsafe();
-                        const delivered = dispatcher.sendBlockReply(normalizedPayload);
-                        if (delivered) {
-                          hasPendingDirectBlockReplyDelivery = true;
-                        }
                       }
+                      markInboundDedupeReplayUnsafe();
+                      const delivered = dispatcher.sendBlockReply(normalizedPayload);
+                      if (delivered) {
+                        hasPendingDirectBlockReplyDelivery = true;
+                      }
+                      return delivered;
                     };
                     return run();
                   },

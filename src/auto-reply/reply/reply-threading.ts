@@ -156,11 +156,11 @@ export function createReplyToModeFilter(
   let hasThreaded = false;
   return (payload: ReplyPayload): ReplyPayload => {
     const isStatusNotice = isReplyPayloadStatusNotice(payload);
+    const isExplicit = Boolean(payload.replyToTag) || Boolean(payload.replyToCurrent);
     if (!payload.replyToId) {
       return payload;
     }
     if (mode === "off") {
-      const isExplicit = Boolean(payload.replyToTag) || Boolean(payload.replyToCurrent);
       // Status notices must never be threaded when replyToMode=off — even
       // if they carry explicit reply tags (replyToCurrent).  Honouring the
       // explicit tag here would make status notices appear in-thread while
@@ -187,7 +187,7 @@ export function createReplyToModeFilter(
     // threaded (so they appear in-context), but they must not consume the
     // "first" slot of the replyToMode=first|batched filter.  Skip advancing
     // hasThreaded so the real assistant reply still gets replyToId.
-    if (isSingleUseReplyToMode(mode) && !isStatusNotice) {
+    if (isSingleUseReplyToMode(mode) && !isStatusNotice && !isExplicit) {
       hasThreaded = true;
       if (opts.hasRepliedRef) {
         opts.hasRepliedRef.value = true;

@@ -11,6 +11,12 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import {
+  deleteClawCronRef,
+  readClawCronRefs,
+  type ClawCronGateway,
+  type PersistedClawCronRef,
+} from "./cron.js";
+import {
   applyClawPackageRemovals,
   planClawPackageRemovals,
   type ClawPackageRemovalResult,
@@ -40,6 +46,7 @@ export type ClawStatusRecord = {
   agentState: "present" | "modified" | "missing";
   workspaceFiles: ClawManagedFileStatus[];
   packages: PersistedClawPackageRef[];
+  cronJobs: PersistedClawCronRef[];
 };
 export type ClawStatusResult = {
   schemaVersion: typeof CLAW_STATUS_SCHEMA_VERSION;
@@ -52,10 +59,12 @@ export type ClawStatusResult = {
     missingAgents: number;
     driftedFiles: number;
     packageRefs: number;
+    cronRefs: number;
+    unresolvedCronRefs: number;
   };
 };
 export type ClawRemovePlanAction = {
-  kind: "agent" | "workspaceFile" | "packageRef" | "installRecord";
+  kind: "agent" | "workspaceFile" | "packageRef" | "cronJob" | "installRecord";
   id: string;
   action: "remove" | "delete" | "retain" | "release" | "uninstall";
   target: string;
@@ -77,6 +86,12 @@ export type RemovedWorkspaceFile = {
   action: "deleted" | "missing" | "retainedModified" | "error";
   message?: string;
 };
+export type RemovedCronJob = {
+  manifestId: string;
+  schedulerJobId?: string;
+  action: "removed" | "error";
+  message?: string;
+};
 export type ClawRemoveResult = {
   schemaVersion: typeof CLAW_REMOVE_RESULT_SCHEMA_VERSION;
   stability: typeof CLAW_OUTPUT_STABILITY;
@@ -86,6 +101,7 @@ export type ClawRemoveResult = {
   agentRemoved: boolean;
   workspaceFiles: RemovedWorkspaceFile[];
   packages: ClawPackageRemovalResult[];
+  cronJobs: RemovedCronJob[];
   packageRefsReleased: number;
   error?: { code: string; message: string };
 };
@@ -155,6 +171,7 @@ export async function readClawStatus(
         readClawWorkspaceFiles(install.agentId, options).map(inspectFile),
       ),
       packages: readClawPackageRefs({ ...options, agentId: install.agentId }),
+      cronJobs: readClawCronRefs(install.agentId, options),
     });
   }
   return {
@@ -170,6 +187,10 @@ export async function readClawStatus(
         .flatMap((record) => record.workspaceFiles)
         .filter((file) => file.state !== "unchanged").length,
       packageRefs: records.flatMap((record) => record.packages).length,
+      cronRefs: records.flatMap((record) => record.cronJobs).length,
+      unresolvedCronRefs: records
+        .flatMap((record) => record.cronJobs)
+        .filter((cron) => cron.status !== "complete" || !cron.schedulerJobId).length,
     },
   };
 }
@@ -209,6 +230,14 @@ export async function buildClawRemovePlan(
       });
     }
   }
+  for (const cron of record?.cronJobs ?? []) {
+    if (cron.status !== "complete" || !cron.schedulerJobId) {
+      blockers.push({
+        code: "cron_cleanup_uncertain",
+        message: `Cron declaration ${JSON.stringify(cron.manifestId)} has ${cron.status} ownership state and must be reconciled before removal.`,
+      });
+    }
+  }
   const actions: ClawRemovePlanAction[] = [];
   if (record) {
     const packageDecisions = await planClawPackageRemovals(record.install, record.packages, {
@@ -244,6 +273,17 @@ export async function buildClawRemovePlan(
         target: `${pkg.source}:${pkg.ref}@${pkg.version}`,
         blocked: false,
         ...(decision.reason ? { reason: decision.reason } : {}),
+      });
+    }
+    for (const cron of record.cronJobs) {
+      const blocked = cron.status !== "complete" || !cron.schedulerJobId;
+      actions.push({
+        kind: "cronJob",
+        id: cron.manifestId,
+        action: blocked ? "retain" : "remove",
+        target: cron.schedulerJobId ?? cron.declarationKey,
+        blocked,
+        ...(blocked ? { reason: `Cron ownership state is ${cron.status}.` } : {}),
       });
     }
     actions.push({
@@ -363,6 +403,7 @@ export async function applyClawRemovePlan(
     config?: OpenClawConfig;
     commitConfig?: ConfigCommit;
     packageDeps?: PackageRemovalDeps;
+    cronGateway?: Pick<ClawCronGateway, "remove">;
   } = {},
 ): Promise<ClawRemoveResult> {
   if (plan.blockers.length > 0 || !plan.agentId) {
@@ -394,6 +435,51 @@ export async function applyClawRemovePlan(
     .toSorted();
   if (JSON.stringify(plannedPackages) !== JSON.stringify(currentPackages)) {
     throw new ClawRemoveError("remove_changed", "Package ownership changed after remove planning.");
+  }
+  const cronJobs: RemovedCronJob[] = [];
+  for (const cron of record.cronJobs) {
+    if (!cron.schedulerJobId || cron.status !== "complete") {
+      throw new ClawRemoveError(
+        "cron_cleanup_uncertain",
+        `Cron declaration ${JSON.stringify(cron.manifestId)} is not safely removable.`,
+      );
+    }
+    if (!options.cronGateway) {
+      throw new ClawRemoveError(
+        "cron_gateway_required",
+        "Claw cron jobs require the gateway-owned cron.remove API.",
+      );
+    }
+    try {
+      await options.cronGateway.remove(cron.schedulerJobId);
+      deleteClawCronRef(plan.agentId, cron.manifestId, options);
+      cronJobs.push({
+        manifestId: cron.manifestId,
+        schedulerJobId: cron.schedulerJobId,
+        action: "removed",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      cronJobs.push({
+        manifestId: cron.manifestId,
+        schedulerJobId: cron.schedulerJobId,
+        action: "error",
+        message,
+      });
+      return {
+        schemaVersion: CLAW_REMOVE_RESULT_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        dryRun: false,
+        status: "partial",
+        agentId: plan.agentId,
+        agentRemoved: false,
+        workspaceFiles: [],
+        packages: [],
+        cronJobs,
+        packageRefsReleased: 0,
+        error: { code: "cron_cleanup_failed", message },
+      };
+    }
   }
   let agentRemoved = false;
   if (options.commitConfig) {
@@ -432,6 +518,7 @@ export async function applyClawRemovePlan(
       agentRemoved,
       workspaceFiles: [],
       packages,
+      cronJobs,
       packageRefsReleased: 0,
       error: {
         code: "package_cleanup_failed",
@@ -455,6 +542,7 @@ export async function applyClawRemovePlan(
     agentRemoved,
     workspaceFiles,
     packages,
+    cronJobs,
     packageRefsReleased: complete ? record.packages.length : 0,
     ...(complete
       ? {}

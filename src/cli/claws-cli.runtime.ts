@@ -28,10 +28,6 @@ import {
 } from "../claws/types.js";
 // Runtime handlers for experimental local Claws commands.
 import { loadConfig } from "../config/config.js";
-import {
-  loadCronJobsStoreWithConfigJobsReadOnly,
-  resolveCronJobsStorePath,
-} from "../cron/store.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import type {
   ClawsAddOptions,
@@ -40,6 +36,7 @@ import type {
   ClawsRemoveOptions,
   ClawsStatusOptions,
 } from "./claws-cli.js";
+import { callGatewayFromCli } from "./gateway-rpc.js";
 
 type DiagnosticLike = { level: string; code: string; path: string; message: string };
 
@@ -172,9 +169,6 @@ export async function runClawsAddCommand(
 
   const config = loadConfig();
   const existingAgentIds = listAgentIds(config);
-  const cronStore = await loadCronJobsStoreWithConfigJobsReadOnly(
-    resolveCronJobsStorePath(config.cron?.store),
-  );
   const plan = await buildClawAddPlan({
     manifest: result.manifest,
     source: result.source,
@@ -187,7 +181,6 @@ export async function runClawsAddCommand(
         resolveAgentWorkspaceDir(config, agentId),
       ),
       existingMcpServerNames: Object.keys(config.mcp?.servers ?? {}),
-      existingCronJobIds: cronStore.store.jobs.map((job) => job.id),
       packagePreflight: preflightClawPackage,
     },
   });
@@ -219,6 +212,9 @@ export async function runClawsAddCommand(
   try {
     addResult = await applyClawAddPlan(plan, {
       runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
+      cronGateway: {
+        add: async (input) => await callGatewayFromCli("cron.add", {}, input),
+      },
     });
   } catch (error) {
     const code = error instanceof ClawAddMutationError ? error.code : "add_failed";

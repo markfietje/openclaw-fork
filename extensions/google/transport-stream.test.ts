@@ -1102,6 +1102,55 @@ describe("google transport stream", () => {
     });
   });
 
+  it("rejects oversized authorized_user ADC token responses", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-google-vertex-adc-large-"));
+    const credentialsPath = path.join(tempDir, "application_default_credentials.json");
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        type: "authorized_user",
+        client_id: "client-id",
+        client_secret: "client-secret",
+        refresh_token: "large-refresh-token",
+      }),
+      "utf8",
+    );
+    vi.stubEnv("GOOGLE_APPLICATION_CREDENTIALS", credentialsPath);
+    const tokenFetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("x".repeat(1024 * 1024 + 1), { status: 200 }));
+
+    await expect(resolveGoogleVertexAuthorizedUserHeaders(tokenFetchMock)).rejects.toThrow(
+      "Google OAuth token response exceeds 1048576 bytes",
+    );
+  });
+
+  it("rejects authorized_user ADC gzip responses that expand past the limit", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-google-vertex-adc-bomb-"));
+    const credentialsPath = path.join(tempDir, "application_default_credentials.json");
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        type: "authorized_user",
+        client_id: "client-id",
+        client_secret: "client-secret",
+        refresh_token: "bomb-refresh-token",
+      }),
+      "utf8",
+    );
+    vi.stubEnv("GOOGLE_APPLICATION_CREDENTIALS", credentialsPath);
+    const tokenFetchMock = vi.fn().mockResolvedValue(
+      new Response(gzipSync("x".repeat(1024 * 1024 + 1)), {
+        status: 200,
+        headers: { "content-encoding": "gzip" },
+      }),
+    );
+
+    await expect(resolveGoogleVertexAuthorizedUserHeaders(tokenFetchMock)).rejects.toThrow(
+      "Google OAuth token response exceeds 1048576 decompressed bytes",
+    );
+  });
+
   it("refreshes authorized_user ADC from a compressed token response", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "openclaw-google-vertex-adc-gzip-"));
     const credentialsPath = path.join(tempDir, "application_default_credentials.json");

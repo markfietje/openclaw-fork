@@ -1198,6 +1198,7 @@ export function scheduleFollowupDrain(
                 messageId:
                   groupSource?.messageId ??
                   (groupSource ? resolveFollowupReplyAnchor(groupSource) : undefined),
+                currentMessageId: groupSource?.currentMessageId,
                 enqueuedAt: Date.now(),
                 ...routing,
                 ...collectRuntimeMetadata(activeGroupItems, cancellation.signal),

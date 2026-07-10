@@ -19,6 +19,7 @@ export function createDeferred<T>() {
 export function createQueueTestRun(params: {
   prompt: string;
   messageId?: string;
+  currentMessageId?: string;
   originatingChannel?: FollowupRun["originatingChannel"];
   originatingTo?: string;
   originatingAccountId?: string;
@@ -31,6 +32,7 @@ export function createQueueTestRun(params: {
   return {
     prompt: params.prompt,
     messageId: params.messageId,
+    currentMessageId: params.currentMessageId,
     enqueuedAt: Date.now(),
     originatingChannel: params.originatingChannel,
     originatingTo: params.originatingTo,

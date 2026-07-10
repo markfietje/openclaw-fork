@@ -279,6 +279,7 @@ describe("followup queue collect routing", () => {
         createRun({
           prompt,
           messageId,
+          currentMessageId: `${messageId}-current`,
           originatingChannel: "telegram",
           originatingTo: "chat:1",
           originatingThreadId: "topic-1",
@@ -296,6 +297,7 @@ describe("followup queue collect routing", () => {
     await done.promise;
 
     expect(calls).toHaveLength(1);
+    expect(calls[0]?.currentMessageId).toBe("message-2-current");
     expect(calls[0]?.prompt).toContain("Queued #1\none");
     expect(calls[0]?.prompt).toContain("Queued #2\ntwo");
   });

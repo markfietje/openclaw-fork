@@ -122,6 +122,13 @@ describe("sendMessageSignal receipts", () => {
     expect(result.timestamp).toBe(1234567891);
     expect(result.receipt.primaryPlatformMessageId).toBe("1234567891");
     expect(result.receipt.platformMessageIds).toEqual(["1234567891"]);
+    await expect(
+      resolveSignalReplyContextWithPersistence({
+        accountId: "default",
+        to: "group:group-1",
+        replyToId: "1234567891",
+      }),
+    ).resolves.toEqual({ author: "+15550001111", body: "<media:image>" });
     expect(result.receipt.raw).toEqual([
       {
         channel: "signal",

@@ -9,10 +9,7 @@ import {
   type DiagnosticModelCallContent,
 } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type {
-  CodexAppServerRuntimeOptions,
-  resolveCodexPluginsPolicy,
-} from "./config.js";
+import type { CodexAppServerRuntimeOptions, resolveCodexPluginsPolicy } from "./config.js";
 
 type TrustedDiagnosticEventInput = Parameters<typeof emitTrustedDiagnosticEventWithPrivateData>[0];
 type CodexModelCallUsage = NonNullable<
@@ -147,6 +144,38 @@ function codexModelCallResultFields(
   };
 }
 
+function nonNegativeFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function completedCodexContextOverflow(
+  result: CodexModelCallTerminalResult,
+  contextTokenBudget: unknown,
+): boolean | undefined {
+  const budget = nonNegativeFiniteNumber(contextTokenBudget);
+  const usage = result.attemptUsage;
+  if (!usage || budget === undefined || budget === 0) {
+    return undefined;
+  }
+  const input = nonNegativeFiniteNumber(usage.input);
+  const cacheRead = nonNegativeFiniteNumber(usage.cacheRead);
+  const promptTokens =
+    nonNegativeFiniteNumber(usage.promptTokens) ??
+    (input !== undefined || cacheRead !== undefined ? (input ?? 0) + (cacheRead ?? 0) : undefined);
+  if (promptTokens === undefined) {
+    return undefined;
+  }
+  if (promptTokens > budget) {
+    return true;
+  }
+  const output = nonNegativeFiniteNumber(usage.output);
+  if (output === undefined) {
+    return undefined;
+  }
+  // Match the runtime's length-stop threshold for zero-output calls.
+  return output === 0 && promptTokens >= budget * 0.99;
+}
+
 /**
  * Creates lifecycle emitters for trusted model-call diagnostics with optional
  * private payload capture.
@@ -208,7 +237,10 @@ export function createCodexModelCallDiagnosticEmitter(params: {
           ...params.baseFields,
           durationMs: Math.max(0, now() - startedAt),
           ...requestPayloadBytesField(),
-          ...codexModelCallResultFields(result, false),
+          ...codexModelCallResultFields(
+            result,
+            completedCodexContextOverflow(result, params.baseFields.contextTokenBudget),
+          ),
         } as TrustedDiagnosticEventInput,
         privateData({
           ...buildContent(),

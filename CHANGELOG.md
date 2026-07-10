@@ -2,6 +2,28 @@
 
 Docs: https://docs.openclaw.ai
 
+## 2026.6.33
+
+### Highlights
+
+- Security boundaries are tighter around CLI credential entry, Slack auth probes, plugin method authorization, gateway authentication limits, masked keys, iMessage and group activation ownership, Telegram URL logging, and credentialed browser navigation. (#94574, #94343, #96224, #96445, #97961, #97838, #99428, #102952) Thanks @xcoulon, @wangmiao0668000666, @eleqtrizit, @lin-hongkuan, @pgondhi987, @xialonglee, and @vincentkoc.
+- Provider and transport response handling now bounds SSE, Discord REST and gateway metadata, Copilot OAuth, proxy capture, Z.AI, Inworld, Anthropic usage, Chutes, browser error, OpenAI Codex OAuth, Hugging Face discovery, and Vertex ADC paths before oversized or stalled responses can exhaust the Gateway. (#96989, #95412, #97499, #97551, #97540, #95416, #97614, #97808, #98455, #98682, #99479, #101079, #102050) Thanks @wangmiao0668000666, @Alix-007, @cxbAsDev, @Pick-cat, @wings1029, @Pandah97, and @lin-hongkuan.
+- Runtime resource safety caps agent-run cache and JSONL socket growth, closes gateway lock descriptors, preserves UTF-8 close reasons, survives transient heartbeat file races, contains SSH and Google Meet child-stream failures, and enforces UTF-8 tool-payload limits. (#77973, #99291, #98130, #100047, #100389, #101160, #102105, #102450) Thanks @fede-kamel, @chenyangjun-xy, @Pick-cat, @NarahariRaghava, @ogarciarevett, @wangmiao0668000666, and @qingminglong.
+- Reply session initialization now serializes its read/identity/write transaction on the v2026.6.8 store while preserving same-session metadata, and stale subagent steer refusals fall through to direct delivery instead of losing the completion. (#90463, #98835, #102160) Thanks @jalehman, @obviyus, and @moguangyu5-design.
+- The npm-only extended-stable path supports a branch-safe SHA preflight and verifies core plus local plugin package artifacts without creating a tag or publishing. (#99352, #101466, #101757) Thanks @kevinslin.
+
+### Changes
+
+- Release validation: add the monthly npm extended-stable workflow, exact-SHA preflight mode, all-local-package packing and install verification, and preserved Full Release Validation performance/soak evidence checks. (#99352, #101466, #101757) Thanks @kevinslin.
+
+### Fixes
+
+- Credentials, authorization, and configuration: mask pasted model tokens, keep Slack bot tokens out of auth-test bodies, authorize plugin methods from their attached registry, bound gateway auth-limiter state, fail closed before overwriting unreadable configuration, strip controls from masked API keys, require owners for iMessage group actions and group activation changes, redact Telegram bot tokens in timeout URLs, and reject credentialed browser page URLs safely. (#94574, #94343, #96224, #96445, #97961, #97838, #99428, #102952) Thanks @xcoulon, @wangmiao0668000666, @eleqtrizit, @lin-hongkuan, @pgondhi987, @xialonglee, and @vincentkoc.
+- Bounded provider and transport I/O: cap SSE buffers and response bodies across Discord, Copilot OAuth, proxy capture, Z.AI, Inworld, Anthropic usage, Chutes OAuth, browser fetches, OpenAI Codex OAuth, Hugging Face model discovery, and Vertex ADC token refresh. (#96989, #95412, #97499, #97551, #97540, #95416, #97614, #97808, #98455, #98682, #99479, #101079, #102050) Thanks @wangmiao0668000666, @Alix-007, @cxbAsDev, @Pick-cat, @wings1029, @Pandah97, and @lin-hongkuan.
+- Gateway and process reliability: cap agent-run cache and JSONL socket buffers, release gateway lock file descriptors, keep WebSocket close reasons UTF-8 safe, survive transient heartbeat file reads, contain SSH-config and Google Meet node-host stream failures, and validate serialized tool payloads by UTF-8 bytes. (#77973, #99291, #98130, #100047, #100389, #101160, #102105, #102450) Thanks @fede-kamel, @chenyangjun-xy, @Pick-cat, @NarahariRaghava, @ogarciarevett, @wangmiao0668000666, and @qingminglong.
+- Sessions and subagents: route Gateway session consumers through the session-accessor seam, serialize reply-session initialization without dropping concurrent metadata, and deliver stale-run subagent completions directly when steering cannot drain. (#90463, #98835, #102160) Thanks @jalehman, @obviyus, and @moguangyu5-design.
+- Release rehearsal safety: accept a full commit SHA only for validation-only extended-stable npm preflight, preflight all local npm package artifacts, and retain blocking performance and stable-soak manifest checks for any future publish reuse. (#99352, #101466, #101757) Thanks @kevinslin.
+
 ## 2026.6.8
 
 ### Highlights

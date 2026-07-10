@@ -583,6 +583,43 @@ tap_text() {
   return 1
 }
 
+tap_install_for_skill() {
+  local skill_title="$1"
+  copy_ui_xml proof-output/openclaw-ui.xml >/dev/null 2>&1 || true
+  local coords=""
+  coords="$(python3 - "$skill_title" proof-output/openclaw-ui.xml <<'PY'
+import html
+import re
+import sys
+from pathlib import Path
+
+title = sys.argv[1]
+xml = Path(sys.argv[2]).read_text(encoding="utf-8", errors="ignore")
+nodes = []
+for node in re.findall(r'<node\b[^>]*/?>', xml):
+    text_match = re.search(r'text="([^"]*)"', node)
+    bounds = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
+    if not bounds:
+        continue
+    text = html.unescape(text_match.group(1) if text_match else "")
+    left, top, right, bottom = map(int, bounds.groups())
+    nodes.append((text, left, top, right, bottom))
+skill_nodes = [node for node in nodes if node[0] == title]
+if len(skill_nodes) != 1:
+    raise SystemExit(f"expected one skill title {title!r}, found {len(skill_nodes)}")
+_, _, skill_top, _, skill_bottom = skill_nodes[0]
+buttons = [node for node in nodes if node[0] == "Install" and not (node[4] < skill_top - 80 or node[2] > skill_bottom + 80)]
+if len(buttons) != 1:
+    raise SystemExit(f"expected one Install near {title!r}, found {len(buttons)}")
+_, left, top, right, bottom = buttons[0]
+print((left + right) // 2, (top + bottom) // 2)
+PY
+)"
+  echo "[proof] tap Install for '${skill_title}' at ${coords}" | tee -a proof-output/capture.log
+  adb shell input tap $coords
+  sleep 1
+}
+
 capture_png() {
   local remote="$1"
   local local_path="$2"
@@ -732,8 +769,8 @@ capture_png /sdcard/openclaw-06-clawhub-results.png proof-output/06-real-clawhub
 copy_ui_xml proof-output/06-clawhub-results-ui.xml
 record_screen /sdcard/openclaw-clawhub-results.mp4 proof-output/clawhub-results.mp4 6
 
-# Open the install review dialog. This is a real UI flow through skills.detail + skills.securityReview.
-tap_text "Install" "905 1930" "last"
+# Open the clean install review dialog by binding the target title to its adjacent Install action.
+tap_install_for_skill "$PROOF_SKILL_TITLE"
 wait_for_text "$REVIEW_TITLE" 120
 capture_png /sdcard/openclaw-07-clawhub-review-dialog.png proof-output/07-real-clawhub-review-dialog.png
 copy_ui_xml proof-output/07-clawhub-review-dialog-ui.xml

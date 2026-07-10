@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import type { Dirent } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../src/cli/completion-runtime.ts";
 import {
@@ -397,7 +397,7 @@ function runPack(packDestination: string): PackResult[] {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 
-function resolvePackedTarballPath(packDestination: string, results: PackResult[]): string {
+export function resolvePackedTarballPath(packDestination: string, results: PackResult[]): string {
   const filenames = results
     .map((entry) => entry.filename)
     .filter((filename): filename is string => typeof filename === "string" && filename.length > 0);

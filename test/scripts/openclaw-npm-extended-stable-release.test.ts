@@ -245,10 +245,11 @@ describe("extended-stable npm release request", () => {
     );
   });
 
-  it("bypasses patch and protected-main policy while preserving canonical branch identity", () => {
+  it("bypasses patch and protected-main policy only for validation preflight", () => {
     const bypassed = {
       ...valid,
       bypassExtendedStableGuard: true,
+      preflightOnly: true,
       releaseTag: "v2026.6.11",
       packageVersion: "2026.6.11",
       mainPackageVersion: "",
@@ -274,6 +275,9 @@ describe("extended-stable npm release request", () => {
         extendedStableBranchSha: "b".repeat(40),
       }),
     ).toThrow(/branch tip SHAs must match/u);
+    expect(() =>
+      validateExtendedStableNpmReleaseRequest({ ...bypassed, preflightOnly: false }),
+    ).toThrow(/only for validation-only preflight/u);
   });
 
   it("rejects bypass on a regular npm release request", () => {

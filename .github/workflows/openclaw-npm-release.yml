@@ -35,7 +35,7 @@ on:
           - latest
           - extended-stable
       bypass_extended_stable_guard:
-        description: Testing only; relax the extended-stable patch and protected-main month policy on the canonical extended-stable branch
+        description: Testing only; relax extended-stable eligibility during validation-only preflight
         required: true
         default: false
         type: boolean

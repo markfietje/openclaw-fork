@@ -74,6 +74,9 @@ export function validateExtendedStableNpmReleaseRequest(request) {
   requireExtendedStableBypassTag(request.npmDistTag, bypassExtendedStableGuard);
   const shaPreflight =
     request.preflightOnly === true && /^[0-9a-f]{40}$/iu.test(request.releaseTag);
+  if (bypassExtendedStableGuard && request.preflightOnly !== true) {
+    throw new Error("Extended-stable guard bypass is allowed only for validation-only preflight.");
+  }
   if (shaPreflight) {
     if (!/^[0-9a-f]{40}$/iu.test(request.checkoutSha)) {
       throw new Error("Validation-only SHA preflight requires the full checked-out commit SHA.");

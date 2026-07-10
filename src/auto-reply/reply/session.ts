@@ -283,8 +283,8 @@ function resolveInitSessionStateContext(params: InitSessionStateParams): InitSes
 
 export async function initSessionState(params: InitSessionStateParams): Promise<SessionInitResult> {
   const context = resolveInitSessionStateContext(params);
-  // Initialization reads, identity decisions, and persistence must share the
-  // writer lane or concurrent turns can overwrite each other's session state.
+  // Keep old-session cleanup on the writer lane too: harness resets carry the
+  // session key, so releasing early can delete a replacement created by the next turn.
   return await runExclusiveSessionStoreWrite(
     context.storePath,
     async () => await initSessionStateLocked(params, context),

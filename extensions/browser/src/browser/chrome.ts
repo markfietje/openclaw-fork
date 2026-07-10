@@ -49,7 +49,7 @@ import {
   diagnoseChromeCdp,
   formatChromeCdpDiagnostic,
   type ChromeVersion,
-  readChromeVersion,
+  readChromeVersionWithCredentialFallback,
   safeChromeCdpErrorMessage,
 } from "./chrome.diagnostics.js";
 import {
@@ -832,7 +832,7 @@ async function fetchChromeVersion(
   ssrfPolicy?: SsrFPolicy,
 ): Promise<ChromeVersion | null> {
   try {
-    return await readChromeVersion(cdpUrl, timeoutMs, ssrfPolicy);
+    return await readChromeVersionWithCredentialFallback(cdpUrl, timeoutMs, ssrfPolicy);
   } catch {
     return null;
   }

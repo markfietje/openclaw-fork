@@ -28,7 +28,7 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { redactToolPayloadText } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { asRecord } from "../record-shared.js";
-import { redactCdpUrl } from "./cdp.helpers.js";
+import { redactCdpErrorText, redactCdpUrl } from "./cdp.helpers.js";
 import type { ChromeMcpSnapshotNode } from "./chrome-mcp.snapshot.js";
 import type { BrowserTab } from "./client.types.js";
 import { BrowserProfileUnavailableError, BrowserTabNotFoundError } from "./errors.js";
@@ -142,7 +142,6 @@ const CHROME_MCP_NAVIGATE_TIMEOUT_MS = 20_000;
 const CHROME_MCP_HANDSHAKE_TIMEOUT_MS = 30_000;
 const CHROME_MCP_STDERR_MAX_BYTES = 8 * 1024;
 const CHROME_MCP_PROCESS_EXIT_GRACE_MS = 250;
-const CDP_URL_IN_TEXT_RE = /\b(?:https?|wss?):\/\/[^\s"'<>`]+/gi;
 const DEVTOOLS_ACTIVE_PORT_RE = /\bDevToolsActivePort\b/i;
 const CHROME_CONNECTION_TOOL_ERROR_RE =
   /(?:Could not connect to Chrome|DevToolsActivePort|ECONNREFUSED|ECONNRESET|websocket|timed out)/i;
@@ -489,11 +488,7 @@ function drainStderr(transport: StdioClientTransport): () => string {
 }
 
 function redactChromeMcpDiagnosticText(text: string): string {
-  return redactToolPayloadText(
-    text.replace(CDP_URL_IN_TEXT_RE, (match) =>
-      redactToolPayloadText(redactCdpUrl(match) ?? match),
-    ),
-  );
+  return redactCdpErrorText(text);
 }
 
 function redactChromeMcpDiagnosticTextWithLocalPaths(text: string): string {

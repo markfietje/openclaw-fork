@@ -30,6 +30,11 @@ const sourceCheckoutImageLanes = new Set([
   "docker-selected-plugins",
   "plugin-binding-command-escape",
 ]);
+// This Vitest source proof lives beside Docker E2E scripts but is never mounted
+// into a package image; requiring dist imports would make its pre-build CI job unloadable.
+const nonDockerSourceProofs = new Set([
+  path.join("scripts", "e2e", "sqlite-sessions-transcripts-flip-proof.ts"),
+]);
 
 function readText(relativePath) {
   return fs.readFileSync(path.join(ROOT_DIR, relativePath), "utf8");
@@ -52,7 +57,10 @@ for (const relativePath of walk("scripts/e2e")) {
     continue;
   }
   const text = readText(relativePath);
-  if (/from\s+["']\.\.\/\.\.\/src\//u.test(text) || /import\(["']\.\.\/\.\.\/src\//u.test(text)) {
+  if (
+    !nonDockerSourceProofs.has(relativePath) &&
+    (/from\s+["']\.\.\/\.\.\/src\//u.test(text) || /import\(["']\.\.\/\.\.\/src\//u.test(text))
+  ) {
     errors.push(`${relativePath}: Docker E2E harness must import built dist, not ../../src`);
   }
   if (/-v\s+["']?\$ROOT_DIR:\/app(?::|["'\s]|$)/u.test(text)) {

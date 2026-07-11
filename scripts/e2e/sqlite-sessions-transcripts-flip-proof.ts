@@ -7,34 +7,34 @@ import net from "node:net";
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { Readable } from "node:stream";
-import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
   readSessionArchiveContentSync,
   stripSessionArchiveCompressionSuffix,
-} from "../../dist/config/sessions/archive-compression.js";
+} from "../../src/config/sessions/archive-compression.js";
 import {
   appendTranscriptMessage,
   type TranscriptEvent,
-} from "../../dist/config/sessions/session-accessor.js";
-import { importSqliteSessionRows } from "../../dist/config/sessions/session-accessor.sqlite.js";
+} from "../../src/config/sessions/session-accessor.js";
+import { importSqliteSessionRows } from "../../src/config/sessions/session-accessor.sqlite.js";
+import { formatSqliteSessionFileMarker } from "../../src/config/sessions/sqlite-marker.js";
+import type { SessionEntry } from "../../src/config/sessions/types.js";
 import {
   connectGatewayClient,
   disconnectGatewayClient,
-} from "../../dist/gateway/test-helpers.e2e.js";
+} from "../../src/gateway/test-helpers.e2e.js";
 import {
-  formatSqliteSessionFileMarker,
   getSessionEntry as getSdkSessionEntry,
   listSessionEntries as listSdkSessionEntries,
   loadTranscriptEventsSync as loadSdkTranscriptEventsSync,
-  type SessionEntry,
-} from "../../dist/plugin-sdk/session-store-runtime.js";
+} from "../../src/plugin-sdk/session-store-runtime.js";
 import {
   appendSessionTranscriptMessageByIdentity,
   readLatestAssistantTextByIdentity,
   readSessionTranscriptEvents,
   resolveSessionTranscriptIdentity,
-} from "../../dist/plugin-sdk/session-transcript-runtime.js";
+} from "../../src/plugin-sdk/session-transcript-runtime.js";
+import { sleep } from "../../src/utils.js";
 import { createOpenClawTestInstance } from "../../test/helpers/openclaw-test-instance.js";
 
 type DoctorMode = "import" | "inspect" | "validate" | "restore";

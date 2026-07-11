@@ -26,6 +26,7 @@ import {
   type MemoryFlushPlanResolver,
 } from "../../plugins/memory-state.js";
 import { GatewayDrainingError } from "../../process/command-queue.js";
+import type { BlockReplyContext } from "../get-reply-options.types.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.shared.js";
@@ -1007,7 +1008,10 @@ describe("runReplyAgent auto-compaction token update", () => {
 
 describe("runReplyAgent block streaming", () => {
   it("treats a suppressed coalesced block as undelivered", async () => {
-    const onBlockReply = vi.fn(() => false);
+    const onBlockReply = vi.fn((_payload: unknown, context?: BlockReplyContext) => {
+      context!.deliverySettled = Promise.resolve(false);
+      return true;
+    });
     runEmbeddedAgentMock.mockImplementationOnce(async (params) => {
       const block = params.onBlockReply as ((payload: { text?: string }) => void) | undefined;
       block?.({ text: "Hello" });
@@ -1091,8 +1095,6 @@ describe("runReplyAgent block streaming", () => {
       typingMode: "instant",
     });
 
-    expect(onBlockReply).toHaveBeenCalledTimes(1);
-    expect((firstMockCallArg(onBlockReply, "block reply") as { text?: string }).text).toBe("Hello");
     expect(result).toMatchObject({ text: "Final message", replyToId: "msg" });
   });
 

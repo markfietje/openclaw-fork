@@ -1387,7 +1387,9 @@ export async function runReplyAgent(params: {
     sessionCtx.AccountId,
     sessionCtx.ChatType,
   );
-  const replyState = opts?.hasRepliedRef ?? { value: false };
+  const replyState: { value: boolean; pending?: Promise<void> } = opts?.hasRepliedRef ?? {
+    value: false,
+  };
   const applyReplyToMode = (payload: ReplyPayload) => payload;
   const onBlockReply = opts?.onBlockReply;
   const deliverBlockReply: GetReplyOptions["onBlockReply"] = onBlockReply
@@ -1398,8 +1400,15 @@ export async function runReplyAgent(params: {
           replyToChannel,
           deliveryState,
         );
-        const delivered = await onBlockReply(filter(payload), context);
-        if (delivered !== false && !context?.abortSignal?.aborted) {
+        const deliveryContext = context ?? {};
+        const delivered = await onBlockReply(filter(payload), deliveryContext);
+        if (deliveryContext.deliverySettled) {
+          replyState.pending = deliveryContext.deliverySettled.then((settled) => {
+            if (settled && !deliveryContext.abortSignal?.aborted) {
+              replyState.value = deliveryState.value;
+            }
+          });
+        } else if (delivered !== false && !deliveryContext.abortSignal?.aborted) {
           replyState.value = deliveryState.value;
         }
         return delivered;
@@ -2073,6 +2082,7 @@ export async function runReplyAgent(params: {
     }
     const currentMessageId =
       sessionCtx.CurrentMessageId ?? sessionCtx.MessageSidFull ?? sessionCtx.MessageSid;
+    await replyState.pending;
     // A terminal fallback is built separately after normal payload filtering.
     // Share this state across deliverable lanes so replyToMode=first still threads
     // at most one visible payload without hidden reasoning/commentary consuming it.

@@ -9,6 +9,7 @@ import type { TypingController } from "./reply/typing.js";
 export type BlockReplyContext = {
   abortSignal?: AbortSignal;
   timeoutMs?: number;
+  deliverySettled?: Promise<boolean>;
   /** Source assistant message index from the upstream stream, when available. */
   assistantMessageIndex?: number;
 };

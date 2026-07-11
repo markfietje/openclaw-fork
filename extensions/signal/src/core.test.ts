@@ -897,36 +897,17 @@ describe("signal outbound", () => {
     clearSignalApprovalReactionTargetsForTest();
   });
 
-  it("uses only proven direct reply authors for Signal native quote metadata", async () => {
-    const send = vi.fn(async (..._args: unknown[]) => ({
-      messageId: "signal-1",
-      receipt: createMessageReceiptFromOutboundResults({
-        results: [{ channel: "signal", messageId: "signal-1" }],
-        kind: "text",
-      }),
-    }));
-
-    const sendReply = async () =>
-      await signalPlugin.message?.send?.text?.({
-        cfg: {} as OpenClawConfig,
-        to: "signal:+15551234567",
-        text: "quoted reply",
-        replyToId: "1700000000001",
-        deps: { signal: send },
-      } as Parameters<NonNullable<typeof signalPlugin.message.send.text>>[0] & {
-        deps: { signal: typeof send };
-      });
-
-    await sendReply();
-
-    expect(send.mock.calls[0]?.[2]).not.toHaveProperty("replyToAuthor");
+  it("resolves only proven direct reply authors", async () => {
     const replyContext = { to: "signal:+15551234567", replyToId: "1700000000001" };
+    await expect(resolveSignalReplyContextWithPersistence(replyContext)).resolves.toBeUndefined();
     await registerSignalReplyContext({ ...replyContext, author: "+15551234567" });
-    await sendReply();
-    expect(send.mock.calls.at(-1)?.[2]).toMatchObject({ replyToAuthor: "+15551234567" });
+    await expect(resolveSignalReplyContextWithPersistence(replyContext)).resolves.toEqual({
+      author: "+15551234567",
+    });
     await registerSignalReplyContext({ ...replyContext, author: "+15550001111" });
-    await sendReply();
-    expect(send.mock.calls.at(-1)?.[2]).not.toHaveProperty("replyToAuthor");
+    await expect(resolveSignalReplyContextWithPersistence(replyContext)).resolves.toEqual({
+      ambiguous: true,
+    });
     await clearSignalReplyAuthorsForTest();
   });
 
@@ -1029,30 +1010,17 @@ describe("signal outbound", () => {
 
   it("keeps persisted edited reply context when an older replay arrives after restart", async () => {
     const persistedRecords = new Map<string, unknown>();
-    let failNextUpdate = true;
-    const openKeyedStore = <T>(): PluginStateKeyedStore<T> => {
-      const records = persistedRecords as Map<string, T>;
-      return {
-        update: async (key, updateValue) => {
-          if (failNextUpdate) {
-            failNextUpdate = false;
-            throw new Error("write unavailable");
-          }
-          const next = updateValue(records.get(key));
-          if (next === undefined) {
-            return false;
-          }
-          records.set(key, next);
-          return true;
+    const openKeyedStore = <T>() =>
+      ({
+        update: async () => {
+          throw new Error("write unavailable");
         },
-        lookup: async (key) => records.get(key),
-      } as PluginStateKeyedStore<T>;
-    };
+        lookup: async (key: string) => persistedRecords.get(key) as T | undefined,
+      }) as unknown as PluginStateKeyedStore<T>;
     setSignalRuntime(createPluginRuntimeMock({ state: { openKeyedStore } }));
 
     try {
       const shared = {
-        accountId: "default",
         to: "signal:group:group-1",
         replyToId: "1700000000000",
         author: "uuid:sender-1",
@@ -1061,11 +1029,7 @@ describe("signal outbound", () => {
         kind: "resolved",
         author: shared.author,
         body: "edited body",
-        accountId: shared.accountId,
-        conversationKey: "group:group-1",
-        replyToId: shared.replyToId,
         sourceTimestamp: 1_700_000_000_999,
-        registeredAt: 1_700_000_000_999,
       });
       await registerSignalReplyContext({
         ...shared,

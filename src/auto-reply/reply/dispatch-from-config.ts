@@ -3169,11 +3169,8 @@ export async function dispatchReplyFromConfig(
       if (!hasPendingDirectBlockReplyDelivery) {
         return;
       }
-      // Direct block replies are queued asynchronously so lightweight replies do
-      // not wait for dispatcher idle. Flush only before later tool/progress
-      // callbacks and final completion where external ordering is visible.
-      hasPendingDirectBlockReplyDelivery = false;
       await waitForReplyDispatcherIdle(dispatcher, abortSignal);
+      hasPendingDirectBlockReplyDelivery = false;
     };
     const shouldForwardProgressCallback = (options?: {
       allowWhenToolSummariesHidden?: boolean;
@@ -3702,11 +3699,22 @@ export async function dispatchReplyFromConfig(
                         );
                       }
                       markInboundDedupeReplayUnsafe();
-                      const delivered = dispatcher.sendBlockReply(normalizedPayload);
-                      if (delivered) {
-                        hasPendingDirectBlockReplyDelivery = true;
+                      const cancelled = dispatcher.getCancelledCounts?.().block ?? 0;
+                      const failed = readDispatcherFailedCounts(dispatcher).block;
+                      if (!dispatcher.sendBlockReply(normalizedPayload)) {
+                        return false;
                       }
-                      return delivered;
+                      hasPendingDirectBlockReplyDelivery = true;
+                      if (context) {
+                        context.deliverySettled = waitForPendingDirectBlockReplyDelivery(
+                          context.abortSignal,
+                        ).then(
+                          () =>
+                            (dispatcher.getCancelledCounts?.().block ?? 0) === cancelled &&
+                            readDispatcherFailedCounts(dispatcher).block === failed,
+                        );
+                      }
+                      return true;
                     };
                     return run();
                   },

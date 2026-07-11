@@ -5,6 +5,7 @@ import {
   resolveSendableOutboundReplyParts,
 } from "openclaw/plugin-sdk/reply-payload";
 import { logVerbose } from "../../globals.js";
+import type { BlockReplyContext } from "../get-reply-options.types.js";
 import { getReplyPayloadMetadata, isReplyPayloadStatusNotice } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { createBlockReplyCoalescer } from "./block-reply-coalescer.js";
@@ -163,17 +164,21 @@ export function createBlockReplyPipeline(params: {
         if (aborted) {
           return false;
         }
-        const delivered = await withTimeout(
-          Promise.resolve(
-            onBlockReply(payload, {
-              abortSignal: abortController.signal,
-              timeoutMs,
-            }),
-          ),
+        const deliveryContext: BlockReplyContext = {
+          abortSignal: abortController.signal,
+          timeoutMs,
+        };
+        const queued = await withTimeout(
+          Promise.resolve(onBlockReply(payload, deliveryContext)),
           timeoutMs,
           timeoutError,
         );
-        return delivered !== false;
+        if (queued === false) {
+          return false;
+        }
+        return deliveryContext.deliverySettled
+          ? await withTimeout(deliveryContext.deliverySettled, timeoutMs, timeoutError)
+          : true;
       })
       .then((didSend) => {
         if (!didSend) {

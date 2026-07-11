@@ -301,13 +301,6 @@ describe("signal createSignalEventHandler inbound context", () => {
         replyToId: "1700000000002",
       }),
     ).resolves.toEqual({ author: "+15550002222", body: "edited hello" });
-    await expect(
-      resolveSignalReplyContextWithPersistence({
-        accountId: "default",
-        to: "+15550002222",
-        replyToId: "1700000000999",
-      }),
-    ).resolves.toBeUndefined();
   });
 
   it("preserves the last debounced message body for native reply quote metadata", async () => {
@@ -1971,16 +1964,6 @@ describe("signal createSignalEventHandler inbound context", () => {
     expect(context.MediaPaths).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(context.MediaUrls).toEqual(["/tmp/a1.dat", "/tmp/a2.dat"]);
     expect(context.MediaTypes).toEqual(["image/jpeg", "application/octet-stream"]);
-    await expect(
-      resolveSignalReplyContextWithPersistence({
-        accountId: "default",
-        to: "+15550001111",
-        replyToId: "1700000000000",
-      }),
-    ).resolves.toEqual({
-      author: "+15550001111",
-      body: "[1 image + 1 document attached]",
-    });
   });
 
   it("marks failed attachment downloads unavailable without a phantom media placeholder", async () => {

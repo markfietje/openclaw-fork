@@ -15,6 +15,7 @@ import {
   fingerprintCodexAppServerNetworkProxyConfigPatch,
   readCodexPluginConfig,
   resolveCodexAppServerRuntimeOptions,
+  resolveCodexAppServerStartOptionsForAgent,
   resolveCodexAppServerUserHomeDir,
   resolveCodexComputerUseConfig,
   resolveCodexModelBackedReviewerPolicyContext,
@@ -1458,6 +1459,11 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     expect(resolveRuntimeForTest({ pluginConfig: {} }).start.managedCommandOrder).toBeUndefined();
     expect(
       resolveRuntimeForTest({
+        pluginConfig: { appServer: { homeScope: "user" } },
+      }).start.managedCommandOrder,
+    ).toBe("desktop-first");
+    expect(
+      resolveRuntimeForTest({
         pluginConfig: { computerUse: { enabled: true } },
       }).start.managedCommandOrder,
     ).toBe("desktop-first");
@@ -1467,6 +1473,110 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
         managedCommandOrder: "desktop-first",
       }).start.managedCommandOrder,
     ).toBe("desktop-first");
+    expect(
+      resolveRuntimeForTest({
+        pluginConfig: { appServer: { homeScope: "user" } },
+        managedCommandOrder: "package-first",
+      }).start.managedCommandOrder,
+    ).toBe("package-first");
+  });
+
+  it("reads effective native Computer Use state before managed spawn", () => {
+    const startOptions = resolveRuntimeForTest({ pluginConfig: {} }).start;
+    const resolveForConfig = (codexConfigToml: string) =>
+      resolveCodexAppServerStartOptionsForAgent({
+        startOptions,
+        agentDir: "/tmp/openclaw-agent",
+        codexConfigToml,
+      }).managedCommandOrder;
+
+    expect(
+      resolveForConfig('[plugins."computer-use@openai-bundled"]\nenabled = false\n'),
+    ).toBeUndefined();
+    for (const codexConfigToml of [
+      '[plugins."computer-use@openai-bundled"]\n',
+      'plugins."computer-use@openai-bundled".enabled = true\n',
+      'plugins = { "computer-use@openai-bundled" = { enabled = true } }\n',
+      '["plugins"."computer-use@openai-bundled".mcp_servers.computer_use]\n',
+    ]) {
+      expect(resolveForConfig(codexConfigToml)).toBe("desktop-first");
+    }
+    expect(
+      resolveForConfig(
+        'model_context_window = 9223372036854775807\ndeveloper_instructions = """\n[plugins."computer-use@openai-bundled"]\nenabled = true\n"""\n',
+      ),
+    ).toBeUndefined();
+    expect(resolveForConfig("[plugins.invalid")).toBe("desktop-first");
+
+    const customIdentityStartOptions = resolveRuntimeForTest({
+      pluginConfig: { computerUse: { pluginName: "custom-computer-use" } },
+    }).start;
+    expect(customIdentityStartOptions.managedCommandOrder).toBe("desktop-first");
+    expect(customIdentityStartOptions.managedComputerUsePluginNames).toEqual([
+      "computer-use",
+      "custom-computer-use",
+    ]);
+    expect(
+      resolveCodexAppServerStartOptionsForAgent({
+        startOptions: customIdentityStartOptions,
+        agentDir: "/tmp/openclaw-agent",
+        codexConfigToml: '[plugins."computer-use@openai-bundled"]\nenabled = true\n',
+      }).managedCommandOrder,
+    ).toBe("desktop-first");
+    expect(
+      resolveCodexAppServerStartOptionsForAgent({
+        startOptions: customIdentityStartOptions,
+        agentDir: "/tmp/openclaw-agent",
+        codexConfigToml:
+          '[plugins."computer-use@openai-bundled"]\nenabled = false\n[plugins."custom-computer-use@local"]\nenabled = true\n',
+      }).managedCommandOrder,
+    ).toBe("desktop-first");
+
+    const privateStartOptions = resolveRuntimeForTest({
+      pluginConfig: { appServer: { homeScope: "user" } },
+      managedCommandOrder: "package-first",
+    }).start;
+    expect(
+      resolveCodexAppServerStartOptionsForAgent({
+        startOptions: privateStartOptions,
+        agentDir: "/tmp/openclaw-agent",
+        codexConfigToml: '[plugins."computer-use@openai-bundled"]\nenabled = true\n',
+      }).managedCommandOrder,
+    ).toBe("package-first");
+  });
+
+  it("keeps desktop ownership for Computer Use persisted in an agent Codex home", async () => {
+    await withTempDir("openclaw-codex-agent-home-", async (agentDir) => {
+      const startOptions = resolveRuntimeForTest({ pluginConfig: {} }).start;
+      const codexHome = path.join(agentDir, "codex-home");
+      await fs.mkdir(codexHome);
+      await fs.writeFile(
+        path.join(codexHome, "config.toml"),
+        '[plugins."computer-use@openai-bundled"]\nenabled = true\n',
+      );
+
+      expect(
+        resolveCodexAppServerStartOptionsForAgent({
+          startOptions,
+          agentDir,
+        }).managedCommandOrder,
+      ).toBe("desktop-first");
+    });
+  });
+
+  it("uses desktop-first when persisted Codex state cannot be read", async () => {
+    await withTempDir("openclaw-codex-unreadable-home-", async (agentDir) => {
+      const startOptions = resolveRuntimeForTest({ pluginConfig: {} }).start;
+      await fs.mkdir(path.join(agentDir, "codex-home"), { recursive: true });
+      await fs.mkdir(path.join(agentDir, "codex-home", "config.toml"));
+
+      expect(
+        resolveCodexAppServerStartOptionsForAgent({
+          startOptions,
+          agentDir,
+        }).managedCommandOrder,
+      ).toBe("desktop-first");
+    });
   });
 
   it("does not change explicit commands when Computer Use is enabled", () => {
@@ -2613,6 +2723,20 @@ allowed_sandbox_modes = ["read-only", "workspace-write"]
     });
 
     expect(packageFirst).not.toEqual(desktopFirst);
+  });
+
+  it("derives distinct shared-client keys for native Computer Use identities", () => {
+    const keyFor = (pluginName: string) =>
+      codexAppServerStartOptionsKey({
+        transport: "stdio",
+        command: "codex",
+        commandSource: "managed",
+        managedComputerUsePluginNames: ["computer-use", pluginName],
+        args: ["app-server"],
+        headers: {},
+      });
+
+    expect(keyFor("custom-a")).not.toEqual(keyFor("custom-b"));
   });
 
   it("derives distinct shared-client keys for distinct headers without exposing them", () => {

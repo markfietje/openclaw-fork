@@ -5,9 +5,10 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./config.js";
 import {
-  testing,
   resolveManagedCodexAppServerPaths,
   resolveManagedCodexAppServerStartOptions,
+  resolveManagedCodexNativeCommand,
+  testing,
 } from "./managed-binary.js";
 
 function startOptions(
@@ -34,6 +35,35 @@ const MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND =
   "/Applications/ChatGPT.app/Contents/Resources/codex";
 
 describe("managed Codex app-server binary", () => {
+  it("resolves the platform-native artifact behind the managed npm launcher", () => {
+    const packageJsonPath =
+      "/repo/extensions/codex/node_modules/@openai/codex-darwin-arm64/package.json";
+    const expected =
+      "/repo/extensions/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex";
+
+    expect(
+      resolveManagedCodexNativeCommand("/repo/extensions/codex/node_modules/.bin/codex", {
+        platform: "darwin",
+        arch: "arm64",
+        resolvePackageJson: (packageName, root) =>
+          packageName === "@openai/codex-darwin-arm64" &&
+          root === "/repo/extensions/codex/node_modules/@openai/codex"
+            ? packageJsonPath
+            : undefined,
+        pathExists: (candidate) => candidate === expected,
+      }),
+    ).toBe(expected);
+  });
+
+  it("reports the desktop bundle binary as its native artifact", () => {
+    expect(
+      resolveManagedCodexNativeCommand(MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND, {
+        platform: "darwin",
+        arch: "arm64",
+      }),
+    ).toBe(MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND);
+  });
+
   it("leaves explicit command overrides unchanged", async () => {
     const explicitOptions = startOptions("config");
     const pathExists = vi.fn(async () => false);

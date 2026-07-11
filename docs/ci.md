@@ -250,11 +250,13 @@ pnpm ci:full-release --sha <full-sha>
 ```
 
 GitHub workflow dispatch refs must be branches or tags, not raw commit SHAs. The
-helper pushes a temporary `release-ci/<sha>-...` branch at the target SHA,
-dispatches `Full Release Validation` from that pinned ref, verifies every child
-workflow `headSha` matches the target, and deletes the temporary branch when the
-run completes. The umbrella verifier also fails if any child workflow ran at a
-different SHA.
+helper pushes a temporary `release-ci/<sha>-...` branch at a trusted `main`
+workflow SHA, passes the requested target SHA through the workflow `ref` input,
+reuses strict exact-target evidence when available, verifies every child
+workflow `headSha` matches the trusted workflow SHA, and deletes the temporary
+branch when the run completes. Pass `-f reuse_evidence=false` to force fresh
+validation. The umbrella verifier also fails if any child workflow ran at a
+different workflow SHA.
 
 `release_profile` controls live/provider breadth passed into release checks. The
 manual release workflows default to `stable`; use `full` only when you

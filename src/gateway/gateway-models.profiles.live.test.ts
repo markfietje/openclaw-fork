@@ -2349,6 +2349,43 @@ async function requestGatewayAgentText(params: {
   });
 }
 
+function buildGatewayToolReadMessage(params: {
+  toolProbePath: string;
+  strictReply: boolean;
+}): string {
+  const filename = path.basename(params.toolProbePath);
+  const context =
+    `OpenClaw release validation created a synthetic local test note named "${filename}" ` +
+    "in your current workspace.";
+  const task =
+    "Use OpenClaw's workspace file reader, not a shell command, to inspect that note and " +
+    "report the values recorded for LEFT and RIGHT.";
+  if (!params.strictReply) {
+    return `${context} ${task}`;
+  }
+  return (
+    `${context} It contains no user data or secrets. ${task} ` +
+    "Reply with only the LEFT and RIGHT values, separated by one space."
+  );
+}
+
+describe("buildGatewayToolReadMessage", () => {
+  it("keeps the request inside the workspace and out of tool-call syntax", () => {
+    const message = buildGatewayToolReadMessage({
+      toolProbePath: "/tmp/operator/workspace/.openclaw-live-tool-probe-deadbeef.txt",
+      strictReply: true,
+    });
+
+    expect(message).toContain('named ".openclaw-live-tool-probe-deadbeef.txt"');
+    expect(message).toContain("synthetic local test note");
+    expect(message).toContain("no user data or secrets");
+    expect(message).toContain("workspace file reader, not a shell command");
+    expect(message).not.toContain("/tmp/operator");
+    expect(message).not.toContain('{"path"');
+    expect(message).not.toContain("tool named");
+  });
+});
+
 type GatewayModelSuiteParams = {
   label: string;
   cfg: OpenClawConfig;
@@ -2917,7 +2954,7 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
     workspaceDir,
     `.openclaw-live-tool-probe-${randomBytes(4).toString("hex")}.txt`,
   );
-  await fs.writeFile(toolProbePath, `nonceA=${nonceA}\nnonceB=${nonceB}\n`);
+  await fs.writeFile(toolProbePath, `LEFT=${nonceA}\nRIGHT=${nonceB}\n`);
 
   const agentDir = resolveDefaultAgentDir(params.cfg);
   const sanitizedCfg: OpenClawConfig = {
@@ -3135,7 +3172,8 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
                 throw new Error(`missing required keywords: ${text}`);
               }
 
-              // Real tool invocation: force the agent to Read a local file and echo a nonce.
+              // Real tool invocation: values exist only in a synthetic workspace note, so a
+              // matching reply still proves the agent inspected the file without an exfil-shaped prompt.
               logProgress(`${progressLabel}: tool-read`);
               const runIdTool = randomUUID();
               const maxToolReadAttempts = 3;
@@ -3152,13 +3190,7 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
                     sessionKey,
                     idempotencyKey: `idem-${runIdTool}-tool-${toolReadAttempt + 1}`,
                     modelKey,
-                    message: strictReply
-                      ? "OpenClaw live tool probe (local, safe): " +
-                        `use the tool named \`read\` (or \`Read\`) with JSON arguments {"path":"${toolProbePath}"}. ` +
-                        `Then reply with exactly: ${nonceA} ${nonceB}. No extra text.`
-                      : "OpenClaw live tool probe (local, safe): " +
-                        `use the tool named \`read\` (or \`Read\`) with JSON arguments {"path":"${toolProbePath}"}. ` +
-                        "Then reply with the two nonce values you read (include both).",
+                    message: buildGatewayToolReadMessage({ toolProbePath, strictReply }),
                     thinkingLevel,
                     context: `${progressLabel}: tool-read`,
                   });
@@ -3359,39 +3391,57 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
               ) {
                 logProgress(`${progressLabel}: tool-only regression`);
                 const runId2 = randomUUID();
-                const firstText = await requestGatewayAgentText({
-                  client,
-                  sessionKey,
-                  idempotencyKey: `idem-${runId2}-1`,
-                  modelKey,
-                  message: `Call the tool named \`read\` (or \`Read\`) on "${toolProbePath}". Do not write any other text.`,
-                  thinkingLevel,
-                  context: `${progressLabel}: tool-only-regression-first`,
-                });
-                assertNoReasoningTags({
-                  text: firstText,
-                  model: modelKey,
-                  phase: "tool-only",
-                  label: params.label,
-                });
+                const historyLeft = randomUUID();
+                const historyRight = randomUUID();
+                const historyToolProbePath = path.join(
+                  workspaceDir,
+                  `.openclaw-live-tool-history-${randomBytes(4).toString("hex")}.txt`,
+                );
+                const historyToolProbeFilename = path.basename(historyToolProbePath);
+                // Fresh values prevent the follow-up from succeeding from the earlier read reply.
+                await fs.writeFile(
+                  historyToolProbePath,
+                  `LEFT=${historyLeft}\nRIGHT=${historyRight}\n`,
+                );
+                try {
+                  const firstText = await requestGatewayAgentText({
+                    client,
+                    sessionKey,
+                    idempotencyKey: `idem-${runId2}-1`,
+                    modelKey,
+                    message: `Call the tool named \`read\` (or \`Read\`) on the release-validation note "${historyToolProbeFilename}". Do not write any other text.`,
+                    thinkingLevel,
+                    context: `${progressLabel}: tool-only-regression-first`,
+                  });
+                  assertNoReasoningTags({
+                    text: firstText,
+                    model: modelKey,
+                    phase: "tool-only",
+                    label: params.label,
+                  });
 
-                const reply = await requestGatewayAgentText({
-                  client,
-                  sessionKey,
-                  idempotencyKey: `idem-${runId2}-2`,
-                  modelKey,
-                  message: `Now answer: what are the values of nonceA and nonceB in "${toolProbePath}"? Reply with exactly: ${nonceA} ${nonceB}.`,
-                  thinkingLevel,
-                  context: `${progressLabel}: tool-only-regression-second`,
-                });
-                assertNoReasoningTags({
-                  text: reply,
-                  model: modelKey,
-                  phase: "tool-only-followup",
-                  label: params.label,
-                });
-                if (!reply.includes(nonceA) || !reply.includes(nonceB)) {
-                  throw new Error(`unexpected reply: ${reply}`);
+                  const reply = await requestGatewayAgentText({
+                    client,
+                    sessionKey,
+                    idempotencyKey: `idem-${runId2}-2`,
+                    modelKey,
+                    message:
+                      `Continue the release-validation check: what LEFT and RIGHT values were read from ` +
+                      `"${historyToolProbeFilename}"? Reply with only those two values, separated by one space.`,
+                    thinkingLevel,
+                    context: `${progressLabel}: tool-only-regression-second`,
+                  });
+                  assertNoReasoningTags({
+                    text: reply,
+                    model: modelKey,
+                    phase: "tool-only-followup",
+                    label: params.label,
+                  });
+                  if (!reply.includes(historyLeft) || !reply.includes(historyRight)) {
+                    throw new Error(`unexpected reply: ${reply}`);
+                  }
+                } finally {
+                  await fs.rm(historyToolProbePath, { force: true });
                 }
               }
 
@@ -3956,7 +4006,7 @@ describeLive("gateway live (dev agent, profile keys)", () => {
         workspaceDir,
         `.openclaw-live-zai-fallback-${randomBytes(4).toString("hex")}.txt`,
       );
-      await fs.writeFile(toolProbePath, `nonceA=${nonceA}\nnonceB=${nonceB}\n`);
+      await fs.writeFile(toolProbePath, `LEFT=${nonceA}\nRIGHT=${nonceB}\n`);
 
       try {
         const port = await withGatewayLiveProbeTimeout(
@@ -4015,9 +4065,7 @@ describeLive("gateway live (dev agent, profile keys)", () => {
         sessionKey,
         idempotencyKey: `idem-${randomUUID()}-tool`,
         modelKey: "anthropic/claude-opus-4-6",
-        message:
-          `Call the tool named \`read\` (or \`Read\` if \`read\` is unavailable) with JSON arguments {"path":"${toolProbePath}"}. ` +
-          `Then reply with exactly: ${nonceA} ${nonceB}. No extra text.`,
+        message: buildGatewayToolReadMessage({ toolProbePath, strictReply: true }),
         thinkingLevel: THINKING_LEVEL,
         context: "zai-fallback: tool-probe",
       });
@@ -4045,8 +4093,8 @@ describeLive("gateway live (dev agent, profile keys)", () => {
         idempotencyKey: `idem-${randomUUID()}-followup`,
         modelKey: "zai/glm-5.1",
         message:
-          `What are the values of nonceA and nonceB in "${toolProbePath}"? ` +
-          `Reply with exactly: ${nonceA} ${nonceB}.`,
+          "Continue the release-validation check: what LEFT and RIGHT values did the previous " +
+          "model read from the synthetic local note? Reply with only those two values, separated by one space.",
         thinkingLevel: THINKING_LEVEL,
         context: "zai-fallback: followup",
       });

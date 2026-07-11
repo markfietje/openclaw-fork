@@ -110,7 +110,10 @@ export function shouldRetryToolReadProbe(params: {
     return true;
   }
   const lower = normalizeLowercaseStringOrEmpty(params.text);
-  if (params.provider === "mistral" && (lower.includes("noncea=") || lower.includes("nonceb="))) {
+  const hasMistralProbeMarker = ["left=", "right=", "noncea=", "nonceb="].some((marker) =>
+    lower.includes(marker),
+  );
+  if (params.provider === "mistral" && hasMistralProbeMarker) {
     return true;
   }
   return false;

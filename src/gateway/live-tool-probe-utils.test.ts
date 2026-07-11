@@ -174,7 +174,19 @@ describe("live tool probe utils", () => {
         expected: false,
       },
       {
-        name: "retries mistral nonce marker echoes without parsed values",
+        name: "retries current mistral field echoes without parsed values",
+        params: {
+          text: "LEFT= RIGHT=",
+          nonceA: "nonce-a",
+          nonceB: "nonce-b",
+          provider: "mistral",
+          attempt: 0,
+          maxAttempts: 3,
+        },
+        expected: true,
+      },
+      {
+        name: "retains retries for legacy mistral nonce marker echoes",
         params: {
           text: "nonceA= nonceB=",
           nonceA: "nonce-a",

@@ -13,7 +13,6 @@ import {
 import {
   assertBrowserNavigationAllowed,
   assertBrowserNavigationResultAllowed,
-  withBrowserNavigationPolicy,
 } from "../navigation-guard.js";
 import { getBrowserProfileCapabilities } from "../profile-capabilities.js";
 import type { BrowserRouteContext, ProfileContext } from "../server-context.js";
@@ -101,10 +100,9 @@ async function ensureBrowserRunning(
 
 async function redactBlockedTabUrls(params: {
   tabs: Awaited<ReturnType<ProfileContext["listTabs"]>>;
-  ssrfPolicy: ReturnType<BrowserRouteContext["state"]>["resolved"]["ssrfPolicy"];
+  navigationPolicy: ReturnType<typeof browserNavigationPolicyForProfile>;
 }): Promise<Awaited<ReturnType<ProfileContext["listTabs"]>>> {
-  const ssrfPolicyOpts = withBrowserNavigationPolicy(params.ssrfPolicy);
-  if (!ssrfPolicyOpts.ssrfPolicy) {
+  if (!params.navigationPolicy.ssrfPolicy) {
     return params.tabs;
   }
 
@@ -113,7 +111,7 @@ async function redactBlockedTabUrls(params: {
     try {
       await assertBrowserNavigationResultAllowed({
         url: tab.url,
-        ...ssrfPolicyOpts,
+        ...params.navigationPolicy,
       });
       redactedTabs.push(tab);
     } catch {
@@ -213,7 +211,7 @@ export function registerBrowserTabRoutes(app: BrowserRouteRegistrar, ctx: Browse
           }
           const tabs = await redactBlockedTabUrls({
             tabs: await profileCtx.listTabs(),
-            ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+            navigationPolicy: browserNavigationPolicyForProfile(ctx, profileCtx),
           });
           res.json({ running: true, tabs });
         },
@@ -323,7 +321,7 @@ export function registerBrowserTabRoutes(app: BrowserRouteRegistrar, ctx: Browse
             }
             const tabs = await redactBlockedTabUrls({
               tabs: await profileCtx.listTabs(),
-              ssrfPolicy: ctx.state().resolved.ssrfPolicy,
+              navigationPolicy: browserNavigationPolicyForProfile(ctx, profileCtx),
             });
             return res.json({ ok: true, tabs });
           }

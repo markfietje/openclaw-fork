@@ -288,12 +288,6 @@ function mockLocalMeetBrowserRequest(
       if (request.path === "/tabs/focus") {
         return { ok: true };
       }
-      if (request.path === "/navigate") {
-        return {
-          targetId: request.body?.targetId ?? "local-meet-tab",
-          url: request.body?.url ?? "https://meet.google.com/abc-defg-hij",
-        };
-      }
       if (request.path === "/permissions/grant") {
         return {
           ok: true,
@@ -2758,12 +2752,6 @@ describe("google-meet plugin", () => {
         if (request.path === "/tabs/focus") {
           return { ok: true };
         }
-        if (request.path === "/navigate") {
-          return {
-            targetId: request.body?.targetId ?? "local-meet-tab",
-            url: request.body?.url ?? "https://meet.google.com/abc-defg-hij",
-          };
-        }
         if (request.path === "/act") {
           actCount += 1;
           return {
@@ -2888,16 +2876,6 @@ describe("google-meet plugin", () => {
             }
             if (raw.path === "/tabs/focus" || raw.path === "/permissions/grant") {
               return { payload: { result: { ok: true } } };
-            }
-            if (raw.path === "/navigate") {
-              return {
-                payload: {
-                  result: {
-                    targetId: raw.body?.targetId ?? "tab-1",
-                    url: raw.body?.url ?? "https://meet.google.com/abc-defg-hij",
-                  },
-                },
-              };
             }
             if (raw.path === "/act") {
               return {
@@ -3405,7 +3383,7 @@ describe("google-meet plugin", () => {
     expect(session.notes).toContain("Reused existing active Meet session.");
   });
 
-  it("reuses existing Meet browser tabs across URL query differences", async () => {
+  it("opens an English tab without mutating a localized same-meeting tab", async () => {
     let actCount = 0;
     const { methods, nodesInvoke } = setup(
       {
@@ -3437,14 +3415,11 @@ describe("google-meet plugin", () => {
               },
             };
           }
-          if (proxy.path === "/tabs/focus") {
-            return { payload: { result: { ok: true } } };
-          }
-          if (proxy.path === "/navigate") {
+          if (proxy.path === "/tabs/open") {
             return {
               payload: {
                 result: {
-                  targetId: "navigated-meet-tab",
+                  targetId: "english-meet-tab",
                   url: "https://meet.google.com/abc-defg-hij?authuser=me%40example.com&hl=en",
                 },
               },
@@ -3458,9 +3433,7 @@ describe("google-meet plugin", () => {
                   result: JSON.stringify(
                     actCount === 1
                       ? {
-                          inCall: false,
-                          title: "Meet",
-                          url: "https://meet.google.com/abc-defg-hij?authuser=me@example.com",
+                          language: "ja",
                         }
                       : {
                           inCall: true,
@@ -3489,79 +3462,30 @@ describe("google-meet plugin", () => {
       respond,
     });
 
-    const focusCall = nodesInvoke.mock.calls.find(([rawCall]) => {
-      const call = requireRecord(rawCall, "node invoke");
-      const params = requireRecord(call.params, "node invoke params");
-      return params.path === "/tabs/focus";
-    });
-    if (!focusCall) {
-      throw new Error("Expected browser.proxy /tabs/focus node invoke");
-    }
-    expect(
-      requireRecord(requireRecord(focusCall[0], "focus node invoke").params, "focus params"),
-    ).toEqual({
-      method: "POST",
-      path: "/tabs/focus",
-      timeoutMs: 5000,
-      body: { targetId: "existing-meet-tab" },
-    });
-    const navigateCall = nodesInvoke.mock.calls.find(([rawCall]) => {
-      const call = requireRecord(rawCall, "node invoke");
-      const params = requireRecord(call.params, "node invoke params");
-      return params.path === "/navigate";
-    });
-    if (!navigateCall) {
-      throw new Error("Expected browser.proxy /navigate node invoke");
-    }
-    expect(
-      requireRecord(
-        requireRecord(navigateCall[0], "navigate node invoke").params,
-        "navigate params",
-      ),
-    ).toEqual({
-      method: "POST",
-      path: "/navigate",
-      timeoutMs: 5000,
-      body: {
-        targetId: "existing-meet-tab",
-        url: "https://meet.google.com/abc-defg-hij?authuser=me%40example.com&hl=en",
-      },
-    });
-    const actCalls = nodesInvoke.mock.calls.filter(([rawCall]) => {
-      const call = requireRecord(rawCall, "node invoke");
-      const params = requireRecord(call.params, "node invoke params");
-      return params.path === "/act";
-    });
-    expect(actCalls.length).toBeGreaterThanOrEqual(1);
-    const postNavigateActCall = actCalls.find(([rawCall]) => {
-      const call = requireRecord(rawCall, "node invoke");
-      const params = requireRecord(call.params, "node invoke params");
-      return requireRecord(params.body, "act body").targetId === "navigated-meet-tab";
-    });
-    if (!postNavigateActCall) {
-      throw new Error("Expected post-navigation browser.proxy /act node invoke");
-    }
-    expect(
-      requireRecord(requireRecord(postNavigateActCall[0], "act node invoke").params, "act params"),
-    ).toEqual({
-      method: "POST",
-      path: "/act",
-      timeoutMs: 10000,
-      body: {
-        kind: "evaluate",
-        targetId: "navigated-meet-tab",
-        fn: expect.any(String),
-      },
-    });
     expect(
       nodesInvoke.mock.calls.some(([rawCall]) => {
         const call = requireRecord(rawCall, "node invoke");
-        return requireRecord(call.params, "node invoke params").path === "/tabs/open";
+        const params = requireRecord(call.params, "node invoke params");
+        if (params.path !== "/tabs/open") {
+          return false;
+        }
+        return (
+          requireRecord(params.body, "open body").url ===
+          "https://meet.google.com/abc-defg-hij?hl=en"
+        );
+      }),
+    ).toBe(true);
+    expect(
+      nodesInvoke.mock.calls.some(([rawCall]) => {
+        const call = requireRecord(rawCall, "node invoke");
+        const params = requireRecord(call.params, "node invoke params");
+        return params.path === "/tabs/focus" || params.path === "/navigate";
       }),
     ).toBe(false);
   });
 
-  it("does not navigate a reused join tab that is already using English UI", async () => {
+  it("reuses a same-meeting tab only after its document reports English", async () => {
+    let actCount = 0;
     const { methods, nodesInvoke } = setup(
       {
         defaultTransport: "chrome-node",
@@ -3596,14 +3520,19 @@ describe("google-meet plugin", () => {
             return { payload: { result: { ok: true } } };
           }
           if (proxy.path === "/act") {
+            actCount += 1;
             return {
               payload: {
                 result: {
-                  result: JSON.stringify({
-                    inCall: true,
-                    title: "Meet",
-                    url: "https://meet.google.com/abc-defg-hij?hl=en",
-                  }),
+                  result: JSON.stringify(
+                    actCount === 1
+                      ? { language: "en-US" }
+                      : {
+                          inCall: true,
+                          title: "Meet",
+                          url: "https://meet.google.com/abc-defg-hij?hl=en",
+                        },
+                  ),
                 },
               },
             };
@@ -3628,18 +3557,13 @@ describe("google-meet plugin", () => {
     expect(
       nodesInvoke.mock.calls.some(([rawCall]) => {
         const call = requireRecord(rawCall, "node invoke");
-        return requireRecord(call.params, "node invoke params").path === "/navigate";
-      }),
-    ).toBe(false);
-    expect(
-      nodesInvoke.mock.calls.some(([rawCall]) => {
-        const call = requireRecord(rawCall, "node invoke");
-        return requireRecord(call.params, "node invoke params").path === "/tabs/open";
+        const path = requireRecord(call.params, "node invoke params").path;
+        return path === "/navigate" || path === "/tabs/open";
       }),
     ).toBe(false);
   });
 
-  it("recovers and inspects an existing Meet tab without opening a new one", async () => {
+  it("reports localized recovery tabs without navigating them", async () => {
     const { tools, nodesInvoke } = setup(
       {
         defaultTransport: "chrome-node",
@@ -3668,28 +3592,11 @@ describe("google-meet plugin", () => {
           if (proxy.path === "/tabs/focus") {
             return { payload: { result: { ok: true } } };
           }
-          if (proxy.path === "/navigate") {
-            return {
-              payload: {
-                result: {
-                  targetId: proxy.body?.targetId ?? "existing-meet-tab",
-                  url: "https://meet.google.com/abc-defg-hij?authuser=me%40example.com&hl=en",
-                },
-              },
-            };
-          }
           if (proxy.path === "/act") {
             return {
               payload: {
                 result: {
-                  result: JSON.stringify({
-                    inCall: false,
-                    manualActionRequired: true,
-                    manualActionReason: "meet-admission-required",
-                    manualActionMessage: "Admit the OpenClaw browser participant in Google Meet.",
-                    title: "Meet",
-                    url: "https://meet.google.com/abc-defg-hij?authuser=me%40example.com&hl=en",
-                  }),
+                  result: JSON.stringify({ language: "ja" }),
                 },
               },
             };
@@ -3714,7 +3621,8 @@ describe("google-meet plugin", () => {
     expect(result.details.targetId).toBe("existing-meet-tab");
     const browser = requireRecord(result.details.browser, "recovered browser state");
     expect(browser.manualActionRequired).toBe(true);
-    expect(browser.manualActionReason).toBe("meet-admission-required");
+    expect(browser.manualActionReason).toBe("meet-locale-unsupported");
+    expect(browser.browserUrl).toBe("https://meet.google.com/abc-defg-hij?authuser=me@example.com");
     const focusCall = nodesInvoke.mock.calls.find(([rawCall]) => {
       const call = requireRecord(rawCall, "node invoke");
       const params = requireRecord(call.params, "node invoke params");
@@ -3734,12 +3642,14 @@ describe("google-meet plugin", () => {
     expect(
       nodesInvoke.mock.calls.some(([rawCall]) => {
         const call = requireRecord(rawCall, "node invoke");
-        return requireRecord(call.params, "node invoke params").path === "/tabs/open";
+        const path = requireRecord(call.params, "node invoke params").path;
+        return path === "/tabs/open" || path === "/navigate";
       }),
     ).toBe(false);
   });
 
   it("recovers and inspects an existing local Chrome Meet tab", async () => {
+    let actCount = 0;
     const callGatewayFromCli = vi.fn(
       async (
         _method: string,
@@ -3762,22 +3672,21 @@ describe("google-meet plugin", () => {
         if (request.path === "/tabs/focus") {
           return { ok: true };
         }
-        if (request.path === "/navigate") {
-          return {
-            targetId: request.body?.targetId ?? "local-meet-tab",
-            url: "https://meet.google.com/abc-defg-hij?authuser=me%40example.com&hl=en",
-          };
-        }
         if (request.path === "/act") {
+          actCount += 1;
           return {
-            result: JSON.stringify({
-              inCall: false,
-              manualActionRequired: true,
-              manualActionReason: "meet-admission-required",
-              manualActionMessage: "Admit the OpenClaw browser participant in Google Meet.",
-              title: "Meet",
-              url: "https://meet.google.com/abc-defg-hij?authuser=me%40example.com&hl=en",
-            }),
+            result: JSON.stringify(
+              actCount === 1
+                ? { language: "en" }
+                : {
+                    inCall: false,
+                    manualActionRequired: true,
+                    manualActionReason: "meet-admission-required",
+                    manualActionMessage: "Admit the OpenClaw browser participant in Google Meet.",
+                    title: "Meet",
+                    url: "https://meet.google.com/abc-defg-hij?authuser=me@example.com",
+                  },
+            ),
           };
         }
         throw new Error(`unexpected browser request path ${request.path}`);
@@ -3903,12 +3812,6 @@ describe("google-meet plugin", () => {
           }
           if (request.path === "/tabs/focus" || request.path === "/permissions/grant") {
             return { ok: true };
-          }
-          if (request.path === "/navigate") {
-            return {
-              targetId: request.body?.targetId ?? "local-meet-tab",
-              url: request.body?.url ?? "https://meet.google.com/abc-defg-hij",
-            };
           }
           if (request.path === "/act") {
             return { result: JSON.stringify(browserState) };
@@ -4571,16 +4474,6 @@ describe("google-meet plugin", () => {
             }
             if (raw.path === "/tabs/focus" || raw.path === "/permissions/grant") {
               return { payload: { result: { ok: true } } };
-            }
-            if (raw.path === "/navigate") {
-              return {
-                payload: {
-                  result: {
-                    targetId: raw.body?.targetId ?? "tab-1",
-                    url: raw.body?.url ?? "https://meet.google.com/abc-defg-hij",
-                  },
-                },
-              };
             }
             if (raw.path === "/act") {
               return {

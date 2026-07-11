@@ -22,6 +22,7 @@ type GoogleMeetManualActionReason =
   | "meet-admission-required"
   | "meet-permission-required"
   | "meet-audio-choice-required"
+  | "meet-locale-unsupported"
   | "browser-control-unavailable";
 
 type GoogleMeetSpeechBlockedReason =

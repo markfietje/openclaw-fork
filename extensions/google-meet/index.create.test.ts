@@ -13,7 +13,9 @@ import {
 import { CREATE_MEET_FROM_BROWSER_SCRIPT } from "./src/transports/chrome-create.js";
 
 const voiceCallMocks = vi.hoisted(() => ({
-  createVoiceCallGateway: vi.fn(({ runtime }: { runtime: { gateway: unknown } }) => runtime.gateway),
+  createVoiceCallGateway: vi.fn(
+    ({ runtime }: { runtime: { gateway: unknown } }) => runtime.gateway,
+  ),
   joinMeetViaVoiceCallGateway: vi.fn(async () => ({
     callId: "call-1",
     dtmfSent: true,
@@ -568,7 +570,7 @@ describe("google-meet create flow", () => {
     expect(browser.browserTitle).toBe("Meet");
   });
 
-  it("reuses an existing browser create tab instead of opening duplicates", async () => {
+  it("opens an English create tab instead of mutating an unpinned tab", async () => {
     const { methods, nodesInvoke } = setup(
       {
         defaultTransport: "chrome-node",
@@ -592,14 +594,11 @@ describe("google-meet create flow", () => {
               },
             };
           }
-          if (proxy.path === "/tabs/focus") {
-            return { payload: { result: { ok: true } } };
-          }
-          if (proxy.path === "/navigate") {
+          if (proxy.path === "/tabs/open") {
             return {
               payload: {
                 result: {
-                  targetId: "navigated-create-tab",
+                  targetId: "english-create-tab",
                   url: "https://meet.google.com/new?hl=en",
                 },
               },
@@ -639,8 +638,8 @@ describe("google-meet create flow", () => {
     expect(payload.meetingUri).toBe("https://meet.google.com/reu-sedx-tab");
     const browser = requireRecord(payload.browser, "browser payload");
     expect(browser.nodeId).toBe("node-1");
-    expect(browser.targetId).toBe("navigated-create-tab");
-    findNodeInvokeParams(nodesInvoke, "focus existing tab", (params) => {
+    expect(browser.targetId).toBe("english-create-tab");
+    findNodeInvokeParams(nodesInvoke, "open English create tab", (params) => {
       if (!params.params || typeof params.params !== "object") {
         return false;
       }
@@ -649,9 +648,9 @@ describe("google-meet create flow", () => {
         return false;
       }
       const body = proxy.body as Record<string, unknown>;
-      return proxy.path === "/tabs/focus" && body.targetId === "existing-create-tab";
+      return proxy.path === "/tabs/open" && body.url === "https://meet.google.com/new?hl=en";
     });
-    findNodeInvokeParams(nodesInvoke, "navigate reused tab to English UI", (params) => {
+    findNodeInvokeParams(nodesInvoke, "act uses English target id", (params) => {
       if (!params.params || typeof params.params !== "object") {
         return false;
       }
@@ -660,24 +659,9 @@ describe("google-meet create flow", () => {
         return false;
       }
       const body = proxy.body as Record<string, unknown>;
-      return (
-        proxy.path === "/navigate" &&
-        body.targetId === "existing-create-tab" &&
-        body.url === "https://meet.google.com/new?hl=en"
-      );
+      return proxy.path === "/act" && body.targetId === "english-create-tab";
     });
-    findNodeInvokeParams(nodesInvoke, "act uses navigated target id", (params) => {
-      if (!params.params || typeof params.params !== "object") {
-        return false;
-      }
-      const proxy = params.params as Record<string, unknown>;
-      if (!proxy.body || typeof proxy.body !== "object") {
-        return false;
-      }
-      const body = proxy.body as Record<string, unknown>;
-      return proxy.path === "/act" && body.targetId === "navigated-create-tab";
-    });
-    const openedCreateTab = mockCalls(nodesInvoke, "nodes invoke").some(([value]) => {
+    const mutatedExistingTab = mockCalls(nodesInvoke, "nodes invoke").some(([value]) => {
       if (!value || typeof value !== "object") {
         return false;
       }
@@ -686,12 +670,12 @@ describe("google-meet create flow", () => {
         return false;
       }
       const proxy = params.params as Record<string, unknown>;
-      return proxy.path === "/tabs/open";
+      return proxy.path === "/navigate" || proxy.path === "/tabs/focus";
     });
-    expect(openedCreateTab).toBe(false);
+    expect(mutatedExistingTab).toBe(false);
   });
 
-  it("does not navigate a reused tab that is already using English UI", async () => {
+  it("reuses an existing English-pinned create tab", async () => {
     const { methods, nodesInvoke } = setup(
       {
         defaultTransport: "chrome-node",
@@ -747,7 +731,7 @@ describe("google-meet create flow", () => {
 
     await handler?.({ params: { join: false }, respond });
 
-    const navigated = mockCalls(nodesInvoke, "nodes invoke").some(([value]) => {
+    const openedOrNavigated = mockCalls(nodesInvoke, "nodes invoke").some(([value]) => {
       if (!value || typeof value !== "object") {
         return false;
       }
@@ -756,9 +740,9 @@ describe("google-meet create flow", () => {
         return false;
       }
       const proxy = params.params as Record<string, unknown>;
-      return proxy.path === "/navigate";
+      return proxy.path === "/navigate" || proxy.path === "/tabs/open";
     });
-    expect(navigated).toBe(false);
+    expect(openedOrNavigated).toBe(false);
   });
 
   it.each([

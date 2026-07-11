@@ -5,7 +5,9 @@
  */
 import crypto from "node:crypto";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { resolveAgentUsageBudgetConfig } from "../usage-budget.js";
 import {
   jsonResult,
   readNonNegativeIntegerParam,
@@ -18,6 +20,8 @@ import { POLICY_REDIRECT_INVOKE_COMMANDS } from "./nodes-tool-media.js";
 import { resolveNodeId } from "./nodes-utils.js";
 
 const BLOCKED_INVOKE_COMMANDS = new Set(["system.run", "system.run.prepare"]);
+const USAGE_BUDGET_NODES_INVOKE_DENIAL =
+  "Generic node invocation is unavailable while this agent has an active usage budget because node commands are not yet individually budget-metered.";
 
 const NODE_READ_ACTION_COMMANDS = {
   camera_list: "camera.list",
@@ -40,6 +44,8 @@ export async function executeNodeCommandAction(params: {
   gatewayOpts: GatewayCallOptions;
   allowMediaInvokeCommands?: boolean;
   mediaInvokeActions: Record<string, string>;
+  config?: OpenClawConfig;
+  agentId?: string;
 }): Promise<
   | ReturnType<typeof jsonResult>
   | { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }
@@ -120,6 +126,14 @@ export async function executeNodeCommandAction(params: {
       const nodeId = await resolveNodeId(params.gatewayOpts, node);
       const invokeCommand = readStringParam(params.input, "invokeCommand", { required: true });
       const invokeCommandNormalized = normalizeLowercaseStringOrEmpty(invokeCommand);
+      if (
+        resolveAgentUsageBudgetConfig({
+          ...(params.config ? { config: params.config } : {}),
+          ...(params.agentId ? { agentId: params.agentId } : {}),
+        })
+      ) {
+        throw new Error(USAGE_BUDGET_NODES_INVOKE_DENIAL);
+      }
       if (BLOCKED_INVOKE_COMMANDS.has(invokeCommandNormalized)) {
         throw new Error(
           `invokeCommand "${invokeCommand}" is reserved for shell execution; use exec with host=node instead`,

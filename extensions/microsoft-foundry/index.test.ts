@@ -2,6 +2,10 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { shouldTestFoundryTextConnection } from "./auth.js";
 import { getAccessTokenResultAsync } from "./cli.js";
@@ -1298,6 +1302,7 @@ describe("microsoft-foundry plugin", () => {
         ?.replayResponsesItemIds;
       return {} as never;
     };
+    markProviderDispatchObservableStreamFn(baseStreamFn);
 
     const wrappedStreamFn = provider.wrapStreamFn?.({
       streamFn: baseStreamFn,
@@ -1312,6 +1317,7 @@ describe("microsoft-foundry plugin", () => {
     } as never);
 
     expect(wrappedStreamFn).toBeTypeOf("function");
+    expect(isProviderDispatchObservableStreamFn(wrappedStreamFn)).toBe(true);
     await wrappedStreamFn?.(
       buildFoundryModel({
         reasoning: true,
@@ -1521,13 +1527,7 @@ describe("microsoft-foundry plugin", () => {
           params: { canonicalModelId: modelName },
         }),
       ).toMatchObject({
-        levels: [
-          { id: "off" },
-          { id: "minimal" },
-          { id: "low" },
-          { id: "medium" },
-          { id: "high" },
-        ],
+        levels: [{ id: "off" }, { id: "minimal" }, { id: "low" }, { id: "medium" }, { id: "high" }],
       });
     }
     expect(

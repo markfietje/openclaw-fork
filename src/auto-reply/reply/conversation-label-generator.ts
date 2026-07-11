@@ -4,6 +4,7 @@ import { requireApiKey } from "../../agents/model-auth.js";
 import { resolveDefaultModelForAgent } from "../../agents/model-selection.js";
 import { applyPreparedRuntimeAuthToModel } from "../../agents/provider-request-config.js";
 import { prepareModelForSimpleCompletion } from "../../agents/simple-completion-transport.js";
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { completeSimple } from "../../llm/stream.js";
@@ -52,6 +53,12 @@ export async function generateConversationLabel(
     params.maxLength > 0
       ? Math.floor(params.maxLength)
       : DEFAULT_MAX_LABEL_LENGTH;
+  if (resolveAgentUsageBudgetConfig({ config: cfg, agentId })) {
+    logVerbose(
+      `conversation-label-generator: skipped because usage budgets are enabled for agent ${agentId ?? "default"}`,
+    );
+    return null;
+  }
   const modelRef = resolveDefaultModelForAgent({ cfg, agentId });
   const resolved = await resolveModelAsync(modelRef.provider, modelRef.model, agentDir, cfg);
   if (!resolved.model) {

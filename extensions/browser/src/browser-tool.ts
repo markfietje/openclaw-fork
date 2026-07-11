@@ -482,6 +482,7 @@ function readToolTimeoutMs(params: Record<string, unknown>) {
 export function createBrowserTool(opts?: {
   sandboxBridgeUrl?: string;
   allowHostControl?: boolean;
+  agentId?: string;
   agentSessionKey?: string;
   agentDir?: string;
   workspaceDir?: string;
@@ -835,6 +836,7 @@ export function createBrowserTool(opts?: {
               {
                 cfg: screenshotCfg,
                 filePath: screenshotPath,
+                agentId: opts?.agentId,
                 agentDir: opts?.agentDir,
                 workspaceDir: opts?.workspaceDir,
                 activeModel: opts?.activeModel,

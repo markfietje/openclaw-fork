@@ -7,6 +7,7 @@ import {
   type ProviderPlugin,
 } from "openclaw/plugin-sdk/provider-model-shared";
 import { OPENAI_RESPONSES_STREAM_HOOKS } from "openclaw/plugin-sdk/provider-stream-family";
+import { preserveProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 import { apiKeyAuthMethod, entraIdAuthMethod } from "./auth.js";
 import { prepareFoundryRuntimeAuth } from "./runtime.js";
 import {
@@ -48,12 +49,16 @@ const wrapMicrosoftFoundryStreamFn: NonNullable<FoundryProviderHooks["wrapStream
       // even though its Responses endpoint does not support persisted `store`.
       replayResponsesItemIds: true,
     } as typeof options & { replayResponsesItemIds: true });
+  const preservedStreamFn = preserveProviderDispatchObservableStreamFn(
+    streamFnWithResponsesReplayIds,
+    baseStreamFn,
+  );
 
   return (
     wrapOpenAIResponsesStreamFn?.({
       ...ctx,
-      streamFn: streamFnWithResponsesReplayIds,
-    }) ?? streamFnWithResponsesReplayIds
+      streamFn: preservedStreamFn,
+    }) ?? preservedStreamFn
   );
 };
 

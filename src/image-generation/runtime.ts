@@ -1,6 +1,7 @@
 /** Runtime entrypoint for image generation with provider fallback and override normalization. */
 import { describeFailoverError, isFailoverError } from "../agents/failover-error.js";
 import type { FallbackAttempt } from "../agents/model-fallback.types.js";
+import { assertNoActiveAgentUsageBudgetForUnsupportedHarness } from "../agents/usage-budget.js";
 import { resolveAgentModelTimeoutMsValue } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -59,6 +60,13 @@ export async function generateImage(
   params: GenerateImageParams,
   deps: ImageGenerationRuntimeDeps = {},
 ): Promise<GenerateImageRuntimeResult> {
+  assertNoActiveAgentUsageBudgetForUnsupportedHarness({
+    config: params.cfg,
+    agentId: params.agentId,
+    provider: "image-generation",
+    model: params.modelOverride ?? "configured",
+    harnessId: "image-generation-runtime",
+  });
   const getProvider = deps.getProvider ?? getImageGenerationProvider;
   const listProviders = deps.listProviders ?? listImageGenerationProviders;
   const logger = deps.log ?? log;

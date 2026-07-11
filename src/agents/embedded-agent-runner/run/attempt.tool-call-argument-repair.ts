@@ -1,6 +1,7 @@
 /**
  * Repairs malformed tool-call arguments in embedded-agent stream results.
  */
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { extractBalancedJsonPrefix } from "../../../shared/balanced-json.js";
 import { normalizeProviderId } from "../../model-selection.js";
 import type { StreamFn } from "../../runtime/index.js";
@@ -767,7 +768,7 @@ function wrapStreamRepairMalformedToolCallArguments(
 }
 
 export function wrapStreamFnRepairMalformedToolCallArguments(baseFn: StreamFn): StreamFn {
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const maybeStream = baseFn(model, context, options);
     if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
       return Promise.resolve(maybeStream).then((stream) =>
@@ -776,6 +777,7 @@ export function wrapStreamFnRepairMalformedToolCallArguments(baseFn: StreamFn): 
     }
     return wrapStreamRepairMalformedToolCallArguments(maybeStream);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseFn);
 }
 
 export function shouldRepairMalformedToolCallArguments(params: {

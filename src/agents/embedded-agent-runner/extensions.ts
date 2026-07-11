@@ -179,6 +179,9 @@ export function buildEmbeddedExtensionFactories(params: {
   modelId: string;
   model: ProviderRuntimeModel | undefined;
   runId?: string;
+  agentId?: string | null;
+  meterCompactionSafeguardUsage?: boolean;
+  onUsageBudgetProviderCallStart?: () => void;
 }): ExtensionFactory[] {
   const factories: ExtensionFactory[] = [];
   if (resolveEffectiveCompactionMode(params.cfg) === "safeguard") {
@@ -205,6 +208,10 @@ export function buildEmbeddedExtensionFactories(params: {
       workspaceDir: params.workspaceDir,
       postCompactionSections: compactionCfg?.postCompactionSections,
       provider: compactionCfg?.provider,
+      config: params.cfg,
+      agentId: params.agentId,
+      meterUsageBudgetModelCalls: params.meterCompactionSafeguardUsage !== false,
+      onUsageBudgetProviderCallStart: params.onUsageBudgetProviderCallStart,
     });
     factories.push(compactionSafeguardExtension);
   }

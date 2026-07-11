@@ -683,6 +683,7 @@ function isGeneratedMediaSizeLimitError(error: unknown): boolean {
 
 async function executeVideoGenerationJob(params: {
   effectiveCfg: OpenClawConfig;
+  agentId?: string;
   prompt: string;
   agentDir?: string;
   model?: string;
@@ -709,6 +710,7 @@ async function executeVideoGenerationJob(params: {
   }
   const result = await generateVideo({
     cfg: params.effectiveCfg,
+    agentId: params.agentId,
     prompt: params.prompt,
     agentDir: params.agentDir,
     modelOverride: params.model,
@@ -929,6 +931,7 @@ async function executeVideoGenerationJob(params: {
 
 export function createVideoGenerateTool(options?: {
   config?: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   authProfileStore?: AuthProfileStore;
   agentSessionKey?: string;
@@ -938,6 +941,7 @@ export function createVideoGenerateTool(options?: {
   fsPolicy?: ToolFsPolicy;
   scheduleBackgroundWork?: MediaGenerateBackgroundScheduler;
   onAsyncTaskStarted?: MediaGenerateAsyncStartCallback;
+  usageBudgetUnsupportedReason?: string;
 }): AnyAgentTool | null {
   const cfg: OpenClawConfig = options?.config ?? getRuntimeConfig();
   if (
@@ -990,6 +994,12 @@ export function createVideoGenerateTool(options?: {
 
       if (action === "status") {
         return createVideoGenerateStatusActionResult(options?.agentSessionKey);
+      }
+      if (options?.usageBudgetUnsupportedReason) {
+        return {
+          content: [{ type: "text", text: options.usageBudgetUnsupportedReason }],
+          details: { error: "usage_budget_unsupported_model_tool", tool: "video_generate" },
+        };
       }
 
       const videoGenerationModelConfig = resolveVideoGenerationModelConfigForTool({
@@ -1210,6 +1220,7 @@ export function createVideoGenerateTool(options?: {
           run: () =>
             executeVideoGenerationJob({
               effectiveCfg,
+              agentId: options?.agentId,
               prompt,
               agentDir: options?.agentDir,
               model,
@@ -1273,6 +1284,7 @@ export function createVideoGenerateTool(options?: {
       try {
         const executed = await executeVideoGenerationJob({
           effectiveCfg,
+          agentId: options?.agentId,
           prompt,
           agentDir: options?.agentDir,
           model,

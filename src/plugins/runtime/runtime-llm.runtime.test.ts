@@ -1,7 +1,8 @@
 // Runtime LLM tests cover plugin provider hooks inside the model runtime adapter.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveContextEngineCapabilities } from "../../agents/embedded-agent-runner/context-engine-capabilities.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withPluginRuntimePluginIdScope } from "./gateway-request-scope.js";
 import { createRuntimeLlm } from "./runtime-llm.runtime.js";
 import type { RuntimeLogger } from "./types-core.js";
@@ -146,6 +147,10 @@ describe("runtime.llm.complete", () => {
     hoisted.completeWithPreparedSimpleCompletionModel.mockReset();
     hoisted.resolveSimpleCompletionSelectionForAgent.mockReset();
     primeCompletionMocks();
+  });
+
+  afterEach(() => {
+    closeOpenClawStateDatabaseForTest();
   });
 
   it("binds context-engine completions to the active session agent", async () => {
@@ -613,6 +618,98 @@ describe("runtime.llm.complete", () => {
       },
     );
     expectFields(requireRecord(logPayload.usage, "log usage"), { costUsd: 0.0042 });
+  });
+
+  it("passes agent usage budget context to the shared simple-completion boundary", async () => {
+    const budgetedConfig = {
+      ...cfg,
+      agents: {
+        defaults: {
+          ...cfg.agents.defaults,
+          usageBudget: { daily: { tokens: 25 } },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const llm = createRuntimeLlm({
+      getConfig: () => budgetedConfig,
+      authority: {
+        allowComplete: true,
+        allowAgentIdOverride: true,
+      },
+    });
+
+    await llm.complete({
+      agentId: "runtime-budget-agent",
+      messages: [{ role: "user", content: "Ping" }],
+    });
+
+    const completionArg = expectSingleCallFirstArg(
+      hoisted.completeWithPreparedSimpleCompletionModel,
+      {
+        cfg: budgetedConfig,
+      },
+    );
+    expectFields(requireRecord(completionArg.usageBudget, "usage budget context"), {
+      config: budgetedConfig,
+      agentId: "runtime-budget-agent",
+      provider: "openai",
+      model: "gpt-5.5",
+      recordIdPrefix: "runtime-llm",
+    });
+  });
+
+  it("fails closed for unbound plugin completions when usage budgets are configured", async () => {
+    const budgetedConfig = {
+      ...cfg,
+      agents: {
+        defaults: {
+          ...cfg.agents.defaults,
+          usageBudget: { daily: { tokens: 25 } },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const llm = createRuntimeLlm({
+      getConfig: () => budgetedConfig,
+      authority: {
+        allowComplete: true,
+      },
+    });
+
+    await expect(
+      llm.complete({
+        messages: [{ role: "user", content: "Ping" }],
+      }),
+    ).rejects.toThrow("requires an explicit agentId or active session agent");
+    expect(hoisted.prepareSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+  });
+
+  it("still delegates unbudgeted runtime completions through the shared boundary", async () => {
+    const llm = createRuntimeLlm({
+      getConfig: () => cfg,
+      authority: {
+        allowComplete: true,
+        allowAgentIdOverride: true,
+      },
+    });
+
+    await llm.complete({
+      agentId: "runtime-unbudgeted-agent",
+      messages: [{ role: "user", content: "Ping" }],
+    });
+
+    const completionArg = expectSingleCallFirstArg(
+      hoisted.completeWithPreparedSimpleCompletionModel,
+      {
+        cfg,
+      },
+    );
+    expectFields(requireRecord(completionArg.usageBudget, "usage budget context"), {
+      config: cfg,
+      agentId: "runtime-unbudgeted-agent",
+      provider: "openai",
+      model: "gpt-5.5",
+      recordIdPrefix: "runtime-llm",
+    });
   });
 
   it("uses scoped plugin identity and ignores caller-shaped spoofing input", async () => {

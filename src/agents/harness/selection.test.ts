@@ -35,15 +35,22 @@ const providerOwnerMocks = vi.hoisted(() => ({
   resolveProviderRefOwnership: vi.fn(),
 }));
 
-vi.mock("./builtin-openclaw.js", () => ({
-  createOpenClawAgentHarness: (): AgentHarness => ({
-    id: "openclaw",
-    label: "OpenClaw embedded agent",
-    contextEngineHostCapabilities: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST.capabilities,
-    supports: () => ({ supported: true, priority: 0 }),
-    runAttempt: agentRunAttempt,
-  }),
-}));
+vi.mock("./builtin-openclaw.js", () => {
+  const builtinHarnessMarker = Symbol("builtinOpenClawAgentHarnessTest");
+  return {
+    createOpenClawAgentHarness: (): AgentHarness =>
+      ({
+        [builtinHarnessMarker]: true,
+        id: "openclaw",
+        label: "OpenClaw embedded agent",
+        contextEngineHostCapabilities: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST.capabilities,
+        supports: () => ({ supported: true, priority: 0 }),
+        runAttempt: agentRunAttempt,
+      }) as AgentHarness,
+    isBuiltinOpenClawAgentHarness: (harness: AgentHarness): boolean =>
+      (harness as { [key: symbol]: unknown })[builtinHarnessMarker] === true,
+  };
+});
 vi.mock("../model-auth.js", () => ({
   getApiKeyForModel: compactAuthMocks.getApiKeyForModel,
 }));
@@ -472,6 +479,33 @@ describe("runAgentHarnessAttempt", () => {
     expect(attempt?.toolsAllow).toEqual([]);
     expect(attempt?.extraSystemPrompt).toContain("Existing operator note.");
     expect(attempt?.extraSystemPrompt).toContain("this sender is not allowed by policy");
+  });
+
+  it("treats registered harnesses with the built-in id as plugin harnesses", async () => {
+    const runAttempt = vi.fn<AgentHarness["runAttempt"]>(async () => createAttemptResult("plugin"));
+    registerAgentHarness(
+      {
+        id: "openclaw",
+        label: "Plugin OpenClaw",
+        supports: (ctx) =>
+          ctx.provider === "codex" ? { supported: true, priority: 100 } : { supported: false },
+        runAttempt,
+      },
+      { ownerPluginId: "custom-plugin" },
+    );
+
+    await runAgentHarnessAttempt({
+      ...createAttemptParams(groupSenderDenyAllConfig()),
+      sessionKey: "agent:main:telegram:group:test-deny-room",
+      messageProvider: "telegram",
+      groupId: "test-deny-room",
+      senderId: "test-denied-sender",
+      extraSystemPrompt: "Existing operator note.",
+    });
+
+    expect(agentRunAttempt).not.toHaveBeenCalled();
+    expect(runAttempt).toHaveBeenCalledTimes(1);
+    expect(runAttempt.mock.calls[0]?.[0].toolsAllow).toEqual([]);
   });
 
   it("adds chat policy wording for plugin harness group deny-all", async () => {
@@ -1272,6 +1306,51 @@ describe("selectAgentHarness", () => {
       compacted: false,
       reason: 'Agent harness "codex" does not support compaction.',
       failure: { reason: "unsupported_harness_compaction" },
+    });
+  });
+
+  it("fails closed before budgeted plugin harness compaction", async () => {
+    const compact = vi.fn<NonNullable<AgentHarness["compact"]>>(async () => ({
+      ok: true,
+      compacted: true,
+    }));
+    registerAgentHarness(
+      {
+        id: "codex",
+        label: "Codex",
+        supports: (ctx) =>
+          ctx.provider === "codex" ? { supported: true, priority: 100 } : { supported: false },
+        runAttempt: vi.fn(async () => createAttemptResult("codex")),
+        compact,
+      },
+      { ownerPluginId: "codex" },
+    );
+
+    const result = await maybeCompactAgentHarnessSession({
+      sessionId: "session-1",
+      sessionKey: "agent:main:main",
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp/workspace",
+      provider: "codex",
+      model: "gpt-5.5",
+      agentHarnessId: "codex",
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: { daily: { tokens: 100 } },
+          },
+        },
+      } as OpenClawConfig,
+    });
+
+    expect(compact).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false,
+      compacted: false,
+      failure: {
+        reason: "usage_budget_unsupported_harness",
+        code: "agent_usage_budget_blocked",
+      },
     });
   });
 

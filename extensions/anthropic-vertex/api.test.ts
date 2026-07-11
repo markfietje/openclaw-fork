@@ -1,5 +1,6 @@
 // Anthropic Vertex tests cover api plugin behavior.
 import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-sdk/llm";
+import { isProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AnthropicVertexStreamDeps } from "./stream-runtime.js";
 
@@ -55,6 +56,27 @@ describe("Anthropic Vertex API stream factories", () => {
 
     expect(anthropicVertexCtorMock).toHaveBeenCalledTimes(1);
     expect(streamAnthropicMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps model-derived lazy streams dispatch observable for budgeted simple completions", () => {
+    const { deps } = createStreamDeps();
+    const directStreamFn = createAnthropicVertexStreamFn(
+      "vertex-project",
+      "us-east5",
+      undefined,
+      deps,
+    );
+    const modelStreamFn = createAnthropicVertexStreamFnForModel(
+      makeModel(),
+      {
+        ANTHROPIC_VERTEX_PROJECT_ID: "vertex-project",
+        GOOGLE_CLOUD_LOCATION: "us-east5",
+      } as NodeJS.ProcessEnv,
+      deps,
+    );
+
+    expect(isProviderDispatchObservableStreamFn(directStreamFn)).toBe(true);
+    expect(isProviderDispatchObservableStreamFn(modelStreamFn)).toBe(true);
   });
 
   it("reuses the runtime stream factory across model-derived stream calls", async () => {

@@ -36,6 +36,7 @@ import {
 } from "../../agents/subagent-capabilities.js";
 import { isToolAllowedByPolicies } from "../../agents/tool-policy-match.js";
 import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "../../agents/tool-policy.js";
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import {
   resolveConversationBindingRecord,
   touchConversationBindingRecord,
@@ -362,6 +363,9 @@ async function maybeApplyTtsToReplyPayload(
       accountId: params.accountId,
     })
   ) {
+    return params.payload;
+  }
+  if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.agentId })) {
     return params.payload;
   }
   const { maybeApplyTtsToPayload } = await loadTtsRuntime();

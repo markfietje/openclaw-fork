@@ -40,6 +40,7 @@ import {
   type TalkEventInput,
   type TalkSessionController,
 } from "openclaw/plugin-sdk/realtime-voice";
+import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
   consultOpenClawAgentForGoogleMeet,
   handleGoogleMeetRealtimeConsultToolCall,
@@ -671,6 +672,7 @@ export async function startCommandAgentAudioBridge(params: {
         const result = await params.runtime.tts.textToSpeechTelephony({
           text: normalized,
           cfg: params.fullConfig,
+          agentId: normalizeAgentId(params.config.realtime.agentId),
         });
         if (!result.success || !result.audioBuffer || !result.sampleRate) {
           throw new Error(result.error ?? "TTS conversion failed");
@@ -1111,6 +1113,7 @@ export async function startCommandRealtimeAudioBridge(params: {
   bridge = createRealtimeVoiceBridgeSession({
     provider: resolved.provider,
     cfg: params.fullConfig,
+    agentId: normalizeAgentId(params.config.realtime.agentId),
     providerConfig: resolved.providerConfig,
     audioFormat: resolveGoogleMeetRealtimeAudioFormat(params.config),
     instructions: params.config.realtime.instructions,

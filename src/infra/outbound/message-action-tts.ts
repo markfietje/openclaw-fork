@@ -1,3 +1,4 @@
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 // Message-action TTS helpers lazily apply session/config driven speech output
 // to send payloads without loading TTS providers for ordinary sends.
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
@@ -64,6 +65,9 @@ export async function maybeApplyTtsToMessageActionSendPayload(params: {
       accountId: params.accountId ?? undefined,
     })
   ) {
+    return params.payload;
+  }
+  if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.agentId })) {
     return params.payload;
   }
   const { maybeApplyTtsToPayload } = await loadMessageActionTtsRuntime();

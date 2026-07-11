@@ -152,6 +152,7 @@ export const streamMistral: StreamFunction<"mistral-conversations", MistralOptio
       if (nextPayload !== undefined) {
         payload = nextPayload as ChatCompletionStreamRequest;
       }
+      options?.onProviderDispatch?.();
       const mistralStream = await mistral.chat.stream(payload, buildRequestOptions(model, options));
       stream.push({ type: "start", partial: output });
       await consumeChatStream(model, output, stream, mistralStream);

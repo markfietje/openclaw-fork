@@ -12,6 +12,7 @@ import {
   type GoogleThinkingInputLevel,
 } from "../plugin-sdk/provider-stream-shared.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
+import { markModelProviderDispatchObservableStreamFn } from "./provider-dispatch-observable-stream.js";
 import type { StreamFn } from "./runtime/index.js";
 
 /** Custom API id for the Google simple-completion stream adapter. */
@@ -38,7 +39,7 @@ function resolveGoogleSimpleThinkingLevel(
 }
 
 function buildGoogleSimpleCompletionStreamFn(): StreamFn {
-  return (model, context, options) => {
+  const streamFn: StreamFn = (model, context, options) => {
     const googleModel = { ...model, api: SOURCE_API };
     return streamWithPayloadPatch(
       streamSimple as unknown as StreamFn,
@@ -56,6 +57,7 @@ function buildGoogleSimpleCompletionStreamFn(): StreamFn {
       },
     );
   };
+  return markModelProviderDispatchObservableStreamFn(streamFn);
 }
 
 /** Rewrites Google generative-ai models to the simple-completion adapter when needed. */

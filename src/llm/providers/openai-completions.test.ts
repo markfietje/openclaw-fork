@@ -2,6 +2,10 @@
 import type { ChatCompletionChunk } from "openai/resources/chat/completions.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../../agents/system-prompt-cache-boundary.js";
+import {
+  hasUsageBudgetUnpriceableCostMetadata,
+  USAGE_BUDGET_RECORDED_COST_METADATA_KEY,
+} from "../../shared/usage-budget-recorded-cost.js";
 import type { Context, Model, SimpleStreamOptions } from "../types.js";
 
 type DeepPartial<T> = { [P in keyof T]?: DeepPartial<T[P]> };
@@ -23,8 +27,9 @@ const mockChunksRef: {
   chunks: OpenAICompatibleChatCompletionChunk[];
   stream?: AsyncIterable<OpenAICompatibleChatCompletionChunk>;
 } = { chunks: [] };
-const mockOpenAIOptionsRef: { options: unknown[]; requests: unknown[] } = {
+const mockOpenAIOptionsRef: { options: unknown[]; params: unknown[]; requests: unknown[] } = {
   options: [],
+  params: [],
   requests: [],
 };
 
@@ -36,7 +41,8 @@ vi.mock("openai", () => {
 
     chat = {
       completions: {
-        create: (_params: unknown, requestOptions: unknown) => {
+        create: (params: unknown, requestOptions: unknown) => {
+          mockOpenAIOptionsRef.params.push(params);
           mockOpenAIOptionsRef.requests.push(requestOptions);
           return {
             withResponse: async () => {
@@ -69,6 +75,7 @@ import { streamOpenAICompletions, streamSimpleOpenAICompletions } from "./openai
 beforeEach(() => {
   mockChunksRef.chunks = [];
   mockChunksRef.stream = undefined;
+  mockOpenAIOptionsRef.params = [];
   mockOpenAIOptionsRef.requests = [];
 });
 
@@ -138,12 +145,14 @@ function makeToolCallChunk(
 
 function makeFinishChunk(
   finishReason: string,
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number },
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cost?: number },
+  serviceTier?: ChatCompletionChunk["service_tier"],
 ): OpenAICompatibleChatCompletionChunk {
   return {
     id: "chatcmpl-test",
     choices: [{ index: 0, delta: {}, finish_reason: finishReason as never }],
     ...(usage ? { usage } : {}),
+    ...(serviceTier ? { service_tier: serviceTier } : {}),
   };
 }
 
@@ -163,9 +172,11 @@ describe("OpenAI-compatible completions params", () => {
   it("configures the OpenAI SDK client with guarded fetch", async () => {
     mockOpenAIOptionsRef.options = [];
     mockChunksRef.chunks = [makeTextChunk("ok"), makeFinishChunk("stop")];
+    const onProviderDispatch = vi.fn();
 
     const stream = streamOpenAICompletions(model, context, {
       apiKey: "sk-test",
+      onProviderDispatch,
     });
     const result = await stream.result();
 
@@ -178,6 +189,7 @@ describe("OpenAI-compatible completions params", () => {
     expect((mockOpenAIOptionsRef.options[0] as { fetch?: unknown }).fetch).toEqual(
       expect.any(Function),
     );
+    expect(onProviderDispatch).not.toHaveBeenCalled();
   });
 
   it("fails when streaming headers arrive but no first SSE event follows", async () => {
@@ -760,6 +772,150 @@ describe("OpenAI-compatible completions params", () => {
       role: "assistant",
       reasoning_content: "",
     });
+  });
+
+  it("prices usage from the returned OpenAI service tier", async () => {
+    const pricedModel = {
+      ...model,
+      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0.75 },
+    } satisfies Model<"openai-completions">;
+    mockChunksRef.chunks = [
+      makeTextChunk("ok"),
+      makeFinishChunk(
+        "stop",
+        { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+        "priority",
+      ),
+    ];
+
+    const stream = streamOpenAICompletions(pricedModel, context, {
+      apiKey: "sk-test",
+    });
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.usage?.cost.total).toBeCloseTo(((100 * 1 + 20 * 2) / 1_000_000) * 2.5);
+    expect(
+      (result.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toMatchObject({
+      kind: "model-call-cost-multiplier",
+      costMultiplier: 2.5,
+    });
+  });
+
+  it("prices usage from the requested OpenAI service tier when response omits it", async () => {
+    const pricedModel = {
+      ...model,
+      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0.75 },
+    } satisfies Model<"openai-completions">;
+    mockChunksRef.chunks = [
+      makeTextChunk("ok"),
+      makeFinishChunk("stop", { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }),
+    ];
+
+    const stream = streamOpenAICompletions(pricedModel, context, {
+      apiKey: "sk-test",
+      serviceTier: "priority",
+    });
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("stop");
+    expect(mockOpenAIOptionsRef.params[0]).toMatchObject({ service_tier: "priority" });
+    expect(result.usage?.cost.total).toBeCloseTo(((100 * 1 + 20 * 2) / 1_000_000) * 2.5);
+    expect(
+      (result.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toMatchObject({
+      kind: "model-call-cost-multiplier",
+      costMultiplier: 2.5,
+    });
+  });
+
+  it("preserves verified OpenRouter in-response billed cost", async () => {
+    const pricedModel = {
+      ...model,
+      id: "openrouter/auto",
+      name: "OpenRouter Auto",
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0.75 },
+    } satisfies Model<"openai-completions">;
+    mockChunksRef.chunks = [
+      makeTextChunk("ok"),
+      makeFinishChunk("stop", {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        cost: 0.0042,
+      }),
+    ];
+
+    const stream = streamOpenAICompletions(pricedModel, context, {
+      apiKey: "sk-test",
+    });
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.usage?.cost.total).toBe(0.0042);
+    expect(
+      (result.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toMatchObject({
+      kind: "provider-billed-model-call-cost",
+      costMultiplier: 1,
+    });
+  });
+
+  it("does not trust OpenRouter billed costs from custom compatible routes", async () => {
+    const customRouteModel = {
+      ...model,
+      id: "openrouter/auto",
+      name: "OpenRouter-compatible proxy",
+      provider: "openrouter",
+      baseUrl: "https://proxy.example.test/api/v1",
+      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0.75 },
+    } satisfies Model<"openai-completions">;
+    mockChunksRef.chunks = [
+      makeTextChunk("ok"),
+      makeFinishChunk("stop", {
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        total_tokens: 120,
+        cost: 0,
+      }),
+    ];
+
+    const stream = streamOpenAICompletions(customRouteModel, context, {
+      apiKey: "sk-test",
+    });
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("stop");
+    expect(result.usage?.cost.total).toBeCloseTo((100 * 1 + 20 * 2) / 1_000_000);
+    expect(
+      (result.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toBeUndefined();
+  });
+
+  it("marks capacity-billed returned service tiers as unpriceable", async () => {
+    const pricedModel = {
+      ...model,
+      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0.75 },
+    } satisfies Model<"openai-completions">;
+    mockChunksRef.chunks = [
+      makeTextChunk("ok"),
+      makeFinishChunk(
+        "stop",
+        { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+        "scale",
+      ),
+    ];
+
+    const stream = streamOpenAICompletions(pricedModel, context, {
+      apiKey: "sk-test",
+    });
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("stop");
+    expect(hasUsageBudgetUnpriceableCostMetadata(result.usage)).toBe(true);
   });
 });
 

@@ -910,6 +910,11 @@ export type ProviderCreateStreamFnContext = {
  */
 export type ProviderWrapStreamFnContext = ProviderPrepareExtraParamsContext & {
   model?: ProviderRuntimeModel;
+  /**
+   * True when the incoming stream function is known to honor `onProviderDispatch`
+   * for this model. Forwarding wrappers should preserve the dispatch marker.
+   */
+  providerDispatchObservable?: boolean;
   streamFn?: StreamFn;
 };
 

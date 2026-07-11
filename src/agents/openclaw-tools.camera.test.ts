@@ -1,5 +1,6 @@
 // Verifies node camera/photo tool payloads, media URLs, and vision gating.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   readFileUtf8AndCleanup,
   stubFetchTextResponse,
@@ -54,19 +55,31 @@ function unexpectedGatewayMethod(method: unknown): never {
   throw new Error(`unexpected method: ${String(method)}`);
 }
 
-function getNodesTool(options?: { modelHasVision?: boolean; allowMediaInvokeCommands?: boolean }) {
+function getNodesTool(options?: {
+  modelHasVision?: boolean;
+  allowMediaInvokeCommands?: boolean;
+  config?: OpenClawConfig;
+  agentSessionKey?: string;
+}) {
   // Tests vary only model vision capability and media invoke permission.
   return createNodesTool({
     ...(options?.modelHasVision !== undefined ? { modelHasVision: options.modelHasVision } : {}),
     ...(options?.allowMediaInvokeCommands !== undefined
       ? { allowMediaInvokeCommands: options.allowMediaInvokeCommands }
       : {}),
+    ...(options?.config ? { config: options.config } : {}),
+    ...(options?.agentSessionKey ? { agentSessionKey: options.agentSessionKey } : {}),
   });
 }
 
 async function executeNodes(
   input: Record<string, unknown>,
-  options?: { modelHasVision?: boolean; allowMediaInvokeCommands?: boolean },
+  options?: {
+    modelHasVision?: boolean;
+    allowMediaInvokeCommands?: boolean;
+    config?: OpenClawConfig;
+    agentSessionKey?: string;
+  },
 ) {
   return getNodesTool(options).execute("call1", input as never);
 }
@@ -727,6 +740,38 @@ describe("nodes invoke", () => {
     expect(details.payload).toStrictEqual({
       devices: [{ id: "cam-back", name: "Back Camera" }],
     });
+  });
+
+  it("blocks generic invoke for budgeted agents before node dispatch", async () => {
+    setupNodeInvokeMock({
+      commands: ["ollama.chat"],
+      onInvoke: () => {
+        throw new Error("node.invoke should not run");
+      },
+    });
+    const config = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 1_000 } },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    await expect(
+      executeNodes(
+        {
+          action: "invoke",
+          node: NODE_ID,
+          invokeCommand: "ollama.chat",
+          invokeParamsJson: '{"model":"llama","prompt":"hello"}',
+        },
+        { config, agentSessionKey: "agent:main:main" },
+      ),
+    ).rejects.toThrow("Generic node invocation is unavailable");
+    expect(callGateway).toHaveBeenCalledWith(expect.objectContaining({ method: "node.list" }));
+    expect(callGateway).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "node.invoke" }),
+    );
   });
 
   it("blocks media invoke commands to avoid base64 context bloat", async () => {

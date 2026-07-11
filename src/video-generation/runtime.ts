@@ -1,5 +1,6 @@
 // Video generation runtime coordinates provider auth, fallbacks, and job polling.
 import type { FallbackAttempt } from "../agents/model-fallback.types.js";
+import { assertNoActiveAgentUsageBudgetForUnsupportedHarness } from "../agents/usage-budget.js";
 import { resolveAgentModelTimeoutMsValue } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -116,6 +117,13 @@ export async function generateVideo(
   params: GenerateVideoParams,
   deps: VideoGenerationRuntimeDeps = {},
 ): Promise<GenerateVideoRuntimeResult> {
+  assertNoActiveAgentUsageBudgetForUnsupportedHarness({
+    config: params.cfg,
+    agentId: params.agentId,
+    provider: "video-generation",
+    model: params.modelOverride ?? "configured",
+    harnessId: "video-generation-runtime",
+  });
   const getProvider = deps.getProvider ?? getVideoGenerationProvider;
   const listProviders = deps.listProviders ?? listVideoGenerationProviders;
   const logger = deps.log ?? log;

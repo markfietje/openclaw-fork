@@ -8,6 +8,14 @@ import {
   createMoonshotThinkingWrapper as createMoonshotThinkingWrapperShared,
   createPlainTextToolCallCompatWrapper as createPlainTextToolCallCompatWrapperShared,
   createToolStreamWrapper as createToolStreamWrapperShared,
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchModelResolverStreamFn,
+  markProviderDispatchObservableStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchModelForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
 } from "./provider-stream-shared.js";
 import {
   buildProviderStreamFamilyHooks,
@@ -134,9 +142,160 @@ describe("composeProviderStreamWrappers", () => {
     const baseStreamFn: StreamFn = () => ({}) as never;
     expect(composeProviderStreamWrappers(baseStreamFn)).toBe(baseStreamFn);
   });
+
+  it("resolves dispatch model metadata attached by provider wrappers", () => {
+    const baseStreamFn: StreamFn = () => ({}) as never;
+    const wrapped = markProviderDispatchModelResolverStreamFn(baseStreamFn, ({ model }) => ({
+      ...model,
+      id: "actual-dispatch-model",
+    }));
+
+    expect(
+      resolveProviderDispatchModelForStreamFn({
+        streamFn: wrapped,
+        model: { id: "configured-model" } as never,
+        context: {} as never,
+        options: {},
+      }).id,
+    ).toBe("actual-dispatch-model");
+  });
+
+  it("preserves dispatch model metadata through compatibility wrappers", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn(
+      markProviderDispatchModelResolverStreamFn(
+        (() => createAssistantMessageEventStream()) as StreamFn,
+        ({ model }) => ({
+          ...model,
+          id: "actual-dispatch-model",
+        }),
+      ),
+    );
+    const wrapped = createPlainTextToolCallCompatWrapper(baseStreamFn);
+
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
+    expect(
+      resolveProviderDispatchModelForStreamFn({
+        streamFn: wrapped,
+        model: { id: "configured-model" } as never,
+        context: {} as never,
+        options: {},
+      }).id,
+    ).toBe("actual-dispatch-model");
+  });
+
+  it("preserves dispatch cost multiplier metadata through compatibility wrappers", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn(
+      markProviderDispatchCostMultiplierResolverStreamFn(
+        (() => createAssistantMessageEventStream()) as StreamFn,
+        () => 2,
+      ),
+    );
+    const wrapped = createPlainTextToolCallCompatWrapper(baseStreamFn);
+
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: wrapped,
+        model: { id: "configured-model" } as never,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(2);
+  });
+
+  it("preserves dispatch reservation cost multiplier metadata through compatibility wrappers", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn(
+      markProviderDispatchReservationCostMultiplierResolverStreamFn(
+        (() => createAssistantMessageEventStream()) as StreamFn,
+        () => 2.5,
+      ),
+    );
+    const wrapped = createPlainTextToolCallCompatWrapper(baseStreamFn);
+
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn: wrapped,
+        model: { id: "configured-model" } as never,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(2.5);
+  });
+
+  it("uses final dispatch cost metadata as the default reservation multiplier", () => {
+    const streamFn = markProviderDispatchCostMultiplierResolverStreamFn(
+      (() => createAssistantMessageEventStream()) as StreamFn,
+      () => 2,
+    );
+
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn,
+        model: { id: "configured-model" } as never,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(2);
+  });
 });
 
 describe("buildProviderStreamFamilyHooks", () => {
+  it("preserves provider-dispatch observability through the OpenAI wrapper family", () => {
+    const markedBaseStreamFn = markProviderDispatchObservableStreamFn(() =>
+      createAssistantMessageEventStream(),
+    );
+    const wrappedMarked = requireStreamFn(
+      requireWrapStreamFn(OPENAI_RESPONSES_STREAM_HOOKS.wrapStreamFn)({
+        streamFn: markedBaseStreamFn,
+        extraParams: { fastMode: true, serviceTier: "flex", textVerbosity: "low" },
+        config: {},
+        agentDir: "/tmp/provider-stream-test",
+      } as never),
+    );
+
+    const unmarkedBaseStreamFn: StreamFn = () => createAssistantMessageEventStream();
+    const wrappedUnmarked = requireStreamFn(
+      requireWrapStreamFn(OPENAI_RESPONSES_STREAM_HOOKS.wrapStreamFn)({
+        streamFn: unmarkedBaseStreamFn,
+        extraParams: { fastMode: true, serviceTier: "flex", textVerbosity: "low" },
+        config: {},
+        agentDir: "/tmp/provider-stream-test",
+      } as never),
+    );
+
+    expect(isProviderDispatchObservableStreamFn(wrappedMarked)).toBe(true);
+    expect(isProviderDispatchObservableStreamFn(wrappedUnmarked)).toBe(false);
+  });
+
+  it("preserves OpenAI service-tier cost multipliers through the wrapper family", () => {
+    const markedBaseStreamFn = markProviderDispatchObservableStreamFn(() =>
+      createAssistantMessageEventStream(),
+    );
+    const wrapped = requireStreamFn(
+      requireWrapStreamFn(OPENAI_RESPONSES_STREAM_HOOKS.wrapStreamFn)({
+        streamFn: markedBaseStreamFn,
+        extraParams: { serviceTier: "priority" },
+        config: {},
+        agentDir: "/tmp/provider-stream-test",
+      } as never),
+    );
+
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: wrapped,
+        model: {
+          api: "openai-responses",
+          baseUrl: "https://api.openai.com/v1",
+          id: "gpt-5.4",
+          provider: "openai",
+        } as never,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(2);
+  });
+
   it("covers the stream family matrix", async () => {
     let capturedPayload: Record<string, unknown> | undefined;
     let capturedModelId: string | undefined;

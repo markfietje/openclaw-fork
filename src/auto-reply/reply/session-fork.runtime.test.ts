@@ -241,6 +241,7 @@ describe("forkSessionFromParentRuntime", () => {
         id: parentSessionId,
         timestamp: "2026-05-01T00:00:00.000Z",
         cwd,
+        parentSession: "root-origin.jsonl",
       },
       {
         type: "message",
@@ -319,6 +320,7 @@ describe("forkSessionFromParentRuntime", () => {
     expect(forkedHeader?.id).toBe(fork.sessionId);
     expect(forkedHeader?.cwd).toBe(cwd);
     expect(forkedHeader?.parentSession).toBe(resolvedParentSessionFile);
+    expect(forkedHeader?.usageFamilyKey).toBe("root-origin");
     expect(forkedEntries.map((entry) => entry.type)).toEqual([
       "session",
       "message",
@@ -792,6 +794,7 @@ describe("forkSessionFromParentRuntime", () => {
         id: parentSessionId,
         timestamp: "2026-05-01T00:00:00.000Z",
         cwd: root,
+        parentSession: "root-origin.jsonl",
       })}\n`,
       "utf-8",
     );
@@ -817,5 +820,6 @@ describe("forkSessionFromParentRuntime", () => {
     expect(header.type).toBe("session");
     expect(header.id).toBe(fork.sessionId);
     expect(header.parentSession).toBe(resolvedParentSessionFile);
+    expect(header.usageFamilyKey).toBe("root-origin");
   });
 });

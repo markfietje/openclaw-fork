@@ -4,8 +4,13 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { resolveTimestampMsToIsoString } from "@openclaw/normalization-core/number-coercion";
+import { resolveSessionFileUsageFamilyKey } from "../../config/sessions/artifacts.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+} from "../compaction-usage-accounting.js";
 import type { CompactionEntry, SessionEntry, SessionHeader } from "../sessions/index.js";
 import { collectDuplicateUserMessageEntryIdsForCompaction } from "./compaction-duplicate-user-messages.js";
 import { stripThinkingSignaturesFromMessage } from "./thinking.js";
@@ -249,6 +254,10 @@ function buildSuccessorEntries(params: {
     if (removedIds.has(entry.id)) {
       continue;
     }
+    if (isNonRotatableAccountingEntry(entry)) {
+      removedIds.add(entry.id);
+      continue;
+    }
 
     let parentId = entry.parentId;
     while (parentId !== null && removedIds.has(parentId)) {
@@ -286,6 +295,14 @@ function buildSuccessorEntries(params: {
     activeBranchIds,
     originalIndexById,
   });
+}
+
+function isNonRotatableAccountingEntry(entry: SessionEntry): boolean {
+  return (
+    entry.type === "custom" &&
+    (entry.customType === COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE ||
+      entry.customType === MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE)
+  );
 }
 
 function collectLatestStateEntryIds(entries: SessionEntry[]): Set<string> {
@@ -371,6 +388,10 @@ function buildSuccessorHeader(params: {
   cwd: string;
   parentSession: string;
 }): SessionHeader {
+  const usageFamilyKey = resolveSessionFileUsageFamilyKey({
+    header: params.previousHeader,
+    sessionFile: params.parentSession,
+  });
   return {
     type: "session",
     version: CURRENT_SESSION_VERSION,
@@ -378,6 +399,7 @@ function buildSuccessorHeader(params: {
     timestamp: params.timestamp,
     cwd: params.previousHeader?.cwd || params.cwd,
     parentSession: params.parentSession,
+    ...(usageFamilyKey ? { usageFamilyKey } : {}),
   };
 }
 

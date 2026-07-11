@@ -1,3 +1,4 @@
+import { preserveProviderDispatchObservableStreamFn } from "../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 /**
  * Registers caller-supplied custom API stream functions with the LLM registry.
  */
@@ -5,7 +6,9 @@ import { getApiProvider, registerApiProvider } from "../llm/api-registry.js";
 import type {
   Api,
   AssistantMessageEventStreamContract,
+  Context,
   Model,
+  SimpleStreamOptions,
   StreamOptions,
 } from "../llm/types.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
@@ -51,14 +54,30 @@ export function ensureCustomApiRegistered(api: Api, streamFn: StreamFn): boolean
   if (getApiProvider(api)) {
     return false;
   }
+  const stream = preserveProviderDispatchObservableStreamFn(
+    (
+      model: Model,
+      context: Context,
+      options?: StreamOptions,
+    ): AssistantMessageEventStreamContract =>
+      adaptCustomStream(model, streamFn(model, context, options)),
+    streamFn,
+  );
+  const streamSimple = preserveProviderDispatchObservableStreamFn(
+    (
+      model: Model,
+      context: Context,
+      options?: SimpleStreamOptions,
+    ): AssistantMessageEventStreamContract =>
+      adaptCustomStream(model, streamFn(model, context, options as StreamOptions)),
+    streamFn,
+  );
 
   registerApiProvider(
     {
       api,
-      stream: (model, context, options) =>
-        adaptCustomStream(model, streamFn(model, context, options)),
-      streamSimple: (model, context, options) =>
-        adaptCustomStream(model, streamFn(model, context, options as StreamOptions)),
+      stream,
+      streamSimple,
     },
     getCustomApiRegistrySourceId(api),
   );

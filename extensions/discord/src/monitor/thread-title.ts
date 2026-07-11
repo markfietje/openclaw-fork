@@ -1,4 +1,5 @@
 // Discord plugin module implements thread title behavior.
+import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import {
@@ -21,6 +22,10 @@ const DISCORD_THREAD_TITLE_MAX_TOKENS = 4_096;
 const DISCORD_THREAD_TITLE_SYSTEM_PROMPT =
   "Generate a concise Discord thread title (3-6 words). Return only the title. Use channel context when provided and avoid redundant channel-name words unless needed for clarity.";
 
+type AgentUsageBudgetConfig = NonNullable<
+  NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>["usageBudget"]
+>;
+
 export async function generateThreadTitle(params: {
   cfg: OpenClawConfig;
   agentId: string;
@@ -32,6 +37,12 @@ export async function generateThreadTitle(params: {
 }): Promise<string | null> {
   const sourceText = params.messageText.trim();
   if (!sourceText) {
+    return null;
+  }
+  if (hasActiveAgentUsageBudget(params.cfg, params.agentId)) {
+    logVerbose(
+      `thread-title: skipped because usage budgets are enabled for agent ${params.agentId}`,
+    );
     return null;
   }
 
@@ -58,6 +69,8 @@ export async function generateThreadTitle(params: {
     });
     const timeoutMs = resolveThreadTitleTimeoutMs(params.timeoutMs);
     const response = await completeThreadTitle({
+      cfg: params.cfg,
+      agentId: params.agentId,
       model: prepared.model,
       auth: prepared.auth,
       userMessage,
@@ -71,7 +84,26 @@ export async function generateThreadTitle(params: {
   }
 }
 
+function hasActiveAgentUsageBudget(cfg: OpenClawConfig, agentId: string): boolean {
+  const resolved =
+    resolveAgentConfig(cfg, agentId)?.usageBudget ?? cfg.agents?.defaults?.usageBudget;
+  return Boolean(
+    resolved && resolved.enabled !== false && hasThreadTitleUsageBudgetLimits(resolved),
+  );
+}
+
+function hasThreadTitleUsageBudgetLimits(config: AgentUsageBudgetConfig): boolean {
+  return (
+    config.daily?.usd !== undefined ||
+    config.daily?.tokens !== undefined ||
+    config.monthly?.usd !== undefined ||
+    config.monthly?.tokens !== undefined
+  );
+}
+
 async function completeThreadTitle(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
   model: Parameters<typeof completeWithPreparedSimpleCompletionModel>[0]["model"];
   auth: Parameters<typeof completeWithPreparedSimpleCompletionModel>[0]["auth"];
   userMessage: string;
@@ -85,6 +117,7 @@ async function completeThreadTitle(params: {
       await completeWithPreparedSimpleCompletionModel({
         model: params.model,
         auth: params.auth,
+        cfg: params.cfg,
         context: {
           systemPrompt: DISCORD_THREAD_TITLE_SYSTEM_PROMPT,
           messages: [
@@ -98,6 +131,13 @@ async function completeThreadTitle(params: {
         options: {
           maxTokens,
           signal,
+        },
+        usageBudget: {
+          config: params.cfg,
+          agentId: params.agentId,
+          provider: params.model.provider,
+          model: params.model.id,
+          recordIdPrefix: "discord-thread-title",
         },
       }),
   });

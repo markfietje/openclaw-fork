@@ -2,6 +2,16 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Context, Model, SimpleStreamOptions } from "openclaw/plugin-sdk/llm";
 import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchModelResolverStreamFn,
+  markProviderDispatchObservableStreamFn,
+  preserveProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchModelForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testing as extraParamsTesting } from "./embedded-agent-runner/extra-params.js";
 
@@ -561,6 +571,149 @@ describe("applyExtraParamsToAgent", () => {
     return capturedOptions?.replayResponsesItemIds;
   };
 
+  it("preserves dispatch resolver metadata through model-aware extra-param wrappers", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn(
+      markProviderDispatchCostMultiplierResolverStreamFn(
+        markProviderDispatchModelResolverStreamFn(
+          (() => createAssistantMessageEventStream()) as StreamFn,
+          ({ model }) => ({
+            ...model,
+            id: "gpt-5.4-priority-dispatch",
+          }),
+        ),
+        () => 2,
+      ),
+    );
+    const agent = { streamFn: baseStreamFn };
+    const model = buildResponsesWrapperModel({
+      provider: "openai",
+      id: "gpt-5.4",
+      baseUrl: "https://api.openai.com/v1",
+    });
+
+    applyExtraParamsToAgent(
+      agent,
+      undefined,
+      "openai",
+      "gpt-5.4",
+      { temperature: 0.2 },
+      undefined,
+      undefined,
+      undefined,
+      model,
+    );
+
+    expect(agent.streamFn).toBeTypeOf("function");
+    expect(isProviderDispatchObservableStreamFn(agent.streamFn)).toBe(true);
+    expect(
+      resolveProviderDispatchModelForStreamFn({
+        streamFn: agent.streamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }).id,
+    ).toBe("gpt-5.4-priority-dispatch");
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: agent.streamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(2);
+  });
+
+  it("reserves OpenAI service-tier budget cost for auto and fast-mode priority dispatch", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn((() =>
+      createAssistantMessageEventStream()) as StreamFn);
+    const model = buildResponsesWrapperModel({
+      provider: "openai",
+      id: "gpt-5.5",
+      baseUrl: "https://api.openai.com/v1",
+    });
+
+    const autoTierStreamFn = createOpenAIServiceTierWrapper(baseStreamFn, "auto");
+    const fastModeStreamFn = createOpenAIFastModeWrapper(baseStreamFn, true);
+    const explicitFlexStreamFn = createOpenAIServiceTierWrapper(fastModeStreamFn, "flex");
+
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: autoTierStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(1);
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: fastModeStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(1);
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: explicitFlexStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(1);
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn: autoTierStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(2.5);
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn: fastModeStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(2.5);
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn: explicitFlexStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(0.5);
+  });
+
+  it("does not reserve priority service-tier budget for proxied OpenAI fast mode", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn((() =>
+      createAssistantMessageEventStream()) as StreamFn);
+    const model = buildResponsesWrapperModel({
+      provider: "openai",
+      id: "gpt-5.5",
+      baseUrl: "https://openai-proxy.example/v1",
+    });
+    const fastModeStreamFn = createOpenAIFastModeWrapper(baseStreamFn, true);
+
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: fastModeStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(1);
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn: fastModeStreamFn,
+        model,
+        context: {} as never,
+        options: {},
+      }),
+    ).toBe(1);
+  });
+
   it("passes agentDir and workspaceDir to provider stream wrappers", () => {
     let capturedContext: WrapProviderStreamFnParams["context"] | undefined;
     extraParamsTesting.setProviderRuntimeDepsForTest({
@@ -612,6 +765,95 @@ describe("applyExtraParamsToAgent", () => {
     expect(capturedContext?.workspaceDir).toBe("/tmp/openclaw-workspace");
     expect(capturedContext?.nativeWebSearchAllowedByToolPolicy).toBe(false);
     expect("nativeWebSearchPolicyContext" in (capturedContext ?? {})).toBe(false);
+  });
+
+  it("does not trust provider wrappers that omit dispatch observability preservation", () => {
+    const onProviderDispatch = vi.fn();
+    const baseStreamFn = markProviderDispatchObservableStreamFn(((_, __, options) => {
+      options?.onProviderDispatch?.();
+      return createAssistantMessageEventStream();
+    }) as StreamFn);
+    const agent = { streamFn: baseStreamFn };
+    const model = {
+      id: "wrapped-model",
+      name: "Wrapped Model",
+      api: "openai-completions",
+      provider: "cohere",
+      input: ["text"],
+      reasoning: false,
+    } as Model;
+
+    extraParamsTesting.setProviderRuntimeDepsForTest({
+      prepareProviderExtraParams: () => undefined,
+      resolveProviderExtraParamsForTransport: () => undefined,
+      wrapProviderStreamFn: (params) => {
+        const underlying = params.context.streamFn;
+        return ((requestModel, context, options) =>
+          underlying?.(requestModel, context, options) ??
+          createAssistantMessageEventStream()) as StreamFn;
+      },
+    });
+
+    applyExtraParamsToAgent(
+      agent,
+      undefined,
+      "cohere",
+      "wrapped-model",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      model,
+    );
+
+    expect(isProviderDispatchObservableStreamFn(agent.streamFn)).toBe(false);
+    void agent.streamFn(model, { messages: [] } as Context, { onProviderDispatch });
+    expect(onProviderDispatch).toHaveBeenCalledOnce();
+  });
+
+  it("preserves budget dispatch observability through explicit provider wrappers", () => {
+    const onProviderDispatch = vi.fn();
+    const baseStreamFn = markProviderDispatchObservableStreamFn(((_, __, options) => {
+      options?.onProviderDispatch?.();
+      return createAssistantMessageEventStream();
+    }) as StreamFn);
+    const agent = { streamFn: baseStreamFn };
+    const model = {
+      id: "wrapped-model",
+      name: "Wrapped Model",
+      api: "openai-completions",
+      provider: "cohere",
+      input: ["text"],
+      reasoning: false,
+    } as Model;
+
+    extraParamsTesting.setProviderRuntimeDepsForTest({
+      prepareProviderExtraParams: () => undefined,
+      resolveProviderExtraParamsForTransport: () => undefined,
+      wrapProviderStreamFn: (params) => {
+        const underlying = params.context.streamFn;
+        const wrapped = ((requestModel, context, options) =>
+          underlying?.(requestModel, context, options) ??
+          createAssistantMessageEventStream()) as StreamFn;
+        return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
+      },
+    });
+
+    applyExtraParamsToAgent(
+      agent,
+      undefined,
+      "cohere",
+      "wrapped-model",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      model,
+    );
+
+    expect(isProviderDispatchObservableStreamFn(agent.streamFn)).toBe(true);
+    void agent.streamFn(model, { messages: [] } as Context, { onProviderDispatch });
+    expect(onProviderDispatch).toHaveBeenCalledOnce();
   });
 
   function runResponsesPayloadMutationCase(params: {
@@ -3409,7 +3651,7 @@ describe("applyExtraParamsToAgent", () => {
     expect(payload.service_tier).toBe("priority");
   });
 
-  it("preserves caller-provided service_tier values", () => {
+  it("lets configured OpenAI serviceTier override caller-provided service_tier values", () => {
     const payload = runResponsesPayloadMutationCase({
       applyProvider: "openai",
       applyModelId: "gpt-5.4",
@@ -3437,7 +3679,7 @@ describe("applyExtraParamsToAgent", () => {
         service_tier: "default",
       },
     });
-    expect(payload.service_tier).toBe("default");
+    expect(payload.service_tier).toBe("priority");
   });
 
   it("warns and skips invalid OpenAI text verbosity values", () => {
@@ -3589,6 +3831,131 @@ describe("applyExtraParamsToAgent", () => {
     expect(payload.reasoning).toEqual({ effort: "medium" });
     expect(payload.text).toEqual({ verbosity: "high" });
     expect(payload.service_tier).toBe("default");
+  });
+
+  it("lets explicit OpenAI serviceTier override fast mode defaults", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.4": {
+                params: {
+                  fastMode: true,
+                  serviceTier: "flex",
+                },
+              },
+            },
+          },
+        },
+      },
+      model: {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+        baseUrl: "https://api.openai.com/v1",
+      } as unknown as Model<"openai-responses">,
+      payload: {
+        store: false,
+      },
+    });
+
+    expect(payload.service_tier).toBe("flex");
+  });
+
+  it("keeps configured OpenAI serviceTier after caller payload hooks", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      cfg: {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.4": {
+                params: {
+                  serviceTier: "flex",
+                },
+              },
+            },
+          },
+        },
+      },
+      model: {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+        baseUrl: "https://api.openai.com/v1",
+      } as unknown as Model<"openai-responses">,
+      options: {
+        onPayload: (nextPayload) => {
+          (nextPayload as Record<string, unknown>).service_tier = "priority";
+        },
+      },
+      payload: {
+        store: false,
+      },
+    });
+
+    expect(payload.service_tier).toBe("flex");
+  });
+
+  it("keeps configured OpenAI serviceTier on async replacement payloads", async () => {
+    let dispatchedPayload: Record<string, unknown> | undefined;
+    const baseStreamFn: StreamFn = async (model, _context, options) => {
+      const payload: Record<string, unknown> = {
+        service_tier: "default",
+        store: false,
+      };
+      const nextPayload = await options?.onPayload?.(payload, model);
+      dispatchedPayload = (nextPayload ?? payload) as Record<string, unknown>;
+      return createAssistantMessageEventStream();
+    };
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(
+      agent,
+      {
+        agents: {
+          defaults: {
+            models: {
+              "openai/gpt-5.4": {
+                params: {
+                  serviceTier: "flex",
+                },
+              },
+            },
+          },
+        },
+      },
+      "openai",
+      "gpt-5.4",
+      undefined,
+    );
+
+    await agent.streamFn?.(
+      {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+        baseUrl: "https://api.openai.com/v1",
+      } as unknown as Model<"openai-responses">,
+      { messages: [] },
+      {
+        onPayload: async () => {
+          await Promise.resolve();
+          return {
+            service_tier: "priority",
+            store: true,
+          };
+        },
+      },
+    );
+
+    expect(dispatchedPayload).toStrictEqual({
+      service_tier: "flex",
+      store: true,
+    });
   });
 
   it("maps MiniMax /fast to the matching highspeed model", () => {

@@ -153,6 +153,15 @@ export function createNodesTool(options?: {
       const params = args as Record<string, unknown>;
       const action = readStringParam(params, "action", { required: true });
       const gatewayOpts = readGatewayCallOptions(params);
+      const nodeCommandContext = {
+        gatewayOpts,
+        mediaInvokeActions: MEDIA_INVOKE_ACTIONS,
+        ...(options?.allowMediaInvokeCommands !== undefined
+          ? { allowMediaInvokeCommands: options.allowMediaInvokeCommands }
+          : {}),
+        ...(options?.config ? { config: options.config } : {}),
+        ...(agentId ? { agentId } : {}),
+      };
 
       try {
         switch (action) {
@@ -240,18 +249,14 @@ export function createNodesTool(options?: {
             return await executeNodeCommandAction({
               action: action as NodeCommandAction,
               input: params,
-              gatewayOpts,
-              allowMediaInvokeCommands: options?.allowMediaInvokeCommands,
-              mediaInvokeActions: MEDIA_INVOKE_ACTIONS,
+              ...nodeCommandContext,
             });
           }
           case "notifications_action": {
             return await executeNodeCommandAction({
               action,
               input: params,
-              gatewayOpts,
-              allowMediaInvokeCommands: options?.allowMediaInvokeCommands,
-              mediaInvokeActions: MEDIA_INVOKE_ACTIONS,
+              ...nodeCommandContext,
             });
           }
           case "camera_clip": {
@@ -285,18 +290,14 @@ export function createNodesTool(options?: {
             return await executeNodeCommandAction({
               action,
               input: params,
-              gatewayOpts,
-              allowMediaInvokeCommands: options?.allowMediaInvokeCommands,
-              mediaInvokeActions: MEDIA_INVOKE_ACTIONS,
+              ...nodeCommandContext,
             });
           }
           case "invoke": {
             return await executeNodeCommandAction({
               action,
               input: params,
-              gatewayOpts,
-              allowMediaInvokeCommands: options?.allowMediaInvokeCommands,
-              mediaInvokeActions: MEDIA_INVOKE_ACTIONS,
+              ...nodeCommandContext,
             });
           }
           default:

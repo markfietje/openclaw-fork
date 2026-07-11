@@ -1,6 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 // Anthropic-family tool payload compatibility wraps provider tool payload shapes.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import type { StreamFn } from "../../../agents/runtime/index.js";
 import { projectRuntimeToolInputSchema } from "../../../agents/tool-schema-json-projection.js";
 import { streamSimple } from "../../stream.js";
@@ -452,7 +453,7 @@ export function createAnthropicToolPayloadCompatibilityWrapper(
   options?: AnthropicToolPayloadCompatibilityOptions,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, streamOptions) => {
+  const wrapped: StreamFn = (model, context, streamOptions) => {
     const originalOnPayload = streamOptions?.onPayload;
     return underlying(model, context, {
       ...streamOptions,
@@ -491,6 +492,7 @@ export function createAnthropicToolPayloadCompatibilityWrapper(
       },
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated Anthropic-family provider stream helper; do not use from third-party plugins. */

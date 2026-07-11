@@ -70,6 +70,7 @@ import { createTtsTool } from "./tools/tts-tool.js";
 import { createUpdatePlanTool } from "./tools/update-plan-tool.js";
 import { createVideoGenerateTool } from "./tools/video-generate-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
+import { resolveAgentUsageBudgetConfig } from "./usage-budget.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
 
 type OpenClawToolsDeps = {
@@ -199,6 +200,15 @@ export function createOpenClawTools(
     config: resolvedConfig,
     agentId: options?.requesterAgentIdOverride,
   });
+  const usageBudgetBlocksModelBackedTools = Boolean(
+    resolveAgentUsageBudgetConfig({
+      config: availabilityConfig ?? resolvedConfig,
+      agentId: sessionAgentId,
+    }),
+  );
+  const usageBudgetModelToolDenial = usageBudgetBlocksModelBackedTools
+    ? "This model-backed tool is unavailable while agent usage budgets are enabled because its provider calls are not yet individually budget-metered."
+    : undefined;
   // Fall back to the session agent workspace so plugin loading stays workspace-stable
   // even when a caller forgets to thread workspaceDir explicitly.
   const inferredWorkspaceDir =
@@ -265,12 +275,14 @@ export function createOpenClawTools(
         currentChannelId: options?.currentChannelId,
         modelHasVision: options?.modelHasVision,
         deferAutoModelResolution: true,
+        usageBudgetUnsupportedReason: usageBudgetModelToolDenial,
       })
     : null;
   options?.recordToolPrepStage?.("openclaw-tools:image-tool");
   const imageGenerateTool = optionalMediaTools.imageGenerate
     ? createImageGenerateTool({
         config: options?.config,
+        agentId: sessionAgentId,
         agentDir: options?.agentDir,
         authProfileStore: options?.authProfileStore,
         agentSessionKey: mediaGenerationAgentSessionKey,
@@ -279,12 +291,14 @@ export function createOpenClawTools(
         sandbox,
         fsPolicy: options?.fsPolicy,
         onAsyncTaskStarted: mediaGenerationAsyncStartCallback,
+        usageBudgetUnsupportedReason: usageBudgetModelToolDenial,
       })
     : null;
   options?.recordToolPrepStage?.("openclaw-tools:image-generate-tool");
   const videoGenerateTool = optionalMediaTools.videoGenerate
     ? createVideoGenerateTool({
         config: options?.config,
+        agentId: sessionAgentId,
         agentDir: options?.agentDir,
         authProfileStore: options?.authProfileStore,
         agentSessionKey: mediaGenerationAgentSessionKey,
@@ -293,12 +307,14 @@ export function createOpenClawTools(
         sandbox,
         fsPolicy: options?.fsPolicy,
         onAsyncTaskStarted: mediaGenerationAsyncStartCallback,
+        usageBudgetUnsupportedReason: usageBudgetModelToolDenial,
       })
     : null;
   options?.recordToolPrepStage?.("openclaw-tools:video-generate-tool");
   const musicGenerateTool = optionalMediaTools.musicGenerate
     ? createMusicGenerateTool({
         config: options?.config,
+        agentId: sessionAgentId,
         agentDir: options?.agentDir,
         authProfileStore: options?.authProfileStore,
         agentSessionKey: mediaGenerationAgentSessionKey,
@@ -307,6 +323,7 @@ export function createOpenClawTools(
         sandbox,
         fsPolicy: options?.fsPolicy,
         onAsyncTaskStarted: mediaGenerationAsyncStartCallback,
+        usageBudgetUnsupportedReason: usageBudgetModelToolDenial,
       })
     : null;
   options?.recordToolPrepStage?.("openclaw-tools:music-generate-tool");
@@ -320,6 +337,7 @@ export function createOpenClawTools(
           sandbox,
           fsPolicy: options?.fsPolicy,
           deferAutoModelResolution: true,
+          usageBudgetUnsupportedReason: usageBudgetModelToolDenial,
         })
       : null;
   options?.recordToolPrepStage?.("openclaw-tools:pdf-tool");
@@ -442,6 +460,7 @@ export function createOpenClawTools(
       config: resolvedConfig,
       agentId: sessionAgentId,
       agentAccountId: options?.agentAccountId,
+      usageBudgetUnsupportedReason: usageBudgetModelToolDenial,
     }),
     ...(includeTranscriptsTool ? [createTranscriptsTool({ config: resolvedConfig })] : []),
     ...collectPresentOpenClawTools([imageGenerateTool, musicGenerateTool, videoGenerateTool]),

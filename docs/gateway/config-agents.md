@@ -189,6 +189,8 @@ knob.
   the compact skills list injected into the system prompt.
 - `agents.defaults.contextLimits.*`:
   bounded runtime excerpts and injected runtime-owned blocks.
+- `agents.defaults.usageBudget.*`:
+  model-call admission budgets for each agent.
 - `memory.qmd.limits.*`:
   indexed memory-search snippet and injection sizing.
 
@@ -200,6 +202,7 @@ budget:
 - `agents.list[].bootstrapMaxChars`
 - `agents.list[].bootstrapTotalMaxChars`
 - `agents.list[].contextLimits.*`
+- `agents.list[].usageBudget.*`
 
 #### `agents.defaults.startupContext`
 
@@ -276,6 +279,83 @@ from `agents.defaults.contextLimits`.
           memoryGetMaxChars: 6000,
           toolResultMaxChars: 8000, // advanced ceiling for this agent
         },
+      },
+    ],
+  },
+}
+```
+
+#### `agents.defaults.usageBudget`
+
+Sets an agent-scoped model-call budget that OpenClaw enforces before dispatching
+the next provider request. Daily windows reset at 00:00 UTC; monthly windows
+reset at 00:00 UTC on the first day of the month.
+
+```json5
+{
+  agents: {
+    defaults: {
+      usageBudget: {
+        daily: { tokens: 250000, usd: 5 },
+        monthly: { tokens: 5000000, usd: 100 },
+      },
+    },
+  },
+}
+```
+
+- `daily.tokens` / `monthly.tokens`: token ceilings based on the agent's usage
+  in the current UTC window. Completed calls are also recorded in a per-agent
+  SQLite ledger, so session reset/archive cleanup does not reset an active
+  budget window.
+- `daily.usd` / `monthly.usd`: estimated spend ceilings based on local model
+  pricing plus usage in the current UTC window.
+- Spend budgets fail closed when the selected model has no usable pricing, or
+  when prior model calls in the active window still cannot be priced. Use token
+  budgets when local spend estimates are not available for a model.
+- If `session.store` is customized, put `{agentId}` in a directory component so
+  budget backfill can scan the budgeted agent's historical transcripts. Custom
+  stores without an agent-scoped transcript directory fail closed under an
+  active usage budget.
+- Budgets are enforced at the OpenClaw model-call wrapper. Agent harnesses and
+  custom provider streams without that per-call accounting boundary fail closed
+  when a budget is configured.
+- The first budget slice covers attributable text model calls only. Plugin
+  runtime/session SDK calls must pass the target `agentId` when any default or
+  per-agent budget is active; unattributed plugin model calls fail closed so
+  they cannot bypass a budgeted agent. Model-backed media, vision, PDF, music,
+  video, TTS, ACP, and custom compaction/provider paths that do not use the
+  model-call accounting boundary are unavailable for budgeted agents until those
+  paths provide attribution and accounting.
+- When a budget is exhausted, OpenClaw returns a generic visible error reply and
+  keeps the agent id, exhausted window, used/limit value, and reset timestamp in
+  internal run metadata/logs for operators. The blocked request is not sent to
+  the model provider and does not rotate to a fallback model.
+
+#### `agents.list[].usageBudget`
+
+Per-agent override for the shared usage budget. Omitted fields inherit from
+`agents.defaults.usageBudget`; set `enabled: false` to exempt one agent from the
+default budget.
+
+```json5
+{
+  agents: {
+    defaults: {
+      usageBudget: {
+        daily: { tokens: 250000, usd: 5 },
+      },
+    },
+    list: [
+      {
+        id: "support",
+        usageBudget: {
+          daily: { tokens: 500000 },
+        },
+      },
+      {
+        id: "unmetered-admin",
+        usageBudget: { enabled: false },
       },
     ],
   },

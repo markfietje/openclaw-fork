@@ -122,6 +122,97 @@ describe("generateThreadTitle", () => {
     });
   });
 
+  it("skips generated titles when usage budgets are enabled", async () => {
+    const result = await generateThreadTitle({
+      cfg: {
+        ...EMPTY_DISCORD_TEST_CONFIG,
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 100 },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      agentId: "main",
+      messageText: "Need a generated title.",
+    });
+
+    expect(result).toBeNull();
+    expect(prepareSimpleCompletionModelForAgentMock).not.toHaveBeenCalled();
+    expect(completeWithPreparedSimpleCompletionModelMock).not.toHaveBeenCalled();
+  });
+
+  it("allows generated titles when a per-agent override disables inherited usage budgets", async () => {
+    const cfg = {
+      ...EMPTY_DISCORD_TEST_CONFIG,
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 100 },
+          },
+        },
+        list: [
+          {
+            id: "main",
+            usageBudget: { enabled: false },
+          },
+          {
+            id: "ops",
+            usageBudget: { daily: { tokens: 100 } },
+          },
+        ],
+      },
+    } as OpenClawConfig;
+
+    const result = await generateThreadTitle({
+      cfg,
+      agentId: "main",
+      messageText: "Need a generated title.",
+    });
+
+    expect(result).toBe("Generated title");
+    expect(prepareSimpleCompletionModelForAgentMock).toHaveBeenCalledWith({
+      cfg,
+      agentId: "main",
+      allowMissingApiKeyModes: ["aws-sdk"],
+    });
+    expect(firstCompletionArgs()).toMatchObject({
+      cfg,
+      usageBudget: {
+        config: cfg,
+        agentId: "main",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        recordIdPrefix: "discord-thread-title",
+      },
+    });
+  });
+
+  it("resolves per-agent usage budgets with normalized agent IDs", async () => {
+    const result = await generateThreadTitle({
+      cfg: {
+        ...EMPTY_DISCORD_TEST_CONFIG,
+        agents: {
+          list: [
+            {
+              id: "Ops",
+              usageBudget: {
+                daily: { tokens: 100 },
+              },
+            },
+          ],
+        },
+      } as OpenClawConfig,
+      agentId: "ops",
+      messageText: "Need a generated title.",
+    });
+
+    expect(result).toBeNull();
+    expect(prepareSimpleCompletionModelForAgentMock).not.toHaveBeenCalled();
+    expect(completeWithPreparedSimpleCompletionModelMock).not.toHaveBeenCalled();
+  });
+
   it("returns null when shared model prep cannot resolve selection", async () => {
     prepareSimpleCompletionModelForAgentMock.mockResolvedValueOnce({
       error: "No model configured for agent main.",

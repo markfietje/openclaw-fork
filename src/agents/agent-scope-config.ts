@@ -34,6 +34,7 @@ export type ResolvedAgentConfig = {
   humanDelay?: AgentEntry["humanDelay"];
   tts?: AgentEntry["tts"];
   contextLimits?: AgentContextLimitsConfig;
+  usageBudget?: AgentDefaultsConfig["usageBudget"];
   heartbeat?: AgentEntry["heartbeat"];
   identity?: AgentEntry["identity"];
   groupChat?: AgentEntry["groupChat"];
@@ -148,6 +149,29 @@ export function resolveAgentConfig(
       typeof entry.contextLimits === "object" && entry.contextLimits
         ? { ...agentDefaults?.contextLimits, ...entry.contextLimits }
         : agentDefaults?.contextLimits,
+    usageBudget:
+      entry.usageBudget?.enabled === false
+        ? { enabled: false }
+        : typeof entry.usageBudget === "object" && entry.usageBudget
+          ? {
+              ...agentDefaults?.usageBudget,
+              ...entry.usageBudget,
+              daily:
+                entry.usageBudget.daily || agentDefaults?.usageBudget?.daily
+                  ? {
+                      ...agentDefaults?.usageBudget?.daily,
+                      ...entry.usageBudget.daily,
+                    }
+                  : undefined,
+              monthly:
+                entry.usageBudget.monthly || agentDefaults?.usageBudget?.monthly
+                  ? {
+                      ...agentDefaults?.usageBudget?.monthly,
+                      ...entry.usageBudget.monthly,
+                    }
+                  : undefined,
+            }
+          : agentDefaults?.usageBudget,
     heartbeat: entry.heartbeat,
     identity: entry.identity,
     groupChat: entry.groupChat,

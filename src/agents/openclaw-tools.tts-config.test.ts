@@ -317,18 +317,57 @@ describe("createOpenClawTools media generation session wiring", () => {
 
     expect(mocks.createImageGenerateToolOptions).toHaveBeenCalledWith(
       expect.objectContaining({
+        agentId: "main",
         agentSessionKey: "agent:main:cron:daily-media:run:run-123",
         onAsyncTaskStarted: undefined,
       }),
     );
     expect(mocks.createVideoGenerateToolOptions).toHaveBeenCalledWith(
       expect.objectContaining({
+        agentId: "main",
         agentSessionKey: "agent:main:cron:daily-media:run:run-123",
       }),
     );
     expect(mocks.createMusicGenerateToolOptions).toHaveBeenCalledWith(
       expect.objectContaining({
+        agentId: "main",
         agentSessionKey: "agent:main:cron:daily-media:run:run-123",
+      }),
+    );
+  });
+
+  it("passes the resolved session agent id into media generation tools", () => {
+    const config = {
+      agents: {
+        list: [{ id: "reader" }, { id: "main" }],
+        defaults: {
+          imageGenerationModel: { primary: "image-owner/model" },
+          videoGenerationModel: { primary: "video-owner/model" },
+          musicGenerationModel: { primary: "music-owner/model" },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    createOpenClawTools({
+      config,
+      agentSessionKey: "agent:reader:telegram:chat:123",
+      disableMessageTool: true,
+      disablePluginTools: true,
+    });
+
+    expect(mocks.createImageGenerateToolOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "reader",
+      }),
+    );
+    expect(mocks.createVideoGenerateToolOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "reader",
+      }),
+    );
+    expect(mocks.createMusicGenerateToolOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "reader",
       }),
     );
   });

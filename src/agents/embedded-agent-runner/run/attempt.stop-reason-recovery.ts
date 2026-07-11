@@ -1,6 +1,7 @@
 /**
  * Recovers sensitive stop reasons by wrapping provider stream functions.
  */
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { createAssistantMessageEventStream } from "../../../llm/utils/event-stream.js";
 import type { StreamFn } from "../../runtime/index.js";
@@ -147,7 +148,7 @@ function wrapStreamHandleUnhandledStopReason(
  * async stream creation failures, iterator errors, and `result()` errors.
  */
 export function wrapStreamFnHandleSensitiveStopReason(baseFn: StreamFn): StreamFn {
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     try {
       const maybeStream = baseFn(model, context, options);
       if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
@@ -171,4 +172,5 @@ export function wrapStreamFnHandleSensitiveStopReason(baseFn: StreamFn): StreamF
       return buildUnhandledStopReasonErrorStream(model, normalizedMessage);
     }
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseFn);
 }

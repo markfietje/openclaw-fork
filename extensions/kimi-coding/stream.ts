@@ -6,7 +6,10 @@ import {
   type AssistantMessageEvent,
 } from "openclaw/plugin-sdk/llm";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
-import { streamWithPayloadPatch } from "openclaw/plugin-sdk/provider-stream-shared";
+import {
+  preserveProviderDispatchObservableStreamFn,
+  streamWithPayloadPatch,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 const TOOL_CALLS_SECTION_BEGIN = "<|tool_calls_section_begin|>";
@@ -445,5 +448,8 @@ export function wrapKimiProviderStream(ctx: ProviderWrapStreamFnContext): Stream
     configuredThinking: ctx.extraParams?.thinking,
     thinkingLevel: ctx.thinkingLevel,
   });
-  return createKimiToolCallMarkupWrapper(createKimiThinkingWrapper(ctx.streamFn, thinkingConfig));
+  return preserveProviderDispatchObservableStreamFn(
+    createKimiToolCallMarkupWrapper(createKimiThinkingWrapper(ctx.streamFn, thinkingConfig)),
+    ctx.streamFn,
+  );
 }

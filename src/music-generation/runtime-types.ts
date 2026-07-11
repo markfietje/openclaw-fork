@@ -20,6 +20,7 @@ import type {
 /** Parameters accepted by the core music generation runtime. */
 export type GenerateMusicParams = {
   cfg: OpenClawConfig;
+  agentId?: string;
   prompt: string;
   agentDir?: string;
   authStore?: AuthProfileStore;

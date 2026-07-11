@@ -510,6 +510,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
     try {
       let client: Anthropic;
       let isOAuth: boolean;
+      let providerDispatchObservedByFetch = false;
 
       if (options?.client) {
         client = options.client;
@@ -537,9 +538,11 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
           options?.headers,
           copilotDynamicHeaders,
           cacheSessionId,
+          options?.onProviderDispatch,
         );
         client = created.client;
         isOAuth = created.isOAuthToken;
+        providerDispatchObservedByFetch = created.providerDispatchObservedByFetch;
       }
       const builtParams = buildParams(model, context, isOAuth, options);
       let params = builtParams.params;
@@ -553,6 +556,9 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
         ...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
         ...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
       };
+      if (!providerDispatchObservedByFetch) {
+        options?.onProviderDispatch?.();
+      }
       const response = await client.messages
         .create({ ...params, stream: true }, requestOptions)
         .asResponse();
@@ -920,7 +926,8 @@ function createClient(
   optionsHeaders?: Record<string, string>,
   dynamicHeaders?: Record<string, string>,
   sessionId?: string,
-): { client: Anthropic; isOAuthToken: boolean } {
+  onProviderDispatch?: () => void,
+): { client: Anthropic; isOAuthToken: boolean; providerDispatchObservedByFetch: boolean } {
   // Adaptive thinking models (Opus 4.6, Sonnet 4.6) have interleaved thinking built-in.
   // The beta header is deprecated on Opus 4.6 and redundant on Sonnet 4.6, so skip it.
   const needsInterleavedBeta = interleavedThinking && !supportsAdaptiveThinking(model);
@@ -948,10 +955,14 @@ function createClient(
         model.headers,
         optionsHeaders,
       ),
-      fetch: buildGuardedModelFetch(model),
+      fetch: buildGuardedModelFetch(
+        model,
+        undefined,
+        onProviderDispatch ? { onProviderDispatch } : undefined,
+      ),
     });
 
-    return { client, isOAuthToken: false };
+    return { client, isOAuthToken: false, providerDispatchObservedByFetch: true };
   }
 
   // Copilot: Bearer auth, selective betas.
@@ -973,7 +984,7 @@ function createClient(
       ),
     });
 
-    return { client, isOAuthToken: false };
+    return { client, isOAuthToken: false, providerDispatchObservedByFetch: false };
   }
 
   if (usesFoundryBearerAuth(model)) {
@@ -994,7 +1005,7 @@ function createClient(
       ),
     });
 
-    return { client, isOAuthToken: false };
+    return { client, isOAuthToken: false, providerDispatchObservedByFetch: false };
   }
 
   // OAuth: Bearer auth, Claude Code identity headers
@@ -1017,7 +1028,7 @@ function createClient(
       ),
     });
 
-    return { client, isOAuthToken: true };
+    return { client, isOAuthToken: true, providerDispatchObservedByFetch: false };
   }
 
   // API key auth
@@ -1042,7 +1053,7 @@ function createClient(
     ),
   });
 
-  return { client, isOAuthToken: false };
+  return { client, isOAuthToken: false, providerDispatchObservedByFetch: false };
 }
 
 function buildParams(

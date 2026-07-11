@@ -93,6 +93,8 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   onAttemptAbort?: () => void;
   /** Supplies run-global model-call ordering for parallel tool outcomes. */
   allocateToolOutcomeOrdinal?: (toolCallId?: string) => number;
+  /** Supplies run-global model-call IDs so retry attempts cannot reuse ledger keys. */
+  nextDiagnosticModelCallId?: () => string;
   model: Model;
   authStorage: AuthStorage;
   /** Auth profile store already resolved during startup for this attempt. */
@@ -132,9 +134,16 @@ export type EmbeddedRunAttemptResult = {
    * - "precheck": pre-prompt overflow recovery intentionally short-circuited the prompt so the
    *   outer run loop can recover via compaction/truncation before any model call is made.
    * - "hook:before_agent_run": a lifecycle hook blocked the run before the prompt was sent.
+   * - "budget": a configured usage budget blocked the model call before provider dispatch.
    * - null: no promptError.
    */
-  promptErrorSource: "prompt" | "compaction" | "precheck" | "hook:before_agent_run" | null;
+  promptErrorSource:
+    | "prompt"
+    | "compaction"
+    | "precheck"
+    | "hook:before_agent_run"
+    | "budget"
+    | null;
   preflightRecovery?:
     | {
         route: Exclude<PreemptiveCompactionRoute, "fits">;

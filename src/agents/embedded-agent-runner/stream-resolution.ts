@@ -4,6 +4,10 @@
 import { getApiProvider } from "../../llm/api-registry.js";
 import { streamSimple } from "../../llm/stream.js";
 import { createAnthropicVertexStreamFnForModel } from "../anthropic-vertex-stream.js";
+import {
+  markModelProviderDispatchObservableStreamFn,
+  preserveModelProviderDispatchObservableStreamFn,
+} from "../provider-dispatch-observable-stream.js";
 import { createBoundaryAwareStreamFnForModel } from "../provider-transport-stream.js";
 import type { StreamFn } from "../runtime/index.js";
 import { stripSystemPromptCacheBoundary } from "../system-prompt-cache-boundary.js";
@@ -127,7 +131,7 @@ export function resolveEmbeddedAgentStreamFn(params: {
   authStorage?: { getApiKey(provider: string): Promise<string | undefined> };
 }): StreamFn {
   if (params.providerStreamFn) {
-    return wrapEmbeddedAgentStreamFn(params.providerStreamFn, {
+    const wrapped = wrapEmbeddedAgentStreamFn(params.providerStreamFn, {
       runSignal: params.signal,
       resolvedApiKey: params.resolvedApiKey,
       authProfileId: params.authProfileId,
@@ -142,11 +146,18 @@ export function resolveEmbeddedAgentStreamFn(params: {
             }
           : context,
     });
+    return preserveModelProviderDispatchObservableStreamFn({
+      wrapped,
+      source: params.providerStreamFn,
+      model: params.model,
+    });
   }
 
   const currentStreamFn = params.currentStreamFn ?? streamSimple;
   if (params.model.provider === "anthropic-vertex") {
-    return createAnthropicVertexStreamFnForModel(params.model);
+    return markModelProviderDispatchObservableStreamFn(
+      createAnthropicVertexStreamFnForModel(params.model),
+    );
   }
 
   const openClawNativeCodexResponsesStreamFn = resolveOpenClawNativeCodexResponsesStreamFn({
@@ -154,7 +165,7 @@ export function resolveEmbeddedAgentStreamFn(params: {
     currentStreamFn: params.currentStreamFn,
   });
   if (openClawNativeCodexResponsesStreamFn) {
-    return wrapEmbeddedAgentStreamFn(openClawNativeCodexResponsesStreamFn, {
+    const wrapped = wrapEmbeddedAgentStreamFn(openClawNativeCodexResponsesStreamFn, {
       runSignal: params.signal,
       resolvedApiKey: params.resolvedApiKey,
       authProfileId: params.authProfileId,
@@ -169,6 +180,11 @@ export function resolveEmbeddedAgentStreamFn(params: {
               systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt),
             }
           : context,
+    });
+    return preserveModelProviderDispatchObservableStreamFn({
+      wrapped,
+      source: openClawNativeCodexResponsesStreamFn,
+      model: params.model,
     });
   }
 
@@ -196,7 +212,7 @@ export function resolveEmbeddedAgentStreamFn(params: {
       // inject the resolved runtime key for them. Without this wrap, OAuth
       // providers (e.g. openai/gpt-5.5 over ChatGPT OAuth) hit the Responses API with an
       // empty bearer and fail with 401 Missing bearer auth header.
-      return wrapEmbeddedAgentStreamFn(boundaryAwareStreamFn, {
+      const wrapped = wrapEmbeddedAgentStreamFn(boundaryAwareStreamFn, {
         runSignal: params.signal,
         resolvedApiKey: params.resolvedApiKey,
         authProfileId: params.authProfileId,
@@ -204,20 +220,41 @@ export function resolveEmbeddedAgentStreamFn(params: {
         providerId: params.model.provider,
         promptCacheKey: params.promptCacheKey,
       });
+      // The boundary transport is the function actually invoked, so its
+      // dispatch metadata owns observability and dispatch identity.
+      const dispatchAwareWrapped = preserveModelProviderDispatchObservableStreamFn({
+        wrapped,
+        source: boundaryAwareStreamFn,
+        model: params.model,
+      });
+      // The default registry stream describes the same API/model dispatch and
+      // may add pricing resolvers that the managed transport does not carry.
+      return isDefaultOpenClawStreamFnForModel(params.model, params.currentStreamFn)
+        ? preserveModelProviderDispatchObservableStreamFn({
+            wrapped: dispatchAwareWrapped,
+            source: streamSimple,
+            model: params.model,
+          })
+        : dispatchAwareWrapped;
     }
   }
 
   const promptCacheKey = params.promptCacheKey?.trim();
-  if (!promptCacheKey) {
+  if (!promptCacheKey && !isDefaultOpenClawStreamFnForModel(params.model, currentStreamFn)) {
     return currentStreamFn;
   }
-  return wrapEmbeddedAgentStreamFn(currentStreamFn, {
+  const wrapped = wrapEmbeddedAgentStreamFn(currentStreamFn, {
     runSignal: params.signal,
     resolvedApiKey: undefined,
     authProfileId: undefined,
     authStorage: undefined,
     providerId: params.model.provider,
     promptCacheKey,
+  });
+  return preserveModelProviderDispatchObservableStreamFn({
+    wrapped,
+    source: currentStreamFn,
+    model: params.model,
   });
 }
 

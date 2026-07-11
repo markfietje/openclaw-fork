@@ -1017,6 +1017,35 @@ describe("browser tool snapshot maxChars", () => {
     expect(toolCommonMocks.imageResultFromFile).not.toHaveBeenCalled();
   });
 
+  it("passes the active agent id to screenshot image understanding", async () => {
+    configMocks.loadConfig.mockReturnValue({
+      browser: {},
+      tools: { media: { image: { models: [{ provider: "openai", model: "gpt-vision" }] } } },
+    } as never);
+    browserActionsMocks.browserScreenshotAction.mockResolvedValueOnce({
+      ok: true,
+      path: "/tmp/screen.png",
+    });
+    toolCommonMocks.describeImageFile.mockResolvedValueOnce({
+      text: "Page text",
+      provider: "openai",
+      model: "gpt-vision",
+    } as never);
+
+    const tool = createBrowserTool({ agentId: "browser-budget-agent" });
+    await tool.execute?.("call-1", {
+      action: "screenshot",
+      target: "host",
+      targetId: "tab-1",
+    });
+
+    expect(toolCommonMocks.describeImageFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "browser-budget-agent",
+      }),
+    );
+  });
+
   it("defangs vision failure fallback text", async () => {
     configMocks.loadConfig.mockReturnValue({
       browser: {},

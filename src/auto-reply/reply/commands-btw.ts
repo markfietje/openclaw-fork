@@ -1,6 +1,10 @@
 /** Handles /btw side-question commands against the active session context. */
 import { resolveAgentDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { runBtwSideQuestion } from "../../agents/btw.js";
+import {
+  AGENT_USAGE_BUDGET_VISIBLE_DENIAL,
+  isAgentUsageBudgetError,
+} from "../../agents/usage-budget.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { extractBtwQuestion } from "./btw-command.js";
 import { rejectUnauthorizedCommand } from "./command-gates.js";
@@ -116,6 +120,16 @@ export const handleBtwCommand: CommandHandler = async (params, allowTextCommands
       reply: reply ? { ...reply, btw: { question } } : reply,
     };
   } catch (error) {
+    if (isAgentUsageBudgetError(error)) {
+      return {
+        shouldContinue: false,
+        reply: {
+          text: `⚠️ ${AGENT_USAGE_BUDGET_VISIBLE_DENIAL}`,
+          btw: { question },
+          isError: true,
+        },
+      };
+    }
     const message = error instanceof Error ? error.message.trim() : "";
     return {
       shouldContinue: false,

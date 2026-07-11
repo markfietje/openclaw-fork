@@ -30,6 +30,35 @@ title: "Usage tracking"
 - CLI: `openclaw channels list` prints the same usage snapshot alongside provider config (use `--no-usage` to skip).
 - macOS menu bar: "Usage" section under Context (only if available).
 
+## Agent usage budgets
+
+`agents.defaults.usageBudget` and `agents.list[].usageBudget` turn transcript
+usage accounting into an enforceable model-call admission check. Budgets are
+agent-scoped, run before the next provider request is sent, and use deterministic
+UTC windows:
+
+- `daily.*`: resets at 00:00 UTC.
+- `monthly.*`: resets at 00:00 UTC on the first day of the month.
+
+Token budgets use the same usage totals shown by `/usage cost`, backed by a
+per-agent SQLite ledger so session reset/archive cleanup does not erase active
+budget-window usage. Spend budgets use local model pricing and fail closed when
+OpenClaw cannot price the selected model or cannot price prior calls in the
+active window. If you configure `session.store`, put `{agentId}` in a directory
+component of the store path; custom stores without an agent-scoped transcript
+directory fail closed because OpenClaw cannot prove which historical transcripts
+belong to the budgeted agent. Hidden
+compaction model calls are admitted through the same budget gate and recorded in
+usage accounting. A denied turn returns a generic visible error; exact agent id,
+window, used/limit value, and reset timestamp stay in internal run metadata and
+logs for operators. The blocked request is not sent to the provider.
+Budgets are currently enforced by the OpenClaw model-call wrapper. Harnesses
+and custom provider streams that do not expose that per-call accounting boundary
+fail closed when a budget is configured for the agent.
+
+See [Configuration — agents](/gateway/config-agents#agentsdefaultsusagebudget)
+for the config shape.
+
 ## Default usage footer mode
 
 `/usage off|tokens|full` sets the footer for a session and is remembered for that

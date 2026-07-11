@@ -34,24 +34,29 @@ const sendTextMock = vi.hoisted(() =>
 );
 const audioFileToSilkBase64Mock = vi.hoisted(() => vi.fn(async () => "silk-base64"));
 
-vi.mock("../messaging/sender.js", () => ({
-  accountToCreds: (account: GatewayAccount) => ({
-    appId: account.appId,
-    clientSecret: account.clientSecret,
-  }),
-  buildDeliveryTarget: (target: { type: string; senderId: string; groupOpenid?: string }) => ({
-    type: target.type === "group" ? "group" : target.type === "c2c" ? "c2c" : target.type,
-    id: target.type === "group" ? target.groupOpenid : target.senderId,
-  }),
-  initApiConfig: vi.fn(),
-  sendFileMessage: vi.fn(),
-  sendImage: vi.fn(),
-  sendText: sendTextMock,
-  sendVideoMessage: vi.fn(),
-  sendVoiceMessage: sendVoiceMessageMock,
-  sendMedia: sendMediaMock,
-  withTokenRetry: async (_creds: unknown, fn: () => Promise<unknown>) => await fn(),
-}));
+vi.mock("../messaging/sender.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../messaging/sender.js")>("../messaging/sender.js");
+  return {
+    UploadDailyLimitExceededError: actual.UploadDailyLimitExceededError,
+    accountToCreds: (account: GatewayAccount) => ({
+      appId: account.appId,
+      clientSecret: account.clientSecret,
+    }),
+    buildDeliveryTarget: (target: { type: string; senderId: string; groupOpenid?: string }) => ({
+      type: target.type === "group" ? "group" : target.type === "c2c" ? "c2c" : target.type,
+      id: target.type === "group" ? target.groupOpenid : target.senderId,
+    }),
+    initApiConfig: vi.fn(),
+    sendFileMessage: vi.fn(),
+    sendImage: vi.fn(),
+    sendText: sendTextMock,
+    sendVideoMessage: vi.fn(),
+    sendVoiceMessage: sendVoiceMessageMock,
+    sendMedia: sendMediaMock,
+    withTokenRetry: async (_creds: unknown, fn: () => Promise<unknown>) => await fn(),
+  };
+});
 
 vi.mock("../utils/image-size.js", async () => {
   const actual =
@@ -311,7 +316,8 @@ describe("dispatchOutbound", () => {
   it("loads scoped media through host read callbacks", async () => {
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "qqbot-host-read-"));
     try {
-      const mediaPath = path.join(tmpRoot, "host-report.txt");
+      const realTmpRoot = await fs.realpath(tmpRoot);
+      const mediaPath = path.join(realTmpRoot, "host-report.txt");
       const mediaReadFile = vi.fn(async () => Buffer.from("host report"));
 
       const result = await sendMedia({
@@ -320,7 +326,11 @@ describe("dispatchOutbound", () => {
         mediaUrl: "host-report.txt",
         accountId: "qq-main",
         account,
-        mediaAccess: { localRoots: [tmpRoot], workspaceDir: tmpRoot, readFile: mediaReadFile },
+        mediaAccess: {
+          localRoots: [realTmpRoot],
+          workspaceDir: realTmpRoot,
+          readFile: mediaReadFile,
+        },
       });
 
       expect(result.error).toBeUndefined();
@@ -373,6 +383,7 @@ describe("dispatchOutbound", () => {
     const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "qqbot-scoped-voice-"));
     try {
       const missingVoicePath = path.join(tmpRoot, "pending.wav");
+      const expectedVoicePath = path.join(await fs.realpath(tmpRoot), "pending.wav");
       const runtime = makeRuntime({
         onDeliver: async (deliver) => {
           await deliver({ text: `<qqvoice>${missingVoicePath}</qqvoice>` }, { kind: "block" });
@@ -390,7 +401,7 @@ describe("dispatchOutbound", () => {
         },
       );
 
-      expect(audioFileToSilkBase64Mock).toHaveBeenCalledWith(missingVoicePath, undefined);
+      expect(audioFileToSilkBase64Mock).toHaveBeenCalledWith(expectedVoicePath, undefined);
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
     }
@@ -940,6 +951,7 @@ describe("dispatchOutbound", () => {
       cfg: {},
       channel: "qqbot",
       accountId: "qq-main",
+      agentId: "main",
     });
     expect(audioFileToSilkBase64Mock).toHaveBeenCalledWith("/tmp/openclaw-qqbot/tts.wav");
     const sentMedia = sendMediaMock.mock.calls.at(0)?.[0] as

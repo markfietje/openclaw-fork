@@ -2,6 +2,10 @@
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Context, Model } from "openclaw/plugin-sdk/llm";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { expectPassthroughReplayPolicy } from "openclaw/plugin-sdk/provider-test-contracts";
 import { describe, expect, it } from "vitest";
 import plugin from "./index.js";
@@ -19,15 +23,17 @@ describe("kilocode provider plugin", () => {
   it("wires kilocode-thinking stream hooks", async () => {
     const provider = await registerSingleProviderPlugin(plugin);
     let capturedPayload: Record<string, unknown> | undefined;
-    const baseStreamFn: StreamFn = (model, _context, options) => {
-      const payload = { config: { thinkingConfig: { thinkingBudget: -1 } } } as Record<
-        string,
-        unknown
-      >;
-      options?.onPayload?.(payload as never, model as never);
-      capturedPayload = payload;
-      return {} as never;
-    };
+    const baseStreamFn: StreamFn = markProviderDispatchObservableStreamFn(
+      (model, _context, options) => {
+        const payload = { config: { thinkingConfig: { thinkingBudget: -1 } } } as Record<
+          string,
+          unknown
+        >;
+        options?.onPayload?.(payload as never, model as never);
+        capturedPayload = payload;
+        return {} as never;
+      },
+    );
 
     const wrappedReasoning = provider.wrapStreamFn?.({
       provider: "kilocode",
@@ -35,6 +41,8 @@ describe("kilocode provider plugin", () => {
       thinkingLevel: "high",
       streamFn: baseStreamFn,
     } as never);
+
+    expect(isProviderDispatchObservableStreamFn(wrappedReasoning as never)).toBe(true);
 
     void wrappedReasoning?.(
       {

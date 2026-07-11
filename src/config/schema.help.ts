@@ -282,6 +282,22 @@ export const FIELD_HELP: Record<string, string> = {
     "Advanced ceiling for a single live tool result before truncation. Leave unset to use the model-context auto cap; explicit values affect both persisted live tool-result writes and overflow-recovery truncation heuristics.",
   "agents.defaults.contextLimits.postCompactionMaxChars":
     "Default max characters retained from AGENTS.md during post-compaction context refresh injection. Lower this to make compaction recovery cheaper, or raise it for agents that depend on longer startup guidance.",
+  "agents.defaults.usageBudget":
+    "Default per-agent model-call budget inherited by agents. Daily windows reset at 00:00 UTC; monthly windows reset at 00:00 UTC on the first day. Spend budgets require known model pricing and fail closed when prior calls in the window are missing usable cost data.",
+  "agents.defaults.usageBudget.enabled":
+    "Enable or disable inherited model-call budget enforcement. Set agents.list[].usageBudget.enabled=false to exempt one agent from defaults.",
+  "agents.defaults.usageBudget.daily":
+    "Daily model-call budget for each agent, reset at 00:00 UTC.",
+  "agents.defaults.usageBudget.daily.usd":
+    "Maximum estimated USD spend allowed for each agent in the current UTC day. Requires known pricing for the selected model and all prior priced calls in the window.",
+  "agents.defaults.usageBudget.daily.tokens":
+    "Maximum model-call tokens allowed for each agent in the current UTC day.",
+  "agents.defaults.usageBudget.monthly":
+    "Monthly model-call budget for each agent, reset at 00:00 UTC on the first day of the month.",
+  "agents.defaults.usageBudget.monthly.usd":
+    "Maximum estimated USD spend allowed for each agent in the current UTC month. Requires known pricing for the selected model and all prior priced calls in the window.",
+  "agents.defaults.usageBudget.monthly.tokens":
+    "Maximum model-call tokens allowed for each agent in the current UTC month.",
   "agents.list":
     "Explicit list of configured agents with IDs and optional overrides for model, tools, identity, and workspace. Keep IDs stable over time so bindings, approvals, and session routing remain deterministic.",
   "agents.list[].skillsLimits":
@@ -298,6 +314,17 @@ export const FIELD_HELP: Record<string, string> = {
     "Per-agent advanced ceiling for the live tool-result max character budget. Omit to inherit defaults or the model-context auto cap.",
   "agents.list[].contextLimits.postCompactionMaxChars":
     "Per-agent override for the post-compaction AGENTS.md excerpt budget.",
+  "agents.list[].usageBudget":
+    "Per-agent override for model-call budget enforcement. Omitted fields inherit agents.defaults.usageBudget; set enabled=false to disable inherited budgets for this agent.",
+  "agents.list[].usageBudget.enabled":
+    "Enable or disable model-call budget enforcement for this agent.",
+  "agents.list[].usageBudget.daily": "Per-agent daily model-call budget, reset at 00:00 UTC.",
+  "agents.list[].usageBudget.daily.usd": "Per-agent daily estimated USD spend cap.",
+  "agents.list[].usageBudget.daily.tokens": "Per-agent daily model-call token cap.",
+  "agents.list[].usageBudget.monthly":
+    "Per-agent monthly model-call budget, reset at 00:00 UTC on the first day of the month.",
+  "agents.list[].usageBudget.monthly.usd": "Per-agent monthly estimated USD spend cap.",
+  "agents.list[].usageBudget.monthly.tokens": "Per-agent monthly model-call token cap.",
   "agents.list[].thinkingDefault":
     "Optional per-agent default thinking level. Overrides agents.defaults.thinkingDefault for this agent when no per-message or session override is set.",
   "agents.list[].reasoningDefault":

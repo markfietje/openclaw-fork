@@ -95,6 +95,26 @@ describe("createMantleAnthropicStreamFn", () => {
     expect(streamOptions.thinkingEnabled).toBe(false);
   });
 
+  it("forwards dispatch and response callbacks to the shared Anthropic transport", () => {
+    const model = createTestModel();
+    const deps = createTestDeps();
+    const onProviderDispatch = vi.fn();
+    const onResponse = vi.fn();
+    deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
+
+    void createMantleAnthropicStreamFn(deps)(model, { messages: [] }, {
+      apiKey: "bedrock-bearer-token",
+      onProviderDispatch,
+      onResponse,
+      maxRetries: 0,
+    } as never);
+
+    const streamOptions = firstStreamOptions(deps);
+    expect(streamOptions.onProviderDispatch).toBe(onProviderDispatch);
+    expect(streamOptions.onResponse).toBe(onResponse);
+    expect(streamOptions.maxRetries).toBe(0);
+  });
+
   it("omits unsupported Opus 4.7 sampling and reasoning overrides", () => {
     const model = createTestModel();
     const context = { messages: [] };
@@ -166,10 +186,14 @@ describe("createMantleAnthropicStreamFn", () => {
     const deps = createTestDeps();
     deps.stream.mockReturnValue({ kind: "anthropic-stream" } as never);
 
-    void createMantleAnthropicStreamFn(deps)(model, { messages: [] }, {
-      apiKey: "bedrock-bearer-token",
-      reasoning: "minimal",
-    });
+    void createMantleAnthropicStreamFn(deps)(
+      model,
+      { messages: [] },
+      {
+        apiKey: "bedrock-bearer-token",
+        reasoning: "minimal",
+      },
+    );
 
     const streamOptions = firstStreamOptions(deps);
     expect(streamOptions.thinkingEnabled).toBe(true);

@@ -1,7 +1,10 @@
 // Kilocode plugin module implements stream behavior.
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveProviderRequestHeaders } from "openclaw/plugin-sdk/provider-http";
-import { normalizeOpenAICompatibleReasoningPayload } from "openclaw/plugin-sdk/provider-stream-shared";
+import {
+  normalizeOpenAICompatibleReasoningPayload,
+  preserveProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 const KILOCODE_FEATURE_HEADER = "X-KILOCODE-FEATURE";
@@ -64,7 +67,7 @@ export function createKilocodeStreamWrapper(
     return undefined;
   }
   const underlying = baseStreamFn;
-  return (model, context, options) => {
+  const wrapped: ProviderStreamFn = (model, context, options) => {
     const originalOnPayload = options?.onPayload;
     const headers = resolveProviderRequestHeaders({
       provider: typeof model.provider === "string" ? model.provider : "kilocode",
@@ -96,6 +99,7 @@ export function createKilocodeStreamWrapper(
       },
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 export function wrapKilocodeProviderStream(

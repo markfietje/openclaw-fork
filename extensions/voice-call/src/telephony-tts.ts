@@ -20,6 +20,7 @@ export type TelephonyTtsRuntime = {
     cfg: CoreConfig;
     prefsPath?: string;
     overrides?: TtsDirectiveOverrides;
+    agentId?: string;
   }) => Promise<{
     success: boolean;
     audioBuffer?: Buffer;
@@ -34,7 +35,7 @@ export type TelephonyTtsRuntime = {
 /** Provider facade used by Twilio/webhook code for telephony synthesis. */
 export type TelephonyTtsProvider = {
   synthesisTimeoutMs: number;
-  synthesizeForTelephony: (text: string) => Promise<Buffer>;
+  synthesizeForTelephony: (text: string, agentId?: string) => Promise<Buffer>;
 };
 
 /** Default timeout for one telephony synthesis request. */
@@ -76,7 +77,7 @@ export function createTelephonyTtsProvider(params: {
 
   return {
     synthesisTimeoutMs,
-    synthesizeForTelephony: async (text: string) => {
+    synthesizeForTelephony: async (text, agentId) => {
       const directives = parseTtsDirectives(text, modelOverrides, {
         cfg: mergedConfig,
         providerConfigs,
@@ -93,6 +94,7 @@ export function createTelephonyTtsProvider(params: {
       const result = await runtime.textToSpeechTelephony({
         text: cleanText,
         cfg: mergedConfig,
+        agentId,
         overrides: directives.overrides,
       });
 

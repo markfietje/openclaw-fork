@@ -1,6 +1,7 @@
 // Voice Call plugin module implements outbound behavior.
 import crypto from "node:crypto";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { normalizeAgentId } from "openclaw/plugin-sdk/routing";
 import {
   resolveVoiceCallEffectiveConfig,
   resolveVoiceCallNumberRouteKeyForCall,
@@ -292,13 +293,13 @@ export async function speak(
     persistCallRecord(ctx.storePath, call);
 
     const numberRouteKey = resolveVoiceCallNumberRouteKeyForCall(call);
-    const voice = resolvePreferredTtsVoice(
-      resolveVoiceCallEffectiveConfig(ctx.config, numberRouteKey).config,
-    );
+    const effectiveConfig = resolveVoiceCallEffectiveConfig(ctx.config, numberRouteKey).config;
+    const voice = resolvePreferredTtsVoice(effectiveConfig);
     await provider.playTts({
       callId,
       providerCallId,
       text,
+      agentId: normalizeAgentId(effectiveConfig.agentId),
       voice,
     });
 

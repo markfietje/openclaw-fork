@@ -1,5 +1,6 @@
 // Moonshot thinking wrapper normalizes reasoning output from Moonshot streams.
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import type { StreamFn } from "../../../agents/runtime/index.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
@@ -159,9 +160,8 @@ export function createMoonshotThinkingWrapper(
   thinkingType?: MoonshotThinkingType,
   thinkingKeep?: MoonshotThinkingKeep,
 ): StreamFn {
-  const wrap =
-    (underlying: StreamFn): StreamFn =>
-    (model, context, options) => {
+  const wrap = (underlying: StreamFn): StreamFn =>
+    preserveProviderDispatchObservableStreamFn((model, context, options) => {
       const modelId = model.id.trim().toLowerCase();
       const isKimiK27 = modelId === MOONSHOT_ALWAYS_THINKING_MODEL_ID;
       const streamModel = isKimiK27 ? { ...model, reasoning: true } : model;
@@ -233,7 +233,7 @@ export function createMoonshotThinkingWrapper(
           return finalizeMoonshotPayloadAfterCaller(result, payloadObj, thinkingEnabled);
         },
       });
-    };
+    }, underlying);
   if (baseStreamFn) {
     return wrap(baseStreamFn);
   }

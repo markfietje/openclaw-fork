@@ -1,5 +1,12 @@
 // Anthropic tests cover stream wrappers plugin behavior.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import {
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+  USAGE_BUDGET_RECORDED_COST_METADATA_KEY,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   testing,
@@ -17,6 +24,12 @@ const OAUTH_BETA = "oauth-2025-04-20";
 const DEFAULT_BETA_HEADER =
   "fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14";
 const OAUTH_BETA_HEADER = `claude-code-20250219,${OAUTH_BETA},${DEFAULT_BETA_HEADER}`;
+const anthropicModel = {
+  provider: "anthropic",
+  api: "anthropic-messages",
+  baseUrl: undefined,
+  id: "claude-sonnet-4-6",
+} as never;
 
 function runWrapper(apiKey: string | undefined): Record<string, string> | undefined {
   const captured: { headers?: Record<string, string> } = {};
@@ -84,6 +97,25 @@ function runPayloadWrapper(
     { apiKey: params.apiKey } as never,
   );
   return captured.payload;
+}
+
+function createUsageStream(usage: Record<string, unknown>): ReturnType<StreamFn> {
+  const message = {
+    role: "assistant",
+    content: [],
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    usage,
+    stopReason: "stop",
+  };
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield { type: "done", reason: "stop", message } as never;
+    },
+    async result() {
+      return message as never;
+    },
+  };
 }
 
 describe("anthropic stream wrappers", () => {
@@ -300,11 +332,131 @@ describe("Anthropic service_tier payload wrappers", () => {
     expect(second?.service_tier).toBe("standard_only");
   });
 
+  it("exposes dynamic fast-mode pricing before provider dispatch", () => {
+    const base = vi.fn(() => ({}) as never) as StreamFn;
+    const pricedBase = markProviderDispatchReservationCostMultiplierResolverStreamFn(
+      markProviderDispatchCostMultiplierResolverStreamFn(base, () => 2),
+      () => 3,
+    );
+    let enabled: boolean | undefined = true;
+    const streamFn = createAnthropicFastModeWrapper(pricedBase, () => enabled);
+    const resolveMultipliers = (apiKey: string) => ({
+      cost: resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn,
+        model: anthropicModel,
+        context: {} as never,
+        options: { apiKey } as never,
+      }),
+      reservation: resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn,
+        model: anthropicModel,
+        context: {} as never,
+        options: { apiKey } as never,
+      }),
+    });
+
+    expect(resolveMultipliers("sk-ant-api03-test-key")).toEqual({
+      cost: 1,
+      reservation: undefined,
+    });
+    expect(base).not.toHaveBeenCalled();
+
+    enabled = false;
+    expect(resolveMultipliers("sk-ant-api03-test-key")).toEqual({ cost: 1, reservation: 1 });
+
+    enabled = undefined;
+    expect(resolveMultipliers("sk-ant-api03-test-key")).toEqual({ cost: 2, reservation: 3 });
+
+    enabled = true;
+    expect(resolveMultipliers("sk-ant-oat01-test-token")).toEqual({ cost: 2, reservation: 3 });
+    expect(base).not.toHaveBeenCalled();
+  });
+
   it("explicit service tier injects service_tier=standard_only for regular API keys", () => {
     const payload = serviceTierWrapperCases[1].run({
       apiKey: "sk-ant-api03-test-key",
       serviceTier: "standard_only",
     });
     expect(payload?.service_tier).toBe("standard_only");
+  });
+
+  it("treats auto service tier cost as unpriceable for usage budgets", async () => {
+    const usage = {
+      input: 100,
+      output: 20,
+      totalTokens: 120,
+      cost: { input: 0.0001, output: 0.00004, cacheRead: 0, cacheWrite: 0, total: 0.00014 },
+    };
+    const streamFn = createAnthropicServiceTierWrapper(() => createUsageStream(usage), "auto");
+
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn,
+        model: anthropicModel,
+        context: {} as never,
+        options: { apiKey: "sk-ant-api03-test-key" } as never,
+      }),
+    ).toBeUndefined();
+
+    const stream = await streamFn(
+      anthropicModel,
+      {} as never,
+      { apiKey: "sk-ant-api03-test-key" } as never,
+    );
+    const events = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    expect(
+      (usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toMatchObject({
+      kind: "unpriceable-model-call-cost",
+      reason: "capacity-billed-service-tier",
+    });
+  });
+
+  it("marks standard_only service tier cost as a known multiplier", async () => {
+    const usage = {
+      input: 100,
+      output: 20,
+      totalTokens: 120,
+      cost: { input: 0.0001, output: 0.00004, cacheRead: 0, cacheWrite: 0, total: 0.00014 },
+    };
+    const streamFn = createAnthropicServiceTierWrapper(
+      () => createUsageStream(usage),
+      "standard_only",
+    );
+
+    expect(
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn,
+        model: anthropicModel,
+        context: {} as never,
+        options: { apiKey: "sk-ant-api03-test-key" } as never,
+      }),
+    ).toBe(1);
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn,
+        model: anthropicModel,
+        context: {} as never,
+        options: { apiKey: "sk-ant-api03-test-key" } as never,
+      }),
+    ).toBe(1);
+
+    const message = await (
+      await streamFn(anthropicModel, {} as never, { apiKey: "sk-ant-api03-test-key" } as never)
+    ).result();
+
+    expect(
+      (message.usage as unknown as Record<string, unknown>)[
+        USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+      ],
+    ).toMatchObject({
+      kind: "model-call-cost-multiplier",
+      costMultiplier: 1,
+    });
   });
 });

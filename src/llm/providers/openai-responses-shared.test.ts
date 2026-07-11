@@ -767,6 +767,35 @@ describe("convertResponsesMessages", () => {
 });
 
 describe("processResponsesStream", () => {
+  it("does not mark provider dispatch before the Responses client performs network I/O", async () => {
+    const output = createAssistantOutput();
+    const stream = new AssistantMessageEventStream();
+    const onProviderDispatch = vi.fn();
+
+    await runResponsesStreamLifecycle({
+      stream,
+      model: nativeOpenAIModel,
+      output,
+      options: { onProviderDispatch },
+      createClient: () => ({
+        responses: {
+          create: () => ({
+            withResponse: async () => ({
+              data: responseEvents([
+                { type: "response.completed", response: { id: "resp_1", status: "completed" } },
+              ]),
+              response: new Response(null, { status: 200 }),
+            }),
+          }),
+        },
+      }),
+      buildParams: () => ({ model: nativeOpenAIModel.id, input: [], stream: true }),
+      formatError: (error) => (error instanceof Error ? error.message : String(error)),
+    });
+
+    expect(onProviderDispatch).not.toHaveBeenCalled();
+  });
+
   it("aborts the Responses request signal when the first SSE event never arrives", async () => {
     vi.useFakeTimers();
     try {

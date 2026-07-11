@@ -83,6 +83,38 @@ describe("runEmbeddedAgent silent-error retry", () => {
     expect(result.payloads).toBeUndefined();
   });
 
+  it("allocates diagnostic model-call IDs across retry attempts", async () => {
+    const callIds: string[] = [];
+    const readNextCallId = (params: unknown) => {
+      const nextDiagnosticModelCallId = (params as { nextDiagnosticModelCallId?: () => string })
+        .nextDiagnosticModelCallId;
+      if (!nextDiagnosticModelCallId) {
+        throw new Error("Expected attempt params to include a diagnostic model-call allocator");
+      }
+      callIds.push(nextDiagnosticModelCallId());
+    };
+    mockedRunEmbeddedAttempt.mockImplementationOnce(async (params) => {
+      readNextCallId(params);
+      return emptyErrorAttempt("ollama", "glm-5.1:cloud");
+    });
+    mockedRunEmbeddedAttempt.mockImplementationOnce(async (params) => {
+      readNextCallId(params);
+      return successAttempt("ollama", "glm-5.1:cloud");
+    });
+
+    await runEmbeddedAgent({
+      ...overflowBaseRunParams,
+      provider: "ollama",
+      model: "glm-5.1:cloud",
+      runId: "run-empty-error-retry-diagnostic-ids",
+    });
+
+    expect(callIds).toEqual([
+      "run-empty-error-retry-diagnostic-ids:model:1",
+      "run-empty-error-retry-diagnostic-ids:model:2",
+    ]);
+  });
+
   it("retries when stopReason=error emitted only thinking blocks and output tokens", async () => {
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       emptyErrorAttempt("anthropic", "claude-opus-4-8", 1120, [

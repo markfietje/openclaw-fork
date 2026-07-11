@@ -93,6 +93,8 @@ export type GuardedFetchOptions = {
    */
   dangerouslyAllowEnvProxyWithoutPinnedDns?: boolean;
   auditContext?: string;
+  /** Internal hook invoked after local guard checks and immediately before network dispatch. */
+  onNetworkDispatch?: () => void;
 };
 
 export type GuardedFetchResult = {
@@ -471,6 +473,7 @@ async function fetchWithSsrFGuardInternal(
   );
   const visited = new Set<string>([getRedirectVisitKey(currentUrl, currentInit)]);
   let redirectCount = 0;
+  let networkDispatchNotified = false;
 
   while (true) {
     let parsedUrl: URL;
@@ -594,6 +597,10 @@ async function fetchWithSsrFGuardInternal(
       // because the default global fetch path will not honor per-request
       // dispatchers.
       const shouldUseRuntimeFetch = Boolean(dispatcher) && !supportsDispatcherInit;
+      if (!networkDispatchNotified) {
+        networkDispatchNotified = true;
+        params.onNetworkDispatch?.();
+      }
       const response = shouldUseRuntimeFetch
         ? await fetchWithRuntimeDispatcher(parsedUrl.toString(), init)
         : await defaultFetch(parsedUrl.toString(), init);

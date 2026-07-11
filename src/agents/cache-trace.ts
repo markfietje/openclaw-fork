@@ -3,6 +3,7 @@
  */
 import crypto from "node:crypto";
 import path from "node:path";
+import { preserveProviderDispatchObservableStreamFn } from "../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveUserPath } from "../utils.js";
@@ -216,7 +217,7 @@ export function createCacheTrace(params: CacheTraceInit): CacheTrace | null {
       });
       return streamFn(model, context, options);
     };
-    return wrapped;
+    return preserveProviderDispatchObservableStreamFn(wrapped, streamFn);
   };
 
   return {

@@ -1,9 +1,19 @@
 // Covers compaction token splitting and history pruning helpers.
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import type { AssistantMessage, ToolResultMessage } from "openclaw/plugin-sdk/llm";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { withEnvOverride } from "../config/test-helpers.js";
+import { USAGE_BUDGET_RECORDED_COST_METADATA_KEY } from "../shared/usage-budget-recorded-cost.js";
+import { withTempDir } from "../test-helpers/temp-dir.js";
+import {
+  MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  USAGE_BUDGET_OPERATION_ID_KEY,
+} from "./compaction-usage-accounting.js";
 import { makeAgentAssistantMessage } from "./test-helpers/agent-message-fixtures.js";
 import "./test-helpers/agent-session-token-mock.js";
+import { AgentUsageBudgetError } from "./usage-budget.js";
 
 let estimateMessagesTokens: typeof import("./compaction.js").estimateMessagesTokens;
 let pruneHistoryForContextShare: typeof import("./compaction.js").pruneHistoryForContextShare;
@@ -13,6 +23,683 @@ beforeAll(async () => {
   vi.resetModules();
   ({ estimateMessagesTokens, pruneHistoryForContextShare, splitMessagesByTokenShare } =
     await import("./compaction.js"));
+});
+
+describe("compaction summary model-call accounting", () => {
+  async function importCompactionWithSummaryGenerator(
+    generateSummaryWithUsage: (
+      ...args: unknown[]
+    ) => Promise<{ summary: string; usage?: AssistantMessage["usage"] }>,
+    providerDispatchObservable = true,
+    dispatch?: {
+      model?: { provider: string; id: string };
+      costMultiplier?: number;
+      reservationCostMultiplier?: number;
+    },
+  ): Promise<typeof import("./compaction.js")> {
+    vi.resetModules();
+    vi.doMock("./sessions/index.js", async () => {
+      const actual =
+        await vi.importActual<typeof import("./sessions/index.js")>("./sessions/index.js");
+      return {
+        ...actual,
+        generateSummaryWithUsage: vi.fn(generateSummaryWithUsage),
+      };
+    });
+    vi.doMock("./provider-dispatch-observable-stream.js", () => ({
+      isModelProviderDispatchObservableStreamFn: vi.fn(() => providerDispatchObservable),
+      resolveProviderDispatchModelForStreamFn: vi.fn(({ model }) => ({
+        ...model,
+        ...dispatch?.model,
+      })),
+      resolveProviderDispatchCostMultiplierForStreamFn: vi.fn(() => dispatch?.costMultiplier ?? 1),
+      resolveProviderDispatchReservationCostMultiplierForStreamFn: vi.fn(
+        () => dispatch?.reservationCostMultiplier ?? dispatch?.costMultiplier ?? 1,
+      ),
+    }));
+    return await import("./compaction.js");
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.doUnmock("./sessions/index.js");
+    vi.doUnmock("./provider-dispatch-observable-stream.js");
+  });
+
+  function summaryParams() {
+    return {
+      messages: [makeMessage(1, 20)],
+      model: {
+        id: "gpt-5.4",
+        provider: "openai",
+        api: "responses",
+        maxTokens: 4096,
+        contextWindow: 128_000,
+      } as never,
+      apiKey: "test-key",
+      signal: new AbortController().signal,
+      reserveTokens: 1024,
+      maxChunkTokens: 4096,
+      contextWindow: 128_000,
+    };
+  }
+
+  it("propagates usage budget denials instead of producing fallback summaries", async () => {
+    const error = new AgentUsageBudgetError("blocked", {
+      agentId: "main",
+      provider: "openai",
+      model: "gpt-5.4",
+      reason: "exceeded",
+    });
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      async () => {
+        throw error;
+      },
+    );
+
+    await expect(summarizeWithFallbackWithUsage(summaryParams())).rejects.toBe(error);
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("accumulates usage from failed retry attempts before success", async () => {
+    const failedUsage = {
+      input: 10,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.012 },
+    };
+    const successUsage = {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 25,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.025 },
+    };
+    let attempts = 0;
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Object.assign(new Error("transient"), { usage: failedUsage });
+        }
+        return { summary: "ok", usage: successUsage };
+      },
+    );
+
+    const result = await summarizeWithFallbackWithUsage(summaryParams());
+
+    expect(result.summary).toBe("ok");
+    expect(result.usage?.totalTokens).toBe(37);
+    expect(result.usage?.cost.total).toBeCloseTo(0.037, 8);
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("preserves recorded cost metadata when merging compaction usage", async () => {
+    const { mergeCompactionSummaryUsage } = await import("./compaction.js");
+    const priorityMetadata = {
+      schemaVersion: 1,
+      kind: "estimated-model-call-cost",
+      costMultiplier: 2,
+    };
+    const flexMetadata = {
+      schemaVersion: 1,
+      kind: "estimated-model-call-cost",
+      costMultiplier: 0.5,
+    };
+    const usage = (
+      tokens: { input: number; output: number; total: number },
+      metadata?: typeof priorityMetadata,
+    ) =>
+      ({
+        input: tokens.input,
+        output: tokens.output,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: tokens.input + tokens.output,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: tokens.total },
+        ...(metadata ? { [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: metadata } : {}),
+      }) as AssistantMessage["usage"];
+    const left = usage({ input: 10, output: 2, total: 0.012 }, priorityMetadata);
+    const cases = [
+      {
+        right: usage({ input: 20, output: 5, total: 0.025 }, priorityMetadata),
+        expectedCostMultiplier: 2,
+      },
+      {
+        right: usage({ input: 20, output: 5, total: 0.025 }),
+        expectedCostMultiplier: 1,
+      },
+      {
+        right: usage({ input: 20, output: 5, total: 0.025 }, flexMetadata),
+        expectedCostMultiplier: 1,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = mergeCompactionSummaryUsage(left, testCase.right);
+
+      expect(result?.totalTokens).toBe(37);
+      expect(result?.cost.total).toBeCloseTo(0.037, 8);
+      expect(
+        (result as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+      ).toStrictEqual({
+        schemaVersion: 1,
+        kind: "estimated-model-call-cost",
+        costMultiplier: testCase.expectedCostMultiplier,
+      });
+    }
+  });
+
+  it("preserves unpriceable cost metadata when merging compaction usage", async () => {
+    const { mergeCompactionSummaryUsage } = await import("./compaction.js");
+    const unpriceableMetadata = {
+      schemaVersion: 1,
+      kind: "unpriceable-model-call-cost",
+      reason: "capacity-billed-service-tier",
+    };
+    const recordedMetadata = {
+      schemaVersion: 1,
+      kind: "estimated-model-call-cost",
+      costMultiplier: 2,
+    };
+    const left = {
+      input: 10,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.012 },
+      [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: unpriceableMetadata,
+    } as AssistantMessage["usage"];
+    const right = {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 25,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.025 },
+      [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: recordedMetadata,
+    } as AssistantMessage["usage"];
+
+    const result = mergeCompactionSummaryUsage(left, right);
+
+    expect(result?.totalTokens).toBe(37);
+    expect(result?.cost.total).toBeCloseTo(0.037, 8);
+    expect(
+      (result as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toStrictEqual(unpriceableMetadata);
+  });
+
+  it("preserves provider-billed zero cost metadata when merging compaction usage", async () => {
+    const { mergeCompactionSummaryUsage } = await import("./compaction.js");
+    const providerBilledMetadata = {
+      schemaVersion: 1,
+      kind: "provider-billed-model-call-cost",
+      costMultiplier: 1,
+    };
+    const left = {
+      input: 10,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: providerBilledMetadata,
+    } as AssistantMessage["usage"];
+    const right = {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 25,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: providerBilledMetadata,
+    } as AssistantMessage["usage"];
+
+    const result = mergeCompactionSummaryUsage(left, right);
+
+    expect(result?.totalTokens).toBe(37);
+    expect(result?.cost.total).toBe(0);
+    expect(
+      (result as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toStrictEqual(providerBilledMetadata);
+  });
+
+  it("drops recorded cost metadata when a merged compaction part has no cost evidence", async () => {
+    const { mergeCompactionSummaryUsage } = await import("./compaction.js");
+    const metadata = {
+      schemaVersion: 1,
+      kind: "estimated-model-call-cost",
+      costMultiplier: 2,
+    };
+    const left = {
+      input: 10,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.012 },
+      [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: metadata,
+    } as AssistantMessage["usage"];
+    const right = {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 25,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    } as AssistantMessage["usage"];
+
+    const result = mergeCompactionSummaryUsage(left, right);
+
+    expect(
+      (result as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toBeUndefined();
+    expect(result?.cost).toStrictEqual({
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 0,
+    });
+  });
+
+  it("persists budgeted summary usage accounting to the transcript", async () => {
+    const callStartedAt = Date.UTC(2026, 6, 15, 23, 59, 59, 900);
+    const callCompletedAt = Date.UTC(2026, 6, 16, 0, 0, 0, 100);
+    const successUsage = {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 25,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.025 },
+    };
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      async () => {
+        vi.setSystemTime(callCompletedAt);
+        return { summary: "ok", usage: successUsage };
+      },
+      true,
+      {
+        model: { provider: "openai", id: "gpt-5.4-priority" },
+        costMultiplier: 2,
+      },
+    );
+
+    await withTempDir({ prefix: "openclaw-compaction-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(callStartedAt);
+        const transcriptPath = path.join(stateDir, "agents", "main", "sessions", "summary.jsonl");
+        const result = await summarizeWithFallbackWithUsage({
+          ...summaryParams(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 10_000 },
+                },
+              },
+            },
+            models: {
+              providers: {
+                openai: {
+                  baseUrl: "https://example.invalid",
+                  models: [
+                    {
+                      id: "gpt-5.4-priority",
+                      name: "gpt-5.4-priority",
+                      reasoning: false,
+                      input: ["text"],
+                      cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+                      contextWindow: 128_000,
+                      maxTokens: 4096,
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          agentId: "main",
+          transcriptPath,
+        });
+
+        expect(result.summary).toBe("ok");
+        const transcript = await fs.readFile(transcriptPath, "utf8");
+        expect(transcript).toContain(MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE);
+        expect(transcript).toContain('"usageBudgetBridge":true');
+        expect(transcript).toContain('"model":"gpt-5.4-priority"');
+        expect(transcript).toContain('"total":25');
+        expect(transcript).toContain('"total":0.00005');
+        expect(transcript).toContain('"costMultiplier":2');
+        const row = transcript
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .find((entry) => entry.type === "custom");
+        expect(row?.timestamp).toBe(new Date(callStartedAt).toISOString());
+      });
+    });
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("uses dispatch reservation multipliers before admitting budgeted summaries", async () => {
+    const generateSummaryWithUsage = vi.fn(async () => ({ summary: "should not dispatch" }));
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      generateSummaryWithUsage,
+      true,
+      { reservationCostMultiplier: 2.5 },
+    );
+
+    await withTempDir({ prefix: "openclaw-compaction-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        await expect(
+          summarizeWithFallbackWithUsage({
+            ...summaryParams(),
+            config: {
+              agents: {
+                defaults: {
+                  usageBudget: {
+                    daily: { usd: 0.002 },
+                  },
+                },
+              },
+              models: {
+                providers: {
+                  openai: {
+                    baseUrl: "https://example.invalid",
+                    models: [
+                      {
+                        id: "gpt-5.4",
+                        name: "gpt-5.4",
+                        reasoning: false,
+                        input: ["text"],
+                        cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+                        contextWindow: 128_000,
+                        maxTokens: 4096,
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+            agentId: "main",
+            transcriptPath: path.join(stateDir, "agents", "main", "sessions", "summary.jsonl"),
+          }),
+        ).rejects.toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: { reason: "exceeded", window: "daily", limitKind: "spend" },
+        });
+      });
+    });
+    expect(generateSummaryWithUsage).not.toHaveBeenCalled();
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("does not persist unknown budget usage for pre-dispatch summary failures", async () => {
+    const setupError = Object.assign(new Error("provider setup failed"), {
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    });
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      async (...args: unknown[]) => {
+        const onProviderDispatch = args.at(-1);
+        expect(onProviderDispatch).toEqual(expect.any(Function));
+        throw setupError;
+      },
+    );
+
+    await withTempDir({ prefix: "openclaw-compaction-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(stateDir, "agents", "main", "sessions", "summary.jsonl");
+        const result = await summarizeWithFallbackWithUsage({
+          ...summaryParams(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 10_000 },
+                },
+              },
+            },
+          },
+          agentId: "main",
+          transcriptPath,
+        });
+
+        expect(result.summary).toContain("Summary unavailable");
+        await expect(fs.readFile(transcriptPath, "utf8")).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      });
+    });
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("allows repeated provider dispatch callbacks for unbudgeted summary retries", async () => {
+    const generateSummaryWithUsage = vi.fn(async (...args: unknown[]) => {
+      const onProviderDispatch = args[12];
+      if (typeof onProviderDispatch !== "function") {
+        throw new Error("missing provider dispatch callback");
+      }
+      onProviderDispatch();
+      onProviderDispatch();
+      return { summary: "ok" };
+    });
+    const { summarizeWithFallbackWithUsage } =
+      await importCompactionWithSummaryGenerator(generateSummaryWithUsage);
+
+    const result = await summarizeWithFallbackWithUsage({
+      ...summaryParams(),
+      config: {},
+      agentId: "main",
+    });
+
+    expect(result.summary).toBe("ok");
+    expect(generateSummaryWithUsage).toHaveBeenCalledOnce();
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("persists budget accounting when compaction fails after provider dispatch without usage", async () => {
+    const operationId = "compaction-operation-post-dispatch";
+    const postDispatchError = new Error("provider failed after dispatch");
+    const generateSummaryWithUsage = vi.fn(async (...args: unknown[]) => {
+      const onProviderDispatch = args[12];
+      if (typeof onProviderDispatch !== "function") {
+        throw new Error("missing provider dispatch callback");
+      }
+      onProviderDispatch();
+      throw postDispatchError;
+    });
+    const { summarizeWithFallbackWithUsage } =
+      await importCompactionWithSummaryGenerator(generateSummaryWithUsage);
+
+    await withTempDir({ prefix: "openclaw-compaction-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(stateDir, "agents", "main", "sessions", "summary.jsonl");
+        await expect(
+          summarizeWithFallbackWithUsage({
+            ...summaryParams(),
+            config: {
+              agents: {
+                defaults: {
+                  usageBudget: {
+                    daily: { tokens: 10_000 },
+                  },
+                },
+              },
+            },
+            agentId: "main",
+            transcriptPath,
+            usageBudgetOperationId: operationId,
+          }),
+        ).rejects.toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: {
+            reason: "missing_window_usage",
+            missingUsageEntries: 1,
+          },
+        });
+
+        expect(generateSummaryWithUsage.mock.calls[0]?.[10]).toBeUndefined();
+        expect(generateSummaryWithUsage.mock.calls[0]?.[11]).toBe(operationId);
+        expect(generateSummaryWithUsage.mock.calls[0]?.[12]).toEqual(expect.any(Function));
+        const transcript = await fs.readFile(transcriptPath, "utf8");
+        expect(transcript).toContain(MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE);
+        expect(transcript).toContain(`"${USAGE_BUDGET_OPERATION_ID_KEY}":"${operationId}"`);
+        expect(transcript).toContain('"stopReason":"error"');
+      });
+    });
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("rejects budgeted summary calls before unobservable stream dispatch", async () => {
+    const generateSummaryWithUsage = vi.fn(async () => ({
+      summary: "should not dispatch",
+    }));
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      generateSummaryWithUsage,
+      false,
+    );
+
+    await withTempDir({ prefix: "openclaw-compaction-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(stateDir, "agents", "main", "sessions", "summary.jsonl");
+        await expect(
+          summarizeWithFallbackWithUsage({
+            ...summaryParams(),
+            config: {
+              agents: {
+                defaults: {
+                  usageBudget: {
+                    daily: { tokens: 10_000 },
+                  },
+                },
+              },
+            },
+            agentId: "main",
+            transcriptPath,
+          }),
+        ).rejects.toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: {
+            agentId: "main",
+            provider: "openai",
+            model: "gpt-5.4",
+            reason: "unsupported_stream",
+          },
+        });
+
+        await expect(fs.readFile(transcriptPath, "utf8")).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      });
+    });
+    expect(generateSummaryWithUsage).not.toHaveBeenCalled();
+  });
+
+  it("does not count the terminal failed retry usage twice", async () => {
+    const failedUsage = {
+      input: 10,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.012 },
+    };
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      async () => {
+        throw Object.assign(new Error("transient"), { usage: failedUsage });
+      },
+    );
+
+    const result = await summarizeWithFallbackWithUsage(summaryParams());
+
+    expect(result.summary).toContain("Summary unavailable");
+    expect(result.usage?.totalTokens).toBe(36);
+    expect(result.usage?.cost.total).toBeCloseTo(0.036, 8);
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("retains usage from failed oversized fallback attempts", async () => {
+    const failedUsage = {
+      input: 10,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.012 },
+    };
+    const { summarizeWithFallbackWithUsage } = await importCompactionWithSummaryGenerator(
+      async () => {
+        throw Object.assign(new Error("transient"), { usage: failedUsage });
+      },
+    );
+
+    const result = await summarizeWithFallbackWithUsage({
+      ...summaryParams(),
+      messages: [makeMessage(1, 20), makeMessage(2, 1_000)],
+      contextWindow: 100,
+      maxChunkTokens: 100,
+    });
+
+    expect(result.summary).toContain("Summary unavailable");
+    expect(result.usage?.totalTokens).toBe(72);
+    expect(result.usage?.cost.total).toBeCloseTo(0.072, 8);
+    vi.doUnmock("./sessions/index.js");
+  });
+
+  it("carries earlier staged usage through later failures", async () => {
+    const firstUsage = {
+      input: 20,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 25,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.025 },
+    };
+    const error = new AgentUsageBudgetError("blocked", {
+      agentId: "main",
+      provider: "openai",
+      model: "gpt-5.4",
+      reason: "exceeded",
+    });
+    let attempts = 0;
+    const { summarizeInStagesWithUsage } = await importCompactionWithSummaryGenerator(async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        return { summary: "first", usage: firstUsage };
+      }
+      throw error;
+    });
+
+    await expect(
+      summarizeInStagesWithUsage({
+        ...summaryParams(),
+        messages: makeMessages(4, 4000),
+        parts: 2,
+        minMessagesForSplit: 1,
+        maxChunkTokens: 1000,
+      }),
+    ).rejects.toSatisfy((thrown: unknown) => {
+      expect(thrown).toBe(error);
+      expect(
+        (thrown as { partialUsage?: AssistantMessage["usage"] }).partialUsage?.totalTokens,
+      ).toBe(25);
+      return true;
+    });
+    vi.doUnmock("./sessions/index.js");
+  });
 });
 
 function makeMessage(id: number, size: number): AgentMessage {

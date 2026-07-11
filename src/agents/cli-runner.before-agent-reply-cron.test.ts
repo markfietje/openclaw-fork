@@ -132,6 +132,35 @@ describe("runCliAgent cron before_agent_reply seam", () => {
     expect(executePreparedCliRunMock).not.toHaveBeenCalled();
   });
 
+  it("rejects budgeted agents before CLI preparation", async () => {
+    await expect(
+      runCliAgent({
+        ...baseRunParams,
+        config: {
+          agents: {
+            defaults: {
+              usageBudget: {
+                daily: { tokens: 100 },
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        reason: "unsupported_harness",
+        agentId: baseRunParams.agentId,
+        provider: baseRunParams.provider,
+        model: baseRunParams.model,
+        harnessId: `cli:${baseRunParams.provider}`,
+      },
+    });
+
+    expect(prepareCliRunContextMock).not.toHaveBeenCalled();
+    expect(executePreparedCliRunMock).not.toHaveBeenCalled();
+  });
+
   it("lets before_agent_reply claim cron runs before the CLI subprocess is invoked", async () => {
     const logInfoSpy = vi.spyOn(cliBackendLog, "info").mockImplementation(() => undefined);
     hasHooksMock.mockImplementation((hookName) => hookName === "before_agent_reply");
@@ -182,6 +211,33 @@ describe("runCliAgent cron before_agent_reply seam", () => {
     } finally {
       logInfoSpy.mockRestore();
     }
+  });
+
+  it("lets a budgeted cron hook claim before CLI budget support is required", async () => {
+    hasHooksMock.mockImplementation((hookName) => hookName === "before_agent_reply");
+    runBeforeAgentReplyMock.mockResolvedValue({
+      handled: true,
+      reply: { text: "budgeted hook reply" },
+    });
+
+    const result = await runCliAgent({
+      ...baseRunParams,
+      trigger: "cron",
+      jobId: "cron-job-123",
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 100 },
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.payloads?.[0]?.text).toBe("budgeted hook reply");
+    expect(prepareCliRunContextMock).not.toHaveBeenCalled();
+    expect(executePreparedCliRunMock).not.toHaveBeenCalled();
   });
 
   it("does not run prepareCliRunContext when the cron hook claims (no resource allocation, no leak)", async () => {

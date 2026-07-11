@@ -200,7 +200,11 @@ function createClient(
   }
 
   const { baseUrl, apiVersion } = resolveAzureConfig(model, options);
-  const guardedFetch = buildGuardedModelFetch({ ...model, baseUrl });
+  const guardedFetch = buildGuardedModelFetch(
+    { ...model, baseUrl },
+    undefined,
+    options?.onProviderDispatch ? { onProviderDispatch: options.onProviderDispatch } : undefined,
+  );
 
   if (isOpenAICompatibleAzureResponsesBaseUrl(baseUrl)) {
     return new OpenAI({

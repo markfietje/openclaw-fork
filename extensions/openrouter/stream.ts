@@ -12,7 +12,14 @@ import {
   readProviderJsonResponse,
 } from "openclaw/plugin-sdk/provider-http";
 import { OPENROUTER_THINKING_STREAM_HOOKS } from "openclaw/plugin-sdk/provider-stream-family";
-import { createPayloadPatchStreamWrapper } from "openclaw/plugin-sdk/provider-stream-shared";
+import {
+  attachUsageBudgetProviderBilledCostMetadata,
+  attachUsageBudgetUnpriceableCostMetadata,
+  createPayloadPatchStreamWrapper,
+  markProviderDispatchObservableStreamFn,
+  preserveProviderDispatchObservableStreamFn,
+  USAGE_BUDGET_RECORDED_COST_METADATA_KEY,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { isOpenRouterDeepSeekV4ModelId } from "./models.js";
 import {
@@ -92,10 +99,36 @@ function readOpenRouterTotalCost(payload: OpenRouterGenerationResponse): number 
   return totalCost;
 }
 
-function isDoneEvent(
-  event: AssistantMessageEvent,
-): event is Extract<AssistantMessageEvent, { type: "done" }> {
-  return event.type === "done";
+function getTerminalAssistantMessage(event: AssistantMessageEvent): AssistantMessage | undefined {
+  if (event.type === "done") {
+    return event.message;
+  }
+  if (event.type === "error") {
+    return event.error;
+  }
+  return undefined;
+}
+
+function hasProviderBilledUsageCost(usage: unknown): boolean {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
+    return false;
+  }
+  const record = usage as Record<string, unknown>;
+  const cost = record.cost;
+  const total =
+    cost && typeof cost === "object" && !Array.isArray(cost)
+      ? (cost as Record<string, unknown>).total
+      : undefined;
+  const metadata = record[USAGE_BUDGET_RECORDED_COST_METADATA_KEY];
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return false;
+  }
+  return (
+    (metadata as Record<string, unknown>).kind === "provider-billed-model-call-cost" &&
+    typeof total === "number" &&
+    Number.isFinite(total) &&
+    total >= 0
+  );
 }
 
 async function fetchOpenRouterGenerationTotalCost(params: {
@@ -136,9 +169,23 @@ async function applyOpenRouterBilledCost(params: {
   message: AssistantMessage;
   model: Parameters<StreamFn>[0];
 }): Promise<void> {
+  const usage = params.message.usage;
+  if (!usage?.cost) {
+    return;
+  }
+  if (hasProviderBilledUsageCost(usage)) {
+    return;
+  }
+  const markUnpriceable = () => {
+    attachUsageBudgetUnpriceableCostMetadata(
+      usage as unknown as Record<string, unknown>,
+      "provider-billed-cost-unavailable",
+    );
+  };
   const apiKey = readString(params.apiKey);
   const responseId = readString((params.message as { responseId?: unknown }).responseId);
-  if (!apiKey || !responseId || !params.message.usage?.cost) {
+  if (!apiKey || !responseId) {
+    markUnpriceable();
     return;
   }
   try {
@@ -148,12 +195,16 @@ async function applyOpenRouterBilledCost(params: {
       responseId,
     });
     if (totalCost !== undefined) {
-      params.message.usage.cost.total = totalCost;
+      usage.cost.total = totalCost;
+      attachUsageBudgetProviderBilledCostMetadata(usage as unknown as Record<string, unknown>);
+      return;
     }
+    markUnpriceable();
   } catch (error) {
     log.debug?.(
-      `kept streamed OpenRouter cost estimate because generation metadata lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      `marked OpenRouter usage unpriceable because generation metadata lookup failed: ${error instanceof Error ? error.message : String(error)}`,
     );
+    markUnpriceable();
   }
 }
 
@@ -163,7 +214,7 @@ function createOpenRouterBilledCostWrapper(
   if (!baseStreamFn) {
     return baseStreamFn;
   }
-  return async (model, context, options) => {
+  const wrapped: StreamFn = async (model, context, options) => {
     const source = await baseStreamFn(model, context, options);
     if (!isVerifiedOpenRouterRoute(model)) {
       return source;
@@ -173,10 +224,11 @@ function createOpenRouterBilledCostWrapper(
     void (async () => {
       try {
         for await (const event of source as AsyncIterable<AssistantMessageEvent>) {
-          if (isDoneEvent(event)) {
+          const terminalMessage = getTerminalAssistantMessage(event);
+          if (terminalMessage) {
             await applyOpenRouterBilledCost({
               apiKey: options?.apiKey,
-              message: event.message,
+              message: terminalMessage,
               model,
             });
           }
@@ -199,6 +251,7 @@ function createOpenRouterBilledCostWrapper(
     })();
     return output as ReturnType<StreamFn>;
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseStreamFn);
 }
 
 function mergeOpenRouterAuthHeaders(options: Parameters<StreamFn>[2]): Parameters<StreamFn>[2] {
@@ -228,12 +281,13 @@ function createOpenRouterAuthHeaderWrapper(
   if (!baseStreamFn) {
     return baseStreamFn;
   }
-  return (model, context, options) =>
+  const wrapped: StreamFn = (model, context, options) =>
     baseStreamFn(
       model,
       context,
       isVerifiedOpenRouterRoute(model) ? mergeOpenRouterAuthHeaders(options) : options,
     );
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseStreamFn);
 }
 
 function assistantMessageHasOpenAIToolCalls(message: Record<string, unknown>): boolean {
@@ -458,10 +512,13 @@ export function wrapOpenRouterProviderStream(
     : ctx.streamFn;
   const wrapStreamFn = OPENROUTER_THINKING_STREAM_HOOKS.wrapStreamFn ?? undefined;
   if (!wrapStreamFn) {
-    return createOpenRouterBilledCostWrapper(
-      createOpenRouterAnthropicPrefillWrapper(
-        createOpenRouterAuthHeaderWrapper(
-          createOpenRouterDeepSeekV4ReplayWrapper(routedStreamFn, ctx.thinkingLevel),
+    return preserveOpenRouterDispatchObservability(
+      ctx,
+      createOpenRouterBilledCostWrapper(
+        createOpenRouterAnthropicPrefillWrapper(
+          createOpenRouterAuthHeaderWrapper(
+            createOpenRouterDeepSeekV4ReplayWrapper(routedStreamFn, ctx.thinkingLevel),
+          ),
         ),
       ),
     );
@@ -474,11 +531,23 @@ export function wrapOpenRouterProviderStream(
         ? undefined
         : ctx.thinkingLevel,
     }) ?? undefined;
-  return createOpenRouterBilledCostWrapper(
-    createOpenRouterAnthropicPrefillWrapper(
-      createOpenRouterAuthHeaderWrapper(
-        createOpenRouterDeepSeekV4ReplayWrapper(wrappedStreamFn, ctx.thinkingLevel),
+  return preserveOpenRouterDispatchObservability(
+    ctx,
+    createOpenRouterBilledCostWrapper(
+      createOpenRouterAnthropicPrefillWrapper(
+        createOpenRouterAuthHeaderWrapper(
+          createOpenRouterDeepSeekV4ReplayWrapper(wrappedStreamFn, ctx.thinkingLevel),
+        ),
       ),
     ),
   );
+}
+
+function preserveOpenRouterDispatchObservability(
+  ctx: ProviderWrapStreamFnContext,
+  streamFn: StreamFn | undefined,
+): StreamFn | undefined {
+  return streamFn && ctx.providerDispatchObservable
+    ? markProviderDispatchObservableStreamFn(streamFn)
+    : streamFn;
 }

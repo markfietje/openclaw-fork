@@ -3,10 +3,12 @@
  *
  * Resolves agent model selection, auth, runtime policy, and missing-auth errors before simple completions run.
  */
+import { randomUUID } from "node:crypto";
 import type { ThinkLevel } from "../auto-reply/thinking.js";
+import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { completeSimple } from "../llm/stream.js";
+import { streamSimple } from "../llm/stream.js";
 import type {
   AssistantMessage,
   Model,
@@ -31,8 +33,27 @@ import {
 } from "./model-selection.js";
 import { supportsOpenAIReasoningEffort } from "./openai-reasoning-effort.js";
 import { OPENAI_PROVIDER_ID, isOpenAIProvider } from "./openai-routing.js";
+import {
+  isModelProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchModelForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "./provider-dispatch-observable-stream.js";
 import { applyPreparedRuntimeAuthToModel } from "./provider-request-config.js";
 import { prepareModelForSimpleCompletion } from "./simple-completion-transport.js";
+import {
+  acquireAgentUsageBudgetAdmission,
+  AgentUsageBudgetError,
+  buildUnsupportedAgentUsageBudgetStreamError,
+  hasAnyActiveAgentUsageBudgetConfig,
+  isAgentUsageBudgetError,
+  recordAgentUsageBudgetAdmissionResult,
+  resolveAgentUsageBudgetConfig,
+  resolveUsageBudgetCostMultiplierUsage,
+  type AgentUsageBudgetAdmissionRelease,
+  type AgentUsageBudgetAdmissionReservation,
+} from "./usage-budget.js";
+import { hasNonzeroUsageLike, type UsageLike } from "./usage.js";
 
 type SimpleCompletionAuthStorage = {
   setRuntimeApiKey: (provider: string, apiKey: string) => void;
@@ -51,6 +72,63 @@ export type SimpleCompletionModelOptions = {
   reasoning?: ThinkLevel | SimpleCompletionThinkingLevel;
   signal?: AbortSignal;
 };
+
+export type SimpleCompletionUsageBudgetContext = {
+  config?: OpenClawConfig;
+  agentId?: string | null;
+  provider: string;
+  model: string;
+  recordIdPrefix?: string;
+  transcriptPath?: string;
+};
+
+function buildRepeatedSimpleCompletionDispatchBudgetError(params: {
+  agentId?: string | null;
+  provider: string;
+  model: string;
+}): AgentUsageBudgetError {
+  return new AgentUsageBudgetError(
+    `Usage budget blocked for agent "${params.agentId ?? "unknown"}": provider retry dispatch cannot be safely attributed.`,
+    {
+      agentId: params.agentId ?? "unknown",
+      provider: params.provider,
+      model: params.model,
+      harnessId: "provider-retry",
+      reason: "unsupported_harness",
+    },
+  );
+}
+
+function isProviderRetryUsageBudgetError(error: unknown): boolean {
+  return (
+    isAgentUsageBudgetError(error) &&
+    typeof error === "object" &&
+    error !== null &&
+    (error as { details?: { harnessId?: unknown } }).details?.harnessId === "provider-retry"
+  );
+}
+
+function estimateJsonTokenUpperBound(value: unknown): number | undefined {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function buildSimpleCompletionUsageBudgetReservation(params: {
+  context: Parameters<typeof streamSimple>[1];
+  model: Model;
+  options: SimpleCompletionModelOptions;
+}): AgentUsageBudgetAdmissionReservation | undefined {
+  const inputTokens = estimateJsonTokenUpperBound(params.context);
+  const outputTokens = params.options.maxTokens ?? params.model.maxTokens;
+  const reservation = {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+  };
+  return Object.keys(reservation).length > 0 ? reservation : undefined;
+}
 
 export type PreparedSimpleCompletionModel =
   | {
@@ -341,18 +419,181 @@ export async function prepareSimpleCompletionModelForAgent(params: {
 export async function completeWithPreparedSimpleCompletionModel(params: {
   model: Model;
   auth: ResolvedProviderAuth;
-  context: Parameters<typeof completeSimple>[1];
+  context: Parameters<typeof streamSimple>[1];
   cfg?: OpenClawConfig;
   options?: SimpleCompletionModelOptions;
+  usageBudget?: SimpleCompletionUsageBudgetContext;
 }): Promise<AssistantMessage> {
-  const completionModel = prepareModelForSimpleCompletion({ model: params.model, cfg: params.cfg });
+  const config = params.usageBudget?.config ?? params.cfg ?? getRuntimeConfig();
+  const completionModel = prepareModelForSimpleCompletion({ model: params.model, cfg: config });
   const { reasoning: rawReasoning, ...options } = params.options ?? {};
   const reasoning = normalizeSimpleCompletionReasoning(rawReasoning, completionModel);
-  return await completeSimple(completionModel, params.context, {
+  const complete = async (onProviderDispatch?: () => void, disableProviderRetries = false) => {
+    const stream = streamSimple(completionModel, params.context, {
+      ...options,
+      ...(reasoning ? { reasoning } : {}),
+      apiKey: params.auth.apiKey,
+      ...(disableProviderRetries ? { maxRetries: 0 } : {}),
+      ...(onProviderDispatch ? { onProviderDispatch } : {}),
+    });
+    return await stream.result();
+  };
+  const usageBudget = params.usageBudget;
+  if (!usageBudget) {
+    if (hasAnyActiveAgentUsageBudgetConfig(config)) {
+      throw new AgentUsageBudgetError(
+        'Usage budget blocked for agent "unknown": simple completion requires agent attribution before model dispatch.',
+        {
+          agentId: "unknown",
+          provider: completionModel.provider,
+          model: completionModel.id,
+          reason: "unsupported_harness",
+        },
+      );
+    }
+    return await complete();
+  }
+  const usageBudgetConfig = resolveAgentUsageBudgetConfig({
+    config,
+    agentId: usageBudget.agentId,
+  });
+  if (!usageBudgetConfig) {
+    return await complete();
+  }
+  if (
+    !isModelProviderDispatchObservableStreamFn({
+      streamFn: streamSimple,
+      model: completionModel,
+    })
+  ) {
+    throw buildUnsupportedAgentUsageBudgetStreamError({
+      agentId: usageBudget.agentId,
+      provider: completionModel.provider,
+      model: completionModel.id,
+    });
+  }
+
+  let usageBudgetTimestampMs: number | undefined;
+  let releaseUsageBudgetAdmission: AgentUsageBudgetAdmissionRelease | undefined;
+  let usageRecorded = false;
+  let preserveInFlightUsageBudgetAdmission = false;
+  let providerDispatchStarted = false;
+  const usageBudgetOperationId = randomUUID();
+  const usageBudgetStreamOptions = {
     ...options,
     ...(reasoning ? { reasoning } : {}),
     apiKey: params.auth.apiKey,
+    maxRetries: 0,
+  };
+  const usageBudgetDispatchModel = resolveProviderDispatchModelForStreamFn({
+    streamFn: streamSimple,
+    model: completionModel,
+    context: params.context,
+    options: usageBudgetStreamOptions,
   });
+  const usageBudgetDispatchProvider = usageBudgetDispatchModel.provider;
+  const usageBudgetDispatchModelId = usageBudgetDispatchModel.id;
+  const usageBudgetCostMultiplier = resolveProviderDispatchCostMultiplierForStreamFn({
+    streamFn: streamSimple,
+    model: completionModel,
+    context: params.context,
+    options: usageBudgetStreamOptions,
+  });
+  const usageBudgetReservationCostMultiplier =
+    resolveProviderDispatchReservationCostMultiplierForStreamFn({
+      streamFn: streamSimple,
+      model: completionModel,
+      context: params.context,
+      options: usageBudgetStreamOptions,
+    });
+  const recordUsage = (usage?: UsageLike) => {
+    if (!releaseUsageBudgetAdmission || usageBudgetTimestampMs === undefined) {
+      return;
+    }
+    const timestampMs = usageBudgetTimestampMs;
+    const recordedUsage = resolveUsageBudgetCostMultiplierUsage({
+      config,
+      provider: usageBudgetDispatchProvider,
+      model: usageBudgetDispatchModelId,
+      usage,
+      costMultiplier: usageBudgetCostMultiplier,
+    });
+    try {
+      recordAgentUsageBudgetAdmissionResult({
+        config,
+        agentId: usageBudget.agentId,
+        provider: usageBudgetDispatchProvider,
+        model: usageBudgetDispatchModelId,
+        usage: recordedUsage,
+        timestampMs,
+        recordId: `${usageBudget.recordIdPrefix ?? "simple-completion"}:${timestampMs}:${randomUUID()}`,
+        usageBudgetOperationId,
+      });
+      usageRecorded = true;
+    } catch (error) {
+      preserveInFlightUsageBudgetAdmission = true;
+      throw error;
+    }
+  };
+  try {
+    releaseUsageBudgetAdmission = await acquireAgentUsageBudgetAdmission({
+      config,
+      agentId: usageBudget.agentId,
+      provider: usageBudgetDispatchProvider,
+      model: usageBudgetDispatchModelId,
+      transcriptPath: usageBudget.transcriptPath,
+      reservation: buildSimpleCompletionUsageBudgetReservation({
+        context: params.context,
+        model: usageBudgetDispatchModel,
+        options,
+      }),
+      costMultiplier: usageBudgetReservationCostMultiplier,
+      reservationCostKnown: usageBudgetReservationCostMultiplier !== undefined,
+      usageBudgetOperationId,
+      signal: options.signal,
+    });
+    usageBudgetTimestampMs = releaseUsageBudgetAdmission?.timestampMs;
+    const result = await complete(() => {
+      if (providerDispatchStarted) {
+        throw buildRepeatedSimpleCompletionDispatchBudgetError({
+          agentId: usageBudget.agentId,
+          provider: usageBudgetDispatchProvider,
+          model: usageBudgetDispatchModelId,
+        });
+      }
+      providerDispatchStarted = true;
+    }, true);
+    if (
+      releaseUsageBudgetAdmission &&
+      (providerDispatchStarted || hasNonzeroUsageLike(result.usage))
+    ) {
+      recordUsage(result.usage);
+    }
+    return result;
+  } catch (error) {
+    const errorUsage = readSimpleCompletionErrorUsage(error);
+    if (
+      releaseUsageBudgetAdmission &&
+      !usageRecorded &&
+      (!isAgentUsageBudgetError(error) || isProviderRetryUsageBudgetError(error)) &&
+      (providerDispatchStarted || hasNonzeroUsageLike(errorUsage))
+    ) {
+      recordUsage(errorUsage);
+    }
+    throw error;
+  } finally {
+    await releaseUsageBudgetAdmission?.({
+      preserveInFlight: preserveInFlightUsageBudgetAdmission,
+    });
+  }
+}
+
+function readSimpleCompletionErrorUsage(error: unknown): UsageLike | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const carrier = error as { usage?: UsageLike; partialUsage?: UsageLike };
+  return carrier.partialUsage ?? carrier.usage;
 }
 
 function normalizeSimpleCompletionReasoning(

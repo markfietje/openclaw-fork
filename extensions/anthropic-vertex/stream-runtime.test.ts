@@ -1,5 +1,6 @@
 // Anthropic Vertex tests cover stream runtime plugin behavior.
 import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-sdk/llm";
+import { isProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AnthropicVertexStreamDeps } from "./stream-runtime.js";
 
@@ -375,6 +376,31 @@ describe("createAnthropicVertexStreamFn", () => {
     const transportOptions = streamTransportOptions(streamAnthropicMock);
     expect(transportOptions.effort).toBe("high");
     expect(transportOptions).not.toHaveProperty("temperature");
+  });
+
+  it("forwards dispatch and response callbacks to the shared Anthropic transport", () => {
+    const { deps, streamAnthropicMock } = createStreamDeps();
+    const streamFn = createAnthropicVertexStreamFn("vertex-project", "us-east5", undefined, deps);
+    const onProviderDispatch = vi.fn();
+    const onResponse = vi.fn();
+
+    void streamFn(makeModel({ id: "claude-sonnet-4-6", maxTokens: 128000 }), { messages: [] }, {
+      onProviderDispatch,
+      onResponse,
+      maxRetries: 0,
+    } as never);
+
+    const transportOptions = streamTransportOptions(streamAnthropicMock);
+    expect(transportOptions.onProviderDispatch).toBe(onProviderDispatch);
+    expect(transportOptions.onResponse).toBe(onResponse);
+    expect(transportOptions.maxRetries).toBe(0);
+  });
+
+  it("marks synthetic Vertex streams as dispatch observable", () => {
+    const { deps } = createStreamDeps();
+    const streamFn = createAnthropicVertexStreamFn("vertex-project", "us-east5", undefined, deps);
+
+    expect(isProviderDispatchObservableStreamFn(streamFn)).toBe(true);
   });
 
   it("keeps already-budgeted cache_control markers intact when forwarding payload hooks", async () => {

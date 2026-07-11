@@ -778,6 +778,13 @@ async function runModelRun(params: {
             : undefined,
         ...(params.thinking ? { reasoning: params.thinking } : {}),
       },
+      usageBudget: {
+        config: cfg,
+        agentId,
+        provider: prepared.selection.provider,
+        model: prepared.selection.modelId,
+        recordIdPrefix: "infer-model-run",
+      },
     });
     const text = collectModelRunText(result.content);
     if (!text) {
@@ -999,7 +1006,8 @@ async function runImageGenerate(params: {
     commandName: `infer ${params.capability}`,
     targetIds: getModelsCommandSecretTargetIds(),
   });
-  const agentDir = resolveAgentDir(cfg, resolveDefaultAgentId(cfg));
+  const agentId = resolveDefaultAgentId(cfg);
+  const agentDir = resolveAgentDir(cfg, agentId);
   const inputImages =
     params.file && params.file.length > 0
       ? await Promise.all(
@@ -1013,6 +1021,7 @@ async function runImageGenerate(params: {
       : undefined;
   const result = await generateImage({
     cfg,
+    agentId,
     agentDir,
     prompt: params.prompt,
     modelOverride: params.model,
@@ -1078,7 +1087,8 @@ async function runImageDescribe(params: {
     commandName: `infer ${params.capability}`,
     targetIds: getModelsCommandSecretTargetIds(),
   });
-  const agentDir = resolveAgentDir(cfg, resolveDefaultAgentId(cfg));
+  const agentId = resolveDefaultAgentId(cfg);
+  const agentDir = resolveAgentDir(cfg, agentId);
   const activeModel = requireProviderModelOverride(params.model);
   const prompt = normalizeOptionalString(params.prompt);
   const outputs = await Promise.all(
@@ -1102,6 +1112,7 @@ async function runImageDescribe(params: {
                 const described = await describePreparedImageWithModel({
                   image: preparedImage,
                   cfg,
+                  agentId,
                   agentDir,
                   provider,
                   model,
@@ -1119,6 +1130,7 @@ async function runImageDescribe(params: {
                 filePath: resolvedPath,
                 ...(isRemoteUrl ? { mediaUrl: resolvedPath } : {}),
                 cfg,
+                agentId,
                 agentDir,
                 prompt,
                 timeoutMs: params.timeoutMs,
@@ -1175,10 +1187,12 @@ async function runAudioTranscribe(params: {
     commandName: "infer audio transcribe",
     targetIds: getModelsCommandSecretTargetIds(),
   });
+  const agentId = resolveDefaultAgentId(cfg);
   const activeModel = requireProviderModelOverride(params.model);
   const result = await transcribeAudioFile({
     filePath: path.resolve(params.file),
     cfg,
+    agentId,
     language: params.language,
     activeModel,
     prompt: params.prompt,
@@ -1322,9 +1336,11 @@ async function runVideoGenerate(params: {
     commandName: "infer video.generate",
     targetIds: getModelsCommandSecretTargetIds(),
   });
-  const agentDir = resolveAgentDir(cfg, resolveDefaultAgentId(cfg));
+  const agentId = resolveDefaultAgentId(cfg);
+  const agentDir = resolveAgentDir(cfg, agentId);
   const result = await generateVideo({
     cfg,
+    agentId,
     agentDir,
     prompt: params.prompt,
     modelOverride: params.model,
@@ -1420,10 +1436,12 @@ async function runVideoDescribe(params: { file: string; model?: string }) {
     commandName: "infer video.describe",
     targetIds: getModelsCommandSecretTargetIds(),
   });
+  const agentId = resolveDefaultAgentId(cfg);
   const activeModel = requireProviderModelOverride(params.model);
   const result = await describeVideoFile({
     filePath: path.resolve(params.file),
     cfg,
+    agentId,
     activeModel,
   });
   if (!result.text) {

@@ -60,6 +60,32 @@ export interface AgentModelCatalogs {
   updated_at: number;
 }
 
+export interface AgentUsageBudgetLedger {
+  agent_id: string;
+  dedup_key: string;
+  model: string;
+  provider: string;
+  record_id: string;
+  timestamp_ms: number;
+  updated_at_ms: number;
+  usage_accounting_source: Generated<string>;
+  usage_budget_bridge: Generated<number>;
+  usage_budget_operation_id: string | null;
+  usage_json: string | null;
+}
+
+export interface AgentUsageBudgetTranscriptImportState {
+  active_transcript_mtime_ms: number | null;
+  active_transcript_path: string | null;
+  active_transcript_size: number | null;
+  agent_id: string;
+  imported_min_start_ms: number;
+  sessions_dir_exists: Generated<number>;
+  sessions_dir_mtime_ms: number | null;
+  sessions_dirs_fingerprint: string | null;
+  updated_at_ms: number;
+}
+
 export interface AndroidNotificationRecentPackages {
   package_name: string;
   sort_order: number;
@@ -959,6 +985,8 @@ export interface DB {
   acp_sessions: AcpSessions;
   agent_databases: AgentDatabases;
   agent_model_catalogs: AgentModelCatalogs;
+  agent_usage_budget_ledger: AgentUsageBudgetLedger;
+  agent_usage_budget_transcript_import_state: AgentUsageBudgetTranscriptImportState;
   android_notification_recent_packages: AndroidNotificationRecentPackages;
   apns_registrations: ApnsRegistrations;
   auth_profile_state: AuthProfileState;

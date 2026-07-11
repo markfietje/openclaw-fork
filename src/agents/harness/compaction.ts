@@ -1,3 +1,4 @@
+import type { Model } from "openclaw/plugin-sdk/llm";
 /**
  * Routes compaction through selected native agent harnesses when supported.
  */
@@ -5,7 +6,6 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveUserPath } from "../../utils.js";
-import type { Model } from "openclaw/plugin-sdk/llm";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import type { CompactEmbeddedAgentSessionParams } from "../embedded-agent-runner/compact.types.js";
@@ -13,6 +13,11 @@ import { resolveModelAsync } from "../embedded-agent-runner/model.js";
 import type { EmbeddedAgentCompactResult } from "../embedded-agent-runner/types.js";
 import { getApiKeyForModel } from "../model-auth.js";
 import { isCliRuntimeAliasForProvider, isCliRuntimeProvider } from "../model-runtime-aliases.js";
+import {
+  buildUnsupportedAgentUsageBudgetHarnessError,
+  resolveAgentUsageBudgetConfig,
+} from "../usage-budget.js";
+import { isBuiltinOpenClawAgentHarness } from "./builtin-openclaw.js";
 import { resolveAgentHarnessPolicy as resolveConfiguredAgentHarnessPolicy } from "./policy.js";
 import { selectAgentHarness } from "./selection.js";
 import type {
@@ -161,7 +166,7 @@ export async function maybeCompactAgentHarnessSession(
     return undefined;
   }
   if (!options.nativeCompactionRequest && !harness.compact) {
-    if (harness.id !== "openclaw") {
+    if (!isBuiltinOpenClawAgentHarness(harness)) {
       return {
         ok: false,
         compacted: false,
@@ -172,6 +177,29 @@ export async function maybeCompactAgentHarnessSession(
     return undefined;
   }
   const compactIdentity = resolveHarnessCompactIdentity(params);
+  if (
+    !isBuiltinOpenClawAgentHarness(harness) &&
+    resolveAgentUsageBudgetConfig({
+      config: params.config,
+      agentId: compactIdentity.agentId,
+    })
+  ) {
+    const error = buildUnsupportedAgentUsageBudgetHarnessError({
+      agentId: compactIdentity.agentId,
+      provider: params.provider ?? "",
+      model: params.model ?? "",
+      harnessId: harness.id,
+    });
+    return {
+      ok: false,
+      compacted: false,
+      reason: error.message,
+      failure: {
+        reason: "usage_budget_unsupported_harness",
+        code: error.code,
+      },
+    };
+  }
   const compactParams = {
     ...params,
     agentDir: compactIdentity.agentDir,

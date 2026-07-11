@@ -254,6 +254,66 @@ describe("createMusicGenerateTool", () => {
     );
   });
 
+  it("denies generation actions when usage budgets are active", async () => {
+    const reason = "Model-backed generation is unavailable for budgeted agents.";
+    const tool = expectMusicGenerateTool(
+      createMusicGenerateTool({
+        config: asConfig({
+          agents: {
+            defaults: {
+              musicGenerationModel: { primary: "google/lyria-3-clip-preview" },
+            },
+          },
+        }),
+        usageBudgetUnsupportedReason: reason,
+      }),
+    );
+
+    await expect(tool.execute("call-1", { prompt: "night drive" })).resolves.toEqual({
+      content: [{ type: "text", text: reason }],
+      details: { error: "usage_budget_unsupported_model_tool", tool: "music_generate" },
+    });
+  });
+
+  it("passes the tool agent id into the music generation runtime", async () => {
+    vi.spyOn(musicGenerationRuntime, "generateMusic").mockResolvedValue({
+      provider: "google",
+      model: "lyria-3-clip-preview",
+      attempts: [],
+      ignoredOverrides: [],
+      tracks: [
+        {
+          buffer: Buffer.from("music-bytes"),
+          mimeType: "audio/mpeg",
+          fileName: "agent-owned.mp3",
+        },
+      ],
+      metadata: {},
+    });
+    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValueOnce({
+      path: "/tmp/agent-owned.mp3",
+      id: "agent-owned.mp3",
+      size: 11,
+      contentType: "audio/mpeg",
+    });
+    const tool = expectMusicGenerateTool(
+      createMusicGenerateTool({
+        config: asConfig({
+          agents: {
+            defaults: {
+              musicGenerationModel: { primary: "google/lyria-3-clip-preview" },
+            },
+          },
+        }),
+        agentId: "composer",
+      }),
+    );
+
+    await tool.execute("call-agent-music", { prompt: "night drive" });
+
+    expect(generateMusicOptions().agentId).toBe("composer");
+  });
+
   it("tells song requests to generate audio instead of only lyrics", () => {
     const tool = expectMusicGenerateTool(
       createMusicGenerateTool({

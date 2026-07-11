@@ -694,6 +694,72 @@ describe("SessionManager.open", () => {
     }
   });
 
+  it("keeps compaction usage accounting side entries off the visible leaf", async () => {
+    const dir = await makeTempDir();
+    const manager = SessionManager.create(dir, dir);
+    manager.appendMessage({ role: "user", content: "old", timestamp: 1 });
+    manager.appendMessage(buildAssistantMessage("old assistant"));
+    const firstKeptId = manager.appendMessage({ role: "user", content: "keep", timestamp: 2 });
+    const compactionId = manager.appendCompaction("summary", firstKeptId, 1000);
+
+    manager.appendCompactionUsageAccounting({
+      schemaVersion: 1,
+      message: {
+        role: "assistant",
+        usage: {
+          input: 10,
+          output: 5,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 15,
+          cost: { total: 0.015 },
+        },
+      },
+    });
+
+    expect(manager.getLeafId()).toBe(compactionId);
+    const sessionFile = manager.getSessionFile();
+    if (!sessionFile) {
+      throw new Error("expected session file");
+    }
+    const reopened = SessionManager.open(sessionFile);
+    expect(reopened.getLeafId()).toBe(compactionId);
+  });
+
+  it("persists branch summary usage accounting on the summary entry", async () => {
+    const dir = await makeTempDir();
+    const manager = SessionManager.create(dir, dir);
+    const targetId = manager.appendMessage({ role: "user", content: "target", timestamp: 1 });
+    const summaryId = manager.branchWithSummary(
+      targetId,
+      "abandoned branch summary",
+      undefined,
+      false,
+      {
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 12,
+          output: 3,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 15,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.015 },
+        },
+      },
+    );
+
+    const entry = manager.getEntry(summaryId);
+    expect(entry?.type).toBe("branch_summary");
+    expect(
+      entry && entry.type === "branch_summary" ? entry.usageAccounting : undefined,
+    ).toMatchObject({
+      provider: "openai",
+      model: "gpt-5.4",
+      usage: { totalTokens: 15 },
+    });
+  });
+
   it("does not probe custom entry getters before serialization", async () => {
     const dir = await makeTempDir();
     const sessionFile = path.join(dir, "session.jsonl");
@@ -1522,6 +1588,7 @@ describe("SessionManager.open", () => {
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as { id?: string; parentId?: string | null });
+    expect(branchedRecords[0]).toMatchObject({ type: "session", usageFamilyKey: "session" });
     expect(branchedRecords).toContainEqual(metadata);
     expect(branchedRecords.find((record) => record.id === assistantId)?.parentId).toBe(metadata.id);
     expect(
@@ -1530,6 +1597,55 @@ describe("SessionManager.open", () => {
       { role: "user", content: "question" },
       { role: "assistant", content: [{ type: "text", text: "answer" }] },
     ]);
+    const secondBranchedFile = SessionManager.open(branchedFile!, dir, dir).createBranchedSession(
+      assistantId,
+    );
+    expect(secondBranchedFile).toBeDefined();
+    const secondBranchedHeader = JSON.parse(
+      (await fs.readFile(secondBranchedFile!, "utf8")).split(/\r?\n/u)[0] ?? "{}",
+    ) as Record<string, unknown>;
+    expect(secondBranchedHeader.parentSession).toBe(branchedFile);
+    expect(secondBranchedHeader.usageFamilyKey).toBe("session");
+  });
+
+  it("preserves usage family keys across transitive forkFrom copies", async () => {
+    const dir = await makeTempDir();
+    const rootFile = path.join(dir, "root.jsonl");
+    await fs.writeFile(
+      rootFile,
+      `${JSON.stringify(buildSessionHeader(dir, "root"))}\n${JSON.stringify(
+        buildMessageEntry(1, null),
+      )}\n`,
+      "utf8",
+    );
+
+    const firstFork = SessionManager.forkFrom(rootFile, dir, dir);
+    const firstForkFile = firstFork.getSessionFile();
+    expect(firstForkFile).toBeDefined();
+    expect(firstFork.getHeader()).toMatchObject({
+      parentSession: rootFile,
+      usageFamilyKey: "root",
+    });
+    const firstForkRecords = (await fs.readFile(firstForkFile!, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const firstForkHeader = firstForkRecords[0];
+    if (!firstForkHeader) {
+      throw new Error("expected first fork header");
+    }
+    delete firstForkHeader.usageFamilyKey;
+    await fs.writeFile(
+      firstForkFile!,
+      `${firstForkRecords.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      "utf8",
+    );
+
+    const secondFork = SessionManager.forkFrom(firstForkFile!, dir, dir);
+    expect(secondFork.getHeader()).toMatchObject({
+      parentSession: firstForkFile,
+      usageFamilyKey: "root",
+    });
   });
 
   it("repairs compaction boundaries that point through opaque rows", async () => {

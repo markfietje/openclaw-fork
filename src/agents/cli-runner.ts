@@ -60,6 +60,10 @@ import {
 import type { AgentMessage } from "./runtime/index.js";
 import { SessionManager } from "./sessions/session-manager.js";
 import { buildAssistantMessage, buildUsageWithNoCost } from "./stream-message-shared.js";
+import {
+  buildUnsupportedAgentUsageBudgetHarnessError,
+  resolveAgentUsageBudgetConfig,
+} from "./usage-budget.js";
 
 const log = createSubsystemLogger("agents/cli-runner");
 
@@ -118,6 +122,18 @@ function shouldRetryFreshCliSessionAfterFailover(params: {
     default:
       return false;
   }
+}
+
+function assertCliRunSupportsUsageBudget(params: RunCliAgentParams): void {
+  if (!resolveAgentUsageBudgetConfig({ config: params.config, agentId: params.agentId })) {
+    return;
+  }
+  throw buildUnsupportedAgentUsageBudgetHarnessError({
+    agentId: params.agentId,
+    provider: params.provider,
+    model: params.model ?? "unspecified",
+    harnessId: `cli:${params.provider}`,
+  });
 }
 
 function formatCliEmptyOutputDiagnostics(output: CliOutput): string | undefined {
@@ -484,6 +500,7 @@ async function runCliAgentInternal(params: RunCliAgentParams): Promise<EmbeddedA
       });
     }
   }
+  assertCliRunSupportsUsageBudget(params);
   const { prepareCliRunContext } = await import("./cli-runner/prepare.runtime.js");
   const context = await prepareCliRunContext(params);
   let result: EmbeddedAgentRunResult | undefined;

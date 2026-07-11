@@ -1,6 +1,10 @@
 // Lmstudio tests cover stream plugin behavior.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetLmstudioPreloadCooldownForTest, wrapLmstudioInferencePreload } from "./stream.js";
 
@@ -205,6 +209,14 @@ describe("lmstudio stream wrapper", () => {
     resolveLmstudioProviderHeadersMock.mockResolvedValue(undefined);
     resolveLmstudioRuntimeApiKeyMock.mockResolvedValue(undefined);
     resetLmstudioPreloadCooldownForTest();
+  });
+
+  it("preserves provider dispatch observability through preload wrappers", () => {
+    const baseStream = markProviderDispatchObservableStreamFn(buildDoneStreamFn());
+
+    const wrapped = createWrappedLmstudioStream(baseStream);
+
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
   });
 
   it("preloads LM Studio model before inference using model context window", async () => {

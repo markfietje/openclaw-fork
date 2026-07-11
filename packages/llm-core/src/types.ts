@@ -106,6 +106,8 @@ export interface StreamOptions {
    * its body stream is consumed.
    */
   onResponse?: (response: ProviderResponse, model: Model) => void | Promise<void>;
+  /** Internal callback invoked immediately before a provider request is sent. */
+  onProviderDispatch?: () => void;
   /**
    * Optional custom HTTP headers to include in API requests.
    * Merged with provider defaults; can override default headers.
@@ -188,6 +190,8 @@ export interface SimpleStreamOptions extends StreamOptions {
   reasoning?: ThinkingLevel;
   /** Custom token budgets for thinking levels (token-based providers only) */
   thinkingBudgets?: ThinkingBudgets;
+  /** Internal aggregate usage owner id consumed by OpenClaw wrappers before provider dispatch. */
+  usageBudgetOperationId?: string;
 }
 
 // Generic StreamFunction with typed options.

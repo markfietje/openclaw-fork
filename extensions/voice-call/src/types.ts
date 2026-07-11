@@ -256,6 +256,8 @@ export type PlayTtsInput = {
   callId: CallId;
   providerCallId: ProviderCallId;
   text: string;
+  /** Effective routed agent for request-scoped synthesis admission and accounting. */
+  agentId?: string;
   voice?: string;
   locale?: string;
 };

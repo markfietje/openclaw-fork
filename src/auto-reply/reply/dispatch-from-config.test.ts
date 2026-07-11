@@ -4044,6 +4044,37 @@ describe("dispatchReplyFromConfig", () => {
     expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(notice);
   });
 
+  it("bypasses final TTS for budgeted agents", async () => {
+    setNoAbort();
+    ttsMocks.state.synthesizeFinalAudio = true;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 1_000 },
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "telegram",
+      ChatType: "direct",
+      AgentId: "budgeted-agent",
+    });
+    const reply = { text: "Hello from a budgeted agent." } satisfies ReplyPayload;
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyResolver: async () => reply,
+    });
+
+    expect(ttsMocks.maybeApplyTtsToPayload).not.toHaveBeenCalled();
+    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith(reply);
+  });
+
   it("renders the first plan update as a status notice without generic working statuses", async () => {
     setNoAbort();
     const cfg = {

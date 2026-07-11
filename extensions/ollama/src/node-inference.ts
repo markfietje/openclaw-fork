@@ -10,6 +10,7 @@ import type {
   OpenClawPluginApi,
   OpenClawPluginNodeHostCommand,
   OpenClawPluginNodeInvokePolicy,
+  OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   readProviderJsonResponse,
@@ -405,17 +406,22 @@ function parseInvokePayload(raw: unknown): Record<string, unknown> {
 
 async function invokeNode(
   api: OpenClawPluginApi,
+  toolContext: OpenClawPluginToolContext | undefined,
   nodeId: string,
   command: string,
   params: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
+  const cfg =
+    toolContext?.getRuntimeConfig?.() ?? toolContext?.runtimeConfig ?? toolContext?.config;
   const raw = await api.runtime.nodes.invoke({
     nodeId,
     command,
     params,
     timeoutMs,
     scopes: ["operator.write"],
+    ...(cfg ? { cfg } : {}),
+    ...(toolContext?.agentId ? { agentId: toolContext.agentId } : {}),
   });
   return parseInvokePayload(raw);
 }
@@ -444,7 +450,10 @@ export const ollamaNodeInferenceToolDefinition = {
   ),
 } as const;
 
-export function createOllamaNodeInferenceTool(api: OpenClawPluginApi): AnyAgentTool {
+export function createOllamaNodeInferenceTool(
+  api: OpenClawPluginApi,
+  toolContext?: OpenClawPluginToolContext,
+): AnyAgentTool {
   return {
     ...ollamaNodeInferenceToolDefinition,
     execute: async (_toolCallId, args) => {
@@ -463,6 +472,7 @@ export function createOllamaNodeInferenceTool(api: OpenClawPluginApi): AnyAgentT
             try {
               const payload = await invokeNode(
                 api,
+                toolContext,
                 node.nodeId,
                 OLLAMA_MODELS_COMMAND,
                 {},
@@ -533,6 +543,7 @@ export function createOllamaNodeInferenceTool(api: OpenClawPluginApi): AnyAgentT
       }
       const result = await invokeNode(
         api,
+        toolContext,
         node.nodeId,
         OLLAMA_CHAT_COMMAND,
         commandParams,

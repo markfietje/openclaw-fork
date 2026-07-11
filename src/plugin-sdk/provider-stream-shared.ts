@@ -1,5 +1,6 @@
 // Provider stream shared helpers implement reusable stream wrappers and payload policies.
 import { randomUUID } from "node:crypto";
+import { preserveProviderDispatchObservableStreamFn } from "../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { normalizeLowercaseStringOrEmpty } from "../../packages/normalization-core/src/string-coerce.js";
 import {
   extractStandalonePlainTextToolCallText,
@@ -20,6 +21,24 @@ import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js"
 export { applyAnthropicRefusal } from "../shared/anthropic-refusal.js";
 export { createDeferredEventBuffer } from "../shared/deferred-event-buffer.js";
 export { notifyLlmRequestActivity, onLlmRequestActivity } from "../shared/llm-request-activity.js";
+export {
+  attachUsageBudgetCostMultiplierMetadata,
+  attachUsageBudgetProviderBilledCostMetadata,
+  attachUsageBudgetRecordedCostMetadata,
+  attachUsageBudgetUnpriceableCostMetadata,
+  USAGE_BUDGET_RECORDED_COST_METADATA_KEY,
+} from "../shared/usage-budget-recorded-cost.js";
+export {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchModelResolverStreamFn,
+  markProviderDispatchObservableStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+  preserveProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchModelForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 
 type ProviderWrapStreamFnContext = import("../plugins/types.js").ProviderWrapStreamFnContext;
 
@@ -226,7 +245,7 @@ export function createPlainTextToolCallCompatWrapper(
   baseStreamFn: StreamFn | undefined,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const maybeStream = underlying(model, context, options);
     if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
       return Promise.resolve(maybeStream).then((stream) =>
@@ -235,6 +254,7 @@ export function createPlainTextToolCallCompatWrapper(
     }
     return wrapPlainTextToolCallStream(maybeStream, context);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated Bundled provider stream helper; do not use from third-party plugins. */
@@ -277,7 +297,7 @@ export function createPayloadPatchStreamWrapper(
   },
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (wrapperOptions?.shouldPatch && !wrapperOptions.shouldPatch({ model, context, options })) {
       return underlying(model, context, options);
     }
@@ -285,6 +305,7 @@ export function createPayloadPatchStreamWrapper(
       patchPayload({ payload, model, context, options }),
     );
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /**
@@ -299,7 +320,7 @@ export function createOpenAICompatibleCompletionsThinkingOffWrapper(
   if (thinkingLevel !== "off") {
     return underlying;
   }
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.api !== "openai-completions") {
       return underlying(model, context, options);
     }
@@ -323,6 +344,7 @@ export function createOpenAICompatibleCompletionsThinkingOffWrapper(
       }
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 function isAnthropicThinkingEnabled(payload: Record<string, unknown>): boolean {
@@ -535,7 +557,7 @@ export function createDeepSeekV4OpenAICompatibleThinkingWrapper(params: {
   }
   const underlying = params.baseStreamFn;
   const resolveReasoningEffort = params.resolveReasoningEffort ?? resolveDeepSeekV4ReasoningEffort;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!params.shouldPatchModel(model)) {
       return underlying(model, context, options);
     }
@@ -556,6 +578,7 @@ export function createDeepSeekV4OpenAICompatibleThinkingWrapper(params: {
       });
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 type ThinkingOnlyFinalTextStream = Awaited<ReturnType<StreamFn>>;
@@ -665,7 +688,7 @@ export function createThinkingOnlyFinalTextWrapper(params: {
     return undefined;
   }
   const underlying = params.baseStreamFn;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const maybeStream = underlying(model, context, options);
     if (!params.shouldPatchModel(model)) {
       return maybeStream;
@@ -675,6 +698,7 @@ export function createThinkingOnlyFinalTextWrapper(params: {
     }
     return wrapThinkingOnlyFinalTextStream(maybeStream);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated Google provider-owned stream helper; do not use from third-party plugins. */

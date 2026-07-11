@@ -2,6 +2,7 @@
  * Normalizes tool-call names, ids, and standalone text calls for providers.
  */
 import { randomUUID } from "node:crypto";
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { normalizeLowercaseStringOrEmpty } from "../../../../packages/normalization-core/src/string-coerce.js";
 import { normalizeStringEntries } from "../../../../packages/normalization-core/src/string-normalization.js";
 import {
@@ -1046,7 +1047,7 @@ export function wrapStreamFnPromoteStandaloneTextToolCalls(
   if (!allowedToolNames || allowedToolNames.size === 0) {
     return baseFn;
   }
-  return (model, context, streamOptions) => {
+  const wrapped: StreamFn = (model, context, streamOptions) => {
     const maybeStream = baseFn(model, context, streamOptions);
     if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
       return Promise.resolve(maybeStream).then((stream) =>
@@ -1055,6 +1056,7 @@ export function wrapStreamFnPromoteStandaloneTextToolCalls(
     }
     return wrapStreamPromoteStandaloneTextToolCalls(maybeStream, allowedToolNames);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseFn);
 }
 
 function wrapStreamTrimToolCallNames(
@@ -1118,7 +1120,7 @@ export function wrapStreamFnTrimToolCallNames(
     count: 0,
     countedMessages: new WeakSet<object>(),
   };
-  return (model, context, streamOptions) => {
+  const wrapped: StreamFn = (model, context, streamOptions) => {
     const maybeStream = baseFn(model, context, streamOptions);
     if (maybeStream && typeof maybeStream === "object" && "then" in maybeStream) {
       return Promise.resolve(maybeStream).then((stream) =>
@@ -1133,6 +1135,7 @@ export function wrapStreamFnTrimToolCallNames(
       state: unknownToolGuardState,
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseFn);
 }
 
 type ReplayToolCallIdSanitizerDecision = {
@@ -1198,7 +1201,7 @@ export function wrapStreamFnSanitizeMalformedToolCalls(
   >,
   provider?: string | null,
 ): StreamFn {
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const ctx = context as unknown as { messages?: unknown };
     const messages = ctx?.messages;
     if (!Array.isArray(messages)) {
@@ -1263,4 +1266,5 @@ export function wrapStreamFnSanitizeMalformedToolCalls(
     } as unknown;
     return baseFn(model, nextContext as typeof context, options);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseFn);
 }

@@ -26,6 +26,7 @@ import {
   compact,
   DEFAULT_COMPACTION_SETTINGS,
   prepareCompaction,
+  type CompactionResult,
 } from "./compaction/compaction.js";
 import { convertToLlm } from "./messages.js";
 import { formatPromptTemplateInvocation } from "./prompt-template-arguments.js";
@@ -40,6 +41,7 @@ import type {
   AgentHarnessResources,
   AgentHarnessStreamOptions,
   AgentHarnessStreamOptionsPatch,
+  BranchSummaryEntry,
   ExecutionEnv,
   NavigateTreeResult,
   PendingSessionWrite,
@@ -167,6 +169,20 @@ function applyStreamOptionsPatch(
   }
 
   return result;
+}
+
+function createCompactionCancelledError(params?: {
+  usage?: NonNullable<AgentHarnessEventResultMap["session_before_compact"]>["usage"];
+  usageBudgetOperationId?: string;
+}): AgentHarnessError {
+  const error = new AgentHarnessError("compaction", "Compaction cancelled");
+  if (params?.usage) {
+    Object.assign(error, { usage: params.usage });
+  }
+  if (params?.usageBudgetOperationId) {
+    Object.assign(error, { usageBudgetOperationId: params.usageBudgetOperationId });
+  }
+  return error;
 }
 
 const SUBSCRIBER_EVENT_TYPE = "*";
@@ -447,8 +463,10 @@ export class CoreAgentHarness<
         headers: requestOptions.headers,
         maxRetries: requestOptions.maxRetries,
         maxRetryDelayMs: requestOptions.maxRetryDelayMs,
+        maxTokens: streamOptions?.maxTokens,
         metadata: requestOptions.metadata,
         onPayload: async (payload) => await this.emitBeforeProviderPayload(model, payload),
+        onProviderDispatch: streamOptions?.onProviderDispatch,
         onResponse: async (response) => {
           const headers = { ...response.headers };
           await this.emitOwn(
@@ -461,6 +479,7 @@ export class CoreAgentHarness<
         sessionId: turnState.sessionId,
         timeoutMs: requestOptions.timeoutMs,
         transport: requestOptions.transport,
+        usageBudgetOperationId: streamOptions?.usageBudgetOperationId,
         apiKey: auth?.apiKey,
       });
     };
@@ -805,12 +824,7 @@ export class CoreAgentHarness<
     }
   }
 
-  async compact(customInstructions?: string): Promise<{
-    summary: string;
-    firstKeptEntryId: string;
-    tokensBefore: number;
-    details?: unknown;
-  }> {
+  async compact(customInstructions?: string): Promise<CompactionResult> {
     if (this.phase !== "idle") {
       throw new AgentHarnessError("busy", "compact() requires idle harness");
     }
@@ -841,7 +855,10 @@ export class CoreAgentHarness<
         signal: new AbortController().signal,
       });
       if (hookResult?.cancel) {
-        throw new AgentHarnessError("compaction", "Compaction cancelled");
+        throw createCompactionCancelledError({
+          usage: hookResult.usage,
+          usageBudgetOperationId: hookResult.usageBudgetOperationId,
+        });
       }
       const provided = hookResult?.compaction;
       const compactResult = provided
@@ -867,6 +884,17 @@ export class CoreAgentHarness<
         result.tokensBefore,
         result.details,
         provided !== undefined,
+        result.usage
+          ? {
+              api: model.api,
+              provider: model.provider,
+              model: model.id,
+              usage: result.usage,
+              ...(result.usageBudgetOperationId
+                ? { usageBudgetOperationId: result.usageBudgetOperationId }
+                : {}),
+            }
+          : undefined,
       );
       const entry = await this.session.getEntry(entryId);
       if (entry?.type === "compaction") {
@@ -929,6 +957,7 @@ export class CoreAgentHarness<
       let summaryEntry: NavigateTreeResult["summaryEntry"];
       let summaryText: string | undefined = hookResult?.summary?.summary;
       let summaryDetails: unknown = hookResult?.summary?.details;
+      let summaryUsageAccounting: NonNullable<BranchSummaryEntry["usageAccounting"]> | undefined;
       if (!summaryText && options?.summarize && entries.length > 0) {
         const model = this.model;
         if (!model) {
@@ -938,12 +967,14 @@ export class CoreAgentHarness<
         if (!auth) {
           throw new AgentHarnessError("auth", "No auth available for branch summary");
         }
+        const branchSummaryTurnState = await this.createTurnState();
         const branchSummary = await generateBranchSummary(entries, {
           model,
           apiKey: auth.apiKey,
           headers: auth.headers,
           signal: new AbortController().signal,
           runtime: this.runtime,
+          streamFn: this.createStreamFn(() => branchSummaryTurnState),
           customInstructions: hookResult?.customInstructions ?? options?.customInstructions,
           replaceInstructions: hookResult?.replaceInstructions ?? options?.replaceInstructions,
         });
@@ -962,6 +993,17 @@ export class CoreAgentHarness<
           readFiles: branchSummary.value.readFiles,
           modifiedFiles: branchSummary.value.modifiedFiles,
         };
+        if (branchSummary.value.usage) {
+          summaryUsageAccounting = {
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: branchSummary.value.usage,
+            ...(branchSummary.value.usageBudgetOperationId
+              ? { usageBudgetOperationId: branchSummary.value.usageBudgetOperationId }
+              : {}),
+          };
+        }
       }
       let editorText: string | undefined;
       let newLeafId: string | null;
@@ -998,6 +1040,7 @@ export class CoreAgentHarness<
               summary: summaryText,
               details: summaryDetails,
               fromHook: hookResult?.summary !== undefined,
+              usageAccounting: summaryUsageAccounting,
             }
           : undefined,
       );

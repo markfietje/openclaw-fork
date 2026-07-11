@@ -26,6 +26,7 @@ import { calculateCost } from "../llm/model-utils.js";
 import { resolveAzureDeploymentNameFromMap } from "../llm/providers/azure-deployment-map.js";
 import { convertMessages } from "../llm/providers/openai-completions.js";
 import { clampOpenAIPromptCacheKey } from "../llm/providers/openai-prompt-cache.js";
+import { applyOpenAIServiceTierPricing } from "../llm/providers/openai-service-tier-pricing.js";
 import { mapOpenAIStopReason } from "../llm/providers/openai-stop-reason.js";
 import {
   describeToolResultMediaPlaceholder,
@@ -46,6 +47,7 @@ import {
   resolveResponsesMessageSnapshotCollapse,
 } from "../shared/openai-responses-stream-compat.js";
 import { createReasoningTagTextPartitioner } from "../shared/text/reasoning-tag-text-partitioner.js";
+import { attachUsageBudgetProviderBilledCostMetadata } from "../shared/usage-budget-recorded-cost.js";
 import { CHARS_PER_TOKEN_ESTIMATE, estimateStringChars } from "../utils/cjk-chars.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./copilot-dynamic-headers.js";
 import { createDeepSeekTextFilter } from "./deepseek-text-filter.js";
@@ -91,6 +93,7 @@ import {
   resolveOpenAIProjectedToolsStrictToolFlag,
 } from "./openai-tool-schema.js";
 import { resolveProviderEndpoint } from "./provider-attribution.js";
+import { markModelProviderDispatchObservableStreamFn } from "./provider-dispatch-observable-stream.js";
 import { resolveProviderRequestPolicyConfig } from "./provider-request-config.js";
 import {
   buildGuardedModelFetch,
@@ -168,6 +171,7 @@ type BaseStreamOptions = {
   frequencyPenalty?: number;
   presencePenalty?: number;
   seed?: number;
+  maxRetries?: number;
 };
 
 type ModelStreamCooperativeScheduler = {
@@ -228,6 +232,7 @@ type OpenAICompletionsOptions = BaseStreamOptions & {
   toolChoice?: OpenAICompletionsToolChoice;
   reasoning?: OpenAIReasoningEffort;
   reasoningEffort?: OpenAIReasoningEffort;
+  serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 };
 
 type OpenAIModeCompatInput = Omit<ModelCompatConfig, "thinkingFormat"> & {
@@ -287,31 +292,44 @@ function stringifyJsonLike(value: unknown, fallback = ""): string {
   return fallback;
 }
 
-function getServiceTierCostMultiplier(serviceTier: ResponseCreateParamsStreaming["service_tier"]) {
-  switch (serviceTier) {
-    case "flex":
-      return 0.5;
-    case "priority":
-      return 2;
-    default:
-      return 1;
-  }
-}
-
 function applyServiceTierPricing(
   usage: MutableAssistantOutput["usage"],
   serviceTier?: ResponseCreateParamsStreaming["service_tier"],
+  model?: Model,
 ): void {
-  const multiplier = getServiceTierCostMultiplier(serviceTier);
-  if (multiplier === 1) {
+  if (!model) {
     return;
   }
-  usage.cost.input *= multiplier;
-  usage.cost.output *= multiplier;
-  usage.cost.cacheRead *= multiplier;
-  usage.cost.cacheWrite *= multiplier;
-  usage.cost.total =
-    usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+  applyOpenAIServiceTierPricing(usage, serviceTier, model);
+}
+
+function isVerifiedOpenRouterUsageAccountingRoute(model: {
+  provider?: unknown;
+  baseUrl?: unknown;
+}): boolean {
+  const provider = typeof model.provider === "string" ? model.provider.trim().toLowerCase() : "";
+  if (provider === "openrouter") {
+    return true;
+  }
+  if (typeof model.baseUrl !== "string" || model.baseUrl.trim() === "") {
+    return false;
+  }
+  try {
+    const url = new URL(model.baseUrl);
+    return url.hostname.toLowerCase() === "openrouter.ai" && url.pathname.startsWith("/api/v1");
+  } catch {
+    return false;
+  }
+}
+
+function readProviderBilledUsageCostTotal(rawUsage: unknown): number | undefined {
+  if (!isRecord(rawUsage)) {
+    return undefined;
+  }
+  const rawCost = rawUsage.cost;
+  const total =
+    typeof rawCost === "number" ? rawCost : isRecord(rawCost) ? rawCost.total : undefined;
+  return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : undefined;
 }
 
 function safeDebugValue(value: unknown): string {
@@ -996,6 +1014,7 @@ async function createResponsesStreamWithEncryptedContentRetry(params: {
   request: OpenAIResponsesRequestParams;
   requestOptions: unknown;
   model: Model;
+  allowRetry?: boolean;
 }): Promise<AsyncIterable<unknown>> {
   try {
     return (await params.client.responses.create(
@@ -1004,7 +1023,11 @@ async function createResponsesStreamWithEncryptedContentRetry(params: {
     )) as unknown as AsyncIterable<unknown>;
   } catch (error) {
     const retryRequest = stripResponsesRequestEncryptedContent(params.request);
-    if (!isInvalidEncryptedContentError(error) || retryRequest === params.request) {
+    if (
+      params.allowRetry === false ||
+      !isInvalidEncryptedContentError(error) ||
+      retryRequest === params.request
+    ) {
       throw error;
     }
     log.warn(
@@ -1429,6 +1452,7 @@ async function processResponsesStream(
     applyServiceTierPricing?: (
       usage: MutableAssistantOutput["usage"],
       serviceTier?: ResponseCreateParamsStreaming["service_tier"],
+      model?: Model,
     ) => void;
     firstEventTimeoutMs?: number;
     abortFirstEventStream?: (reason: Error) => void;
@@ -1807,6 +1831,7 @@ async function processResponsesStream(
           output.usage,
           (response?.service_tier as ResponseCreateParamsStreaming["service_tier"] | undefined) ??
             options.serviceTier,
+          model,
         );
       }
       output.stopReason = mapResponsesStopReason(response?.status as string | undefined);
@@ -1946,9 +1971,15 @@ function resolveOpenAISdkTimeoutMs(model: Model): number | undefined {
   return resolveModelRequestTimeoutMs(model, undefined);
 }
 
-function buildOpenAISdkClientOptions(model: Model): { timeout?: number } {
+function buildOpenAISdkClientOptions(
+  model: Model,
+  maxRetries?: number,
+): { timeout?: number; maxRetries?: number } {
   const timeout = resolveOpenAISdkTimeoutMs(model);
-  return timeout === undefined ? {} : { timeout };
+  return {
+    ...(timeout !== undefined ? { timeout } : {}),
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
+  };
 }
 
 function buildOpenAISdkRequestOptions(
@@ -1977,19 +2008,25 @@ function createOpenAIResponsesClient(
   apiKey: string,
   optionHeaders?: Record<string, string>,
   turnHeaders?: Record<string, string>,
+  onProviderDispatch?: () => void,
+  maxRetries?: number,
 ) {
   return new OpenAI({
     apiKey,
     baseURL: model.baseUrl,
     dangerouslyAllowBrowser: true,
     defaultHeaders: buildOpenAIClientHeaders(model, context, optionHeaders, turnHeaders),
-    fetch: buildGuardedModelFetch(model),
-    ...buildOpenAISdkClientOptions(model),
+    fetch: buildGuardedModelFetch(
+      model,
+      undefined,
+      onProviderDispatch ? { onProviderDispatch } : undefined,
+    ),
+    ...buildOpenAISdkClientOptions(model, maxRetries),
   });
 }
 
 export function createOpenAIResponsesTransportStreamFn(): StreamFn {
-  return (model, context, options) => {
+  return markModelProviderDispatchObservableStreamFn((model, context, options) => {
     const responsesOptions = options as OpenAIResponsesOptions | undefined;
     const eventStream = createAssistantMessageEventStream();
     const stream = eventStream as unknown as { push(event: unknown): void; end(): void };
@@ -2026,6 +2063,8 @@ export function createOpenAIResponsesTransportStreamFn(): StreamFn {
           apiKey,
           options?.headers,
           turnState?.headers,
+          options?.onProviderDispatch,
+          options?.maxRetries,
         );
         let params = buildOpenAIResponsesParams(
           model,
@@ -2068,6 +2107,9 @@ export function createOpenAIResponsesTransportStreamFn(): StreamFn {
           request: params,
           requestOptions,
           model,
+          // Budget admission owns each physical dispatch. Let the outer runner
+          // admit any repair retry as a separate model call.
+          allowRetry: options?.maxRetries !== 0,
         });
         emitModelTransportDebug(
           log,
@@ -2106,7 +2148,7 @@ export function createOpenAIResponsesTransportStreamFn(): StreamFn {
       }
     })();
     return eventStream as unknown as ReturnType<StreamFn>;
-  };
+  });
 }
 
 function resolveCacheRetention(cacheRetention: string | undefined): "short" | "long" | "none" {
@@ -2445,7 +2487,7 @@ export function buildOpenAIResponsesParams(
 }
 
 export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
-  return (model, context, options) => {
+  return markModelProviderDispatchObservableStreamFn((model, context, options) => {
     const responsesOptions = options as OpenAIResponsesOptions | undefined;
     const eventStream = createAssistantMessageEventStream();
     const stream = eventStream as unknown as { push(event: unknown): void; end(): void };
@@ -2482,6 +2524,8 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
           apiKey,
           options?.headers,
           turnState?.headers,
+          options?.onProviderDispatch,
+          options?.maxRetries,
         );
         const deploymentName = resolveAzureDeploymentName(model);
         let params = buildAzureOpenAIResponsesParams(
@@ -2559,7 +2603,7 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
       }
     })();
     return eventStream as unknown as ReturnType<StreamFn>;
-  };
+  });
 }
 
 function normalizeAzureBaseUrl(baseUrl: string): string {
@@ -2579,6 +2623,8 @@ function createAzureOpenAIClient(
   apiKey: string,
   optionHeaders?: Record<string, string>,
   turnHeaders?: Record<string, string>,
+  onProviderDispatch?: () => void,
+  maxRetries?: number,
 ) {
   const baseURL = normalizeAzureBaseUrl(model.baseUrl);
   const clientOptions = {
@@ -2586,8 +2632,12 @@ function createAzureOpenAIClient(
     dangerouslyAllowBrowser: true,
     defaultHeaders: buildOpenAIClientHeaders(model, context, optionHeaders, turnHeaders),
     baseURL,
-    fetch: buildGuardedModelFetch(model),
-    ...buildOpenAISdkClientOptions(model),
+    fetch: buildGuardedModelFetch(
+      model,
+      undefined,
+      onProviderDispatch ? { onProviderDispatch } : undefined,
+    ),
+    ...buildOpenAISdkClientOptions(model, maxRetries),
   };
 
   if (isOpenAICompatibleAzureResponsesBaseUrl(baseURL)) {
@@ -2643,6 +2693,8 @@ function createOpenAICompletionsClient(
   context: Context,
   apiKey: string,
   optionHeaders?: Record<string, string>,
+  onProviderDispatch?: () => void,
+  maxRetries?: number,
 ) {
   const clientConfig = buildOpenAICompletionsClientConfig(model, context, optionHeaders);
   return new OpenAI({
@@ -2651,8 +2703,12 @@ function createOpenAICompletionsClient(
     dangerouslyAllowBrowser: true,
     defaultHeaders: clientConfig.defaultHeaders,
     defaultQuery: clientConfig.defaultQuery,
-    fetch: buildGuardedModelFetch(model),
-    ...buildOpenAISdkClientOptions(model),
+    fetch: buildGuardedModelFetch(
+      model,
+      undefined,
+      onProviderDispatch ? { onProviderDispatch } : undefined,
+    ),
+    ...buildOpenAISdkClientOptions(model, maxRetries),
   });
 }
 
@@ -2728,7 +2784,7 @@ function buildOpenAICompletionsClientConfig(
 }
 
 export function createOpenAICompletionsTransportStreamFn(): StreamFn {
-  return (model, context, options) => {
+  return markModelProviderDispatchObservableStreamFn((model, context, options) => {
     const eventStream = createAssistantMessageEventStream();
     const stream = eventStream as unknown as { push(event: unknown): void; end(): void };
     void (async () => {
@@ -2752,7 +2808,14 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
       let firstEventAbort: ReturnType<typeof createFirstStreamEventAbortController> | undefined;
       try {
         const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-        const client = createOpenAICompletionsClient(model, context, apiKey, options?.headers);
+        const client = createOpenAICompletionsClient(
+          model,
+          context,
+          apiKey,
+          options?.headers,
+          options?.onProviderDispatch,
+          options?.maxRetries,
+        );
         let params = buildOpenAICompletionsParams(
           model as OpenAIModeModel,
           context,
@@ -2762,6 +2825,9 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
         if (nextParams !== undefined) {
           params = nextParams as typeof params;
         }
+        const serviceTier = (
+          params as { service_tier?: ResponseCreateParamsStreaming["service_tier"] }
+        ).service_tier;
         if (
           (options as { openclawCodeModeToolSurface?: unknown } | undefined)
             ?.openclawCodeModeToolSurface === true
@@ -2789,6 +2855,7 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           firstEventTimeoutMs: getFirstStreamEventTimeoutMs(options),
           abortFirstEventStream: firstEventAbort.abort,
           onFirstEventTimeout: getFirstStreamEventTimeoutHandler(options),
+          serviceTier,
         });
         finalizeTransportStream({ stream, output, signal: options?.signal });
       } catch (error) {
@@ -2798,7 +2865,7 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
       }
     })();
     return eventStream as unknown as ReturnType<StreamFn>;
-  };
+  });
 }
 
 async function processOpenAICompletionsStream(
@@ -2812,6 +2879,7 @@ async function processOpenAICompletionsStream(
     firstEventTimeoutMs?: number;
     abortFirstEventStream?: (reason: Error) => void;
     onFirstEventTimeout?: (reason: Error) => void;
+    serviceTier?: ResponseCreateParamsStreaming["service_tier"];
   },
 ) {
   const MAX_POST_TOOL_CALL_BUFFER_BYTES = 256_000;
@@ -3068,6 +3136,7 @@ async function processOpenAICompletionsStream(
     }
   };
   const cooperativeScheduler = createModelStreamCooperativeScheduler(options?.signal);
+  let serviceTier = options?.serviceTier;
   const guardedStream = withFirstStreamEventTimeout(responseStream as AsyncIterable<unknown>, {
     provider: model.provider,
     api: model.api,
@@ -3087,9 +3156,10 @@ async function processOpenAICompletionsStream(
     }
     const chunk = rawChunk as ChatCompletionChunk;
     output.responseId ||= chunk.id;
+    serviceTier = readOpenAICompletionsChunkServiceTier(chunk) ?? serviceTier;
     let hasReasoningUsageActivity = false;
     if (chunk.usage) {
-      output.usage = parseTransportChunkUsage(chunk.usage, model);
+      output.usage = parseTransportChunkUsage(chunk.usage, model, serviceTier);
       hasReasoningUsageActivity = hasOpenAICompletionsReasoningUsageActivity(chunk.usage);
     }
     const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
@@ -3100,7 +3170,7 @@ async function processOpenAICompletionsStream(
     }
     const choiceUsage = (choice as unknown as { usage?: ChatCompletionChunk["usage"] }).usage;
     if (!chunk.usage && choiceUsage) {
-      output.usage = parseTransportChunkUsage(choiceUsage, model);
+      output.usage = parseTransportChunkUsage(choiceUsage, model, serviceTier);
       hasReasoningUsageActivity = hasOpenAICompletionsReasoningUsageActivity(choiceUsage);
     }
     if (choice.finish_reason) {
@@ -4456,6 +4526,7 @@ export function buildOpenAICompletionsParams(
 export function parseTransportChunkUsage(
   rawUsage: NonNullable<ChatCompletionChunk["usage"]>,
   model: Model,
+  serviceTier?: ResponseCreateParamsStreaming["service_tier"],
 ) {
   const cachedTokens = rawUsage.prompt_tokens_details?.cached_tokens || 0;
   const promptTokens = rawUsage.prompt_tokens || 0;
@@ -4474,7 +4545,28 @@ export function parseTransportChunkUsage(
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
   calculateCost(model as never, usage as never);
+  applyServiceTierPricing(usage, serviceTier, model);
+  const providerBilledCost = isVerifiedOpenRouterUsageAccountingRoute(model)
+    ? readProviderBilledUsageCostTotal(rawUsage)
+    : undefined;
+  if (providerBilledCost !== undefined) {
+    usage.cost.total = providerBilledCost;
+    attachUsageBudgetProviderBilledCostMetadata(usage as unknown as Record<string, unknown>);
+  }
   return usage;
+}
+
+function readOpenAICompletionsChunkServiceTier(
+  chunk: ChatCompletionChunk,
+): ResponseCreateParamsStreaming["service_tier"] | undefined {
+  const serviceTier = (chunk as { service_tier?: unknown }).service_tier;
+  return serviceTier === "auto" ||
+    serviceTier === "default" ||
+    serviceTier === "flex" ||
+    serviceTier === "priority" ||
+    serviceTier === "scale"
+    ? serviceTier
+    : undefined;
 }
 
 function hasOpenAICompletionsReasoningUsageActivity(
@@ -4507,6 +4599,7 @@ export const testing = {
   normalizeResponsesFailedEvent,
   prepareOpenAIResponsesReasoningItemForReplay,
   createResponsesStreamWithEncryptedContentRetry,
+  applyServiceTierPricing,
   stripResponsesRequestEncryptedContent,
   tagOpenAIResponsesReasoningReplayItem,
   summarizeResponsesFailedNoDetailsObservation,

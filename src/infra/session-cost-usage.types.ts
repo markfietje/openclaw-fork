@@ -14,15 +14,39 @@ export type CostBreakdown = {
 };
 
 export type ParsedUsageEntry = {
+  entryId?: string;
+  dedupKey?: string;
+  sourceFilePath?: string;
+  sourceLineIndex?: number;
+  source?: UsageAccountingSource;
+  usageBudgetOperationId?: string;
   usage: NormalizedUsage;
   costTotal?: number;
   costBreakdown?: CostBreakdown;
+  usageBudgetRecordedCostTotal?: number;
+  usageBudgetUnpriceableCost?: boolean;
   provider?: string;
   model?: string;
   timestamp?: Date;
 };
 
+export type UsageAccountingSource =
+  | "message"
+  | "compaction"
+  | "branch_summary"
+  | "compaction_custom"
+  | "model_call_custom";
+
 export type ParsedTranscriptEntry = {
+  entryId?: string;
+  sessionId?: string;
+  source?: UsageAccountingSource;
+  sourceFilePath?: string;
+  sourceLineIndex?: number;
+  sourceLineText?: string;
+  legacyRowFingerprint?: string;
+  legacyRowOccurrenceIndex?: number;
+  usageBudgetOperationId?: string;
   message: Record<string, unknown>;
   role?: "user" | "assistant";
   timestamp?: Date;
@@ -30,6 +54,8 @@ export type ParsedTranscriptEntry = {
   usage?: NormalizedUsage;
   costTotal?: number;
   costBreakdown?: CostBreakdown;
+  usageBudgetRecordedCostTotal?: number;
+  usageBudgetUnpriceableCost?: boolean;
   provider?: string;
   model?: string;
   stopReason?: string;

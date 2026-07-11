@@ -11,6 +11,7 @@ import {
   clearCompactionProviders,
   registerCompactionProvider,
 } from "../../plugins/compaction-provider.js";
+import { COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE } from "../compaction-usage-accounting.js";
 import * as compactionModule from "../compaction.js";
 import { buildEmbeddedExtensionFactories } from "../embedded-agent-runner/extensions.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
@@ -179,10 +180,39 @@ async function runCompactionScenario(params: {
   });
   const result = (await compactionHandler(params.event, mockContext)) as {
     cancel?: boolean;
+    usage?: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      totalTokens: number;
+      cost: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        total: number;
+      };
+    };
+    usageBudgetOperationId?: string;
     compaction?: {
       summary: string;
       firstKeptEntryId: string;
       tokensBefore: number;
+      usage?: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        totalTokens: number;
+        cost: {
+          input: number;
+          output: number;
+          cacheRead: number;
+          cacheWrite: number;
+          total: number;
+        };
+      };
     };
   };
   return { result, getApiKeyAndHeadersMock };
@@ -194,6 +224,20 @@ function expectCompactionResult(result: {
     summary: string;
     firstKeptEntryId: string;
     tokensBefore: number;
+    usage?: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      totalTokens: number;
+      cost: {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+        total: number;
+      };
+    };
   };
 }) {
   expect(result.cancel).not.toBe(true);
@@ -738,9 +782,12 @@ describe("compaction-safeguard runtime registry", () => {
       model: {
         contextWindow: 200_000,
       } as Parameters<typeof buildEmbeddedExtensionFactories>[0]["model"],
+      agentId: "safeguard-agent",
     });
 
     const runtime = getCompactionSafeguardRuntime(sessionManager);
+    expect(runtime?.config).toBe(cfg);
+    expect(runtime?.agentId).toBe("safeguard-agent");
     expect(runtime?.qualityGuardMaxRetries).toBe(99);
     expect(runtime?.recentTurnsPreserve).toBe(99);
     expect(resolveQualityGuardMaxRetries(runtime?.qualityGuardMaxRetries)).toBe(3);
@@ -2016,6 +2063,291 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(mockSummarizeInStages).toHaveBeenCalled();
   });
 
+  it("returns usage from safeguard LLM fallback summaries", async () => {
+    const usage = {
+      input: 40,
+      output: 12,
+      cacheRead: 3,
+      cacheWrite: 0,
+      totalTokens: 55,
+      cost: { input: 0.01, output: 0.02, cacheRead: 0.001, cacheWrite: 0, total: 0.031 },
+    };
+    const summarizeInStagesWithUsage = vi.fn(async () => ({
+      summary: "usage-aware safeguard summary",
+      usage,
+    }));
+    testing.setSummarizeInStagesWithUsageForTest(summarizeInStagesWithUsage);
+
+    const sessionManager = stubSessionManager();
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 10_000 },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      config: cfg,
+      agentId: "budgeted-agent",
+    });
+
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "older context", timestamp: 1 },
+          { role: "assistant", content: "older reply", timestamp: 2 } as unknown as AgentMessage,
+        ],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: {
+          read: [],
+          edited: [],
+          written: [],
+        },
+        settings: { reserveTokens: 4_000 },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "key" });
+
+    const compaction = expectCompactionResult(result);
+    expect(summarizeInStagesWithUsage).toHaveBeenCalled();
+    expect(summarizeInStagesWithUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: cfg,
+        agentId: "budgeted-agent",
+      }),
+    );
+    expect(compaction.summary).toContain("usage-aware safeguard summary");
+    expect(compaction.usage).toEqual(usage);
+  });
+
+  it("retains usage from a failed quality retry when keeping the last summary", async () => {
+    const initialUsage = {
+      input: 40,
+      output: 12,
+      cacheRead: 3,
+      cacheWrite: 1,
+      totalTokens: 56,
+      cost: { input: 0.125, output: 0.25, cacheRead: 0.5, cacheWrite: 1, total: 1.875 },
+    };
+    const retryUsage = {
+      input: 9,
+      output: 4,
+      cacheRead: 2,
+      cacheWrite: 0,
+      totalTokens: 15,
+      cost: { input: 0.25, output: 0.5, cacheRead: 0.125, cacheWrite: 0, total: 0.875 },
+    };
+    const retryError = Object.assign(new Error("retry transient failure"), {
+      partialUsage: retryUsage,
+    });
+    const summarizeInStagesWithUsage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        summary: [
+          "## Decisions",
+          "Keep current flow.",
+          "## Open TODOs",
+          "None.",
+          "## Constraints/Rules",
+          "Follow rules.",
+          "## Pending user asks",
+          "older context only",
+          "## Exact identifiers",
+          "None.",
+        ].join("\n"),
+        usage: initialUsage,
+      })
+      .mockRejectedValueOnce(retryError);
+    testing.setSummarizeInStagesWithUsageForTest(summarizeInStagesWithUsage);
+
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      qualityGuardEnabled: true,
+      qualityGuardMaxRetries: 1,
+    });
+
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "older context", timestamp: 1 },
+          { role: "assistant", content: "older reply", timestamp: 2 } as unknown as AgentMessage,
+          { role: "user", content: "latest budget status", timestamp: 3 },
+        ],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: {
+          read: [],
+          edited: [],
+          written: [],
+        },
+        settings: { reserveTokens: 4_000 },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "key" });
+
+    const compaction = expectCompactionResult(result);
+    expect(summarizeInStagesWithUsage).toHaveBeenCalledTimes(2);
+    expect(compaction.summary).toContain("older context only");
+    expect(compaction.usage).toEqual({
+      input: 49,
+      output: 16,
+      cacheRead: 5,
+      cacheWrite: 1,
+      totalTokens: 71,
+      cost: {
+        input: 0.375,
+        output: 0.75,
+        cacheRead: 0.625,
+        cacheWrite: 1,
+        total: 2.75,
+      },
+    });
+  });
+
+  it("persists usage accounting when safeguard summarization cancels", async () => {
+    const usage = {
+      input: 40,
+      output: 12,
+      cacheRead: 3,
+      cacheWrite: 1,
+      totalTokens: 56,
+      cost: { input: 0.125, output: 0.25, cacheRead: 0.5, cacheWrite: 1, total: 1.875 },
+    };
+    const summarizeError = Object.assign(new Error("provider failed after usage"), {
+      partialUsage: usage,
+    });
+    const summarizeInStagesWithUsage = vi.fn().mockRejectedValue(summarizeError);
+    testing.setSummarizeInStagesWithUsageForTest(summarizeInStagesWithUsage);
+
+    const tmp = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "openclaw-compaction-failed-usage-"),
+    );
+    try {
+      const sessionFile = path.join(tmp, "session.jsonl");
+      const sessionManager = {
+        ...stubSessionManager(),
+        getSessionFile: () => sessionFile,
+      };
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 0,
+      });
+
+      const event = {
+        preparation: {
+          messagesToSummarize: [
+            { role: "user", content: "older context", timestamp: 1 },
+            { role: "assistant", content: "older reply", timestamp: 2 } as unknown as AgentMessage,
+          ],
+          turnPrefixMessages: [] as AgentMessage[],
+          firstKeptEntryId: "entry-1",
+          tokensBefore: 1_500,
+          fileOps: {
+            read: [],
+            edited: [],
+            written: [],
+          },
+          settings: { reserveTokens: 4_000 },
+        },
+        customInstructions: "",
+        signal: new AbortController().signal,
+      };
+
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "key" });
+
+      expect(result.cancel).toBe(true);
+      const [entry] = (await fs.promises.readFile(sessionFile, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(entry).toMatchObject({
+        type: "custom",
+        customType: COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+        appendMode: "side",
+        data: {
+          message: {
+            role: "assistant",
+            provider: "anthropic",
+            model: "claude-opus-4-5",
+            usage,
+            stopReason: "error",
+          },
+        },
+      });
+    } finally {
+      await fs.promises.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("returns failed usage to the direct compaction caller when self-metering is disabled", async () => {
+    const usage = {
+      input: 40,
+      output: 12,
+      cacheRead: 3,
+      cacheWrite: 1,
+      totalTokens: 56,
+      cost: { input: 0.125, output: 0.25, cacheRead: 0.5, cacheWrite: 1, total: 1.875 },
+    };
+    const summarizeError = Object.assign(new Error("provider failed after usage"), {
+      partialUsage: usage,
+    });
+    const summarizeInStagesWithUsage = vi.fn(
+      async (params: Parameters<typeof compactionModule.summarizeInStagesWithUsage>[0]) => {
+        params.onProviderCallStart?.();
+        throw summarizeError;
+      },
+    );
+    testing.setSummarizeInStagesWithUsageForTest(summarizeInStagesWithUsage);
+
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 0,
+      meterUsageBudgetModelCalls: false,
+    });
+
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "older context", timestamp: 1 },
+          { role: "assistant", content: "older reply", timestamp: 2 } as unknown as AgentMessage,
+        ],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: {
+          read: [],
+          edited: [],
+          written: [],
+        },
+        settings: { reserveTokens: 4_000 },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "key" });
+
+    expect(result.cancel).toBe(true);
+    expect(result.usage).toEqual(usage);
+    expect(result.usageBudgetOperationId).toMatch(/^compaction-safeguard:/);
+  });
+
   it("propagates provider AbortError and cancels when caller signal is already aborted", async () => {
     mockSummarizeInStages.mockReset();
 
@@ -2137,6 +2469,65 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(compaction.summary).toContain("## Recent turns preserved verbatim");
     expect(compaction.summary).toContain("latest ask status");
     expect(compaction.summary).toContain("latest assistant reply");
+  });
+
+  it("cancels configured provider compaction while usage budgets are active without self-metering", async () => {
+    mockSummarizeInStages.mockReset();
+    const providerSummarize = vi.fn().mockResolvedValue("provider summary body");
+    registerCompactionProvider({
+      id: "budget-unmetered-provider",
+      label: "Budget Unmetered Provider",
+      summarize: providerSummarize,
+    });
+
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      provider: "budget-unmetered-provider",
+      recentTurnsPreserve: 0,
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 1_000 },
+            },
+          },
+        },
+      } as OpenClawConfig,
+      agentId: "budgeted-agent",
+      meterUsageBudgetModelCalls: false,
+    });
+
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "older context", timestamp: 1 },
+        ] as AgentMessage[],
+        turnPrefixMessages: [] as AgentMessage[],
+        firstKeptEntryId: "entry-1",
+        tokensBefore: 1_500,
+        fileOps: {
+          read: [],
+          edited: [],
+          written: [],
+        },
+        settings: { reserveTokens: 4_000 },
+      },
+      customInstructions: "",
+      signal: new AbortController().signal,
+    };
+
+    const { result } = await runCompactionScenario({
+      sessionManager,
+      event,
+      apiKey: "key",
+    });
+
+    expect(result).toEqual({ cancel: true });
+    expect(providerSummarize).not.toHaveBeenCalled();
+    expect(mockSummarizeInStages).not.toHaveBeenCalled();
+    expect(consumeCompactionSafeguardCancelReason(sessionManager)).toContain(
+      'Compaction provider "budget-unmetered-provider" is unavailable while agent usage budgets are enabled',
+    );
   });
 });
 

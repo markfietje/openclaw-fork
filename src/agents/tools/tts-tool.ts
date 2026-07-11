@@ -48,6 +48,7 @@ export function createTtsTool(opts?: {
   agentChannel?: GatewayMessageChannel;
   agentId?: string;
   agentAccountId?: string;
+  usageBudgetUnsupportedReason?: string;
 }): AnyAgentTool {
   return {
     label: "TTS",
@@ -61,6 +62,12 @@ export function createTtsTool(opts?: {
       const text = readStringParam(params, "text", { required: true });
       const channel = readStringParam(params, "channel");
       const timeoutMs = readTtsTimeoutMs(params);
+      if (opts?.usageBudgetUnsupportedReason) {
+        return {
+          content: [{ type: "text", text: opts.usageBudgetUnsupportedReason }],
+          details: { error: "usage_budget_unsupported_model_tool", tool: "tts" },
+        };
+      }
       const cfg = opts?.config ?? getRuntimeConfig();
       const result = await textToSpeech({
         text,

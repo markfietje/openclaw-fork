@@ -1,4 +1,8 @@
 // Talk session runtime manages realtime voice session lifecycle and provider wiring.
+import {
+  buildUnsupportedAgentUsageBudgetStreamError,
+  hasActiveAgentUsageBudgetForScope,
+} from "../agents/usage-budget.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
 import type {
@@ -51,6 +55,8 @@ export type RealtimeVoiceBridgeSession = {
 export type RealtimeVoiceBridgeSessionParams = {
   provider: RealtimeVoiceProviderPlugin;
   cfg?: OpenClawConfig;
+  /** Routed agent used to enforce configured usage budgets before provider connect. */
+  agentId?: string | null;
   providerConfig: RealtimeVoiceProviderConfig;
   audioFormat?: RealtimeVoiceAudioFormat;
   audioSink: RealtimeVoiceAudioSink;
@@ -90,7 +96,25 @@ export function createRealtimeVoiceBridgeSession(
     },
     acknowledgeMark: () => requireBridge().acknowledgeMark(),
     close: () => requireBridge().close(),
-    connect: () => requireBridge().connect(),
+    connect: () => {
+      if (hasActiveAgentUsageBudgetForScope({ config: params.cfg, agentId: params.agentId })) {
+        const configuredModel = params.providerConfig.model;
+        const model =
+          typeof configuredModel === "string" && configuredModel.trim()
+            ? configuredModel.trim()
+            : (params.provider.defaultModel ?? "realtime");
+        // Realtime providers do not expose per-call usage. Reject before the bridge opens
+        // a paid session so a configured hard budget cannot be bypassed.
+        return Promise.reject(
+          buildUnsupportedAgentUsageBudgetStreamError({
+            agentId: params.agentId,
+            provider: params.provider.id,
+            model,
+          }),
+        );
+      }
+      return requireBridge().connect();
+    },
     sendAudio: (audio) => requireBridge().sendAudio(audio),
     sendUserMessage: (text) => requireBridge().sendUserMessage?.(text),
     handleBargeIn: (options) => requireBridge().handleBargeIn?.(options),

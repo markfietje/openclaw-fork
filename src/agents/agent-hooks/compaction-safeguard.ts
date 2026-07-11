@@ -1,7 +1,10 @@
 /** Extension that safeguards compaction with structured summaries and quality repair. */
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { extractSections } from "../../auto-reply/reply/post-compaction-context.js";
+import { appendSessionTranscriptEvent } from "../../config/sessions/transcript-append.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { openRootFile } from "../../infra/boundary-file-read.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { isAbortError } from "../../infra/abort-signal.js";
@@ -20,14 +23,21 @@ import {
   isRealConversationMessage,
 } from "../compaction-real-conversation.js";
 import {
+  COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  USAGE_BUDGET_OPERATION_ID_KEY,
+} from "../compaction-usage-accounting.js";
+import {
   BASE_CHUNK_RATIO,
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
   SUMMARIZATION_OVERHEAD_TOKENS,
+  type CompactionSummaryWithUsage,
   computeAdaptiveChunkRatio,
   isOversizedForSummary,
+  mergeCompactionSummaryUsage,
   resolveContextWindowTokens,
   summarizeInStages,
+  summarizeInStagesWithUsage,
 } from "../compaction.js";
 import { collectTextContentBlocks } from "../content-blocks.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "../copilot-dynamic-headers.js";
@@ -37,6 +47,7 @@ import type { AgentMessage } from "../runtime/index.js";
 import { repairToolUseResultPairing } from "../session-transcript-repair.js";
 import type { ExtensionAPI, ExtensionContext, FileOperations } from "../sessions/index.js";
 import { extractToolCallsFromAssistant, extractToolResultId } from "../tool-call-id.js";
+import { resolveAgentUsageBudgetConfig } from "../usage-budget.js";
 import {
   composeSplitTurnInstructions,
   resolveCompactionInstructions,
@@ -76,7 +87,7 @@ const PREVIOUS_SUMMARY_REDISTILL_PREFIX =
   "Previous compaction summary to re-distill with the current conversation. " +
   "Prune stale, duplicate, or superseded details instead of preserving it verbatim.";
 const compactionSafeguardDeps = {
-  summarizeInStages,
+  summarizeInStagesWithUsage,
 };
 
 function buildPreviousSummaryMessage(previousSummary: string): AgentMessage {
@@ -240,12 +251,17 @@ async function summarizeViaLLM(params: {
   customInstructions?: string;
   summarizationInstructions?: Parameters<typeof summarizeInStages>[0]["summarizationInstructions"];
   previousSummary?: string;
-}): Promise<string> {
+  config?: OpenClawConfig;
+  agentId?: string | null;
+  transcriptPath?: string;
+  usageBudgetOperationId?: string;
+  onProviderCallStart?: () => void;
+}): Promise<CompactionSummaryWithUsage> {
   const messages = prependPreviousSummaryForRedistill({
     messages: params.messages,
     previousSummary: params.previousSummary,
   });
-  return compactionSafeguardDeps.summarizeInStages({
+  return compactionSafeguardDeps.summarizeInStagesWithUsage({
     messages,
     model: params.model,
     apiKey: params.apiKey,
@@ -257,6 +273,84 @@ async function summarizeViaLLM(params: {
     customInstructions: params.customInstructions,
     summarizationInstructions: params.summarizationInstructions,
     previousSummary: undefined,
+    config: params.config,
+    agentId: params.agentId,
+    transcriptPath: params.transcriptPath,
+    onProviderCallStart: params.onProviderCallStart,
+    ...(params.usageBudgetOperationId
+      ? { usageBudgetOperationId: params.usageBudgetOperationId }
+      : {}),
+  });
+}
+
+function readCompactionSummaryErrorUsage(error: unknown): CompactionSummaryWithUsage["usage"] {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const carrier = error as {
+    usage?: CompactionSummaryWithUsage["usage"];
+    partialUsage?: CompactionSummaryWithUsage["usage"];
+  };
+  return carrier.partialUsage ?? carrier.usage;
+}
+
+function resolveUsageBudgetSelfMeteringContext(
+  runtime: ReturnType<typeof getCompactionSafeguardRuntime>,
+): {
+  enabled: boolean;
+  config?: OpenClawConfig;
+  agentId?: string | null;
+} {
+  if (runtime?.meterUsageBudgetModelCalls === false) {
+    return { enabled: false };
+  }
+  return {
+    enabled: true,
+    config: runtime?.config,
+    agentId: runtime?.agentId,
+  };
+}
+
+async function appendFailedCompactionUsageAccounting(params: {
+  ctx: ExtensionContext;
+  model: NonNullable<ExtensionContext["model"]>;
+  config?: OpenClawConfig;
+  usage: CompactionSummaryWithUsage["usage"];
+  timestampMs: number;
+  usageBudgetOperationId: string;
+}): Promise<void> {
+  if (!params.usage) {
+    return;
+  }
+  const transcriptPath = params.ctx.sessionManager.getSessionFile?.();
+  if (!transcriptPath) {
+    return;
+  }
+  await appendSessionTranscriptEvent({
+    config: params.config,
+    transcriptPath,
+    event: {
+      type: "custom",
+      customType: COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: `compaction-safeguard-failed:${params.timestampMs}`,
+      parentId: null,
+      timestamp: new Date(params.timestampMs).toISOString(),
+      appendMode: "side",
+      data: {
+        schemaVersion: 1,
+        [USAGE_BUDGET_OPERATION_ID_KEY]: params.usageBudgetOperationId,
+        message: {
+          role: "assistant",
+          content: [],
+          api: params.model.api,
+          provider: params.model.provider,
+          model: params.model.id,
+          usage: params.usage,
+          stopReason: "error",
+          timestamp: params.timestampMs,
+        },
+      },
+    },
   });
 }
 
@@ -955,6 +1049,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     // Model resolution: ctx.model is undefined in compact.ts workflow (extensionRunner.initialize() is never called).
     // Fall back to runtime.model which is explicitly passed when building extension paths.
     const runtime = getCompactionSafeguardRuntime(ctx.sessionManager);
+    const usageBudgetSelfMetering = resolveUsageBudgetSelfMeteringContext(runtime);
     const customInstructions = resolveCompactionInstructions(
       eventInstructions,
       runtime?.customInstructions,
@@ -985,6 +1080,17 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     // Falls through to the LLM path below on failure.
     // -----------------------------------------------------------------------
     if (providerId) {
+      if (
+        resolveAgentUsageBudgetConfig({
+          config: runtime?.config,
+          agentId: runtime?.agentId,
+        })
+      ) {
+        const reason = `Compaction provider "${providerId}" is unavailable while agent usage budgets are enabled because provider summarization calls are not yet budget-metered.`;
+        log.warn(reason);
+        setCompactionSafeguardCancelReason(ctx.sessionManager, reason);
+        return { cancel: true };
+      }
       const compactionProvider = getCompactionProvider(providerId);
       if (compactionProvider) {
         try {
@@ -1072,6 +1178,16 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     }
     const apiKey = authResult.apiKey ?? "";
     const authHeaders = authResult.headers;
+    const transcriptPath = ctx.sessionManager.getSessionFile?.();
+    const usageBudgetOperationId = `compaction-safeguard:${randomUUID()}`;
+    let usageBudgetProviderCallStarted = false;
+    const onUsageBudgetProviderCallStart = runtime?.onUsageBudgetProviderCallStart
+      ? () => {
+          usageBudgetProviderCallStarted = true;
+          runtime.onUsageBudgetProviderCallStart?.();
+        }
+      : undefined;
+    let summaryUsage: CompactionSummaryWithUsage["usage"];
 
     try {
       const modelContextWindow = resolveContextWindowTokens(model);
@@ -1130,7 +1246,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   Math.floor(contextWindowTokens * droppedChunkRatio) -
                     SUMMARIZATION_OVERHEAD_TOKENS,
                 );
-                droppedSummary = await summarizeViaLLM({
+                const droppedResult = await summarizeViaLLM({
                   messages: pruned.droppedMessagesList,
                   model,
                   apiKey,
@@ -1145,8 +1261,19 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   customInstructions: structuredInstructions,
                   summarizationInstructions,
                   previousSummary: preparation.previousSummary,
+                  config: usageBudgetSelfMetering.config,
+                  agentId: usageBudgetSelfMetering.agentId,
+                  transcriptPath,
+                  usageBudgetOperationId,
+                  onProviderCallStart: onUsageBudgetProviderCallStart,
                 });
+                droppedSummary = droppedResult.summary;
+                summaryUsage = mergeCompactionSummaryUsage(summaryUsage, droppedResult.usage);
               } catch (droppedError) {
+                summaryUsage = mergeCompactionSummaryUsage(
+                  summaryUsage,
+                  readCompactionSummaryErrorUsage(droppedError),
+                );
                 log.warn(
                   `Compaction safeguard: failed to summarize dropped messages, continuing without: ${formatErrorMessage(
                     droppedError,
@@ -1207,26 +1334,37 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         let splitTurnSectionLocal = "";
         let historySummary = "";
         try {
-          historySummary =
-            messagesToSummarize.length > 0
-              ? await summarizeViaLLM({
-                  messages: messagesToSummarize,
-                  model,
-                  apiKey,
-                  headers,
-                  signal,
-                  reserveTokens,
-                  maxChunkTokens,
-                  contextWindow: contextWindowTokens,
-                  customInstructions: currentInstructions,
-                  summarizationInstructions,
-                  previousSummary: effectivePreviousSummary,
-                })
-              : buildStructuredFallbackSummary(effectivePreviousSummary, summarizationInstructions);
+          if (messagesToSummarize.length > 0) {
+            const historyResult = await summarizeViaLLM({
+              messages: messagesToSummarize,
+              model,
+              apiKey,
+              headers,
+              signal,
+              reserveTokens,
+              maxChunkTokens,
+              contextWindow: contextWindowTokens,
+              customInstructions: currentInstructions,
+              summarizationInstructions,
+              previousSummary: effectivePreviousSummary,
+              config: usageBudgetSelfMetering.config,
+              agentId: usageBudgetSelfMetering.agentId,
+              transcriptPath,
+              usageBudgetOperationId,
+              onProviderCallStart: onUsageBudgetProviderCallStart,
+            });
+            historySummary = historyResult.summary;
+            summaryUsage = mergeCompactionSummaryUsage(summaryUsage, historyResult.usage);
+          } else {
+            historySummary = buildStructuredFallbackSummary(
+              effectivePreviousSummary,
+              summarizationInstructions,
+            );
+          }
 
           summaryWithoutPreservedTurns = historySummary;
           if (preparation.isSplitTurn && turnPrefixMessages.length > 0) {
-            const prefixSummary = await summarizeViaLLM({
+            const prefixResult = await summarizeViaLLM({
               messages: turnPrefixMessages,
               model,
               apiKey,
@@ -1241,7 +1379,14 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
               ),
               summarizationInstructions,
               previousSummary: undefined,
+              config: usageBudgetSelfMetering.config,
+              agentId: usageBudgetSelfMetering.agentId,
+              transcriptPath,
+              usageBudgetOperationId,
+              onProviderCallStart: onUsageBudgetProviderCallStart,
             });
+            const prefixSummary = prefixResult.summary;
+            summaryUsage = mergeCompactionSummaryUsage(summaryUsage, prefixResult.usage);
             splitTurnSectionLocal = `**Turn Context (split turn):**\n\n${prefixSummary}`;
             summaryWithoutPreservedTurns = historySummary.trim()
               ? `${historySummary}\n\n---\n\n${splitTurnSectionLocal}`
@@ -1253,6 +1398,10 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           );
         } catch (attemptError) {
           if (lastSuccessfulSummary && attempt > 0) {
+            summaryUsage = mergeCompactionSummaryUsage(
+              summaryUsage,
+              readCompactionSummaryErrorUsage(attemptError),
+            );
             log.warn(
               `Compaction safeguard: quality retry failed on attempt ${attempt + 1}; ` +
                 `keeping last successful summary: ${formatErrorMessage(attemptError)}`,
@@ -1318,10 +1467,32 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           summary,
           firstKeptEntryId: preparation.firstKeptEntryId,
           tokensBefore: preparation.tokensBefore,
+          usage: summaryUsage,
+          usageBudgetOperationId,
           details: { readFiles, modifiedFiles },
         },
       };
     } catch (error) {
+      summaryUsage = mergeCompactionSummaryUsage(
+        summaryUsage,
+        readCompactionSummaryErrorUsage(error),
+      );
+      if (usageBudgetSelfMetering.enabled) {
+        await appendFailedCompactionUsageAccounting({
+          ctx,
+          model,
+          config: usageBudgetSelfMetering.config,
+          usage: summaryUsage,
+          timestampMs: Date.now(),
+          usageBudgetOperationId,
+        }).catch((appendError: unknown) => {
+          log.warn(
+            `Compaction safeguard: failed to persist failed-summary usage accounting: ${formatErrorMessage(
+              appendError,
+            )}`,
+          );
+        });
+      }
       const message = formatErrorMessage(error);
       log.warn(
         `Compaction summarization failed; cancelling compaction to preserve history: ${message}`,
@@ -1330,14 +1501,25 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         ctx.sessionManager,
         `Compaction safeguard could not summarize the session: ${message}`,
       );
-      return { cancel: true };
+      return {
+        cancel: true,
+        ...(!usageBudgetSelfMetering.enabled && summaryUsage ? { usage: summaryUsage } : {}),
+        ...(!usageBudgetSelfMetering.enabled && (summaryUsage || usageBudgetProviderCallStarted)
+          ? { usageBudgetOperationId }
+          : {}),
+      };
     }
   });
 }
 
 export const testing = {
   setSummarizeInStagesForTest(next?: typeof summarizeInStages) {
-    compactionSafeguardDeps.summarizeInStages = next ?? summarizeInStages;
+    compactionSafeguardDeps.summarizeInStagesWithUsage = next
+      ? async (params) => ({ summary: await next(params) })
+      : summarizeInStagesWithUsage;
+  },
+  setSummarizeInStagesWithUsageForTest(next?: typeof summarizeInStagesWithUsage) {
+    compactionSafeguardDeps.summarizeInStagesWithUsage = next ?? summarizeInStagesWithUsage;
   },
   collectToolFailures,
   formatToolFailuresSection,

@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { isAcpRuntimeSpawnAvailable } from "../../acp/runtime/availability.js";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
+import { getRuntimeConfigSnapshot } from "../../config/config.js";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
@@ -126,6 +127,10 @@ import {
   resolveSessionWriteLockOptions,
 } from "../session-write-lock.js";
 import { createAgentSession, estimateTokens, SessionManager } from "../sessions/index.js";
+import {
+  AGENT_SESSION_MODEL_CALL_USAGE_BUDGET_ENFORCEMENT,
+  type AgentSessionUsageBudgetEnforcementOptions,
+} from "../sessions/sdk-usage-budget-internal.js";
 import { detectRuntimeShell } from "../shell-utils.js";
 import {
   filterProviderNormalizableTools,
@@ -476,7 +481,11 @@ function fallbackFailureToCompactionResult(err: unknown): EmbeddedAgentCompactRe
 export async function compactEmbeddedAgentSessionDirect(
   paramsInput: CompactEmbeddedAgentSessionRuntimeParams,
 ): Promise<EmbeddedAgentCompactResult> {
-  const paramsBase = applyAgentRunSessionTargetIdentity(paramsInput);
+  const config = paramsInput.config ?? getRuntimeConfigSnapshot() ?? undefined;
+  const paramsBase = applyAgentRunSessionTargetIdentity({
+    ...paramsInput,
+    config,
+  });
   const runSessionTarget = await resolveAgentRunSessionTarget(paramsBase);
   const params: CompactEmbeddedAgentSessionParamsWithSessionFile = {
     ...paramsBase,
@@ -1217,15 +1226,17 @@ async function compactEmbeddedAgentSessionDirectOnce(
     };
 
     const compactionTimeoutMs = resolveCompactionTimeoutMs(params.config);
-    const sessionLock = await acquireSessionWriteLock({
+    const sessionLockOptions = {
       sessionFile: params.sessionFile,
       ...resolveSessionWriteLockOptions(params.config, {
         maxHoldMsFallback: resolveSessionLockMaxHoldFromTimeout({
           timeoutMs: compactionTimeoutMs,
         }),
       }),
-    });
+    };
+    let sessionLock: Awaited<ReturnType<typeof acquireSessionWriteLock>> | undefined;
     try {
+      sessionLock = await acquireSessionWriteLock(sessionLockOptions);
       await repairSessionFileIfNeeded({
         sessionFile: params.sessionFile,
         debug: (message) => log.debug(message),
@@ -1272,6 +1283,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
         provider,
         modelId,
         model,
+        agentId: sessionAgentId,
       });
       const resourceLoader = createEmbeddedAgentResourceLoader({
         cwd: effectiveCwd,
@@ -1332,7 +1344,13 @@ async function compactEmbeddedAgentSessionDirectOnce(
         const systemPromptText = buildSystemPromptText(thinkLevel);
         let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
         try {
-          const createdSession = await createAgentSession({
+          const createSessionOptions: NonNullable<Parameters<typeof createAgentSession>[0]> &
+            AgentSessionUsageBudgetEnforcementOptions = {
+            config: params.config,
+            agentId: sessionAgentId,
+            ...(params.config
+              ? { usageBudgetEnforcement: AGENT_SESSION_MODEL_CALL_USAGE_BUDGET_ENFORCEMENT }
+              : {}),
             cwd: effectiveCwd,
             agentDir,
             authStorage,
@@ -1344,7 +1362,8 @@ async function compactEmbeddedAgentSessionDirectOnce(
             sessionManager,
             settingsManager,
             resourceLoader,
-          });
+          };
+          const createdSession = await createAgentSession(createSessionOptions);
           session = createdSession.session;
           session.setActiveToolsByName(sessionToolAllowlist);
           applySystemPromptToSession(session, systemPromptText);
@@ -1379,7 +1398,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
             senderUsername: params.senderUsername,
             senderE164: params.senderE164,
           });
-          session.agent.streamFn = wrapStreamFnWithDiagnosticModelCallEvents(
+          const diagnosticStreamFn = wrapStreamFnWithDiagnosticModelCallEvents(
             session.agent.streamFn,
             {
               runId: diagnosticCompactionRunId,
@@ -1389,13 +1408,18 @@ async function compactEmbeddedAgentSessionDirectOnce(
               model: modelId,
               api: effectiveModel.api,
               transport: session.agent.transport,
+              config: params.config,
+              agentId: sessionAgentId,
+              transcriptPath: params.sessionFile,
               contextTokenBudget,
               trace: compactionModelCallTrace,
+              signal: runAbortController.signal,
               contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
               nextCallId: () =>
                 `${diagnosticCompactionRunId}:model:${(diagnosticModelCallSeq += 1)}`,
             },
           );
+          session.agent.streamFn = diagnosticStreamFn;
 
           const prior = await sanitizeSessionHistory({
             messages: session.messages,
@@ -1717,7 +1741,7 @@ async function compactEmbeddedAgentSessionDirectOnce(
       } catch {
         /* best-effort */
       }
-      await sessionLock.release();
+      await sessionLock?.release();
     }
   } catch (err) {
     const reason = resolveCompactionFailureReason({

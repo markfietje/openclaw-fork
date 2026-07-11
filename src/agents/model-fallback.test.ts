@@ -37,6 +37,7 @@ import {
 } from "./run-termination.js";
 import { SessionWriteLockTimeoutError } from "./session-write-lock-error.js";
 import { makeModelFallbackCfg } from "./test-helpers/model-fallback-config-fixture.js";
+import { buildUnsupportedAgentUsageBudgetHarnessError } from "./usage-budget.js";
 
 type ProviderModelNormalizationParams = { provider: string; context: { modelId: string } };
 
@@ -753,6 +754,36 @@ describe("runWithModelFallback", () => {
     expect(result.attempts).toHaveLength(1);
     expect(result.attempts[0].error).toBe("bad request");
     expect(result.attempts[0].reason).toBe("unknown");
+  });
+
+  it("does not rotate fallback candidates for usage-budget denials", async () => {
+    const cfg = makeCfg({
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.4",
+            fallbacks: ["anthropic/claude-sonnet-4-6"],
+          },
+        },
+      },
+    });
+    const denial = buildUnsupportedAgentUsageBudgetHarnessError({
+      agentId: "ops",
+      provider: "openai",
+      model: "gpt-5.4",
+      harnessId: "external-cli",
+    });
+    const run = vi.fn().mockRejectedValue(denial);
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-5.4",
+        run,
+      }),
+    ).rejects.toBe(denial);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("does not treat Codex missing tool-result failures as model fallback candidates", async () => {

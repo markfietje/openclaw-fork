@@ -1219,6 +1219,35 @@ CREATE INDEX IF NOT EXISTS idx_migration_sources_path
 CREATE INDEX IF NOT EXISTS idx_migration_sources_run
   ON migration_sources(last_run_id, source_path);
 
+CREATE TABLE IF NOT EXISTS agent_usage_budget_ledger (
+  dedup_key TEXT NOT NULL PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  record_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  timestamp_ms INTEGER NOT NULL,
+  usage_accounting_source TEXT NOT NULL DEFAULT 'message',
+  usage_json TEXT,
+  usage_budget_bridge INTEGER NOT NULL DEFAULT 0,
+  usage_budget_operation_id TEXT,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_usage_budget_ledger_agent_time
+  ON agent_usage_budget_ledger(agent_id, timestamp_ms);
+
+CREATE TABLE IF NOT EXISTS agent_usage_budget_transcript_import_state (
+  agent_id TEXT NOT NULL PRIMARY KEY,
+  imported_min_start_ms INTEGER NOT NULL,
+  sessions_dir_exists INTEGER NOT NULL DEFAULT 0,
+  sessions_dir_mtime_ms REAL,
+  sessions_dirs_fingerprint TEXT,
+  active_transcript_path TEXT,
+  active_transcript_size INTEGER,
+  active_transcript_mtime_ms REAL,
+  updated_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS backup_runs (
   id TEXT NOT NULL PRIMARY KEY,
   created_at INTEGER NOT NULL,

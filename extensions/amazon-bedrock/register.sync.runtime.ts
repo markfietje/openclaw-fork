@@ -16,11 +16,24 @@ import {
   resolveClaudeFable5ModelIdentity,
   resolveClaudeModelIdentity,
 } from "openclaw/plugin-sdk/provider-model-shared";
-import { streamWithPayloadPatch } from "openclaw/plugin-sdk/provider-stream-shared";
+import {
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+  preserveProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+  streamWithPayloadPatch,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { refreshAwsSharedConfigCacheForBedrock } from "./aws-credential-refresh.js";
 import { supportsBedrockPromptCaching } from "./bedrock-options.js";
 import { mergeImplicitBedrockProvider, resolveBedrockConfigApiKey } from "./discovery-shared.js";
 import { bedrockMemoryEmbeddingProviderAdapter } from "./memory-embedding-adapter.js";
+import {
+  type BedrockServiceTier,
+  getBedrockServiceTierBudgetReservationMultiplier,
+  getBedrockServiceTierCostMultiplier,
+  isBedrockServiceTier,
+} from "./service-tier-pricing.js";
 import { streamBedrock, streamSimpleBedrock } from "./stream.runtime.js";
 import {
   isLatestAdaptiveBedrockModelRef,
@@ -72,9 +85,6 @@ function normalizeBedrockResolvedModel({ modelId, model }: ProviderNormalizeReso
   };
 }
 
-const BEDROCK_SERVICE_TIER_VALUES = ["flex", "priority", "default", "reserved"] as const;
-type BedrockServiceTier = (typeof BEDROCK_SERVICE_TIER_VALUES)[number];
-
 function isAnthropicBedrockModel(modelId: string): boolean {
   const normalized = modelId.trim().toLowerCase();
   if (normalized.includes("anthropic.claude") || normalized.includes("anthropic/claude")) {
@@ -92,15 +102,12 @@ function isAnthropicBedrockModel(modelId: string): boolean {
 
 function createBedrockNoCacheWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) =>
+  const wrapped: StreamFn = (model, context, options) =>
     underlying(model, context, {
       ...options,
       cacheRetention: "none",
     });
-}
-
-function isBedrockServiceTier(value: string): value is BedrockServiceTier {
-  return BEDROCK_SERVICE_TIER_VALUES.some((tier) => tier === value);
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 function resolveBedrockServiceTier(
@@ -123,7 +130,7 @@ function createBedrockServiceTierWrapper(
   underlying: StreamFn,
   serviceTier: BedrockServiceTier,
 ): StreamFn {
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.api !== "bedrock-converse-stream") {
       return underlying(model, context, options);
     }
@@ -131,6 +138,30 @@ function createBedrockServiceTierWrapper(
       payloadObj.serviceTier ??= { type: serviceTier };
     });
   };
+  const costResolved = markProviderDispatchCostMultiplierResolverStreamFn(
+    preserveProviderDispatchObservableStreamFn(wrapped, underlying),
+    ({ model, context, options }) =>
+      model.api === "bedrock-converse-stream"
+        ? getBedrockServiceTierCostMultiplier(serviceTier)
+        : resolveProviderDispatchCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          }),
+  );
+  return markProviderDispatchReservationCostMultiplierResolverStreamFn(
+    costResolved,
+    ({ model, context, options }) =>
+      model.api === "bedrock-converse-stream"
+        ? getBedrockServiceTierBudgetReservationMultiplier(serviceTier)
+        : resolveProviderDispatchReservationCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          }),
+  );
 }
 
 function createGuardrailWrapStreamFn(
@@ -150,7 +181,7 @@ function createGuardrailWrapStreamFn(
     if (!inner) {
       return inner;
     }
-    return (model, context, options) => {
+    const wrapped: StreamFn = (model, context, options) => {
       return streamWithPayloadPatch(inner, model, context, options, (payload) => {
         const gc: Record<string, unknown> = {
           guardrailIdentifier: guardrailConfig.guardrailIdentifier,
@@ -165,6 +196,7 @@ function createGuardrailWrapStreamFn(
         payload.guardrailConfig = gc;
       });
     };
+    return preserveProviderDispatchObservableStreamFn(wrapped, inner);
   };
 }
 
@@ -471,8 +503,9 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
     if (!streamFn) {
       return streamFn;
     }
-    return (streamModel, context, options) =>
+    const wrapped: StreamFn = (streamModel, context, options) =>
       streamFn(streamModel, context, withAwsCredentialRefreshOnPayload(Object.assign({}, options)));
+    return preserveProviderDispatchObservableStreamFn(wrapped, streamFn);
   }
 
   /** Extract the AWS region from a bedrock-runtime baseUrl. */
@@ -594,7 +627,7 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
       if (!underlying) {
         return wrapped;
       }
-      return (streamModel, context, options) => {
+      const regionAndPayloadWrapper: StreamFn = (streamModel, context, options) => {
         const merged = omitUnsupportedClaudeTemperature(
           modelRef,
           Object.assign({}, options, region ? { region } : {}),
@@ -697,6 +730,7 @@ export function registerAmazonBedrockPlugin(api: OpenClawPluginApi): void {
           }),
         );
       };
+      return preserveProviderDispatchObservableStreamFn(regionAndPayloadWrapper, underlying);
     },
     matchesContextOverflowError: ({ errorMessage }) =>
       bedrockContextOverflowPatterns.some((pattern) => pattern.test(errorMessage)),

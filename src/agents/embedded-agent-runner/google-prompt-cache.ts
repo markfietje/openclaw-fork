@@ -13,6 +13,7 @@ import { parseGeminiAuth } from "../../infra/gemini-auth.js";
 import { normalizeGoogleApiBaseUrl } from "../../infra/google-api-base-url.js";
 import { streamWithPayloadPatch } from "../../llm/providers/stream-wrappers/stream-payload-utils.js";
 import type { Model } from "../../llm/types.js";
+import { preserveModelProviderDispatchObservableStreamFn } from "../provider-dispatch-observable-stream.js";
 import { buildGuardedModelFetch } from "../provider-transport-fetch.js";
 import type { StreamFn } from "../runtime/index.js";
 import { isSessionWriteLockAcquireError } from "../session-write-lock-error.js";
@@ -79,6 +80,7 @@ type PrepareGooglePromptCacheStreamFnParams = {
   signal?: AbortSignal;
   streamFn: StreamFn | undefined;
   systemPrompt?: string;
+  usageBudgetEnforced?: boolean;
 };
 
 type GooglePromptCacheDeps = {
@@ -492,6 +494,11 @@ export async function prepareGooglePromptCacheStreamFn(
   if (!params.streamFn) {
     return undefined;
   }
+  if (params.usageBudgetEnforced) {
+    // Managed cache create/refresh calls are separate billable provider
+    // operations; skip them while model-call budgets cannot meter cache ops.
+    return undefined;
+  }
   if (resolveExplicitCachedContent(params.extraParams)) {
     return undefined;
   }
@@ -514,7 +521,7 @@ export async function prepareGooglePromptCacheStreamFn(
   }
 
   const inner = params.streamFn;
-  return async (model, context, options) => {
+  const wrapped: StreamFn = async (model, context, options) => {
     const cacheConfig = buildManagedGooglePromptCacheConfig(context, options);
     const cachedContent = await ensureGooglePromptCache(
       {
@@ -548,4 +555,9 @@ export async function prepareGooglePromptCacheStreamFn(
       },
     );
   };
+  return preserveModelProviderDispatchObservableStreamFn({
+    wrapped,
+    source: inner,
+    model: params.model,
+  });
 }

@@ -10,6 +10,7 @@ import { wrapProviderSimpleCompletionStreamFn } from "../plugins/provider-runtim
 import { createAnthropicVertexStreamFnForModel } from "./anthropic-vertex-stream.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
 import { prepareGoogleSimpleCompletionModel } from "./google-simple-completion-stream.js";
+import { preserveModelProviderDispatchObservableStreamFn } from "./provider-dispatch-observable-stream.js";
 import { registerProviderStreamForModel } from "./provider-stream.js";
 import {
   buildTransportAwareSimpleStreamFn,
@@ -75,8 +76,16 @@ function applyProviderSimpleCompletionWrapper(model: Model, cfg?: OpenClawConfig
   }
 
   const sourceApi = model.api;
-  const sourceStreamFn: StreamFn = (runtimeModel, context, options) =>
-    sourceProvider.streamSimple({ ...runtimeModel, api: sourceApi }, context, options);
+  const sourceStreamFn = preserveModelProviderDispatchObservableStreamFn({
+    wrapped: ((runtimeModel, context, options) =>
+      sourceProvider.streamSimple(
+        { ...runtimeModel, api: sourceApi },
+        context,
+        options,
+      )) as StreamFn,
+    source: sourceProvider.streamSimple as StreamFn,
+    model,
+  });
   const streamFn = wrapProviderSimpleCompletionStreamFn({
     provider: model.provider,
     config: cfg,

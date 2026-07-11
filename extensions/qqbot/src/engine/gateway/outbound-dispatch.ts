@@ -152,7 +152,14 @@ export async function dispatchOutbound(
     guildId: event.guildId,
     groupOpenid: event.groupOpenid,
   };
-  const replyCtx = { target: replyTarget, account, cfg, log, ...gatewayMediaContext };
+  const replyCtx = {
+    target: replyTarget,
+    account,
+    agentId: routeAgentId,
+    cfg,
+    log,
+    ...gatewayMediaContext,
+  };
 
   const sendWithRetry = <T>(sendFn: (token: string) => Promise<T>) =>
     sendWithTokenRetry(account.appId, account.clientSecret, sendFn, log, account.accountId);

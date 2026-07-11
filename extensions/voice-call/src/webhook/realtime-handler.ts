@@ -26,6 +26,7 @@ import {
   type TalkEventInput,
   type TalkSessionController,
 } from "openclaw/plugin-sdk/realtime-voice";
+import { resolveAgentIdFromSessionKey } from "openclaw/plugin-sdk/routing";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { sliceUtf16Safe, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import WebSocket, { WebSocketServer } from "ws";
@@ -643,6 +644,7 @@ export class RealtimeCallHandler {
     const session = createRealtimeVoiceBridgeSession({
       provider: this.realtimeProvider,
       cfg: this.coreConfig,
+      agentId: resolveAgentIdFromSessionKey(callRecord?.sessionKey),
       providerConfig: this.providerConfig,
       instructions: this.config.instructions,
       tools: this.config.tools,

@@ -10,6 +10,7 @@ import {
   AgentToolModelSchema,
   MemorySearchSchema,
   AgentRunRetriesConfigSchema,
+  AgentUsageBudgetSchema,
 } from "./zod-schema.agent-runtime.js";
 import {
   BlockStreamingChunkSchema,
@@ -115,6 +116,7 @@ export const AgentDefaultsSchema = z
       .strict()
       .optional(),
     contextLimits: AgentContextLimitsSchema,
+    usageBudget: AgentUsageBudgetSchema,
     timeFormat: z.union([z.literal("auto"), z.literal("12"), z.literal("24")]).optional(),
     envelopeTimezone: z.string().optional(),
     envelopeTimestamp: z.union([z.literal("on"), z.literal("off")]).optional(),

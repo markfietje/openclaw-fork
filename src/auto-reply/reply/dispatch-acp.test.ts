@@ -1416,6 +1416,32 @@ describe("tryDispatchAcpReply", () => {
     expect(bindingServiceMocks.unbind).not.toHaveBeenCalled();
   });
 
+  it("fails closed for budgeted ACP agents before dispatching a turn", async () => {
+    setReadyAcpResolution();
+    const { dispatcher } = createDispatcher();
+
+    await runDispatch({
+      bodyForAgent: "test",
+      dispatcher,
+      cfg: createAcpTestConfig({
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 100 },
+            },
+          },
+        },
+      }),
+    });
+
+    expect(managerMocks.runTurn).not.toHaveBeenCalled();
+    expect(mediaUnderstandingMocks.applyMediaUnderstanding).not.toHaveBeenCalled();
+    expect(dispatcherCall(dispatcher.sendFinalReply).isError).toBe(true);
+    expect(dispatcherCall(dispatcher.sendFinalReply).text).toContain(
+      "ACP dispatch is unavailable while agent usage budgets are enabled",
+    );
+  });
+
   it("fails closed when ACP dispatch cannot enforce restrictive runtime toolsAllow", async () => {
     setReadyAcpResolution();
     const { dispatcher } = createDispatcher();

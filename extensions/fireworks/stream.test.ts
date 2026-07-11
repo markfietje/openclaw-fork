@@ -1,6 +1,10 @@
 // Fireworks tests cover stream plugin behavior.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Context, Model } from "openclaw/plugin-sdk/llm";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { describe, expect, it } from "vitest";
 import {
   createFireworksKimiThinkingDisabledWrapper,
@@ -36,6 +40,14 @@ function capturePayload(params: {
 }
 
 describe("createFireworksKimiThinkingDisabledWrapper", () => {
+  it("preserves provider dispatch observability", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn(() => ({}) as ReturnType<StreamFn>);
+
+    const wrapped = createFireworksKimiThinkingDisabledWrapper(baseStreamFn);
+
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
+  });
+
   it("forces thinking disabled for Fireworks Kimi models", () => {
     expect(
       capturePayload({

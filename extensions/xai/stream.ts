@@ -6,6 +6,8 @@ import {
   composeProviderStreamWrappers,
   createPlainTextToolCallCompatWrapper,
   createToolStreamWrapper,
+  markProviderDispatchModelResolverStreamFn,
+  preserveProviderDispatchObservableStreamFn,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 
 const XAI_FAST_MODEL_IDS = new Map<string, string>([
@@ -231,7 +233,7 @@ export function createXaiToolPayloadCompatibilityWrapper(
   baseStreamFn: StreamFn | undefined,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
@@ -255,6 +257,7 @@ export function createXaiToolPayloadCompatibilityWrapper(
       },
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 export function createXaiFastModeWrapper(
@@ -262,7 +265,7 @@ export function createXaiFastModeWrapper(
   fastMode: DynamicFastMode,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const resolveFastDispatchModel = (model: Parameters<StreamFn>[0]) => {
     const supportsFastAliasTransport =
       model.api === "openai-completions" || model.api === "openai-responses";
     if (
@@ -270,16 +273,18 @@ export function createXaiFastModeWrapper(
       !supportsFastAliasTransport ||
       model.provider !== "xai"
     ) {
-      return underlying(model, context, options);
+      return model;
     }
-
     const fastModelId = resolveXaiFastModelId(model.id);
-    if (!fastModelId) {
-      return underlying(model, context, options);
-    }
-
-    return underlying({ ...model, id: fastModelId }, context, options);
+    return fastModelId ? { ...model, id: fastModelId } : model;
   };
+  const wrapped: StreamFn = (model, context, options) => {
+    return underlying(resolveFastDispatchModel(model), context, options);
+  };
+  return markProviderDispatchModelResolverStreamFn(
+    preserveProviderDispatchObservableStreamFn(wrapped, underlying),
+    ({ model }) => resolveFastDispatchModel(model),
+  );
 }
 
 function resolveXaiFastMode(extraParams: Record<string, unknown> | undefined): boolean | undefined {

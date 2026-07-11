@@ -10,6 +10,7 @@ import {
 import type {
   BranchSummaryEntry,
   CompactionEntry,
+  CompactionUsageAccounting,
   CustomEntry,
   CustomMessageEntry,
   LabelEntry,
@@ -194,6 +195,7 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
     tokensBefore: number,
     details?: unknown,
     fromHook?: boolean,
+    usageAccounting?: CompactionUsageAccounting,
   ): Promise<string> {
     return this.appendTypedEntry({
       type: "compaction",
@@ -203,6 +205,7 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
       summary,
       firstKeptEntryId,
       tokensBefore,
+      usageAccounting,
       details,
       fromHook,
     } satisfies CompactionEntry);
@@ -267,7 +270,12 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
   /** Move the visible branch leaf and optionally attach a summary of the abandoned branch. */
   async moveTo(
     entryId: string | null,
-    summary?: { summary: string; details?: unknown; fromHook?: boolean },
+    summary?: {
+      summary: string;
+      details?: unknown;
+      fromHook?: boolean;
+      usageAccounting?: CompactionUsageAccounting;
+    },
   ): Promise<string | undefined> {
     if (entryId !== null && !(await this.storage.getEntry(entryId))) {
       throw new SessionError("not_found", `Entry ${entryId} not found`);
@@ -283,6 +291,7 @@ export class Session<TMetadata extends SessionMetadata = SessionMetadata> {
       timestamp: new Date().toISOString(),
       fromId: entryId ?? "root",
       summary: summary.summary,
+      usageAccounting: summary.usageAccounting,
       details: summary.details,
       fromHook: summary.fromHook,
     } satisfies BranchSummaryEntry);

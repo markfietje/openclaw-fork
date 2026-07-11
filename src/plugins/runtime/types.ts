@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 // Plugin runtime types describe activated plugin capabilities exposed to core execution.
 import type { OperatorScope } from "../../gateway/operator-scopes.js";
 import type { PluginRuntimeCore, RuntimeLogger } from "./types-core.js";
@@ -77,6 +78,10 @@ export type RuntimeNodeInvokeParams = {
   idempotencyKey?: string;
   /** Requested Gateway scopes. Honored only for bundled or trusted official plugins. */
   scopes?: OperatorScope[];
+  /** Active runtime config used to resolve agent-scoped usage-budget policy. */
+  cfg?: OpenClawConfig;
+  /** Calling agent id for usage-budget policy. Omit to fail closed when any budget is active. */
+  agentId?: string | null;
 };
 
 /** Trusted in-process runtime surface injected into native plugins. */

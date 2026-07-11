@@ -1,6 +1,10 @@
 // Kimi Coding tests cover stream plugin behavior.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Context, Model } from "openclaw/plugin-sdk/llm";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { describe, expect, it } from "vitest";
 import {
   createKimiThinkingWrapper,
@@ -241,11 +245,12 @@ describe("kimi tool-call markup wrapper", () => {
 
   it("adapts provider stream context without changing wrapper behavior", async () => {
     const finalMessage = createAssistantTextMessage(KIMI_TOOL_TEXT);
-    const baseStreamFn = createResultStreamFn(finalMessage);
+    const baseStreamFn = markProviderDispatchObservableStreamFn(createResultStreamFn(finalMessage));
 
     const wrapped = wrapKimiProviderStream({
       streamFn: baseStreamFn,
     } as never);
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
     const stream = await callKimiStream(wrapped);
 
     await expect(stream.result()).resolves.toEqual({

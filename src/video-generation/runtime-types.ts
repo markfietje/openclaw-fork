@@ -13,6 +13,7 @@ import type {
 
 export type GenerateVideoParams = {
   cfg: OpenClawConfig;
+  agentId?: string;
   prompt: string;
   agentDir?: string;
   authStore?: AuthProfileStore;

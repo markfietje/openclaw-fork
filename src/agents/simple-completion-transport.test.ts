@@ -1,6 +1,11 @@
 // Simple completion transport tests cover provider-specific stream alias
 // selection before the generic completion helper invokes the LLM layer.
 import type { Model } from "openclaw/plugin-sdk/llm";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+  preserveProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { registerApiProvider, unregisterApiProviders } from "../llm/api-registry.js";
@@ -139,6 +144,95 @@ describe("prepareModelForSimpleCompletion", () => {
     expect(stream).toBe(sourceResult);
     expect(stream).not.toBeInstanceOf(Promise);
     expect(capturedApi).toBe(sourceApi);
+  });
+
+  it("does not infer dispatch observability for unmarked provider simple wrappers", () => {
+    const sourceApi = "observable-simple-source";
+    const onProviderDispatch = vi.fn();
+    registerApiProvider(
+      {
+        api: sourceApi,
+        stream: () => {
+          throw new Error("unexpected full stream");
+        },
+        streamSimple: markProviderDispatchObservableStreamFn((_runtimeModel, _context, options) => {
+          options?.onProviderDispatch?.();
+          return { source: true } as never;
+        }),
+      },
+      SIMPLE_COMPLETION_SOURCE_ID,
+    );
+    wrapProviderSimpleCompletionStreamFn.mockImplementationOnce(
+      ({ context }) =>
+        ((...args: Parameters<typeof context.streamFn>) => context.streamFn(...args)) as never,
+    );
+    const model: Model = {
+      id: "wrapped-model",
+      name: "Wrapped Model",
+      api: sourceApi,
+      provider: "cohere",
+      baseUrl: "https://api.cohere.com/v1",
+      input: ["text"],
+      reasoning: false,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 4096,
+    };
+
+    const result = prepareModelForSimpleCompletion({ model });
+
+    const registeredStream = ensureCustomApiRegistered.mock.calls.at(-1)?.[1];
+    if (typeof registeredStream !== "function") {
+      throw new Error("Expected synthetic simple-completion stream registration");
+    }
+    expect(isProviderDispatchObservableStreamFn(registeredStream)).toBe(false);
+    registeredStream(result, { messages: [] }, { onProviderDispatch });
+    expect(onProviderDispatch).toHaveBeenCalledOnce();
+  });
+
+  it("preserves dispatch observability when provider simple wrappers explicitly preserve it", () => {
+    const sourceApi = "observable-simple-source";
+    const onProviderDispatch = vi.fn();
+    registerApiProvider(
+      {
+        api: sourceApi,
+        stream: () => {
+          throw new Error("unexpected full stream");
+        },
+        streamSimple: markProviderDispatchObservableStreamFn((_runtimeModel, _context, options) => {
+          options?.onProviderDispatch?.();
+          return { source: true } as never;
+        }),
+      },
+      SIMPLE_COMPLETION_SOURCE_ID,
+    );
+    wrapProviderSimpleCompletionStreamFn.mockImplementationOnce(({ context }) => {
+      const wrapped = ((...args: Parameters<typeof context.streamFn>) =>
+        context.streamFn(...args)) as never;
+      return preserveProviderDispatchObservableStreamFn(wrapped, context.streamFn);
+    });
+    const model: Model = {
+      id: "wrapped-model",
+      name: "Wrapped Model",
+      api: sourceApi,
+      provider: "cohere",
+      baseUrl: "https://api.cohere.com/v1",
+      input: ["text"],
+      reasoning: false,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 4096,
+    };
+
+    const result = prepareModelForSimpleCompletion({ model });
+
+    const registeredStream = ensureCustomApiRegistered.mock.calls.at(-1)?.[1];
+    if (typeof registeredStream !== "function") {
+      throw new Error("Expected synthetic simple-completion stream registration");
+    }
+    expect(isProviderDispatchObservableStreamFn(registeredStream)).toBe(true);
+    registeredStream(result, { messages: [] }, { onProviderDispatch });
+    expect(onProviderDispatch).toHaveBeenCalledOnce();
   });
 
   it("registers the configured Ollama transport and keeps the original api", () => {

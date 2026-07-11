@@ -521,6 +521,40 @@ describe("google transport stream", () => {
     );
   });
 
+  it("does not rotate Gemini API keys when provider retries are disabled", async () => {
+    vi.stubEnv("OPENCLAW_LIVE_GEMINI_KEY", "");
+    vi.stubEnv("GEMINI_API_KEYS", "gemini-key-2");
+    guardedFetchMock.mockResolvedValueOnce(buildRateLimitResponse()).mockResolvedValueOnce(
+      buildSseResponse([
+        {
+          candidates: [{ content: { parts: [{ text: "unexpected" }] }, finishReason: "STOP" }],
+        },
+      ]),
+    );
+
+    const streamFn = createGoogleGenerativeAiTransportStreamFn();
+    const stream = await Promise.resolve(
+      streamFn(
+        buildGeminiModel(),
+        {
+          messages: [{ role: "user", content: "hello", timestamp: 0 }],
+        } as Parameters<typeof streamFn>[1],
+        {
+          apiKey: "gemini-key-1",
+          maxRetries: 0,
+        } as Parameters<typeof streamFn>[2],
+      ),
+    );
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("error");
+    expect(guardedFetchMock).toHaveBeenCalledTimes(1);
+    expectHeaders(
+      requireRequestInit(requireMockCall(guardedFetchMock, 0, "guarded fetch"), "guarded fetch"),
+      { "x-goog-api-key": "gemini-key-1" },
+    );
+  });
+
   it("does not rotate OAuth JSON credentials through configured Gemini API keys", async () => {
     vi.stubEnv("OPENCLAW_LIVE_GEMINI_KEY", "");
     vi.stubEnv("GEMINI_API_KEYS", "gemini-env-key");
@@ -1015,6 +1049,55 @@ describe("google transport stream", () => {
       thinkingLevel: "LOW",
     });
     expect(retryBody.tools).toEqual(firstBody.tools);
+  });
+
+  it("does not retry a stalled Gemini 3 request when provider retries are disabled", async () => {
+    vi.stubEnv("OPENCLAW_GOOGLE_GEMINI_FIRST_RESPONSE_RETRY_MS", "10");
+    const controller = new AbortController();
+    guardedFetchMock.mockImplementation(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => {
+              reject(
+                toLintErrorObject(
+                  init.signal?.reason ?? new Error("aborted"),
+                  "Non-Error rejection",
+                ),
+              );
+            },
+            { once: true },
+          );
+        }),
+    );
+
+    const model = buildGeminiModel({
+      id: "gemini-3.1-pro-preview",
+      name: "Gemini 3.1 Pro Preview",
+    });
+    const streamFn = createGoogleGenerativeAiTransportStreamFn();
+    const stream = await Promise.resolve(
+      streamFn(
+        model,
+        {
+          messages: [{ role: "user", content: "hello", timestamp: 0 }],
+        } as never,
+        {
+          reasoning: "high",
+          maxRetries: 0,
+          signal: controller.signal,
+        } as never,
+      ),
+    );
+    const abortTimer = setTimeout(() => controller.abort(new Error("test complete")), 25);
+    try {
+      await stream.result();
+    } finally {
+      clearTimeout(abortTimer);
+    }
+
+    expect(guardedFetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("keeps streaming after the first Gemini 3 chunk arrives before the retry deadline", async () => {

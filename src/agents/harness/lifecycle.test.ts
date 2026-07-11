@@ -357,6 +357,92 @@ describe("AgentHarness lifecycle runner", () => {
     expect(completed?.errorCategory).toBeUndefined();
   });
 
+  it("blocks plugin harness attempts when usage budgets require per-call enforcement", async () => {
+    resetDiagnosticEventsForTest();
+    const params = createAttemptParams();
+    params.provider = "custom-provider";
+    params.modelId = "custom-model";
+    params.model = { id: "custom-model", provider: "custom-provider" } as Model;
+    params.config = {
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { usd: 1 },
+          },
+        },
+      },
+    } as AgentHarnessAttemptParams["config"];
+    const harnessTrace = createDiagnosticTrace();
+    const runAttempt = vi.fn(async () => createAttemptResult());
+    const harness: AgentHarness = {
+      id: "custom",
+      label: "Custom",
+      supports: () => ({ supported: true }),
+      runAttempt,
+    };
+    const diagnostics = captureDiagnosticEvents(
+      (event) => event.type === "run.completed" || event.type === "harness.run.completed",
+    );
+    let result: EmbeddedRunAttemptResult | undefined;
+    try {
+      result = await runWithDiagnosticTraceContext(harnessTrace, () =>
+        runAgentHarnessLifecycleAttempt(harness, params),
+      );
+      await flushDiagnosticEvents();
+    } finally {
+      diagnostics.unsubscribe();
+    }
+
+    expect(runAttempt).not.toHaveBeenCalled();
+    expect(result?.promptErrorSource).toBe("budget");
+    expect(result?.agentHarnessId).toBe("custom");
+    expect(String((result?.promptError as Error | undefined)?.message)).toContain(
+      'agent harness "custom" does not expose per-call usage-budget enforcement',
+    );
+    const runCompleted = diagnostics.events.find(({ event }) => event.type === "run.completed")
+      ?.event as
+      | (DiagnosticEventPayload & {
+          blockedBy?: string;
+          outcome?: string;
+        })
+      | undefined;
+    expect(runCompleted?.outcome).toBe("blocked");
+    expect(runCompleted?.blockedBy).toBe("usage_budget");
+    const harnessCompleted = diagnostics.events.find(
+      ({ event }) => event.type === "harness.run.completed",
+    )?.event as (DiagnosticEventPayload & { outcome?: string }) | undefined;
+    expect(harnessCompleted?.outcome).toBe("error");
+  });
+
+  it("does not exempt plugin harnesses that reuse the built-in harness id from budgets", async () => {
+    const params = createAttemptParams();
+    params.config = {
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 10 },
+          },
+        },
+      },
+    } as AgentHarnessAttemptParams["config"];
+    const runAttempt = vi.fn(async () => createAttemptResult());
+    const harness: AgentHarness = {
+      id: "openclaw",
+      label: "Spoofed OpenClaw",
+      pluginId: "custom-plugin",
+      supports: () => ({ supported: true }),
+      runAttempt,
+    };
+
+    const result = await runAgentHarnessLifecycleAttempt(harness, params);
+
+    expect(runAttempt).not.toHaveBeenCalled();
+    expect(result.promptErrorSource).toBe("budget");
+    expect(String((result.promptError as Error | undefined)?.message)).toContain(
+      'agent harness "openclaw" does not expose per-call usage-budget enforcement',
+    );
+  });
+
   it("emits trusted harness error diagnostics with the failing lifecycle phase", async () => {
     resetDiagnosticEventsForTest();
     const params = createAttemptParams();

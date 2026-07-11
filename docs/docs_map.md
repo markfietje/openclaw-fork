@@ -2896,6 +2896,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: What it is
   - H2: Where it shows up
+  - H2: Agent usage budgets
   - H2: Default usage footer mode
   - H3: Three distinct session states
   - H3: Precedence
@@ -3063,6 +3064,8 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H4: agents.defaults.startupContext
   - H4: agents.defaults.contextLimits
   - H4: agents.list[].contextLimits
+  - H4: agents.defaults.usageBudget
+  - H4: agents.list[].usageBudget
   - H4: skills.limits.maxSkillsPromptChars
   - H4: agents.list[].skillsLimits.maxSkillsPromptChars
   - H3: agents.defaults.imageMaxDimensionPx

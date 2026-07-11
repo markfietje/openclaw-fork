@@ -4,6 +4,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { hasOutboundReplyContent } from "openclaw/plugin-sdk/reply-payload";
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
@@ -134,6 +135,9 @@ async function maybeApplyAcpTts(params: {
       accountId: params.accountId,
     }) === "final"
   ) {
+    return params.payload;
+  }
+  if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.agentId })) {
     return params.payload;
   }
   const { maybeApplyTtsToPayload } = await loadDispatchAcpTtsRuntime();

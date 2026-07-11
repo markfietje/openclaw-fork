@@ -5,6 +5,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { stream, type Model, type SimpleStreamOptions } from "openclaw/plugin-sdk/llm";
+import { markProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 
 const MANTLE_ANTHROPIC_BETA = "fine-grained-tool-streaming-2025-05-14";
 type AnthropicOptions = ConstructorParameters<typeof Anthropic>[0];
@@ -82,6 +83,9 @@ function buildMantleAnthropicBaseOptions(
     cacheRetention: options?.cacheRetention,
     sessionId: options?.sessionId,
     onPayload: options?.onPayload,
+    onProviderDispatch: options?.onProviderDispatch,
+    onResponse: options?.onResponse,
+    maxRetries: options?.maxRetries,
     maxRetryDelayMs: options?.maxRetryDelayMs,
     metadata: options?.metadata,
   };
@@ -116,7 +120,7 @@ export function createMantleAnthropicStreamFn(deps?: {
   createClient?: (options: AnthropicOptions) => Anthropic;
   stream?: MantleAnthropicStream;
 }): StreamFn {
-  return (model, context, options) => {
+  return markProviderDispatchObservableStreamFn((model, context, options) => {
     const apiKey = options?.apiKey ?? "";
     const createClient = deps?.createClient ?? ((clientOptions) => new Anthropic(clientOptions));
     const streamFn = deps?.stream ?? stream;
@@ -162,5 +166,5 @@ export function createMantleAnthropicStreamFn(deps?: {
       ...(isClaudeMythosPreviewModel(model) ? { effort: reasoning } : {}),
       thinkingBudgetTokens: adjusted.thinkingBudget,
     });
-  };
+  });
 }

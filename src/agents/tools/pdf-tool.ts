@@ -294,6 +294,7 @@ export function createPdfTool(options?: {
    * tool. The concrete PDF model is still resolved before execution.
    */
   deferAutoModelResolution?: boolean;
+  usageBudgetUnsupportedReason?: string;
 }): AnyAgentTool | null {
   const agentDir = options?.agentDir?.trim();
   const hasExplicitModelConfig = hasExplicitPdfToolModelConfig(options?.config);
@@ -343,6 +344,12 @@ export function createPdfTool(options?: {
     parameters: PdfToolSchema,
     execute: async (_toolCallId, args) => {
       const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+      if (options?.usageBudgetUnsupportedReason) {
+        return {
+          content: [{ type: "text", text: options.usageBudgetUnsupportedReason }],
+          details: { error: "usage_budget_unsupported_model_tool", tool: "pdf" },
+        };
+      }
 
       // MARK: - Normalize pdf + pdfs input
       const pdfInputs = resolvePdfInputs(record);

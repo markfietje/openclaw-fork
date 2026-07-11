@@ -2,6 +2,10 @@
 import crypto from "node:crypto";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { Model } from "openclaw/plugin-sdk/llm";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { describe, expect, it, vi } from "vitest";
 import { prepareGooglePromptCacheStreamFn } from "./google-prompt-cache.js";
 import { EmbeddedAttemptSessionTakeoverError } from "./run/attempt.session-lock.js";
@@ -153,6 +157,7 @@ function preparePromptCacheStream(params: {
   now: number;
   sessionManager: TestGooglePromptCacheSessionManager;
   streamFn: StreamFn;
+  usageBudgetEnforced?: boolean;
 }) {
   // Keep provider/model/cache-retention constants centralized so individual
   // tests can focus on cache lifecycle behavior.
@@ -166,6 +171,9 @@ function preparePromptCacheStream(params: {
       sessionManager: params.sessionManager,
       streamFn: params.streamFn,
       systemPrompt: "Follow policy.",
+      ...(params.usageBudgetEnforced !== undefined
+        ? { usageBudgetEnforced: params.usageBudgetEnforced }
+        : {}),
     },
     {
       buildGuardedFetch: () => params.fetchMock as typeof fetch,
@@ -175,6 +183,43 @@ function preparePromptCacheStream(params: {
 }
 
 describe("google prompt cache", () => {
+  it("skips managed cache operations while usage budgets are enforced", async () => {
+    const { streamFn: innerStreamFn } = createCapturingStreamFn();
+    const fetchMock = createCacheFetchMock({
+      name: "cachedContents/system-cache-budget",
+      expireTime: new Date(1_000_000 + 3_600_000).toISOString(),
+    });
+
+    const wrapped = await preparePromptCacheStream({
+      fetchMock,
+      now: 1_000_000,
+      sessionManager: makeSessionManager(),
+      streamFn: innerStreamFn,
+      usageBudgetEnforced: true,
+    });
+
+    expect(wrapped).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(innerStreamFn).not.toHaveBeenCalled();
+  });
+
+  it("preserves provider dispatch observability from the wrapped stream", async () => {
+    const { streamFn: innerStreamFn } = createCapturingStreamFn();
+    markProviderDispatchObservableStreamFn(innerStreamFn as StreamFn);
+
+    const wrapped = await preparePromptCacheStream({
+      fetchMock: createCacheFetchMock({
+        name: "cachedContents/system-cache-marker",
+        expireTime: new Date(1_000_000 + 3_600_000).toISOString(),
+      }),
+      now: 1_000_000,
+      sessionManager: makeSessionManager(),
+      streamFn: innerStreamFn,
+    });
+
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
+  });
+
   it("creates cached content from the system prompt and strips that prompt from live requests", async () => {
     // Cached system prompts should move out of live request context and into the
     // cachedContent option to avoid paying prompt tokens repeatedly.

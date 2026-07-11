@@ -4,6 +4,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import { readLatestAssistantTextFromSessionTranscript } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import {
@@ -44,6 +45,9 @@ type ParsedTtsCommand = {
 type TtsAttemptDetail = NonNullable<
   NonNullable<ReturnType<typeof getLastTtsAttempt>>["attempts"]
 >[number];
+
+const TTS_USAGE_BUDGET_DENIAL =
+  "TTS audio commands are unavailable while agent usage budgets are enabled because speech generation and summaries are not yet individually budget-metered.";
 
 function parseTtsCommand(normalized: string): ParsedTtsCommand | null {
   // Accept `/tts` and `/tts <action> [args]` as a single control surface.
@@ -123,7 +127,15 @@ async function buildTtsAudioReply(params: {
   accountId?: string;
   prefsPath: string;
   agentId?: string;
-}): Promise<{ reply: ReplyPayload; provider?: string; hash?: string } | { error: string }> {
+}): Promise<
+  | { reply: ReplyPayload; provider?: string; hash?: string }
+  | { error: string }
+  | { blocked: string }
+> {
+  if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.agentId })) {
+    return { blocked: TTS_USAGE_BUDGET_DENIAL };
+  }
+
   const start = Date.now();
   const result = await textToSpeech({
     text: params.text,
@@ -280,6 +292,9 @@ export const handleTtsCommands: CommandHandler = async (params, allowTextCommand
       prefsPath,
       agentId: params.agentId,
     });
+    if ("blocked" in audio) {
+      return { shouldContinue: false, reply: { text: audio.blocked } };
+    }
     if ("error" in audio) {
       return {
         shouldContinue: false,
@@ -314,6 +329,9 @@ export const handleTtsCommands: CommandHandler = async (params, allowTextCommand
       prefsPath,
       agentId: params.agentId,
     });
+    if ("blocked" in audio) {
+      return { shouldContinue: false, reply: { text: audio.blocked } };
+    }
     if (!("error" in audio)) {
       return { shouldContinue: false, reply: audio.reply };
     }

@@ -6,6 +6,13 @@ import {
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
 import {
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+  preserveProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
+import {
   patchCodexNativeWebSearchPayload,
   resolveCodexNativeSearchActivation,
 } from "../../../agents/codex-native-web-search-core.js";
@@ -35,15 +42,21 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { streamSimple } from "../../stream.js";
 import type { SimpleStreamOptions } from "../../types.js";
+import {
+  getOpenAIServiceTierBudgetReservationMultiplier,
+  type OpenAIServiceTier,
+} from "../openai-service-tier-pricing.js";
 import { mapThinkingLevelToReasoningEffort } from "./reasoning-effort-utils.js";
 import { streamWithPayloadPatch } from "./stream-payload-utils.js";
 
 const log = createSubsystemLogger("llm/providers/stream-wrappers");
 
-type OpenAIServiceTier = "auto" | "default" | "flex" | "priority";
 type DynamicFastMode = boolean | (() => boolean | undefined);
 type OpenClawSimpleStreamOptions = SimpleStreamOptions & {
   openclawCodeModeToolSurface?: boolean;
+};
+type OpenAIServiceTierStreamOptions = Parameters<StreamFn>[2] & {
+  serviceTier?: OpenAIServiceTier;
 };
 type OpenAIResponsesReplayOptions = Parameters<StreamFn>[2] & {
   replayResponsesItemIds?: boolean;
@@ -143,6 +156,48 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
     (typeof value === "object" || typeof value === "function") &&
     typeof (value as { then?: unknown }).then === "function"
   );
+}
+
+function applyOpenAIServiceTierPayloadResult(
+  payload: unknown,
+  result: unknown,
+  serviceTier: OpenAIServiceTier,
+): unknown {
+  const finalPayload = result ?? payload;
+  if (finalPayload && typeof finalPayload === "object") {
+    const payloadObj = finalPayload as Record<string, unknown>;
+    // Explicit serviceTier is the billing contract. Apply it after caller
+    // payload hooks so budget admission and the dispatched tier stay aligned.
+    payloadObj.service_tier = serviceTier;
+  }
+  return finalPayload;
+}
+
+function readOpenAIServiceTierPayloadValue(payload: unknown): OpenAIServiceTier | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const value = (payload as { service_tier?: unknown }).service_tier;
+  if (
+    value === "auto" ||
+    value === "default" ||
+    value === "flex" ||
+    value === "priority" ||
+    value === "scale"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function recordOpenAIServiceTierOption(
+  options: OpenAIServiceTierStreamOptions,
+  payload: unknown,
+): void {
+  const serviceTier = readOpenAIServiceTierPayloadValue(payload);
+  if (serviceTier !== undefined) {
+    options.serviceTier = serviceTier;
+  }
 }
 
 function readPayloadToolName(tool: unknown): string | undefined {
@@ -438,7 +493,7 @@ export function createOpenAIResponsesContextManagementWrapper(
   extraParams: Record<string, unknown> | undefined,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const policy = resolveOpenAIResponsesPayloadPolicy(model, {
       extraParams,
       enablePromptCacheStripping: true,
@@ -472,6 +527,7 @@ export function createOpenAIResponsesContextManagementWrapper(
     };
     return underlying(model, context, nextOptions);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -479,7 +535,7 @@ export function createOpenAIReasoningCompatibilityWrapper(
   baseStreamFn: StreamFn | undefined,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!shouldApplyOpenAIReasoningCompatibility(model)) {
       return underlying(model, context, options);
     }
@@ -490,12 +546,13 @@ export function createOpenAIReasoningCompatibilityWrapper(
       );
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
 export function createOpenAIStringContentWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!shouldFlattenOpenAICompletionMessages(model)) {
       return underlying(model, context, options);
     }
@@ -506,6 +563,7 @@ export function createOpenAIStringContentWrapper(baseStreamFn: StreamFn | undefi
       payloadObj.messages = flattenCompletionMessagesToStringContent(payloadObj.messages);
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -513,7 +571,7 @@ export function createOpenAICompletionsStrictMessageKeysWrapper(
   baseStreamFn: StreamFn | undefined,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!shouldStripOpenAICompletionMessageKeys(model)) {
       return underlying(model, context, options);
     }
@@ -524,6 +582,7 @@ export function createOpenAICompletionsStrictMessageKeysWrapper(
       payloadObj.messages = stripCompletionMessagesToRoleContent(payloadObj.messages);
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -531,7 +590,7 @@ export function createOpenAICompletionsToolsCompatWrapper(
   baseStreamFn: StreamFn | undefined,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!shouldStripOpenAICompletionTools(model)) {
       return underlying(model, context, options);
     }
@@ -541,6 +600,7 @@ export function createOpenAICompletionsToolsCompatWrapper(
       delete payloadObj.parallel_tool_calls;
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -552,7 +612,7 @@ export function createOpenAIThinkingLevelWrapper(
   if (!thinkingLevel) {
     return underlying;
   }
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!shouldApplyOpenAIReasoningCompatibility(model)) {
       if (thinkingLevel === "off") {
         return underlying(model, context, options);
@@ -589,6 +649,7 @@ export function createOpenAIThinkingLevelWrapper(
       }
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -597,7 +658,7 @@ export function createOpenAIFastModeWrapper(
   enabled: DynamicFastMode = true,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (
       normalizeOpenAIFastMode(enabled) !== true ||
       (model.api !== "openai-responses" &&
@@ -608,7 +669,7 @@ export function createOpenAIFastModeWrapper(
       return underlying(model, context, options);
     }
     const originalOnPayload = options?.onPayload;
-    return underlying(model, context, {
+    const nextOptions: OpenAIServiceTierStreamOptions = {
       ...options,
       onPayload: (payload) => {
         if (payload && typeof payload === "object") {
@@ -617,10 +678,41 @@ export function createOpenAIFastModeWrapper(
             model,
           });
         }
-        return originalOnPayload?.(payload, model);
+        const result = originalOnPayload?.(payload, model);
+        if (isPromiseLike(result)) {
+          return Promise.resolve(result).then((resolved) => {
+            recordOpenAIServiceTierOption(nextOptions, resolved ?? payload);
+            return resolved;
+          });
+        }
+        recordOpenAIServiceTierOption(nextOptions, result ?? payload);
+        return result;
       },
-    });
+    };
+    return underlying(model, context, nextOptions);
   };
+  const costResolved = markProviderDispatchCostMultiplierResolverStreamFn(
+    preserveProviderDispatchObservableStreamFn(wrapped, underlying),
+    ({ model, context, options }) =>
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: underlying,
+        model,
+        context,
+        options,
+      }),
+  );
+  return markProviderDispatchReservationCostMultiplierResolverStreamFn(
+    costResolved,
+    ({ model, context, options }) =>
+      normalizeOpenAIFastMode(enabled) === true && shouldApplyOpenAIServiceTier(model)
+        ? getOpenAIServiceTierBudgetReservationMultiplier(model, "priority")
+        : resolveProviderDispatchReservationCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          }),
+  );
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -629,16 +721,56 @@ export function createOpenAIServiceTierWrapper(
   serviceTier: OpenAIServiceTier,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!shouldApplyOpenAIServiceTier(model)) {
       return underlying(model, context, options);
     }
-    return streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
-      if (payloadObj.service_tier === undefined) {
-        payloadObj.service_tier = serviceTier;
-      }
-    });
+    const originalOnPayload = options?.onPayload;
+    const nextOptions: OpenAIServiceTierStreamOptions = {
+      ...options,
+      serviceTier,
+      onPayload: (payload) => {
+        const result = originalOnPayload?.(payload, model);
+        if (isPromiseLike(result)) {
+          return Promise.resolve(result).then((resolved) => {
+            const finalPayload = applyOpenAIServiceTierPayloadResult(
+              payload,
+              resolved,
+              serviceTier,
+            );
+            recordOpenAIServiceTierOption(nextOptions, finalPayload);
+            return finalPayload;
+          });
+        }
+        const finalPayload = applyOpenAIServiceTierPayloadResult(payload, result, serviceTier);
+        recordOpenAIServiceTierOption(nextOptions, finalPayload);
+        return finalPayload;
+      },
+    };
+    return underlying(model, context, nextOptions);
   };
+  const costResolved = markProviderDispatchCostMultiplierResolverStreamFn(
+    preserveProviderDispatchObservableStreamFn(wrapped, underlying),
+    ({ model, context, options }) =>
+      resolveProviderDispatchCostMultiplierForStreamFn({
+        streamFn: underlying,
+        model,
+        context,
+        options,
+      }),
+  );
+  return markProviderDispatchReservationCostMultiplierResolverStreamFn(
+    costResolved,
+    ({ model, context, options }) =>
+      shouldApplyOpenAIServiceTier(model)
+        ? getOpenAIServiceTierBudgetReservationMultiplier(model, serviceTier)
+        : resolveProviderDispatchReservationCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          }),
+  );
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -647,7 +779,7 @@ export function createOpenAITextVerbosityWrapper(
   verbosity: OpenAITextVerbosity,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.api !== "openai-responses" && model.api !== "openai-chatgpt-responses") {
       return underlying(model, context, options);
     }
@@ -672,6 +804,7 @@ export function createOpenAITextVerbosityWrapper(
       },
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 /** @deprecated OpenAI Codex provider-owned stream helper; do not use from third-party plugins. */
 export function createCodexNativeWebSearchWrapper(
@@ -697,7 +830,7 @@ export function createCodexNativeWebSearchWrapper(
   },
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (
       (params.codeModeToolSurfaceEnabled === true || isCodeModeEnabled(params.config)) &&
       hasCodeModeVisibleTools(context)
@@ -794,17 +927,19 @@ export function createCodexNativeWebSearchWrapper(
       },
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
 export function createOpenAIDefaultTransportWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const mergedOptions = {
       ...options,
       transport: options?.transport ?? "auto",
     } as SimpleStreamOptions;
     return underlying(model, context, mergedOptions);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated OpenAI provider-owned stream helper; do not use from third-party plugins. */
@@ -813,7 +948,7 @@ export function createOpenAIAttributionHeadersWrapper(
   opts?: { codexNativeTransportStreamFn?: StreamFn },
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const attributionProvider = shouldApplyOpenAIAttributionHeaders(model);
     if (!attributionProvider) {
       return underlying(model, context, options);
@@ -837,4 +972,5 @@ export function createOpenAIAttributionHeadersWrapper(
       }).headers,
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }

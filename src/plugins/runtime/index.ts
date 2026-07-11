@@ -1,6 +1,11 @@
 // Plugin runtime entrypoint assembles runtime helpers available to activated plugins.
+import {
+  hasAnyActiveAgentUsageBudgetConfig,
+  resolveAgentUsageBudgetConfig,
+} from "../../agents/usage-budget.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveStateDir } from "../../config/paths.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   generateImage as generateRuntimeImage,
   listRuntimeImageGenerationProviders,
@@ -50,12 +55,78 @@ const loadModelAuthRuntime = createLazyRuntimeModule(
   () => import("./runtime-model-auth.runtime.js"),
 );
 
+type UsageBudgetRuntimeParams = {
+  cfg?: OpenClawConfig;
+  agentId?: string | null;
+};
+
+const USAGE_BUDGET_RUNTIME_MEDIA_DENIAL =
+  "Plugin runtime media provider calls are unavailable while agent usage budgets are enabled because media provider calls are not yet individually budget-metered.";
+
+const USAGE_BUDGET_RUNTIME_TTS_DENIAL =
+  "Plugin runtime TTS provider calls are unavailable while agent usage budgets are enabled because speech provider calls are not yet individually budget-metered.";
+
+const USAGE_BUDGET_RUNTIME_NODE_INVOKE_DENIAL =
+  "Plugin runtime node invocations are unavailable while agent usage budgets are enabled because node commands are not yet individually budget-metered.";
+
+function hasActiveUsageBudget(params: UsageBudgetRuntimeParams): boolean {
+  const cfg = params.cfg ?? getRuntimeConfig();
+  if (params.agentId === undefined || params.agentId === null) {
+    return hasAnyActiveAgentUsageBudgetConfig(cfg);
+  }
+  return Boolean(
+    resolveAgentUsageBudgetConfig({
+      config: cfg,
+      agentId: params.agentId,
+    }),
+  );
+}
+
+function assertRuntimeMediaUsageBudgetAllowed(params: UsageBudgetRuntimeParams): void {
+  if (hasActiveUsageBudget(params)) {
+    throw new Error(USAGE_BUDGET_RUNTIME_MEDIA_DENIAL);
+  }
+}
+
+function resolveRuntimeTtsUsageBudgetDenial(params: UsageBudgetRuntimeParams): string | undefined {
+  return hasActiveUsageBudget(params) ? USAGE_BUDGET_RUNTIME_TTS_DENIAL : undefined;
+}
+
+function assertRuntimeNodeInvokeUsageBudgetAllowed(params: UsageBudgetRuntimeParams): void {
+  if (hasActiveUsageBudget(params)) {
+    throw new Error(USAGE_BUDGET_RUNTIME_NODE_INVOKE_DENIAL);
+  }
+}
+
 function createRuntimeTts(): PluginRuntime["tts"] {
   const bindTtsRuntime = createLazyRuntimeMethodBinder(loadTtsRuntime);
+  const textToSpeech = bindTtsRuntime((runtime) => runtime.textToSpeech);
+  const textToSpeechStream = bindTtsRuntime((runtime) => runtime.textToSpeechStream);
+  const textToSpeechTelephony = bindTtsRuntime((runtime) => runtime.textToSpeechTelephony);
   return {
-    textToSpeech: bindTtsRuntime((runtime) => runtime.textToSpeech),
-    textToSpeechStream: bindTtsRuntime((runtime) => runtime.textToSpeechStream),
-    textToSpeechTelephony: bindTtsRuntime((runtime) => runtime.textToSpeechTelephony),
+    textToSpeech: async (params) => {
+      // Channel-native TTS reaches provider synthesis through api.runtime.tts;
+      // fail here so budgeted agents cannot bypass model-call metering.
+      const denial = resolveRuntimeTtsUsageBudgetDenial(params);
+      if (denial) {
+        return { success: false, error: denial };
+      }
+      return await textToSpeech(params);
+    },
+    textToSpeechStream: async (params) => {
+      const denial = resolveRuntimeTtsUsageBudgetDenial(params);
+      if (denial) {
+        return { success: false, error: denial };
+      }
+      return await textToSpeechStream(params);
+    },
+    textToSpeechTelephony: async (params) => {
+      const denial = resolveRuntimeTtsUsageBudgetDenial(params);
+      if (denial) {
+        return { success: false, error: denial };
+      }
+      return await textToSpeechTelephony(params);
+    },
     listVoices: bindTtsRuntime((runtime) => runtime.listSpeechVoices),
   };
 }
@@ -64,37 +135,72 @@ function createRuntimeMediaUnderstandingFacade(): PluginRuntime["mediaUnderstand
   const bindMediaUnderstandingRuntime = createLazyRuntimeMethodBinder(
     loadMediaUnderstandingRuntime,
   );
+  const runFile = bindMediaUnderstandingRuntime((runtime) => runtime.runMediaUnderstandingFile);
+  const describeImageFile = bindMediaUnderstandingRuntime((runtime) => runtime.describeImageFile);
+  const describeImageFileWithModel = bindMediaUnderstandingRuntime(
+    (runtime) => runtime.describeImageFileWithModel,
+  );
+  const extractStructuredWithModel = bindMediaUnderstandingRuntime(
+    (runtime) => runtime.extractStructuredWithModel,
+  );
+  const describeVideoFile = bindMediaUnderstandingRuntime((runtime) => runtime.describeVideoFile);
+  const transcribeAudioFile = bindMediaUnderstandingRuntime(
+    (runtime) => runtime.transcribeAudioFile,
+  );
   return {
-    runFile: bindMediaUnderstandingRuntime((runtime) => runtime.runMediaUnderstandingFile),
-    describeImageFile: bindMediaUnderstandingRuntime((runtime) => runtime.describeImageFile),
-    describeImageFileWithModel: bindMediaUnderstandingRuntime(
-      (runtime) => runtime.describeImageFileWithModel,
-    ),
-    extractStructuredWithModel: bindMediaUnderstandingRuntime(
-      (runtime) => runtime.extractStructuredWithModel,
-    ),
-    describeVideoFile: bindMediaUnderstandingRuntime((runtime) => runtime.describeVideoFile),
-    transcribeAudioFile: bindMediaUnderstandingRuntime((runtime) => runtime.transcribeAudioFile),
+    runFile: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await runFile(params);
+    },
+    describeImageFile: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await describeImageFile(params);
+    },
+    describeImageFileWithModel: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await describeImageFileWithModel(params);
+    },
+    extractStructuredWithModel: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await extractStructuredWithModel(params);
+    },
+    describeVideoFile: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await describeVideoFile(params);
+    },
+    transcribeAudioFile: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await transcribeAudioFile(params);
+    },
   };
 }
 
 function createRuntimeImageGeneration(): PluginRuntime["imageGeneration"] {
   return {
-    generate: (params) => generateRuntimeImage(params),
+    generate: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await generateRuntimeImage(params);
+    },
     listProviders: (params) => listRuntimeImageGenerationProviders(params),
   };
 }
 
 function createRuntimeVideoGeneration(): PluginRuntime["videoGeneration"] {
   return {
-    generate: (params) => generateRuntimeVideo(params),
+    generate: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await generateRuntimeVideo(params);
+    },
     listProviders: (params) => listRuntimeVideoGenerationProviders(params),
   };
 }
 
 function createRuntimeMusicGeneration(): PluginRuntime["musicGeneration"] {
   return {
-    generate: (params) => generateRuntimeMusic(params),
+    generate: async (params) => {
+      assertRuntimeMediaUsageBudgetAllowed(params);
+      return await generateRuntimeMusic(params);
+    },
     listProviders: (params) => listRuntimeMusicGenerationProviders(params),
   };
 }
@@ -223,6 +329,22 @@ function createLateBindingNodes(allowGatewayBinding = false): PluginRuntime["nod
   });
 }
 
+function createUsageBudgetGuardedNodesRuntime(
+  nodes: PluginRuntime["nodes"],
+): PluginRuntime["nodes"] {
+  return {
+    list: (params) => nodes.list(params),
+    invoke: async (params) => {
+      const { cfg, agentId, ...invokeParams } = params;
+      assertRuntimeNodeInvokeUsageBudgetAllowed({
+        cfg: cfg ?? getRuntimeConfig(),
+        ...(agentId !== undefined ? { agentId } : {}),
+      });
+      return await nodes.invoke(invokeParams);
+    },
+  };
+}
+
 export function createPluginRuntime(_options: CreatePluginRuntimeOptions = {}): PluginRuntime {
   const mediaUnderstanding = createRuntimeMediaUnderstandingFacade();
   const taskFlow = createRuntimeTaskFlow();
@@ -239,7 +361,9 @@ export function createPluginRuntime(_options: CreatePluginRuntimeOptions = {}): 
       _options.subagent,
       _options.allowGatewaySubagentBinding === true,
     ),
-    nodes: _options.nodes ?? createLateBindingNodes(_options.allowGatewaySubagentBinding === true),
+    nodes: createUsageBudgetGuardedNodesRuntime(
+      _options.nodes ?? createLateBindingNodes(_options.allowGatewaySubagentBinding === true),
+    ),
     system: createRuntimeSystem(),
     media: createRuntimeMedia(),
     webSearch: {

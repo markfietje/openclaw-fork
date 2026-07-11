@@ -94,6 +94,7 @@ export async function describeBrowserScreenshot(
     filePath,
     cfg: ctx.cfg,
     prompt: DEFAULT_BROWSER_SCREENSHOT_DESCRIPTION_PROMPT,
+    agentId: ctx.agentId,
     agentDir: ctx.agentDir,
     workspaceDir: ctx.workspaceDir,
     activeModel: normalizeActiveModel(ctx.activeModel),

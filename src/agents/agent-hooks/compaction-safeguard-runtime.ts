@@ -1,5 +1,6 @@
 /** Session-manager scoped runtime state for compaction safeguard configuration. */
 import type { AgentCompactionIdentifierPolicy } from "../../config/types.agent-defaults.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { Model } from "../../llm/types.js";
 import { createSessionManagerRuntimeRegistry } from "./session-manager-runtime-registry.js";
 
@@ -27,6 +28,13 @@ type CompactionSafeguardRuntimeValue = {
    * `summarize()` is called instead of the built-in `summarizeInStages()`.
    */
   provider?: string;
+  /** Agent-scoped usage budget context for safeguard-owned model calls. */
+  config?: OpenClawConfig;
+  agentId?: string | null;
+  /** Whether safeguard-owned LLM calls should self-meter usage-budget records. */
+  meterUsageBudgetModelCalls?: boolean;
+  /** Marks that safeguard summarization has reached a provider call boundary. */
+  onUsageBudgetProviderCallStart?: () => void;
   /**
    * Pending human-readable cancel reason from the current safeguard compaction
    * attempt. OpenClaw consumes this to replace the upstream generic

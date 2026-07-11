@@ -1,6 +1,7 @@
 // OpenAI Responses provider adapts OpenAI response streams to the agent runtime.
 import OpenAI from "openai";
 import type { ResponseCreateParamsStreaming } from "openai/resources/responses/responses.js";
+import { buildGuardedModelFetch } from "../../agents/provider-transport-fetch.js";
 import { getEnvApiKey } from "../env-api-keys.js";
 import type {
   CacheRetention,
@@ -10,7 +11,6 @@ import type {
   SimpleStreamOptions,
   StreamFunction,
   StreamOptions,
-  Usage,
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { resolveCacheRetention } from "./cache-retention.js";
@@ -24,6 +24,7 @@ import {
   resolveResponsesReasoningEffort,
   runResponsesStreamLifecycle,
 } from "./openai-responses-shared.js";
+import { applyOpenAIServiceTierPricing } from "./openai-service-tier-pricing.js";
 import { buildBaseOptions } from "./simple-options.js";
 
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "opencode"]);
@@ -91,13 +92,20 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
       const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
       const cacheRetention = resolveCacheRetention(options?.cacheRetention);
       const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
-      return createClient(model, context, apiKey, options?.headers, cacheSessionId);
+      return createClient(
+        model,
+        context,
+        apiKey,
+        options?.headers,
+        cacheSessionId,
+        options?.onProviderDispatch,
+      );
     },
     buildParams: () => buildParams(model, context, options),
     processStreamOptions: {
       serviceTier: options?.serviceTier,
       applyServiceTierPricing: (usage, serviceTier) =>
-        applyServiceTierPricing(usage, serviceTier, model),
+        applyOpenAIServiceTierPricing(usage, serviceTier, model),
     },
     formatError: formatOpenAIResponsesError,
   });
@@ -130,6 +138,7 @@ function createClient(
   apiKey?: string,
   optionsHeaders?: Record<string, string>,
   sessionId?: string,
+  onProviderDispatch?: () => void,
 ) {
   if (!apiKey) {
     throw new Error(`No API key for provider: ${model.provider}`);
@@ -172,6 +181,11 @@ function createClient(
     baseURL: isCloudflareProvider(model.provider) ? resolveCloudflareBaseUrl(model) : model.baseUrl,
     dangerouslyAllowBrowser: true,
     defaultHeaders,
+    fetch: buildGuardedModelFetch(
+      model,
+      undefined,
+      onProviderDispatch ? { onProviderDispatch } : undefined,
+    ),
   });
 }
 
@@ -215,36 +229,4 @@ function buildParams(
   });
 
   return params;
-}
-
-function getServiceTierCostMultiplier(
-  model: Pick<Model<"openai-responses">, "id">,
-  serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-): number {
-  switch (serviceTier) {
-    case "flex":
-      return 0.5;
-    case "priority":
-      return model.id === "gpt-5.5" ? 2.5 : 2;
-    default:
-      return 1;
-  }
-}
-
-function applyServiceTierPricing(
-  usage: Usage,
-  serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-  model: Pick<Model<"openai-responses">, "id">,
-) {
-  const multiplier = getServiceTierCostMultiplier(model, serviceTier);
-  if (multiplier === 1) {
-    return;
-  }
-
-  usage.cost.input *= multiplier;
-  usage.cost.output *= multiplier;
-  usage.cost.cacheRead *= multiplier;
-  usage.cost.cacheWrite *= multiplier;
-  usage.cost.total =
-    usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
 }

@@ -143,6 +143,7 @@ export async function processDiscordVoiceSegment(params: {
 
   const voiceReplyAudio = await synthesizeVoiceReplyAudio({
     cfg: params.cfg,
+    agentId: entry.route.agentId,
     override: params.discordConfig.voice?.tts,
     replyText,
     speakerLabel: ingress.speakerLabel,

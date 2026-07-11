@@ -775,6 +775,7 @@ describe("DiscordVoiceManager", () => {
     expect(result.ok).toBe(true);
     expect(joinVoiceChannelMock).toHaveBeenCalledTimes(1);
     expect(createRealtimeVoiceBridgeSessionMock).toHaveBeenCalledTimes(1);
+    expect(lastRealtimeBridgeParams()).toMatchObject({ cfg: {}, agentId: "agent-1" });
     expect(realtimeSessionMock.connect).toHaveBeenCalledTimes(1);
     expect(entry.transcripts).toEqual({
       sessionId: "notes-1",
@@ -5480,7 +5481,9 @@ describe("DiscordVoiceManager", () => {
     expect(commandArgs?.message).toContain("Do not call the tts tool");
     expect(commandArgs?.message).toContain("repair obvious transcription artifacts");
     expect(lastTtsArgs().channel).toBe("discord");
+    expect(lastTtsArgs().agentId).toBe("agent-1");
     expect(lastTtsArgs().text).toBe("hello back");
+    expect(lastTtsStreamArgs().agentId).toBe("agent-1");
   });
 
   it("logs a bounded inbound transcript preview for voice debugging", async () => {

@@ -731,6 +731,7 @@ const defaultScheduleImageGenerateBackgroundWork = createDefaultMediaGenerateBac
 
 async function executeImageGenerationJob(params: {
   effectiveCfg: OpenClawConfig;
+  agentId?: string;
   prompt: string;
   agentDir?: string;
   model?: string;
@@ -759,6 +760,7 @@ async function executeImageGenerationJob(params: {
   }
   const result = await generateImage({
     cfg: params.effectiveCfg,
+    agentId: params.agentId,
     prompt: params.prompt,
     agentDir: params.agentDir,
     modelOverride: params.model,
@@ -891,6 +893,7 @@ async function executeImageGenerationJob(params: {
 
 export function createImageGenerateTool(options?: {
   config?: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   authProfileStore?: AuthProfileStore;
   agentSessionKey?: string;
@@ -900,6 +903,7 @@ export function createImageGenerateTool(options?: {
   fsPolicy?: ToolFsPolicy;
   scheduleBackgroundWork?: MediaGenerateBackgroundScheduler;
   onAsyncTaskStarted?: MediaGenerateAsyncStartCallback;
+  usageBudgetUnsupportedReason?: string;
 }): AnyAgentTool | null {
   const cfg = options?.config ?? getRuntimeConfig();
   if (
@@ -944,6 +948,12 @@ export function createImageGenerateTool(options?: {
       }
       if (action === "status") {
         return createImageGenerateStatusActionResult(options?.agentSessionKey);
+      }
+      if (options?.usageBudgetUnsupportedReason) {
+        return {
+          content: [{ type: "text", text: options.usageBudgetUnsupportedReason }],
+          details: { error: "usage_budget_unsupported_model_tool", tool: "image_generate" },
+        };
       }
 
       const model = readStringParam(params, "model");
@@ -1121,6 +1131,7 @@ export function createImageGenerateTool(options?: {
           run: () =>
             executeImageGenerationJob({
               effectiveCfg,
+              agentId: options?.agentId,
               prompt,
               agentDir: options?.agentDir,
               model,
@@ -1179,6 +1190,7 @@ export function createImageGenerateTool(options?: {
       try {
         const executed = await executeImageGenerationJob({
           effectiveCfg,
+          agentId: options?.agentId,
           prompt,
           agentDir: options?.agentDir,
           model,

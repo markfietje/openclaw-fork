@@ -303,6 +303,22 @@ export const AgentContextLimitsSchema = z
   .strict()
   .optional();
 
+export const AgentUsageBudgetWindowSchema = z
+  .object({
+    usd: z.number().positive().optional(),
+    tokens: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export const AgentUsageBudgetSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    daily: AgentUsageBudgetWindowSchema.optional(),
+    monthly: AgentUsageBudgetWindowSchema.optional(),
+  })
+  .strict()
+  .optional();
+
 const AgentSkillsLimitsSchema = z
   .object({
     maxSkillsPromptChars: z.number().int().min(0).optional(),
@@ -1064,6 +1080,7 @@ export const AgentEntrySchema = z
     tts: TtsConfigSchema,
     skillsLimits: AgentSkillsLimitsSchema,
     contextLimits: AgentContextLimitsSchema,
+    usageBudget: AgentUsageBudgetSchema,
     contextTokens: z.number().int().positive().optional(),
     heartbeat: HeartbeatSchema,
     identity: IdentitySchema,

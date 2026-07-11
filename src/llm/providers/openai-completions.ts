@@ -1,4 +1,5 @@
 // OpenAI completions provider adapts chat completions to the agent runtime.
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import OpenAI from "openai";
 import type {
   ChatCompletionAssistantMessageParam,
@@ -29,6 +30,7 @@ import {
   stripSystemPromptCacheBoundary,
 } from "../../agents/system-prompt-cache-boundary.js";
 import { createReasoningTagTextPartitioner } from "../../shared/text/reasoning-tag-text-partitioner.js";
+import { attachUsageBudgetProviderBilledCostMetadata } from "../../shared/usage-budget-recorded-cost.js";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { calculateCost, clampThinkingLevel } from "../model-utils.js";
 import type {
@@ -56,6 +58,7 @@ import { resolveCacheRetention } from "./cache-retention.js";
 import { isCloudflareProvider, resolveCloudflareBaseUrl } from "./cloudflare.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.js";
+import { applyOpenAIServiceTierPricing } from "./openai-service-tier-pricing.js";
 import { mapOpenAIStopReason } from "./openai-stop-reason.js";
 import { buildBaseOptions } from "./simple-options.js";
 import { describeToolResultMediaPlaceholder, extractToolResultText } from "./tool-result-text.js";
@@ -108,6 +111,7 @@ function sanitizeToolResultText(text: string, fallback: string): string {
 export interface OpenAICompletionsOptions extends StreamOptions {
   toolChoice?: OpenAICompletionsToolChoice;
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  serviceTier?: OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming["service_tier"];
 }
 
 interface OpenAICompatCacheControl {
@@ -132,6 +136,13 @@ type ChatCompletionTextPartWithCacheControl = ChatCompletionContentPartText & {
 
 type ChatCompletionToolWithCacheControl = OpenAI.Chat.Completions.ChatCompletionTool & {
   cache_control?: OpenAICompatCacheControl;
+};
+type OpenAICompletionsRawUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+  cost?: unknown;
 };
 
 export const streamOpenAICompletions: StreamFunction<
@@ -165,7 +176,15 @@ export const streamOpenAICompletions: StreamFunction<
       const compat = getCompat(model);
       const cacheRetention = resolveCacheRetention(options?.cacheRetention);
       const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
-      const client = createClient(model, context, apiKey, options?.headers, cacheSessionId, compat);
+      const client = createClient(
+        model,
+        context,
+        apiKey,
+        options?.headers,
+        cacheSessionId,
+        compat,
+        options?.onProviderDispatch,
+      );
       let params = buildParams(model, context, options, compat, cacheRetention);
       const nextParams = await options?.onPayload?.(params, model);
       if (nextParams !== undefined) {
@@ -370,6 +389,15 @@ export const streamOpenAICompletions: StreamFunction<
           }
         }
       };
+      let responseServiceTier: string | undefined =
+        typeof options?.serviceTier === "string" && options.serviceTier.trim().length > 0
+          ? options.serviceTier
+          : undefined;
+      let lastUsageRaw: OpenAICompletionsRawUsage | undefined;
+      const updateUsage = (usageRaw: OpenAICompletionsRawUsage) => {
+        lastUsageRaw = usageRaw;
+        output.usage = parseChunkUsage(usageRaw, model, responseServiceTier);
+      };
 
       const guardedOpenaiStream = withFirstStreamEventTimeout(openaiStream, {
         provider: model.provider,
@@ -390,11 +418,18 @@ export const streamOpenAICompletions: StreamFunction<
         // OpenAI documents ChatCompletionChunk.id as the unique chat completion identifier,
         // and each chunk in a streamed completion carries the same id.
         output.responseId ||= chunk.id;
+        const chunkServiceTier = readOpenAICompletionsServiceTier(chunk);
+        if (chunkServiceTier !== undefined) {
+          responseServiceTier = chunkServiceTier;
+          if (lastUsageRaw) {
+            updateUsage(lastUsageRaw);
+          }
+        }
         if (typeof chunk.model === "string" && chunk.model.length > 0 && chunk.model !== model.id) {
           output.responseModel ||= chunk.model;
         }
         if (chunk.usage) {
-          output.usage = parseChunkUsage(chunk.usage, model);
+          updateUsage(chunk.usage);
         }
 
         const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
@@ -404,11 +439,9 @@ export const streamOpenAICompletions: StreamFunction<
 
         // Fallback: some providers (e.g., Moonshot) return usage
         // in choice.usage instead of the standard chunk.usage
-        const choiceUsage = (
-          choice as typeof choice & { usage?: Parameters<typeof parseChunkUsage>[0] }
-        ).usage;
+        const choiceUsage = (choice as typeof choice & { usage?: OpenAICompletionsRawUsage }).usage;
         if (!chunk.usage && choiceUsage) {
-          output.usage = parseChunkUsage(choiceUsage, model);
+          updateUsage(choiceUsage);
         }
 
         if (choice.finish_reason) {
@@ -598,6 +631,7 @@ function createClient(
   optionsHeaders?: Record<string, string>,
   sessionId?: string,
   compat: ResolvedOpenAICompletionsCompat = getCompat(model),
+  onProviderDispatch?: () => void,
 ) {
   if (!apiKey) {
     throw new Error(`No API key for provider: ${model.provider}`);
@@ -638,7 +672,11 @@ function createClient(
     baseURL: isCloudflareProvider(model.provider) ? resolveCloudflareBaseUrl(model) : model.baseUrl,
     dangerouslyAllowBrowser: true,
     defaultHeaders,
-    fetch: buildGuardedModelFetch(model),
+    fetch: buildGuardedModelFetch(
+      model,
+      undefined,
+      onProviderDispatch ? { onProviderDispatch } : undefined,
+    ),
   });
 }
 
@@ -707,6 +745,10 @@ function buildParams(
 
   if (options?.temperature !== undefined) {
     params.temperature = options.temperature;
+  }
+
+  if (options?.serviceTier !== undefined) {
+    params.service_tier = options.serviceTier;
   }
 
   if (options?.stop !== undefined && options.stop.length > 0) {
@@ -1250,13 +1292,9 @@ function convertTools(
 }
 
 function parseChunkUsage(
-  rawUsage: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    prompt_cache_hit_tokens?: number;
-    prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
-  },
+  rawUsage: OpenAICompletionsRawUsage,
   model: Model<"openai-completions">,
+  serviceTier?: string,
 ): AssistantMessage["usage"] {
   const promptTokens = rawUsage.prompt_tokens || 0;
   const cacheReadTokens =
@@ -1283,7 +1321,47 @@ function parseChunkUsage(
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
   calculateCost(model, usage);
+  applyOpenAIServiceTierPricing(usage, serviceTier, model);
+  const providerBilledCost = isVerifiedOpenRouterUsageAccountingRoute(model)
+    ? readProviderBilledUsageCostTotal(rawUsage)
+    : undefined;
+  if (providerBilledCost !== undefined) {
+    usage.cost.total = providerBilledCost;
+    attachUsageBudgetProviderBilledCostMetadata(usage as unknown as Record<string, unknown>);
+  }
   return usage;
+}
+
+function isVerifiedOpenRouterUsageAccountingRoute(model: {
+  provider?: unknown;
+  baseUrl?: unknown;
+}): boolean {
+  const provider = typeof model.provider === "string" ? model.provider.trim().toLowerCase() : "";
+  if (typeof model.baseUrl === "string" && model.baseUrl.trim() !== "") {
+    const normalized = model.baseUrl.trim().replace(/\/+$/, "");
+    return (
+      normalized === "https://openrouter.ai/api/v1" || normalized === "https://openrouter.ai/v1"
+    );
+  }
+  return provider === "openrouter";
+}
+
+function readProviderBilledUsageCostTotal(rawUsage: unknown): number | undefined {
+  if (!isRecord(rawUsage)) {
+    return undefined;
+  }
+  const rawCost = rawUsage.cost;
+  const total =
+    typeof rawCost === "number" ? rawCost : isRecord(rawCost) ? rawCost.total : undefined;
+  return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : undefined;
+}
+
+function readOpenAICompletionsServiceTier(chunk: unknown): string | undefined {
+  if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+    return undefined;
+  }
+  const serviceTier = (chunk as { service_tier?: unknown }).service_tier;
+  return typeof serviceTier === "string" && serviceTier.trim().length > 0 ? serviceTier : undefined;
 }
 
 /**

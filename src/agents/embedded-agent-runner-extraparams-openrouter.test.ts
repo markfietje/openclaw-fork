@@ -6,6 +6,7 @@ import {
   createOpenRouterWrapper,
   isProxyReasoningUnsupported,
 } from "../llm/providers/stream-wrappers/proxy.js";
+import { streamSimple } from "../llm/stream.js";
 import { runExtraParamsPayloadCase } from "./embedded-agent-runner-extraparams.test-support.js";
 import {
   applyExtraParamsToAgent,
@@ -58,6 +59,37 @@ afterEach(() => {
 });
 
 describe("applyExtraParamsToAgent OpenRouter reasoning", () => {
+  it("passes model-aware provider-dispatch observability to OpenRouter hooks", () => {
+    let observedProviderDispatchObservable: boolean | undefined;
+    extraParamsTesting.setProviderRuntimeDepsForTest({
+      prepareProviderExtraParams: ({ context }) => context.extraParams,
+      resolveProviderExtraParamsForTransport: () => undefined,
+      wrapProviderStreamFn: (params) => {
+        observedProviderDispatchObservable = params.context.providerDispatchObservable;
+        return params.context.streamFn;
+      },
+    });
+
+    const agent = { streamFn: streamSimple as StreamFn };
+    applyExtraParamsToAgent(
+      agent,
+      undefined,
+      "openrouter",
+      "auto",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        api: "openai-completions",
+        provider: "openrouter",
+        id: "openrouter/auto",
+      } as never,
+    );
+
+    expect(observedProviderDispatchObservable).toBe(true);
+  });
+
   it("does not inject reasoning when thinkingLevel is off (default) for OpenRouter", () => {
     const payload = runExtraParamsPayloadCase({
       provider: "openrouter",

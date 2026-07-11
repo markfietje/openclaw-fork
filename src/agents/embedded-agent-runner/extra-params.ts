@@ -38,6 +38,11 @@ import { canonicalizeMaxTokensParam, resolveMaxTokensParam } from "../model-max-
 import { legacyModelKey, modelKey } from "../model-selection-normalize.js";
 import { detectOpenAICompletionsCompat } from "../openai-completions-compat.js";
 import { supportsGptParallelToolCallsPayload } from "../provider-api-families.js";
+import {
+  isModelProviderDispatchObservableStreamFn,
+  markModelProviderDispatchObservableStreamFn,
+  preserveModelProviderDispatchObservableStreamFn,
+} from "../provider-dispatch-observable-stream.js";
 import { resolveProviderRequestPolicyConfig } from "../provider-request-config.js";
 import type { AgentRuntimeTransport } from "../runtime-plan/types.js";
 import type { StreamFn } from "../runtime/index.js";
@@ -569,7 +574,27 @@ function createStreamFnWithExtraParams(
     });
   };
 
-  return wrappedStreamFn;
+  return model
+    ? preserveModelProviderDispatchObservableStreamFn({
+        wrapped: wrappedStreamFn,
+        source: underlying,
+        model,
+      })
+    : wrappedStreamFn;
+}
+
+function preserveExtraParamWrapperDispatchObservability(params: {
+  wrapped: StreamFn;
+  source: StreamFn;
+  model?: ProviderRuntimeModel;
+}): StreamFn {
+  return params.model
+    ? preserveModelProviderDispatchObservableStreamFn({
+        wrapped: params.wrapped,
+        source: params.source,
+        model: params.model,
+      })
+    : params.wrapped;
 }
 
 function resolveAliasedParamValue(
@@ -650,19 +675,21 @@ function canonicalizeOpenRouterResponseCacheParams(
 function createParallelToolCallsWrapper(
   baseStreamFn: StreamFn | undefined,
   enabled: boolean,
+  model?: ProviderRuntimeModel,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
-    if (!supportsGptParallelToolCallsPayload(model.api)) {
-      return underlying(model, context, options);
+  const wrapped: StreamFn = (requestModel, context, options) => {
+    if (!supportsGptParallelToolCallsPayload(requestModel.api)) {
+      return underlying(requestModel, context, options);
     }
     log.debug(
-      `applying parallel_tool_calls=${enabled} for ${model.provider ?? "unknown"}/${model.id ?? "unknown"} api=${model.api}`,
+      `applying parallel_tool_calls=${enabled} for ${requestModel.provider ?? "unknown"}/${requestModel.id ?? "unknown"} api=${requestModel.api}`,
     );
-    return streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
+    return streamWithPayloadPatch(underlying, requestModel, context, options, (payloadObj) => {
       payloadObj.parallel_tool_calls = enabled;
     });
   };
+  return preserveExtraParamWrapperDispatchObservability({ wrapped, source: underlying, model });
 }
 
 function shouldStripOpenAICompletionsStore(model: ProviderRuntimeModel): boolean {
@@ -684,16 +711,20 @@ function shouldStripOpenAICompletionsStore(model: ProviderRuntimeModel): boolean
   return !capabilities.usesKnownNativeOpenAIRoute;
 }
 
-function createOpenAICompletionsStoreCompatWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
+function createOpenAICompletionsStoreCompatWrapper(
+  baseStreamFn: StreamFn | undefined,
+  model?: ProviderRuntimeModel,
+): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
-    if (!shouldStripOpenAICompletionsStore(model as ProviderRuntimeModel)) {
-      return underlying(model, context, options);
+  const wrapped: StreamFn = (requestModel, context, options) => {
+    if (!shouldStripOpenAICompletionsStore(requestModel as ProviderRuntimeModel)) {
+      return underlying(requestModel, context, options);
     }
-    return streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
+    return streamWithPayloadPatch(underlying, requestModel, context, options, (payloadObj) => {
       delete payloadObj.store;
     });
   };
+  return preserveExtraParamWrapperDispatchObservability({ wrapped, source: underlying, model });
 }
 
 function sanitizeExtraBodyRecord(value: Record<string, unknown>): Record<string, unknown> {
@@ -740,9 +771,10 @@ function resolveChatTemplateKwargsParam(
 function createOpenAICompletionsChatTemplateKwargsWrapper(params: {
   baseStreamFn: StreamFn | undefined;
   configured: Record<string, unknown>;
+  model?: ProviderRuntimeModel;
 }): StreamFn {
   const underlying = params.baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.api !== "openai-completions") {
       return underlying(model, context, options);
     }
@@ -758,18 +790,24 @@ function createOpenAICompletionsChatTemplateKwargsWrapper(params: {
       payloadObj.chat_template_kwargs = params.configured;
     });
   };
+  return preserveExtraParamWrapperDispatchObservability({
+    wrapped,
+    source: underlying,
+    model: params.model,
+  });
 }
 
 function createOpenAICompletionsExtraBodyWrapper(
   baseStreamFn: StreamFn | undefined,
   extraBody: Record<string, unknown>,
+  model?: ProviderRuntimeModel,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
-    if (model.api !== "openai-completions") {
-      return underlying(model, context, options);
+  const wrapped: StreamFn = (requestModel, context, options) => {
+    if (requestModel.api !== "openai-completions") {
+      return underlying(requestModel, context, options);
     }
-    return streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
+    return streamWithPayloadPatch(underlying, requestModel, context, options, (payloadObj) => {
       const collisions = Object.keys(extraBody).filter((key) => Object.hasOwn(payloadObj, key));
       if (collisions.length > 0) {
         log.warn(`extra_body overwriting request payload keys: ${collisions.join(", ")}`);
@@ -777,6 +815,7 @@ function createOpenAICompletionsExtraBodyWrapper(
       Object.assign(payloadObj, extraBody);
     });
   };
+  return preserveExtraParamWrapperDispatchObservability({ wrapped, source: underlying, model });
 }
 
 type ApplyExtraParamsContext = {
@@ -843,7 +882,10 @@ function applyPostPluginStreamWrappers(
       shouldPatchModel: (model) =>
         isDeepSeekV4OpenAICompatibleModel(model) && deepSeekV4NativeThinkingAllowedByCompat(model),
     });
-    ctx.agent.streamFn = createDeepSeekV4NonNativeCompatSanitizerWrapper(ctx.agent.streamFn);
+    ctx.agent.streamFn = createDeepSeekV4NonNativeCompatSanitizerWrapper(
+      ctx.agent.streamFn,
+      ctx.model,
+    );
 
     // MiMo reasoning models use the same DeepSeek-style reasoning_content wire
     // format. When MiMo is reached through an unowned proxy/custom provider
@@ -890,6 +932,7 @@ function applyPostPluginStreamWrappers(
     ctx.agent.streamFn = createOpenAICompletionsChatTemplateKwargsWrapper({
       baseStreamFn: ctx.agent.streamFn,
       configured: configuredChatTemplateKwargs,
+      model: ctx.model,
     });
   }
 
@@ -900,9 +943,13 @@ function applyPostPluginStreamWrappers(
   );
   const extraBody = resolveExtraBodyParam(rawExtraBody);
   if (extraBody) {
-    ctx.agent.streamFn = createOpenAICompletionsExtraBodyWrapper(ctx.agent.streamFn, extraBody);
+    ctx.agent.streamFn = createOpenAICompletionsExtraBodyWrapper(
+      ctx.agent.streamFn,
+      extraBody,
+      ctx.model,
+    );
   }
-  ctx.agent.streamFn = createOpenAICompletionsStoreCompatWrapper(ctx.agent.streamFn);
+  ctx.agent.streamFn = createOpenAICompletionsStoreCompatWrapper(ctx.agent.streamFn, ctx.model);
 
   const rawParallelToolCalls = resolveAliasedParamValue(
     [ctx.effectiveExtraParams, ctx.override],
@@ -913,7 +960,11 @@ function applyPostPluginStreamWrappers(
     return;
   }
   if (typeof rawParallelToolCalls === "boolean") {
-    ctx.agent.streamFn = createParallelToolCallsWrapper(ctx.agent.streamFn, rawParallelToolCalls);
+    ctx.agent.streamFn = createParallelToolCallsWrapper(
+      ctx.agent.streamFn,
+      rawParallelToolCalls,
+      ctx.model,
+    );
     return;
   }
   if (rawParallelToolCalls === null) {
@@ -988,19 +1039,25 @@ function resolveDeepSeekV4ThinkingFormatOverride(
 
 function createDeepSeekV4NonNativeCompatSanitizerWrapper(
   baseStreamFn: StreamFn | undefined,
+  model?: ProviderRuntimeModel,
 ): StreamFn | undefined {
   if (!baseStreamFn) {
     return undefined;
   }
-  return (model, context, options) => {
-    if (!shouldSanitizeDeepSeekV4NonNativeFields(model)) {
-      return baseStreamFn(model, context, options);
+  const wrapped: StreamFn = (requestModel, context, options) => {
+    if (!shouldSanitizeDeepSeekV4NonNativeFields(requestModel)) {
+      return baseStreamFn(requestModel, context, options);
     }
-    return streamWithPayloadPatch(baseStreamFn, model, context, options, (payload) => {
+    return streamWithPayloadPatch(baseStreamFn, requestModel, context, options, (payload) => {
       delete payload.thinking;
       stripDeepSeekV4ReasoningContent(payload);
     });
   };
+  return preserveExtraParamWrapperDispatchObservability({
+    wrapped,
+    source: baseStreamFn,
+    model,
+  });
 }
 
 function shouldSanitizeDeepSeekV4NonNativeFields(model: Parameters<StreamFn>[0]): boolean {
@@ -1119,6 +1176,9 @@ export function applyExtraParamsToAgent(
   };
 
   const providerStreamBase = agent.streamFn;
+  const providerDispatchObservableBase = model
+    ? isModelProviderDispatchObservableStreamFn({ streamFn: providerStreamBase, model })
+    : false;
   const nativeWebSearchAllowedByToolPolicy = options?.nativeWebSearchPolicyContext
     ? isNativeWebSearchAllowedByToolPolicy({
         config: cfg,
@@ -1143,6 +1203,7 @@ export function applyExtraParamsToAgent(
       thinkingLevel,
       model,
       streamFn: providerStreamBase,
+      providerDispatchObservable: providerDispatchObservableBase,
     },
   });
   agent.streamFn = pluginWrappedStreamFn ?? providerStreamBase;
@@ -1155,6 +1216,17 @@ export function applyExtraParamsToAgent(
     ...wrapperContext,
     providerWrapperHandled,
   });
+  const currentStreamDispatchObservable =
+    model && agent.streamFn
+      ? isModelProviderDispatchObservableStreamFn({ streamFn: agent.streamFn, model })
+      : false;
+  if (
+    model &&
+    agent.streamFn &&
+    (currentStreamDispatchObservable || (!providerWrapperHandled && providerDispatchObservableBase))
+  ) {
+    agent.streamFn = markModelProviderDispatchObservableStreamFn(agent.streamFn);
+  }
 
   return { effectiveExtraParams };
 }

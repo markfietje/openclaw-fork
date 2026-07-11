@@ -613,6 +613,38 @@ describe("streamOpenAICodexResponses transport", () => {
     },
   );
 
+  it("does not retry usage-budget provider dispatch denials", async () => {
+    const budgetError = Object.assign(
+      new Error(
+        'Usage budget blocked for agent "main": provider retry dispatch cannot be safely attributed.',
+      ),
+      { code: "agent_usage_budget_blocked" },
+    );
+    const onProviderDispatch = vi.fn(() => {
+      throw budgetError;
+    });
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const stream = streamOpenAICodexResponses(model, context, {
+      apiKey: createJwt({
+        "https://api.openai.com/auth": {
+          chatgpt_account_id: "acct-1",
+        },
+      }),
+      transport: "sse",
+      maxRetries: 3,
+      onProviderDispatch,
+    });
+
+    const result = await stream.result();
+
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toContain("provider retry dispatch cannot be safely attributed");
+    expect(onProviderDispatch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("caps oversized Retry-After delays before sleeping", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

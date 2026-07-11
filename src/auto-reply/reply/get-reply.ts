@@ -13,6 +13,7 @@ import {
 } from "../../agents/agent-scope.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
@@ -189,6 +190,12 @@ async function applyMediaUnderstandingIfNeeded(params: {
   activeModel: { provider: string; model: string };
 }): Promise<ApplyMediaUnderstandingResult | undefined> {
   if (!hasInboundMediaForUnderstanding(params.ctx)) {
+    return undefined;
+  }
+  if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.agentId })) {
+    logVerbose(
+      "media understanding skipped because agent usage budgets are enabled and media provider calls are not yet budget-metered.",
+    );
     return undefined;
   }
   try {

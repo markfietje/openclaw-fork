@@ -17,6 +17,7 @@ import {
   createProviderHttpError,
   providerOperationRetryConfig,
 } from "openclaw/plugin-sdk/provider-http";
+import { markProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 import {
   buildGuardedModelFetch,
   coerceTransportToolCallArguments,
@@ -1070,7 +1071,10 @@ async function openGoogleSseChunks(params: {
     params.kind === "google-vertex"
       ? "Google Vertex AI API error"
       : "Google Generative AI API error";
-  if (!shouldRetryGoogleGemini3FirstResponse({ kind: params.kind, model: params.model })) {
+  if (
+    params.options?.maxRetries === 0 ||
+    !shouldRetryGoogleGemini3FirstResponse({ kind: params.kind, model: params.model })
+  ) {
     const response = await params.guardedFetch(params.url, {
       method: "POST",
       headers: params.headers,
@@ -1261,7 +1265,7 @@ function pushTextBlockEnd(
 }
 
 function createGoogleTransportStreamFn(kind: CanonicalGoogleTransportApi): StreamFn {
-  return (rawModel, context, rawOptions) => {
+  return markProviderDispatchObservableStreamFn((rawModel, context, rawOptions) => {
     const model = rawModel as GoogleTransportModel;
     const options = rawOptions as GoogleTransportOptions | undefined;
     const { eventStream, stream } = createWritableTransportEventStream();
@@ -1278,7 +1282,11 @@ function createGoogleTransportStreamFn(kind: CanonicalGoogleTransportApi): Strea
       };
       try {
         const apiKey = options?.apiKey ?? getEnvApiKey(model.provider) ?? undefined;
-        const guardedFetch = buildGuardedModelFetch(model);
+        const guardedFetch = options?.onProviderDispatch
+          ? buildGuardedModelFetch(model, undefined, {
+              onProviderDispatch: options.onProviderDispatch,
+            })
+          : buildGuardedModelFetch(model);
         let params = buildGoogleGenerativeAiParams(model, context, options);
         const nextParams = await options?.onPayload?.(params, model);
         if (nextParams !== undefined) {
@@ -1310,15 +1318,18 @@ function createGoogleTransportStreamFn(kind: CanonicalGoogleTransportApi): Strea
           options,
           primaryApiKey: apiKey,
         });
+        // Budget admission sets maxRetries=0 because every physical provider
+        // dispatch must be admitted and accounted as its own model call.
+        const allowProviderRetry = options?.maxRetries !== 0;
         const sse =
-          apiKeys.length > 0
+          apiKeys.length > 0 && allowProviderRetry
             ? await executeWithApiKeyRotation({
                 provider: model.provider,
                 apiKeys,
                 transientRetry: providerOperationRetryConfig("read"),
                 execute: openSse,
               })
-            : await openSse(apiKey);
+            : await openSse(apiKeys[0] ?? apiKey);
         stream.push({ type: "start", partial: output as never });
         let currentBlockIndex = -1;
         const toolCallBlocksById = new Map<
@@ -1478,7 +1489,7 @@ function createGoogleTransportStreamFn(kind: CanonicalGoogleTransportApi): Strea
       }
     })();
     return eventStream as unknown as ReturnType<StreamFn>;
-  };
+  });
 }
 
 export function createGoogleGenerativeAiTransportStreamFn(): StreamFn {

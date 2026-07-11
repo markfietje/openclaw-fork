@@ -1,6 +1,7 @@
 /** Dispatches isolated cron output to direct delivery, mirrors, and follow-up queues. */
 import { isAudioFileName } from "@openclaw/media-core/mime";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import {
   isSilentReplyText,
@@ -351,6 +352,9 @@ async function maybeApplyTtsToCronPayloads(params: {
       accountId: params.delivery.accountId,
     })
   ) {
+    return params.payloads;
+  }
+  if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.agentId })) {
     return params.payloads;
   }
   const { maybeApplyTtsToPayload } = await loadTtsRuntime();

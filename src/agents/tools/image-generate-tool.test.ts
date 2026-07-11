@@ -403,6 +403,70 @@ describe("createImageGenerateTool", () => {
     expect(listProviders).not.toHaveBeenCalled();
   });
 
+  it("denies generation actions when usage budgets are active", async () => {
+    const reason = "Model-backed generation is unavailable for budgeted agents.";
+    const tool = requireImageGenerateTool(
+      createImageGenerateTool({
+        config: {
+          agents: {
+            defaults: {
+              imageGenerationModel: {
+                primary: "openai/gpt-image-1",
+              },
+            },
+          },
+        },
+        usageBudgetUnsupportedReason: reason,
+      }),
+    );
+
+    await expect(tool.execute("call-1", { prompt: "paint a lighthouse" })).resolves.toEqual({
+      content: [{ type: "text", text: reason }],
+      details: { error: "usage_budget_unsupported_model_tool", tool: "image_generate" },
+    });
+  });
+
+  it("passes the tool agent id into the image generation runtime", async () => {
+    const generateImage = vi.spyOn(imageGenerationRuntime, "generateImage").mockResolvedValue({
+      provider: "openai",
+      model: "gpt-image-1",
+      attempts: [],
+      ignoredOverrides: [],
+      images: [
+        {
+          buffer: Buffer.from("png-out"),
+          mimeType: "image/png",
+          fileName: "agent-owned.png",
+        },
+      ],
+    });
+    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValue({
+      path: "/tmp/agent-owned.png",
+      id: "agent-owned.png",
+      size: 7,
+      contentType: "image/png",
+    });
+
+    const tool = requireImageGenerateTool(
+      createImageGenerateTool({
+        config: {
+          agents: {
+            defaults: {
+              imageGenerationModel: {
+                primary: "openai/gpt-image-1",
+              },
+            },
+          },
+        },
+        agentId: "artist",
+      }),
+    );
+
+    await tool.execute("call-agent-image", { prompt: "A product render" });
+
+    expect(mockCallArg(generateImage, 0, "generateImage").agentId).toBe("artist");
+  });
+
   it("matches image-generation providers across plugin-advertised aliases", () => {
     vi.spyOn(imageGenerationRuntime, "listRuntimeImageGenerationProviders").mockReturnValue([
       {

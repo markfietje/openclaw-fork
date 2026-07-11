@@ -62,6 +62,7 @@ import {
   createOllamaNodeHostCommands,
   createOllamaNodeInferenceTool,
   createOllamaNodeInvokePolicy,
+  ollamaNodeInferenceToolDefinition,
 } from "./src/node-inference.js";
 import { readProviderBaseUrl } from "./src/provider-base-url.js";
 import {
@@ -452,7 +453,9 @@ export default definePluginEntry({
       }
     }
     api.registerNodeInvokePolicy(createOllamaNodeInvokePolicy());
-    api.registerTool(createOllamaNodeInferenceTool(api));
+    api.registerTool((ctx) => createOllamaNodeInferenceTool(api, ctx), {
+      name: ollamaNodeInferenceToolDefinition.name,
+    });
     const resolveCurrentPluginConfig = (config?: OpenClawConfig): OllamaPluginConfig => {
       const runtimePluginConfig = resolvePluginConfigObject(config, "ollama");
       if (runtimePluginConfig) {

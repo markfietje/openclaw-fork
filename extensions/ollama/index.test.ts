@@ -77,6 +77,12 @@ beforeEach(() => {
   createConfiguredOllamaStreamFnMock.mockClear();
 });
 
+function expectNodeInferenceToolFactory(registerTool: ReturnType<typeof vi.fn>) {
+  expect(registerTool).toHaveBeenCalledWith(expect.any(Function), { name: "node_inference" });
+  const factory = registerTool.mock.calls[0]?.[0] as ((ctx: unknown) => unknown) | undefined;
+  expect(factory?.({})).toMatchObject({ name: "node_inference" });
+}
+
 function registerProvider() {
   return registerProvidersWithPluginConfig({}).find((provider) => provider.id === "ollama");
 }
@@ -204,7 +210,7 @@ describe("ollama plugin", () => {
         defaultPlatforms: ["macos", "linux", "windows"],
       }),
     );
-    expect(registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "node_inference" }));
+    expectNodeInferenceToolFactory(registerTool);
   });
 
   it("keeps the agent tool but does not advertise node inference when disabled locally", () => {
@@ -226,7 +232,7 @@ describe("ollama plugin", () => {
 
     expect(registerNodeHostCommand).not.toHaveBeenCalled();
     expect(registerNodeInvokePolicy).toHaveBeenCalledOnce();
-    expect(registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: "node_inference" }));
+    expectNodeInferenceToolFactory(registerTool);
   });
 
   it("does not preselect a default model during provider auth setup", async () => {

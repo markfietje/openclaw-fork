@@ -416,6 +416,7 @@ type ExecutedMusicGeneration = {
 
 async function executeMusicGenerationJob(params: {
   effectiveCfg: OpenClawConfig;
+  agentId?: string;
   prompt: string;
   agentDir?: string;
   model?: string;
@@ -438,6 +439,7 @@ async function executeMusicGenerationJob(params: {
   }
   const result = await generateMusic({
     cfg: params.effectiveCfg,
+    agentId: params.agentId,
     prompt: params.prompt,
     agentDir: params.agentDir,
     modelOverride: params.model,
@@ -573,6 +575,7 @@ async function executeMusicGenerationJob(params: {
 
 export function createMusicGenerateTool(options?: {
   config?: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   authProfileStore?: AuthProfileStore;
   agentSessionKey?: string;
@@ -582,6 +585,7 @@ export function createMusicGenerateTool(options?: {
   fsPolicy?: ToolFsPolicy;
   scheduleBackgroundWork?: MediaGenerateBackgroundScheduler;
   onAsyncTaskStarted?: MediaGenerateAsyncStartCallback;
+  usageBudgetUnsupportedReason?: string;
 }): AnyAgentTool | null {
   const cfg: OpenClawConfig = options?.config ?? getRuntimeConfig();
   if (
@@ -628,6 +632,12 @@ export function createMusicGenerateTool(options?: {
 
       if (action === "status") {
         return createMusicGenerateStatusActionResult(options?.agentSessionKey);
+      }
+      if (options?.usageBudgetUnsupportedReason) {
+        return {
+          content: [{ type: "text", text: options.usageBudgetUnsupportedReason }],
+          details: { error: "usage_budget_unsupported_model_tool", tool: "music_generate" },
+        };
       }
 
       const musicGenerationModelConfig = resolveMusicGenerationModelConfigForTool({
@@ -758,6 +768,7 @@ export function createMusicGenerateTool(options?: {
           run: () =>
             executeMusicGenerationJob({
               effectiveCfg,
+              agentId: options?.agentId,
               prompt,
               agentDir: options?.agentDir,
               model,
@@ -816,6 +827,7 @@ export function createMusicGenerateTool(options?: {
       try {
         const executed = await executeMusicGenerationJob({
           effectiveCfg,
+          agentId: options?.agentId,
           prompt,
           agentDir: options?.agentDir,
           lyrics,

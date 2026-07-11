@@ -4,6 +4,8 @@
  * Keeps session-manager branch traversal local while delegating summary generation to agent-core.
  */
 import type { Model } from "../../../llm/types.js";
+import type { StreamFn } from "../../../llm/types.js";
+import type { Usage } from "../../../llm/types.js";
 import {
   collectEntriesForBranchSummaryFromBranches,
   generateBranchSummary as generateBranchSummaryCore,
@@ -27,8 +29,12 @@ export interface BranchSummaryResult {
   summary?: string;
   readFiles?: string[];
   modifiedFiles?: string[];
+  usage?: Usage;
+  usageBudgetOperationId?: string;
   aborted?: boolean;
   error?: string;
+  errorUsage?: Usage;
+  errorUsageBudgetOperationId?: string;
 }
 
 export interface GenerateBranchSummaryOptions {
@@ -39,6 +45,7 @@ export interface GenerateBranchSummaryOptions {
   customInstructions?: string;
   replaceInstructions?: boolean;
   reserveTokens?: number;
+  streamFn?: StreamFn;
 }
 
 /** Collects entries that differ between two session branches for summarization. */
@@ -69,7 +76,16 @@ export async function generateBranchSummary(
     return result.value;
   }
   if (result.error.code === "aborted") {
-    return { aborted: true, error: result.error.message };
+    return {
+      aborted: true,
+      error: result.error.message,
+      errorUsage: result.error.usage,
+      errorUsageBudgetOperationId: result.error.usageBudgetOperationId,
+    };
   }
-  return { error: result.error.message };
+  return {
+    error: result.error.message,
+    errorUsage: result.error.usage,
+    errorUsageBudgetOperationId: result.error.usageBudgetOperationId,
+  };
 }

@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
+import type { OpenClawConfig } from "../../config/types.js";
 import {
   clampThinkingLevel,
   getSupportedThinkingLevels,
@@ -30,8 +31,10 @@ import type {
   Message,
   Model,
   TextContent,
+  Usage,
 } from "../../llm/types.js";
 import { isContextOverflow } from "../../llm/utils/overflow.js";
+import { USAGE_BUDGET_OPERATION_ID_KEY } from "../compaction-usage-accounting.js";
 import type {
   Agent,
   AgentEvent,
@@ -105,21 +108,50 @@ function unwrapCoreResult<T>(result: { ok: true; value: T } | { ok: false; error
 function normalizeBranchSummaryResult(
   result:
     | { ok: true; value: CoreBranchSummaryResult }
-    | { ok: false; error: { code: string; message: string } },
+    | {
+        ok: false;
+        error: { code: string; message: string; usage?: Usage; usageBudgetOperationId?: string };
+      },
 ): {
   summary?: string;
   readFiles?: string[];
   modifiedFiles?: string[];
+  usage?: Usage;
+  usageBudgetOperationId?: string;
   aborted?: boolean;
   error?: string;
+  errorUsage?: Usage;
+  errorUsageBudgetOperationId?: string;
 } {
   if (result.ok) {
     return result.value;
   }
   if (result.error.code === "aborted") {
-    return { aborted: true, error: result.error.message };
+    return {
+      aborted: true,
+      error: result.error.message,
+      errorUsage: result.error.usage,
+      errorUsageBudgetOperationId: result.error.usageBudgetOperationId,
+    };
   }
-  return { error: result.error.message };
+  return {
+    error: result.error.message,
+    errorUsage: result.error.usage,
+    errorUsageBudgetOperationId: result.error.usageBudgetOperationId,
+  };
+}
+
+function createCompactionCancelledError(
+  outcome?: Extract<CompactionWorkOutcome, { status: "aborted" }>,
+): Error {
+  const error = new Error("Compaction cancelled");
+  if (outcome?.usage) {
+    Object.assign(error, { usage: outcome.usage });
+  }
+  if (outcome?.usageBudgetOperationId) {
+    Object.assign(error, { usageBudgetOperationId: outcome.usageBudgetOperationId });
+  }
+  return error;
 }
 
 function hasPersistedAssistantContent(content: unknown): boolean {
@@ -219,6 +251,10 @@ export type AgentSessionWriteLockRunner = <T>(run: () => Promise<T> | T) => Prom
 // ============================================================================
 
 export interface AgentSessionConfig {
+  /** OpenClaw runtime config used by session-local model-call helpers. */
+  config?: OpenClawConfig;
+  /** Agent whose session-local model-call helpers should be budgeted. */
+  agentId?: string;
   agent: Agent;
   sessionManager: SessionManager;
   settingsManager: SettingsManager;
@@ -317,7 +353,7 @@ type CompactionReason = "manual" | "threshold" | "overflow";
 
 type CompactionWorkOutcome =
   | { status: "compacted"; result: CompactionResult }
-  | { status: "aborted" }
+  | { status: "aborted"; usage?: Usage; usageBudgetOperationId?: string }
   | { status: "skipped" };
 
 // ============================================================================
@@ -714,10 +750,20 @@ export class AgentSession {
     }
 
     const targetRecord = target as unknown as Record<string, unknown>;
+    const replacementRecord = replacement as unknown as Record<string, unknown>;
+    const usageBudgetOperationId =
+      target.role === "assistant" &&
+      Object.hasOwn(targetRecord, USAGE_BUDGET_OPERATION_ID_KEY) &&
+      !Object.hasOwn(replacementRecord, USAGE_BUDGET_OPERATION_ID_KEY)
+        ? targetRecord[USAGE_BUDGET_OPERATION_ID_KEY]
+        : undefined;
     for (const key of Object.keys(targetRecord)) {
       delete targetRecord[key];
     }
-    Object.assign(targetRecord, replacement);
+    Object.assign(targetRecord, replacementRecord);
+    if (usageBudgetOperationId !== undefined) {
+      targetRecord[USAGE_BUDGET_OPERATION_ID_KEY] = usageBudgetOperationId;
+    }
   }
 
   /** Emit extension events based on agent events */
@@ -1834,7 +1880,7 @@ export class AgentSession {
         signal: this.compactionAbortController.signal,
       });
       if (outcome.status !== "compacted") {
-        throw new Error("Compaction cancelled");
+        throw createCompactionCancelledError(outcome.status === "aborted" ? outcome : undefined);
       }
 
       this.emit({
@@ -1898,6 +1944,32 @@ export class AgentSession {
     return { apiKey: authResult.apiKey, headers: authResult.headers };
   }
 
+  private appendCompactionUsageAccounting(
+    usage: Usage | undefined,
+    stopReason: string,
+    usageBudgetOperationId?: string,
+  ): void {
+    if (!usage || !this.model) {
+      return;
+    }
+    this.sessionManager.appendCompactionUsageAccounting({
+      schemaVersion: 1,
+      ...(usageBudgetOperationId
+        ? { [USAGE_BUDGET_OPERATION_ID_KEY]: usageBudgetOperationId }
+        : {}),
+      message: {
+        role: "assistant",
+        content: [],
+        api: this.model.api,
+        provider: this.model.provider,
+        model: this.model.id,
+        usage,
+        stopReason,
+        timestamp: Date.now(),
+      },
+    });
+  }
+
   private async runCompactionWork(options: {
     settings: ReturnType<SettingsManager["getCompactionSettings"]>;
     signal: AbortSignal;
@@ -1945,7 +2017,13 @@ export class AgentSession {
       });
 
       if (extensionResult?.cancel) {
-        return { status: "aborted" };
+        return {
+          status: "aborted",
+          ...(extensionResult.usage ? { usage: extensionResult.usage } : {}),
+          ...(extensionResult.usageBudgetOperationId
+            ? { usageBudgetOperationId: extensionResult.usageBudgetOperationId }
+            : {}),
+        };
       }
 
       if (extensionResult?.compaction) {
@@ -1954,8 +2032,8 @@ export class AgentSession {
       }
     }
 
-    compactionResult ??= unwrapCoreResult(
-      await compact(
+    if (!compactionResult) {
+      const compactResult = await compact(
         preparation,
         this.model,
         auth.apiKey,
@@ -1964,11 +2042,26 @@ export class AgentSession {
         options.signal,
         this.thinkingLevel,
         this.agent.streamFn,
-      ),
-    );
+      );
+      if (!compactResult.ok) {
+        this.appendCompactionUsageAccounting(
+          compactResult.error.usage,
+          "error",
+          compactResult.error.usageBudgetOperationId,
+        );
+        throw compactResult.error;
+      }
+      compactionResult = compactResult.value;
+    }
 
     if (options.signal.aborted) {
-      return { status: "aborted" };
+      return {
+        status: "aborted",
+        ...(compactionResult.usage ? { usage: compactionResult.usage } : {}),
+        ...(compactionResult.usageBudgetOperationId
+          ? { usageBudgetOperationId: compactionResult.usageBudgetOperationId }
+          : {}),
+      };
     }
 
     this.sessionManager.appendCompaction(
@@ -1977,6 +2070,17 @@ export class AgentSession {
       compactionResult.tokensBefore,
       compactionResult.details,
       fromExtension,
+      compactionResult.usage
+        ? {
+            api: this.model.api,
+            provider: this.model.provider,
+            model: this.model.id,
+            usage: compactionResult.usage,
+            ...(compactionResult.usageBudgetOperationId
+              ? { usageBudgetOperationId: compactionResult.usageBudgetOperationId }
+              : {}),
+          }
+        : undefined,
     );
     const newEntries = this.sessionManager.getEntries();
     const sessionContext = this.sessionManager.buildSessionContext();
@@ -2930,6 +3034,7 @@ export class AgentSession {
       // Run default summarizer if needed
       let summaryText: string | undefined;
       let summaryDetails: unknown;
+      let summaryUsageAccounting: BranchSummaryEntry["usageAccounting"] | undefined;
       if (options.summarize && entriesToSummarize.length > 0 && !extensionSummary) {
         const model = this.model!;
         const { apiKey, headers } = await this.getRequiredRequestAuth(model);
@@ -2947,9 +3052,19 @@ export class AgentSession {
           }),
         );
         if (result.aborted) {
+          this.appendCompactionUsageAccounting(
+            result.errorUsage,
+            "aborted",
+            result.errorUsageBudgetOperationId,
+          );
           return { cancelled: true, aborted: true };
         }
         if (result.error) {
+          this.appendCompactionUsageAccounting(
+            result.errorUsage,
+            "error",
+            result.errorUsageBudgetOperationId,
+          );
           throw new Error(result.error);
         }
         summaryText = result.summary;
@@ -2957,6 +3072,17 @@ export class AgentSession {
           readFiles: result.readFiles || [],
           modifiedFiles: result.modifiedFiles || [],
         };
+        if (result.usage) {
+          summaryUsageAccounting = {
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: result.usage,
+            ...(result.usageBudgetOperationId
+              ? { usageBudgetOperationId: result.usageBudgetOperationId }
+              : {}),
+          };
+        }
       } else if (extensionSummary) {
         summaryText = extensionSummary.summary;
         summaryDetails = extensionSummary.details;
@@ -2995,6 +3121,7 @@ export class AgentSession {
           summaryText,
           summaryDetails,
           fromExtension,
+          summaryUsageAccounting,
         );
         summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
 

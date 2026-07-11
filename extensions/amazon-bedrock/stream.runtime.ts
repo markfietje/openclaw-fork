@@ -26,6 +26,7 @@ import {
 } from "@aws-sdk/client-bedrock-runtime";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { DocumentType } from "@smithy/types";
+import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import {
   adjustMaxTokensForThinking,
   AssistantMessageEventStream,
@@ -61,9 +62,14 @@ import {
 import {
   applyAnthropicRefusal,
   createDeferredEventBuffer,
+  markProviderDispatchObservableStreamFn,
   notifyLlmRequestActivity,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { supportsBedrockPromptCaching, type BedrockOptions } from "./bedrock-options.js";
+import {
+  applyBedrockServiceTierPricing,
+  readBedrockServiceTierValue,
+} from "./service-tier-pricing.js";
 import { supportsBedrockNativeMaxEffort } from "./thinking-policy.js";
 
 type Block = (TextContent | ThinkingContent | ToolCall) & { index?: number; partialJson?: string };
@@ -144,6 +150,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
 
     const config: BedrockRuntimeClientConfig = {
       profile: options.profile,
+      ...(options.maxRetries === 0 ? { maxAttempts: 1 } : {}),
     };
     const configuredRegion = getConfiguredBedrockRegion(options);
     const hasConfiguredProfile = hasConfiguredBedrockProfile(options);
@@ -241,8 +248,12 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
       if (nextCommandInput !== undefined) {
         commandInput = nextCommandInput as typeof commandInput;
       }
+      const requestedServiceTier = readBedrockServiceTierValue(
+        (commandInput as Record<string, unknown>).serviceTier,
+      );
       const command = new ConverseStreamCommand(commandInput);
 
+      options.onProviderDispatch?.();
       const response = await client.send(command, { abortSignal: options.signal });
       if (response.$metadata.httpStatusCode !== undefined) {
         const responseHeaders: Record<string, string> = {};
@@ -282,7 +293,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream", BedrockOpt
             output.stopReason = mapStopReason(item.messageStop.stopReason);
           }
         } else if (item.metadata) {
-          handleMetadata(item.metadata, model, output);
+          handleMetadata(item.metadata, model, output, requestedServiceTier);
         } else if (item.internalServerException) {
           throw item.internalServerException;
         } else if (item.modelStreamErrorException) {
@@ -366,6 +377,9 @@ export const streamSimpleBedrock: StreamFunction<"bedrock-converse-stream", Simp
   context: Context,
   options?: SimpleStreamOptions,
 ) => streamBedrock(model, context, resolveSimpleBedrockOptions(model, options));
+
+markProviderDispatchObservableStreamFn(streamBedrock as unknown as StreamFn);
+markProviderDispatchObservableStreamFn(streamSimpleBedrock as unknown as StreamFn);
 
 function resolveSimpleBedrockOptions(
   model: Model<"bedrock-converse-stream">,
@@ -526,6 +540,7 @@ function handleMetadata(
   event: ConverseStreamMetadataEvent,
   model: Model<"bedrock-converse-stream">,
   output: AssistantMessage,
+  requestedServiceTier?: string,
 ): void {
   if (event.usage) {
     output.usage.input = event.usage.inputTokens || 0;
@@ -534,6 +549,10 @@ function handleMetadata(
     output.usage.cacheWrite = event.usage.cacheWriteInputTokens || 0;
     output.usage.totalTokens = event.usage.totalTokens || output.usage.input + output.usage.output;
     calculateCost(model, output.usage);
+    applyBedrockServiceTierPricing(
+      output.usage,
+      readBedrockServiceTierValue(event.serviceTier) ?? requestedServiceTier,
+    );
   }
 }
 

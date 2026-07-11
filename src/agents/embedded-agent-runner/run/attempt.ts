@@ -6,6 +6,7 @@ import os from "node:os";
 import { MAX_IMAGE_BYTES } from "@openclaw/media-core/constants";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { buildHierarchyReinforcementMessage } from "../../../auto-reply/handoff-summarizer.js";
 import { filterHeartbeatTranscriptArtifacts } from "../../../auto-reply/heartbeat-filter.js";
@@ -192,7 +193,7 @@ import {
   logAgentRuntimeToolDiagnostics,
   normalizeAgentRuntimeTools,
 } from "../../runtime-plan/tools.js";
-import type { AgentMessage } from "../../runtime/index.js";
+import type { AgentMessage, StreamFn } from "../../runtime/index.js";
 import { resolveSandboxContext } from "../../sandbox.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import {
@@ -203,6 +204,7 @@ import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js"
 import { sanitizeToolUseResultPairing } from "../../session-transcript-repair.js";
 import { acquireSessionWriteLock } from "../../session-write-lock.js";
 import { createAgentSession, SessionManager } from "../../sessions/index.js";
+import { AGENT_SESSION_MODEL_CALL_USAGE_BUDGET_ENFORCEMENT } from "../../sessions/sdk-usage-budget-internal.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
 import { detectRuntimeShell } from "../../shell-utils.js";
 import { buildActiveSubagentSystemPromptAddition } from "../../subagent-active-context.js";
@@ -250,6 +252,11 @@ import {
   type CronCreatorToolAllowlistEntry,
 } from "../../tools/cron-tool.js";
 import { shouldAllowProviderOwnedThinkingReplay } from "../../transcript-policy.js";
+import {
+  isAgentUsageBudgetError,
+  isAgentUsageBudgetErrorMessage,
+  resolveAgentUsageBudgetConfig,
+} from "../../usage-budget.js";
 import { normalizeUsage, type NormalizedUsage } from "../../usage.js";
 import {
   DEFAULT_BOOTSTRAP_FILENAME,
@@ -688,6 +695,18 @@ function isMidTurnPrecheckAssistantError(message: AgentMessage | undefined): boo
   }
   const record = message as unknown as { stopReason?: unknown; errorMessage?: unknown };
   return record.stopReason === "error" && record.errorMessage === MID_TURN_PRECHECK_ERROR_MESSAGE;
+}
+
+function readUsageBudgetAssistantErrorMessage(
+  message: AgentMessage | undefined,
+): string | undefined {
+  if (!message || message.role !== "assistant") {
+    return undefined;
+  }
+  const record = message as unknown as { stopReason?: unknown; errorMessage?: unknown };
+  return record.stopReason === "error" && isAgentUsageBudgetErrorMessage(record.errorMessage)
+    ? record.errorMessage
+    : undefined;
 }
 
 function removeTrailingMidTurnPrecheckAssistantError(params: {
@@ -2336,6 +2355,7 @@ export async function runEmbeddedAttempt(
         modelId: params.modelId,
         model: params.model,
         runId: params.runId,
+        agentId: sessionAgentId,
       });
       const resourceLoader = createEmbeddedAgentResourceLoader({
         cwd: effectiveCwd,
@@ -2521,6 +2541,11 @@ export async function runEmbeddedAttempt(
         createAgentSession: async (options) =>
           await createAgentSession(options as unknown as Parameters<typeof createAgentSession>[0]),
         options: {
+          config: params.config,
+          agentId: sessionAgentId,
+          ...(params.config
+            ? { usageBudgetEnforcement: AGENT_SESSION_MODEL_CALL_USAGE_BUDGET_ENFORCEMENT }
+            : {}),
           cwd: effectiveCwd,
           agentDir,
           authStorage: params.authStorage,
@@ -3098,7 +3123,7 @@ export async function runEmbeddedAttempt(
       }
 
       const innerStreamFn = activeSession.agent.streamFn;
-      activeSession.agent.streamFn = (model, context, options) => {
+      const yieldGuardedStreamFn: StreamFn = (model, context, options) => {
         const signal = runAbortController.signal as AbortSignal & { reason?: unknown };
         if (yieldDetected && signal.aborted && signal.reason === "sessions_yield") {
           return createYieldAbortedResponse(model) as unknown as Awaited<
@@ -3107,6 +3132,10 @@ export async function runEmbeddedAttempt(
         }
         return innerStreamFn(model, context, options);
       };
+      activeSession.agent.streamFn = preserveProviderDispatchObservableStreamFn(
+        yieldGuardedStreamFn,
+        innerStreamFn,
+      );
 
       // Some models emit tool names with surrounding whitespace (e.g. " read ").
       // agent runtime dispatches tool calls with exact string matching, so normalize
@@ -3210,7 +3239,7 @@ export async function runEmbeddedAttempt(
       });
       if (firstEventTimeoutMs > 0) {
         const baseStreamFn = activeSession.agent.streamFn;
-        activeSession.agent.streamFn = (model, context, options) => {
+        const firstEventTimeoutStreamFn: StreamFn = (model, context, options) => {
           type FirstEventStreamOptions = {
             firstEventTimeoutMs?: number;
             onFirstEventTimeout?: (error: Error) => void;
@@ -3222,40 +3251,53 @@ export async function runEmbeddedAttempt(
             onFirstEventTimeout: optionsWithFirstEvent?.onFirstEventTimeout ?? idleTimeoutTrigger,
           } as typeof options);
         };
+        activeSession.agent.streamFn = preserveProviderDispatchObservableStreamFn(
+          firstEventTimeoutStreamFn,
+          baseStreamFn,
+        );
       }
       let diagnosticModelCallSeq = 0;
-      activeSession.agent.streamFn = wrapStreamFnWithDiagnosticModelCallEvents(
-        activeSession.agent.streamFn,
-        {
-          runId: params.runId,
-          ...(params.sessionKey && { sessionKey: params.sessionKey }),
-          ...(params.sessionId && { sessionId: params.sessionId }),
-          provider: params.provider,
-          model: params.modelId,
-          api: params.model.api,
-          transport: effectiveAgentTransport,
-          ...(params.contextWindowInfo?.tokens
-            ? { contextTokenBudget: params.contextWindowInfo.tokens }
-            : {}),
-          ...(params.contextWindowInfo?.source
-            ? { contextWindowSource: params.contextWindowInfo.source }
-            : {}),
-          ...(params.contextWindowInfo?.referenceTokens
-            ? { contextWindowReferenceTokens: params.contextWindowInfo.referenceTokens }
-            : {}),
-          trace: runTrace,
-          contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
-          nextCallId: () => `${params.runId}:model:${(diagnosticModelCallSeq += 1)}`,
-          onStarted: () => {
-            params.onExecutionPhase?.({
-              phase: "model_call_started",
-              provider: params.provider,
-              model: params.modelId,
-              firstModelCallStarted: true,
-            });
+      const nextDiagnosticModelCallId =
+        params.nextDiagnosticModelCallId ??
+        (() => `${params.runId}:model:${(diagnosticModelCallSeq += 1)}`);
+      const installDiagnosticModelCallWrapper = () => {
+        activeSession.agent.streamFn = wrapStreamFnWithDiagnosticModelCallEvents(
+          activeSession.agent.streamFn,
+          {
+            runId: params.runId,
+            ...(params.sessionKey && { sessionKey: params.sessionKey }),
+            ...(params.sessionId && { sessionId: params.sessionId }),
+            transcriptPath: params.sessionFile,
+            provider: params.provider,
+            model: params.modelId,
+            api: params.model.api,
+            transport: effectiveAgentTransport,
+            ...(params.contextWindowInfo?.tokens
+              ? { contextTokenBudget: params.contextWindowInfo.tokens }
+              : {}),
+            ...(params.contextWindowInfo?.source
+              ? { contextWindowSource: params.contextWindowInfo.source }
+              : {}),
+            ...(params.contextWindowInfo?.referenceTokens
+              ? { contextWindowReferenceTokens: params.contextWindowInfo.referenceTokens }
+              : {}),
+            trace: runTrace,
+            ...(params.config ? { config: params.config } : {}),
+            agentId: sessionAgentId,
+            signal: runAbortController.signal,
+            contentCapture: resolveDiagnosticModelContentCapturePolicy(params.config),
+            nextCallId: nextDiagnosticModelCallId,
+            onStarted: () => {
+              params.onExecutionPhase?.({
+                phase: "model_call_started",
+                provider: params.provider,
+                model: params.modelId,
+                firstModelCallStarted: true,
+              });
+            },
           },
-        },
-      );
+        );
+      };
 
       try {
         if (isRawModelRun) {
@@ -4460,6 +4502,9 @@ export async function runEmbeddedAttempt(
           }
 
           if (!skipPromptSubmission) {
+            const usageBudgetEnforced = Boolean(
+              resolveAgentUsageBudgetConfig({ config: params.config, agentId: sessionAgentId }),
+            );
             const googlePromptCacheStreamFn = await prepareGooglePromptCacheStreamFn({
               apiKey: await resolveEmbeddedAgentApiKey({
                 provider: params.provider,
@@ -4481,10 +4526,12 @@ export async function runEmbeddedAttempt(
               signal: runAbortController.signal,
               streamFn: activeSession.agent.streamFn,
               systemPrompt: systemPromptText,
+              usageBudgetEnforced,
             });
             if (googlePromptCacheStreamFn) {
               activeSession.agent.streamFn = googlePromptCacheStreamFn;
             }
+            installDiagnosticModelCallWrapper();
             installPromptSubmissionLockRelease({
               session: activeSession,
               waitForSessionEvents: (sessionToDrain) =>
@@ -4956,7 +5003,7 @@ export async function runEmbeddedAttempt(
             });
           } else {
             promptError = err;
-            promptErrorSource = "prompt";
+            promptErrorSource = isAgentUsageBudgetError(err) ? "budget" : "prompt";
           }
         } finally {
           acceptingSteerMessages = false;
@@ -5161,6 +5208,12 @@ export async function runEmbeddedAttempt(
             messagesSnapshot,
             prePromptMessageCount,
           });
+          const usageBudgetErrorMessage =
+            readUsageBudgetAssistantErrorMessage(currentAttemptAssistant);
+          if (!promptError && usageBudgetErrorMessage) {
+            promptError = new Error(usageBudgetErrorMessage);
+            promptErrorSource = "budget";
+          }
           attemptUsage = getUsageTotals();
           cacheBreak = cacheObservabilityEnabled
             ? completePromptCacheObservation({
@@ -5486,7 +5539,13 @@ export async function runEmbeddedAttempt(
 
       if (
         hookRunner?.hasHooks("llm_output") &&
-        shouldRunLlmOutputHooksForAttempt({ promptErrorSource })
+        shouldRunLlmOutputHooksForAttempt({
+          promptErrorSource,
+          hasAttemptOutput:
+            assistantTexts.length > 0 ||
+            currentAttemptAssistant !== undefined ||
+            toolMetasNormalized.length > 0,
+        })
       ) {
         hookRunner
           .runLlmOutput(

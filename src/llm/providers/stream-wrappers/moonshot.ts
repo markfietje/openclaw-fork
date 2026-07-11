@@ -1,4 +1,5 @@
 // Moonshot stream wrapper normalizes Moonshot streamed text and reasoning output.
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import type { StreamFn } from "../../../agents/runtime/index.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import { streamSimple } from "../../stream.js";
@@ -26,11 +27,12 @@ export function shouldApplySiliconFlowThinkingOffCompat(params: {
 /** Wraps Moonshot-compatible requests to rewrite SiliconFlow thinking-off payloads. */
 export function createSiliconFlowThinkingWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) =>
+  const wrapped: StreamFn = (model, context, options) =>
     streamWithPayloadPatch(underlying, model, context, options, (payloadObj) => {
       // SiliconFlow rejects the string "off" for these models but accepts null.
       if (payloadObj.thinking === "off") {
         payloadObj.thinking = null;
       }
     });
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }

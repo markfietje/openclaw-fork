@@ -19,4 +19,23 @@ describe("createOpenClawTools PDF registration", () => {
     expect(pdfTool?.name).toBe("pdf");
     expect(collectPresentOpenClawTools([pdfTool]).map((tool) => tool.name)).toEqual(["pdf"]);
   });
+
+  it("fails closed before model-backed PDF analysis when usage budgets are active", async () => {
+    const pdfTool = createPdfTool({
+      agentDir: "/tmp/openclaw-agent-main",
+      deferAutoModelResolution: true,
+      usageBudgetUnsupportedReason: "Budgeted agents cannot use this tool.",
+    });
+
+    const result = await pdfTool?.execute("call-1", { pdf: "/tmp/report.pdf" });
+
+    expect(result?.content?.[0]).toEqual({
+      type: "text",
+      text: "Budgeted agents cannot use this tool.",
+    });
+    expect(result?.details).toEqual({
+      error: "usage_budget_unsupported_model_tool",
+      tool: "pdf",
+    });
+  });
 });

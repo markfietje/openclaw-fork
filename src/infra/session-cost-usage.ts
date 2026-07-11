@@ -1,9 +1,21 @@
 // Persists and formats per-session cost and usage records.
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  USAGE_BUDGET_OPERATION_ID_KEY,
+} from "../agents/compaction-usage-accounting.js";
+import { stableStringify } from "../agents/stable-stringify.js";
+import {
+  loadAgentUsageBudgetLedgerAccountedEntries,
+  readUsageBudgetRecordedCostMetadata,
+  readUsageBudgetRecordedCostTotal,
+} from "../agents/usage-budget.js";
 import type { NormalizedUsage, UsageLike } from "../agents/usage.js";
 import { normalizeUsage } from "../agents/usage.js";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
@@ -13,6 +25,7 @@ import {
   isUsageCountedSessionTranscriptFileName,
   parseSessionArchiveTimestamp,
   parseUsageCountedSessionIdFromFileName,
+  resolveSessionHeaderUsageFamilyKey,
 } from "../config/sessions/artifacts.js";
 import {
   resolveSessionFilePath,
@@ -22,6 +35,7 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { stripEnvelope, stripMessageIdHints } from "../shared/chat-envelope.js";
+import { hasUsageBudgetUnpriceableCostMetadata } from "../shared/usage-budget-recorded-cost.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { countToolResults, extractToolCallNames } from "../utils/transcript-tools.js";
 import {
@@ -57,6 +71,7 @@ import type {
   SessionToolUsage,
   SessionUsageTimePoint,
   SessionUsageTimeSeries,
+  UsageAccountingSource,
   UsageCacheStatus,
 } from "./session-cost-usage.types.js";
 
@@ -75,10 +90,10 @@ export type {
 } from "./session-cost-usage.types.js";
 
 // Bump when the *meaning* of cached totals changes (not just their inputs), so durable
-// caches written by older builds are rebuilt instead of served stale. Bumped to 5:
-// recorded zero costs for known-priced token usage are recomputed, and unpriced
-// zero-cost usage counts toward missingCostEntries.
-const USAGE_COST_CACHE_VERSION = 5;
+// caches written by older builds are rebuilt instead of served stale. Version 11
+// reconciles budget-ledger and aggregate-compaction rows while preserving authoritative
+// provider-zero costs and recomputing fabricated zeros for known-priced usage.
+const USAGE_COST_CACHE_VERSION = 11;
 const USAGE_COST_CACHE_FILE = ".usage-cost-cache.json";
 const USAGE_COST_CACHE_LOCK_WRITE_GRACE_MS = 10_000;
 const USAGE_COST_CACHE_TEMP_FILE_GRACE_MS = USAGE_COST_CACHE_LOCK_WRITE_GRACE_MS;
@@ -106,12 +121,21 @@ type UsageCostRefreshResult = "refreshed" | "busy";
 const usageCostRefreshes = new Map<string, UsageCostRefreshState>();
 
 type UsageCostCachedUsageEntry = CostUsageTotals & {
+  entryId?: string;
+  dedupKey?: string;
+  sourceFilePath?: string;
+  sourceLineIndex?: number;
+  source?: UsageAccountingSource;
+  usageBudgetOperationId?: string;
+  usageBudgetRecordedCostTotal?: number;
   timestamp: number;
   provider?: string;
   model?: string;
 };
 
 type UsageCostCachedTranscriptEntry = {
+  source?: UsageAccountingSource;
+  usageBudgetOperationId?: string;
   timestamp?: number;
   role?: "user" | "assistant";
   durationMs?: number;
@@ -123,12 +147,18 @@ type UsageCostCachedTranscriptEntry = {
   usageTotals?: CostUsageTotals;
 };
 
+type UsageBudgetLedgerAccountedEntry = ReturnType<
+  typeof loadAgentUsageBudgetLedgerAccountedEntries
+>[number];
+
 type UsageCostCacheFileEntry = {
   filePath: string;
   size: number;
   mtimeMs: number;
   pricingFingerprint: string;
   scannedAt: number;
+  usageIdentitySessionId?: string;
+  legacyRowOccurrences?: Record<string, number>;
   parsedRecords: number;
   countedRecords: number;
   usageEntries: UsageCostCachedUsageEntry[];
@@ -475,6 +505,7 @@ function countUsableUsageCostCacheFiles(params: {
 function buildCostUsageSummaryFromCache(params: {
   cache: UsageCostCacheFile;
   files: UsageCostTranscriptFile[];
+  ledgerEntries?: UsageBudgetLedgerAccountedEntry[];
   startMs: number;
   endMs: number;
   pricingFingerprint: string;
@@ -493,6 +524,7 @@ function buildCostUsageSummaryFromCache(params: {
     files: params.files,
     pricingFingerprint: params.pricingFingerprint,
   });
+  const usageEntries: UsageCostCachedUsageEntry[] = [];
 
   for (const [filePath, entry] of Object.entries(params.cache.files)) {
     const file = filesByPath.get(filePath);
@@ -507,15 +539,26 @@ function buildCostUsageSummaryFromCache(params: {
       continue;
     }
     for (const usageEntry of entry.usageEntries) {
-      if (usageEntry.timestamp < params.startMs || usageEntry.timestamp > params.endMs) {
-        continue;
-      }
-      const date = formatDayKey(new Date(usageEntry.timestamp));
-      const bucket = dailyMap.get(date) ?? emptyTotals();
-      addTotals(bucket, usageEntry);
-      dailyMap.set(date, bucket);
-      addTotals(totals, usageEntry);
+      usageEntries.push(usageEntry);
     }
+  }
+  for (const ledgerEntry of params.ledgerEntries ?? []) {
+    const usageEntry = cachedUsageEntryFromLedger(ledgerEntry);
+    if (!usageEntry) {
+      continue;
+    }
+    usageEntries.push(usageEntry);
+  }
+
+  for (const usageEntry of collectCanonicalUsageBridgeEntries(usageEntries)) {
+    if (usageEntry.timestamp < params.startMs || usageEntry.timestamp > params.endMs) {
+      continue;
+    }
+    const date = formatDayKey(new Date(usageEntry.timestamp));
+    const bucket = dailyMap.get(date) ?? emptyTotals();
+    addTotals(bucket, usageEntry);
+    dailyMap.set(date, bucket);
+    addTotals(totals, usageEntry);
   }
 
   fillMissingDays(dailyMap, params.startMs, params.endMs);
@@ -592,13 +635,32 @@ function buildSessionCostSummaryFromCacheEntry(params: {
   let lastActivity: number | undefined;
   let lastUserTimestamp: number | undefined;
   const maxLatencyMs = 12 * 60 * 60 * 1000;
+  const usageEntries: Array<UsageBridgeComparableEntry & { totals: CostUsageTotals }> = [];
 
   for (const entry of params.entry.transcriptEntries) {
     const ts = entry.timestamp;
-    if (ts !== undefined && ts < params.startMs) {
-      continue;
-    }
-    if (ts !== undefined && ts > params.endMs) {
+    if (!timestampInReportRange(ts, params.startMs, params.endMs)) {
+      if (
+        entry.usageTotals &&
+        entry.source === "model_call_custom" &&
+        timestampInUsageBridgeReconciliationRange(ts, params.startMs, params.endMs)
+      ) {
+        usageEntries.push({
+          source: entry.source,
+          ...(entry.usageBudgetOperationId
+            ? { usageBudgetOperationId: entry.usageBudgetOperationId }
+            : {}),
+          timestamp: ts,
+          provider: entry.provider,
+          model: entry.model,
+          input: entry.usageTotals.input,
+          output: entry.usageTotals.output,
+          cacheRead: entry.usageTotals.cacheRead,
+          cacheWrite: entry.usageTotals.cacheWrite,
+          totalTokens: entry.usageTotals.totalTokens,
+          totals: entry.usageTotals,
+        });
+      }
       continue;
     }
 
@@ -701,11 +763,43 @@ function buildSessionCostSummaryFromCacheEntry(params: {
     }
 
     const usageTotals = entry.usageTotals;
-    if (!usageTotals) {
+    if (usageTotals) {
+      usageEntries.push({
+        source: entry.source,
+        ...(entry.usageBudgetOperationId
+          ? { usageBudgetOperationId: entry.usageBudgetOperationId }
+          : {}),
+        timestamp: ts,
+        provider: entry.provider,
+        model: entry.model,
+        input: usageTotals.input,
+        output: usageTotals.output,
+        cacheRead: usageTotals.cacheRead,
+        cacheWrite: usageTotals.cacheWrite,
+        totalTokens: usageTotals.totalTokens,
+        totals: usageTotals,
+      });
+    }
+  }
+
+  const consumedModelCallBridgeOwnerIndexes = new Set<number>();
+  const consumedModelCallBridgeIndexes = new Set<number>();
+  for (const [entryIndex, usageEntry] of usageEntries.entries()) {
+    if (
+      skipModelCallBridgeUsageEntry({
+        entry: usageEntry,
+        entryIndex,
+        entries: usageEntries,
+        consumedOwnerIndexes: consumedModelCallBridgeOwnerIndexes,
+        consumedBridgeIndexes: consumedModelCallBridgeIndexes,
+      })
+    ) {
       continue;
     }
 
+    const usageTotals = usageEntry.totals;
     addTotals(totals, usageTotals);
+    const ts = usageBridgeTimestampMs(usageEntry);
     if (ts !== undefined) {
       const date = new Date(ts);
       const dayKey = formatDayKey(date);
@@ -735,14 +829,14 @@ function buildSessionCostSummaryFromCacheEntry(params: {
       utcQuarterHourToken.totalCost += usageTotals.totalCost;
       utcQuarterHourTokenMap.set(quarterBucket.key, utcQuarterHourToken);
 
-      if (entry.provider || entry.model) {
-        const dailyModelKey = `${dayKey}::${entry.provider ?? "unknown"}::${entry.model ?? "unknown"}`;
+      if (usageEntry.provider || usageEntry.model) {
+        const dailyModelKey = `${dayKey}::${usageEntry.provider ?? "unknown"}::${usageEntry.model ?? "unknown"}`;
         const dailyModel =
           dailyModelUsageMap.get(dailyModelKey) ??
           ({
             date: dayKey,
-            provider: entry.provider,
-            model: entry.model,
+            provider: usageEntry.provider,
+            model: usageEntry.model,
             tokens: 0,
             cost: 0,
             count: 0,
@@ -754,13 +848,13 @@ function buildSessionCostSummaryFromCacheEntry(params: {
       }
     }
 
-    if (entry.provider || entry.model) {
-      const modelKey = `${entry.provider ?? "unknown"}::${entry.model ?? "unknown"}`;
+    if (usageEntry.provider || usageEntry.model) {
+      const modelKey = `${usageEntry.provider ?? "unknown"}::${usageEntry.model ?? "unknown"}`;
       const modelUsage =
         modelUsageMap.get(modelKey) ??
         ({
-          provider: entry.provider,
-          model: entry.model,
+          provider: usageEntry.provider,
+          model: usageEntry.model,
           count: 0,
           totals: emptyTotals(),
         } as SessionModelUsage);
@@ -864,7 +958,10 @@ const extractCostBreakdown = (usageRaw?: UsageLike | null): CostBreakdown | unde
   };
 };
 
-const parseTimestamp = (entry: Record<string, unknown>): Date | undefined => {
+const parseTimestamp = (
+  entry: Record<string, unknown>,
+  resolvedMessage?: Record<string, unknown>,
+): Date | undefined => {
   const raw = entry.timestamp;
   if (typeof raw === "string") {
     const parsed = new Date(raw);
@@ -872,7 +969,7 @@ const parseTimestamp = (entry: Record<string, unknown>): Date | undefined => {
       return parsed;
     }
   }
-  const message = entry.message as Record<string, unknown> | undefined;
+  const message = resolvedMessage ?? (entry.message as Record<string, unknown> | undefined);
   const messageTimestamp = asFiniteNumber(message?.timestamp);
   if (messageTimestamp !== undefined) {
     const parsed = new Date(messageTimestamp);
@@ -883,15 +980,114 @@ const parseTimestamp = (entry: Record<string, unknown>): Date | undefined => {
   return undefined;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCompactionUsageAccountingEntry(entry: Record<string, unknown>): boolean {
+  return entry.type === "custom" && entry.customType === COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE;
+}
+
+function isModelCallUsageAccountingEntry(entry: Record<string, unknown>): boolean {
+  return entry.type === "custom" && entry.customType === MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE;
+}
+
+function isModelCallUsageBudgetBridgeEntry(entry: Record<string, unknown>): boolean {
+  if (!isModelCallUsageAccountingEntry(entry)) {
+    return false;
+  }
+  const data = isRecord(entry.data) ? entry.data : undefined;
+  return data?.usageBudgetBridge === true;
+}
+
+function resolveUsageAccountingSource(entry: Record<string, unknown>): UsageAccountingSource {
+  if (entry.type === "compaction") {
+    return "compaction";
+  }
+  if (entry.type === "branch_summary") {
+    return "branch_summary";
+  }
+  if (isModelCallUsageBudgetBridgeEntry(entry)) {
+    return "model_call_custom";
+  }
+  if (isCompactionUsageAccountingEntry(entry)) {
+    return "compaction_custom";
+  }
+  return "message";
+}
+
+function resolveCompactionUsageAccounting(
+  entry: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (
+    (entry.type !== "compaction" && entry.type !== "branch_summary") ||
+    !isRecord(entry.usageAccounting)
+  ) {
+    return undefined;
+  }
+  return entry.usageAccounting;
+}
+
+function resolveUsageBudgetOperationId(entry: Record<string, unknown>): string | undefined {
+  const message = isRecord(entry.message) ? entry.message : undefined;
+  const messageId = message?.[USAGE_BUDGET_OPERATION_ID_KEY];
+  if (typeof messageId === "string" && messageId.trim()) {
+    return messageId;
+  }
+  const usageAccounting = resolveCompactionUsageAccounting(entry);
+  const usageAccountingId = usageAccounting?.[USAGE_BUDGET_OPERATION_ID_KEY];
+  if (typeof usageAccountingId === "string" && usageAccountingId.trim()) {
+    return usageAccountingId;
+  }
+  const data = isRecord(entry.data) ? entry.data : undefined;
+  const dataId = data?.[USAGE_BUDGET_OPERATION_ID_KEY];
+  if (typeof dataId === "string" && dataId.trim()) {
+    return dataId;
+  }
+  const directId = entry[USAGE_BUDGET_OPERATION_ID_KEY];
+  return typeof directId === "string" && directId.trim() ? directId : undefined;
+}
+
+function resolveTranscriptEntryMessage(
+  entry: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (isRecord(entry.message)) {
+    return entry.message;
+  }
+  const compactionAccounting = resolveCompactionUsageAccounting(entry);
+  if (compactionAccounting) {
+    return {
+      role: "assistant",
+      content: [],
+      api: compactionAccounting.api,
+      provider: compactionAccounting.provider,
+      model: compactionAccounting.model,
+      usage: compactionAccounting.usage,
+      stopReason: "stop",
+      timestamp: entry.timestamp,
+    };
+  }
+  if (!isCompactionUsageAccountingEntry(entry) && !isModelCallUsageAccountingEntry(entry)) {
+    return undefined;
+  }
+  const data = isRecord(entry.data) ? entry.data : undefined;
+  return isRecord(data?.message) ? data.message : undefined;
+}
+
 const parseTranscriptEntry = (entry: Record<string, unknown>): ParsedTranscriptEntry | null => {
-  const message = entry.message as Record<string, unknown> | undefined;
-  if (!message || typeof message !== "object") {
+  const message = resolveTranscriptEntryMessage(entry);
+  if (!message) {
     return null;
   }
 
   const roleRaw = message.role;
-  const role = roleRaw === "user" || roleRaw === "assistant" ? roleRaw : undefined;
-  if (!role) {
+  const parsedRole = roleRaw === "user" || roleRaw === "assistant" ? roleRaw : undefined;
+  const usageOnly =
+    isCompactionUsageAccountingEntry(entry) ||
+    isModelCallUsageAccountingEntry(entry) ||
+    resolveCompactionUsageAccounting(entry) !== undefined;
+  const role = usageOnly ? undefined : parsedRole;
+  if (!role && !usageOnly) {
     return null;
   }
 
@@ -907,17 +1103,26 @@ const parseTranscriptEntry = (entry: Record<string, unknown>): ParsedTranscriptE
     (typeof entry.model === "string" ? entry.model : undefined);
 
   const costBreakdown = extractCostBreakdown(usageRaw);
+  const usageBudgetRecordedCostTotal = readUsageBudgetRecordedCostTotal(usageRaw);
+  const usageBudgetUnpriceableCost = hasUsageBudgetUnpriceableCostMetadata(usageRaw);
   const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
   const durationMs = asFiniteNumber(message.durationMs ?? entry.durationMs);
+  const entryId = typeof entry.id === "string" && entry.id.length > 0 ? entry.id : undefined;
+  const usageBudgetOperationId = resolveUsageBudgetOperationId(entry);
 
   return {
+    entryId,
+    source: resolveUsageAccountingSource(entry),
+    ...(usageBudgetOperationId ? { usageBudgetOperationId } : {}),
     message,
     role,
-    timestamp: parseTimestamp(entry),
+    timestamp: parseTimestamp(entry, message),
     durationMs,
     usage,
     costTotal: costBreakdown?.total,
     costBreakdown,
+    usageBudgetRecordedCostTotal,
+    usageBudgetUnpriceableCost,
     provider,
     model,
     stopReason,
@@ -928,6 +1133,735 @@ const parseTranscriptEntry = (entry: Record<string, unknown>): ParsedTranscriptE
 
 const formatDayKey = (date: Date): string =>
   date.toLocaleDateString("en-CA", { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+
+function buildLegacyParsedUsageRecordId(entry: ParsedTranscriptEntry): string | undefined {
+  if (entry.entryId) {
+    return undefined;
+  }
+  if (entry.legacyRowFingerprint === undefined || entry.legacyRowOccurrenceIndex === undefined) {
+    return undefined;
+  }
+  const timestampMs = entry.timestamp?.getTime();
+  if (timestampMs === undefined) {
+    return undefined;
+  }
+  return [
+    "legacy-transcript",
+    entry.legacyRowFingerprint,
+    entry.legacyRowOccurrenceIndex,
+    timestampMs,
+    entry.provider ?? "",
+    entry.model ?? "",
+  ].join("|");
+}
+
+function buildStableLegacyParsedRowFingerprint(params: {
+  usageIdentitySessionId: string;
+  record: Record<string, unknown>;
+}): string {
+  return createHash("sha256")
+    .update(params.usageIdentitySessionId)
+    .update("\0")
+    .update(stableStringify(params.record))
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function resolveUsageCostTranscriptIdentitySessionId(params: {
+  filePath: string;
+  fallbackSessionId: string;
+  header: Record<string, unknown>;
+}): string {
+  const usageFamilyKey = resolveUsageCostTranscriptUsageFamilyKey({
+    filePath: params.filePath,
+    fallbackSessionId: params.fallbackSessionId,
+    header: params.header,
+  });
+  if (usageFamilyKey) {
+    return usageFamilyKey;
+  }
+  const parentSession =
+    typeof params.header.parentSession === "string" ? params.header.parentSession.trim() : "";
+  if (!parentSession) {
+    return params.fallbackSessionId;
+  }
+  const parentPath = path.isAbsolute(parentSession)
+    ? parentSession
+    : path.resolve(path.dirname(params.filePath), parentSession);
+  return (
+    parseUsageCountedSessionIdFromFileName(path.basename(parentPath)) ?? params.fallbackSessionId
+  );
+}
+
+const USAGE_COST_TRANSCRIPT_HEADER_READ_BYTES = 64 * 1024;
+
+function readUsageCostTranscriptHeader(filePath: string): Record<string, unknown> | undefined {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buffer = Buffer.alloc(USAGE_COST_TRANSCRIPT_HEADER_READ_BYTES);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
+    const firstLine = buffer.toString("utf8", 0, bytesRead).split(/\r?\n/u, 1)[0]?.trim();
+    if (!firstLine) {
+      return undefined;
+    }
+    const parsed = JSON.parse(firstLine) as unknown;
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) {
+      fs.closeSync(fd);
+    }
+  }
+}
+
+function resolveUsageCostTranscriptUsageFamilyKey(params: {
+  filePath: string;
+  fallbackSessionId: string;
+  header: Record<string, unknown>;
+  visited?: Set<string>;
+}): string | undefined {
+  const visited = params.visited ?? new Set<string>();
+  const currentPath = path.resolve(params.filePath);
+  if (visited.has(currentPath)) {
+    return params.fallbackSessionId;
+  }
+  visited.add(currentPath);
+  return (
+    resolveSessionHeaderUsageFamilyKey({
+      header: params.header,
+      resolveParentUsageFamilyKey: (parentSession) => {
+        const parentPath = path.isAbsolute(parentSession)
+          ? parentSession
+          : path.resolve(path.dirname(params.filePath), parentSession);
+        const parentHeader = readUsageCostTranscriptHeader(parentPath);
+        if (!parentHeader) {
+          return undefined;
+        }
+        return resolveUsageCostTranscriptUsageFamilyKey({
+          filePath: parentPath,
+          fallbackSessionId:
+            parseUsageCountedSessionIdFromFileName(path.basename(parentPath)) ??
+            params.fallbackSessionId,
+          header: parentHeader,
+          visited,
+        });
+      },
+    }) ?? params.fallbackSessionId
+  );
+}
+
+function buildParsedUsageDedupKey(entry: ParsedTranscriptEntry): string | undefined {
+  if (!entry.usage) {
+    return undefined;
+  }
+  if (entry.entryId) {
+    return ["transcript-entry", entry.sessionId ?? "", entry.entryId].join("|");
+  }
+  return buildLegacyParsedUsageRecordId(entry);
+}
+
+function parsedUsageEntryFromLedger(
+  entry: UsageBudgetLedgerAccountedEntry,
+): ParsedUsageEntry | undefined {
+  if (!entry.usage) {
+    return undefined;
+  }
+  return {
+    ...(entry.sourceFilePath ? { sourceFilePath: entry.sourceFilePath } : {}),
+    ...(entry.sourceLineIndex !== undefined ? { sourceLineIndex: entry.sourceLineIndex } : {}),
+    ...(entry.recordId ? { entryId: entry.recordId } : {}),
+    dedupKey: entry.dedupKey,
+    source: entry.source,
+    ...(entry.usageBudgetOperationId
+      ? { usageBudgetOperationId: entry.usageBudgetOperationId }
+      : {}),
+    usage: entry.usage,
+    costTotal: entry.missingCostEntries > 0 ? undefined : entry.totalCost,
+    provider: entry.provider,
+    model: entry.model,
+    timestamp: new Date(entry.timestampMs),
+  };
+}
+
+function cachedUsageEntryFromLedger(
+  entry: UsageBudgetLedgerAccountedEntry,
+): UsageCostCachedUsageEntry | undefined {
+  if (!entry.usage) {
+    return undefined;
+  }
+  const totals = emptyTotals();
+  totals.input = entry.usage.input ?? 0;
+  totals.output = entry.usage.output ?? 0;
+  totals.cacheRead = entry.usage.cacheRead ?? 0;
+  totals.cacheWrite = entry.usage.cacheWrite ?? 0;
+  totals.totalTokens = entry.totalTokens;
+  totals.totalCost = entry.missingCostEntries > 0 ? 0 : entry.totalCost;
+  totals.missingCostEntries = entry.missingCostEntries;
+  return {
+    ...(entry.recordId ? { entryId: entry.recordId } : {}),
+    ...(entry.dedupKey ? { dedupKey: entry.dedupKey } : {}),
+    ...(entry.sourceFilePath ? { sourceFilePath: entry.sourceFilePath } : {}),
+    ...(entry.sourceLineIndex !== undefined ? { sourceLineIndex: entry.sourceLineIndex } : {}),
+    source: entry.source,
+    ...(entry.usageBudgetOperationId
+      ? { usageBudgetOperationId: entry.usageBudgetOperationId }
+      : {}),
+    timestamp: entry.timestampMs,
+    provider: entry.provider,
+    model: entry.model,
+    ...totals,
+  };
+}
+
+type UsageBridgeComparableEntry = {
+  entryId?: string;
+  dedupKey?: string;
+  sourceFilePath?: string;
+  sourceLineIndex?: number;
+  source?: UsageAccountingSource;
+  usageBudgetOperationId?: string;
+  timestamp?: number | Date;
+  provider?: string;
+  model?: string;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  totalTokens?: number;
+  usage?: NormalizedUsage;
+  costTotal?: number;
+  costBreakdown?: CostBreakdown;
+  totalCost?: number;
+  totals?: CostUsageTotals;
+  missingCostEntries?: number;
+  usageBudgetRecordedCostTotal?: number;
+};
+
+const MODEL_CALL_BRIDGE_MATCH_WINDOW_MS = 5 * 60 * 1000;
+const USAGE_COST_BRIDGE_RECONCILIATION_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+function timestampInReportRange(
+  timestampMs: number | undefined,
+  startMs: number | undefined,
+  endMs: number | undefined,
+): boolean {
+  if (startMs !== undefined && timestampMs !== undefined && timestampMs < startMs) {
+    return false;
+  }
+  if (endMs !== undefined && timestampMs !== undefined && timestampMs > endMs) {
+    return false;
+  }
+  return true;
+}
+
+function timestampInUsageBridgeReconciliationRange(
+  timestampMs: number | undefined,
+  startMs: number | undefined,
+  endMs: number | undefined,
+): boolean {
+  if (timestampMs === undefined) {
+    return true;
+  }
+  if (endMs !== undefined && timestampMs > endMs) {
+    return false;
+  }
+  return (
+    startMs === undefined || timestampMs >= startMs - USAGE_COST_BRIDGE_RECONCILIATION_LOOKBACK_MS
+  );
+}
+
+function isAggregateUsageBridgeOwner(entry: UsageBridgeComparableEntry): boolean {
+  return (
+    entry.source === "compaction" ||
+    entry.source === "branch_summary" ||
+    entry.source === "compaction_custom"
+  );
+}
+
+function usageBridgeTimestampMs(entry: UsageBridgeComparableEntry): number | undefined {
+  if (entry.timestamp instanceof Date) {
+    return entry.timestamp.getTime();
+  }
+  return typeof entry.timestamp === "number" && Number.isFinite(entry.timestamp)
+    ? entry.timestamp
+    : undefined;
+}
+
+function usageBridgeComponentValue(
+  entry: UsageBridgeComparableEntry,
+  key: "input" | "output" | "cacheRead" | "cacheWrite",
+): number {
+  return entry.usage?.[key] ?? entry[key] ?? 0;
+}
+
+function usageBridgeTotalTokens(entry: UsageBridgeComparableEntry): number {
+  return (
+    entry.usage?.total ??
+    entry.totalTokens ??
+    usageBridgeComponentValue(entry, "input") +
+      usageBridgeComponentValue(entry, "output") +
+      usageBridgeComponentValue(entry, "cacheRead") +
+      usageBridgeComponentValue(entry, "cacheWrite")
+  );
+}
+
+type UsageBridgeComponents = {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+};
+
+function usageBridgeComponents(entry: UsageBridgeComparableEntry): UsageBridgeComponents {
+  return {
+    input: usageBridgeComponentValue(entry, "input"),
+    output: usageBridgeComponentValue(entry, "output"),
+    cacheRead: usageBridgeComponentValue(entry, "cacheRead"),
+    cacheWrite: usageBridgeComponentValue(entry, "cacheWrite"),
+    total: usageBridgeTotalTokens(entry),
+  };
+}
+
+function addUsageBridgeComponents(
+  left: UsageBridgeComponents,
+  right: UsageBridgeComponents,
+): UsageBridgeComponents {
+  return {
+    input: left.input + right.input,
+    output: left.output + right.output,
+    cacheRead: left.cacheRead + right.cacheRead,
+    cacheWrite: left.cacheWrite + right.cacheWrite,
+    total: left.total + right.total,
+  };
+}
+
+function usageBridgeComponentsEqual(
+  left: UsageBridgeComponents,
+  right: UsageBridgeComponents,
+): boolean {
+  return (
+    left.input === right.input &&
+    left.output === right.output &&
+    left.cacheRead === right.cacheRead &&
+    left.cacheWrite === right.cacheWrite &&
+    left.total === right.total
+  );
+}
+
+function usageBridgeComponentsExceed(
+  left: UsageBridgeComponents,
+  right: UsageBridgeComponents,
+): boolean {
+  return (
+    left.input > right.input ||
+    left.output > right.output ||
+    left.cacheRead > right.cacheRead ||
+    left.cacheWrite > right.cacheWrite ||
+    left.total > right.total
+  );
+}
+
+function usageBridgeSignature(entry: UsageBridgeComparableEntry): string {
+  return [
+    entry.provider ?? "",
+    entry.model ?? "",
+    usageBridgeComponentValue(entry, "input"),
+    usageBridgeComponentValue(entry, "output"),
+    usageBridgeComponentValue(entry, "cacheRead"),
+    usageBridgeComponentValue(entry, "cacheWrite"),
+    usageBridgeTotalTokens(entry),
+  ].join("|");
+}
+
+function usageBridgeCanBelongToOwner(
+  bridge: UsageBridgeComparableEntry,
+  owner: UsageBridgeComparableEntry,
+): boolean {
+  if (bridge.source !== "model_call_custom" || owner.source === "model_call_custom") {
+    return false;
+  }
+  const sameProviderModel = bridge.provider === owner.provider && bridge.model === owner.model;
+  const sameOperationId =
+    bridge.usageBudgetOperationId !== undefined &&
+    bridge.usageBudgetOperationId === owner.usageBudgetOperationId;
+  if (isAggregateUsageBridgeOwner(owner)) {
+    if (bridge.usageBudgetOperationId || owner.usageBudgetOperationId) {
+      return sameOperationId;
+    }
+  }
+  if (bridge.usageBudgetOperationId || owner.usageBudgetOperationId) {
+    return sameProviderModel && sameOperationId;
+  }
+  if (!sameProviderModel) {
+    return false;
+  }
+  const bridgeTimestamp = usageBridgeTimestampMs(bridge);
+  const ownerTimestamp = usageBridgeTimestampMs(owner);
+  return (
+    bridgeTimestamp !== undefined &&
+    ownerTimestamp !== undefined &&
+    Math.abs(bridgeTimestamp - ownerTimestamp) <= MODEL_CALL_BRIDGE_MATCH_WINDOW_MS
+  );
+}
+
+function modelCallBridgeMatchesCanonicalUsage(
+  bridge: UsageBridgeComparableEntry,
+  owner: UsageBridgeComparableEntry,
+): boolean {
+  return (
+    usageBridgeCanBelongToOwner(bridge, owner) &&
+    usageBridgeSignature(bridge) === usageBridgeSignature(owner)
+  );
+}
+
+function usageBridgeKnownCostTotal(entry: UsageBridgeComparableEntry): number | undefined {
+  const total =
+    entry.usageBudgetRecordedCostTotal ??
+    entry.costBreakdown?.total ??
+    entry.costTotal ??
+    entry.totalCost ??
+    entry.totals?.totalCost;
+  if (total === undefined || !Number.isFinite(total)) {
+    return undefined;
+  }
+  if ((entry.missingCostEntries ?? entry.totals?.missingCostEntries ?? 0) > 0) {
+    return undefined;
+  }
+  return total;
+}
+
+function applyUsageBridgeReconciledCost(
+  entry: UsageBridgeComparableEntry,
+  totalCost: number,
+): void {
+  entry.costTotal = totalCost;
+  entry.costBreakdown = undefined;
+  entry.totalCost = totalCost;
+  entry.missingCostEntries = 0;
+  if (entry.totals) {
+    entry.totals.totalCost = totalCost;
+    entry.totals.inputCost = 0;
+    entry.totals.outputCost = 0;
+    entry.totals.cacheReadCost = 0;
+    entry.totals.cacheWriteCost = 0;
+    entry.totals.missingCostEntries = 0;
+  }
+}
+
+function reconcileAggregateUsageBridgeOwnerCost<TEntry extends UsageBridgeComparableEntry>(
+  owner: TEntry,
+  bridges: readonly TEntry[],
+): void {
+  if (!isAggregateUsageBridgeOwner(owner)) {
+    return;
+  }
+  const target = usageBridgeComponents(owner);
+  let covered = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  let totalCost = 0;
+  for (const bridge of bridges) {
+    covered = addUsageBridgeComponents(covered, usageBridgeComponents(bridge));
+    const bridgeCost = usageBridgeKnownCostTotal(bridge);
+    if (bridgeCost === undefined) {
+      return;
+    }
+    totalCost += bridgeCost;
+  }
+  if (!usageBridgeComponentsEqual(covered, target)) {
+    return;
+  }
+  applyUsageBridgeReconciledCost(owner, totalCost);
+}
+
+function findUsageBridgeSubsetForOwner<TEntry extends UsageBridgeComparableEntry>(params: {
+  entry: TEntry;
+  entryIndex: number;
+  owner: TEntry;
+  entries: readonly TEntry[];
+  consumedBridgeIndexes: Set<number>;
+}): number[] | undefined {
+  if (!usageBridgeCanBelongToOwner(params.entry, params.owner)) {
+    return undefined;
+  }
+  const target = usageBridgeComponents(params.owner);
+  const current = usageBridgeComponents(params.entry);
+  if (usageBridgeComponentsExceed(current, target)) {
+    return undefined;
+  }
+  const ownerTimestamp = usageBridgeTimestampMs(params.owner) ?? 0;
+  const candidates = [
+    { candidate: params.entry, index: params.entryIndex },
+    ...params.entries
+      .map((candidate, index) => ({ candidate, index }))
+      .filter(({ candidate, index }) => {
+        return (
+          index !== params.entryIndex &&
+          !params.consumedBridgeIndexes.has(index) &&
+          usageBridgeCanBelongToOwner(candidate, params.owner)
+        );
+      }),
+  ].toSorted((a, b) => {
+    const aTimestamp = usageBridgeTimestampMs(a.candidate) ?? ownerTimestamp;
+    const bTimestamp = usageBridgeTimestampMs(b.candidate) ?? ownerTimestamp;
+    return Math.abs(aTimestamp - ownerTimestamp) - Math.abs(bTimestamp - ownerTimestamp);
+  });
+  const total = candidates.reduce<UsageBridgeComponents>(
+    (sum, candidate) => addUsageBridgeComponents(sum, usageBridgeComponents(candidate.candidate)),
+    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  );
+  if (usageBridgeComponentsEqual(total, target)) {
+    return candidates.map((candidate) => candidate.index);
+  }
+  if (
+    params.owner.usageBudgetOperationId &&
+    !usageBridgeComponentsExceed(total, target) &&
+    candidates.every(
+      ({ candidate }) => candidate.usageBudgetOperationId === params.owner.usageBudgetOperationId,
+    )
+  ) {
+    return candidates.map((candidate) => candidate.index);
+  }
+  return undefined;
+}
+
+function skipModelCallBridgeUsageEntry<TEntry extends UsageBridgeComparableEntry>(params: {
+  entry: TEntry;
+  entryIndex: number;
+  entries: readonly TEntry[];
+  consumedOwnerIndexes: Set<number>;
+  consumedBridgeIndexes: Set<number>;
+}): boolean {
+  if (params.consumedBridgeIndexes.has(params.entryIndex)) {
+    return true;
+  }
+  if (params.entry.source !== "model_call_custom") {
+    return false;
+  }
+  const ownerIndex = params.entries.findIndex((owner, candidateIndex) => {
+    return (
+      candidateIndex !== params.entryIndex &&
+      !params.consumedOwnerIndexes.has(candidateIndex) &&
+      modelCallBridgeMatchesCanonicalUsage(params.entry, owner)
+    );
+  });
+  if (ownerIndex === -1) {
+    const aggregateOwner = params.entries
+      .map((owner, index) => ({ owner, index }))
+      .find(({ owner, index }) => {
+        if (index === params.entryIndex || params.consumedOwnerIndexes.has(index)) {
+          return false;
+        }
+        const subset = findUsageBridgeSubsetForOwner({
+          entry: params.entry,
+          entryIndex: params.entryIndex,
+          owner,
+          entries: params.entries,
+          consumedBridgeIndexes: params.consumedBridgeIndexes,
+        });
+        if (!subset) {
+          return false;
+        }
+        reconcileAggregateUsageBridgeOwnerCost(
+          owner,
+          subset.map((bridgeIndex) => params.entries[bridgeIndex]).filter(Boolean),
+        );
+        params.consumedOwnerIndexes.add(index);
+        for (const bridgeIndex of subset) {
+          params.consumedBridgeIndexes.add(bridgeIndex);
+        }
+        return true;
+      });
+    return Boolean(aggregateOwner);
+  }
+  reconcileAggregateUsageBridgeOwnerCost(params.entries[ownerIndex], [params.entry]);
+  params.consumedOwnerIndexes.add(ownerIndex);
+  params.consumedBridgeIndexes.add(params.entryIndex);
+  return true;
+}
+
+function usageCostEntrySourceRank(entry: UsageBridgeComparableEntry): number {
+  const filePath = entry.sourceFilePath;
+  if (!filePath) {
+    return 2;
+  }
+  return isPrimarySessionTranscriptFileName(path.basename(filePath)) ? 0 : 1;
+}
+
+function usageCostEntryArchiveTimestamp(filePath?: string): number {
+  if (!filePath) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const fileName = path.basename(filePath);
+  return (
+    parseSessionArchiveTimestamp(fileName, "reset") ??
+    parseSessionArchiveTimestamp(fileName, "deleted") ??
+    Number.NEGATIVE_INFINITY
+  );
+}
+
+function compareDuplicateUsageCostEntries<TEntry extends UsageBridgeComparableEntry>(
+  left: TEntry,
+  right: TEntry,
+): number {
+  const sourceRankDelta = usageCostEntrySourceRank(left) - usageCostEntrySourceRank(right);
+  if (sourceRankDelta !== 0) {
+    return sourceRankDelta;
+  }
+  const archiveDelta =
+    usageCostEntryArchiveTimestamp(right.sourceFilePath) -
+    usageCostEntryArchiveTimestamp(left.sourceFilePath);
+  if (archiveDelta !== 0) {
+    return archiveDelta;
+  }
+  const missingCostDelta = (left.missingCostEntries ?? 0) - (right.missingCostEntries ?? 0);
+  if (missingCostDelta !== 0) {
+    return missingCostDelta;
+  }
+  const timestampDelta =
+    (usageBridgeTimestampMs(right) ?? Number.NEGATIVE_INFINITY) -
+    (usageBridgeTimestampMs(left) ?? Number.NEGATIVE_INFINITY);
+  if (timestampDelta !== 0) {
+    return timestampDelta;
+  }
+  return stableStringify(left).localeCompare(stableStringify(right));
+}
+
+function parseTranscriptEntryDedupKey(
+  dedupKey: string | undefined,
+): { sessionId: string; entryId: string } | undefined {
+  const prefix = "transcript-entry|";
+  if (!dedupKey?.startsWith(prefix)) {
+    return undefined;
+  }
+  const rest = dedupKey.slice(prefix.length);
+  const separatorIndex = rest.indexOf("|");
+  if (separatorIndex === -1) {
+    return undefined;
+  }
+  return {
+    sessionId: rest.slice(0, separatorIndex),
+    entryId: rest.slice(separatorIndex + 1),
+  };
+}
+
+function usageCostEntryIdDuplicateKey(entry: UsageBridgeComparableEntry): string | undefined {
+  if (!entry.entryId) {
+    return undefined;
+  }
+  const parsed = parseTranscriptEntryDedupKey(entry.dedupKey);
+  const sameEntryId =
+    parsed?.entryId === entry.entryId || parsed?.entryId.startsWith(`${entry.entryId}|`);
+  if (!parsed || !sameEntryId || parsed.sessionId.length === 0) {
+    return undefined;
+  }
+  return ["transcript-entry", parsed.sessionId, entry.entryId].join("|");
+}
+
+function collapseLedgerTranscriptEntryIdDuplicates<TEntry extends UsageBridgeComparableEntry>(
+  entries: readonly TEntry[],
+): TEntry[] {
+  const byEntryId = new Map<string, TEntry[]>();
+  for (const entry of entries) {
+    if (!entry.entryId) {
+      continue;
+    }
+    const group = byEntryId.get(entry.entryId) ?? [];
+    group.push(entry);
+    byEntryId.set(entry.entryId, group);
+  }
+  const consumed = new Set<TEntry>();
+  const collapsed: TEntry[] = [];
+  const collapseGroup = (group: TEntry[]): void => {
+    if (
+      group.length > 1 &&
+      group.some((entry) => entry.sourceFilePath) &&
+      group.some((entry) => !entry.sourceFilePath)
+    ) {
+      const canonical = group.toSorted(compareDuplicateUsageCostEntries)[0];
+      if (canonical) {
+        collapsed.push(canonical);
+      }
+      for (const entry of group) {
+        consumed.add(entry);
+      }
+    }
+  };
+  for (const group of byEntryId.values()) {
+    const byScopedEntryId = new Map<string, TEntry[]>();
+    for (const entry of group) {
+      const key = usageCostEntryIdDuplicateKey(entry);
+      if (!key) {
+        continue;
+      }
+      const scopedGroup = byScopedEntryId.get(key) ?? [];
+      scopedGroup.push(entry);
+      byScopedEntryId.set(key, scopedGroup);
+    }
+    for (const scopedGroup of byScopedEntryId.values()) {
+      collapseGroup(scopedGroup);
+    }
+    const remaining = group.filter((entry) => !consumed.has(entry));
+    const remainingScopedKeys = new Set(
+      remaining.flatMap((entry) => {
+        const key = usageCostEntryIdDuplicateKey(entry);
+        return key ? [key] : [];
+      }),
+    );
+    if (remainingScopedKeys.size <= 1) {
+      collapseGroup(remaining);
+    }
+  }
+  for (const entry of entries) {
+    if (!consumed.has(entry)) {
+      collapsed.push(entry);
+    }
+  }
+  return collapsed;
+}
+
+function deduplicateUsageCostEntries<TEntry extends UsageBridgeComparableEntry>(
+  entries: readonly TEntry[],
+): TEntry[] {
+  const passthrough: TEntry[] = [];
+  const byDedupKey = new Map<string, TEntry>();
+  for (const entry of entries) {
+    if (!entry.dedupKey) {
+      passthrough.push(entry);
+      continue;
+    }
+    const existing = byDedupKey.get(entry.dedupKey);
+    if (!existing || compareDuplicateUsageCostEntries(entry, existing) < 0) {
+      byDedupKey.set(entry.dedupKey, entry);
+    }
+  }
+  return collapseLedgerTranscriptEntryIdDuplicates([...passthrough, ...byDedupKey.values()]);
+}
+
+function collectCanonicalUsageBridgeEntries<TEntry extends UsageBridgeComparableEntry>(
+  entries: readonly TEntry[],
+): TEntry[] {
+  const canonicalInputEntries = deduplicateUsageCostEntries(entries);
+  const consumedModelCallBridgeOwnerIndexes = new Set<number>();
+  const consumedModelCallBridgeIndexes = new Set<number>();
+  const canonicalEntries: TEntry[] = [];
+  for (const [entryIndex, entry] of canonicalInputEntries.entries()) {
+    if (
+      skipModelCallBridgeUsageEntry({
+        entry,
+        entryIndex,
+        entries: canonicalInputEntries,
+        consumedOwnerIndexes: consumedModelCallBridgeOwnerIndexes,
+        consumedBridgeIndexes: consumedModelCallBridgeIndexes,
+      })
+    ) {
+      continue;
+    }
+    canonicalEntries.push(entry);
+  }
+  return canonicalEntries;
+}
 
 /**
  * Maximum window (in days) for which we will zero-fill missing calendar
@@ -1173,6 +2107,19 @@ const shouldRecomputeRecordedZeroCost = (params: {
   isModelPricingKnown(params.cost) &&
   computeUsageTokenTotals(params.usage).totalTokens > 0;
 
+function estimateUsageCostWithRecordedMultiplier(params: {
+  usage: NormalizedUsage;
+  usageRaw: unknown;
+  cost: ReturnType<typeof resolveModelCostConfig>;
+}): number | undefined {
+  const estimated = estimateUsageCost({ usage: params.usage, cost: params.cost });
+  if (estimated === undefined) {
+    return undefined;
+  }
+  const metadata = readUsageBudgetRecordedCostMetadata(params.usageRaw);
+  return metadata?.authoritativeCost === false ? estimated * metadata.costMultiplier : estimated;
+}
+
 type UsageCostResolver = (params: {
   provider?: string;
   model?: string;
@@ -1208,14 +2155,49 @@ async function canReadJsonlFromOffset(filePath: string, startOffset: number): Pr
   }
 }
 
+type UsageCostJsonlRecord = {
+  record: Record<string, unknown>;
+  lineIndex: number;
+  lineText: string;
+};
+
+async function countJsonlLineBreaksBeforeOffset(filePath: string, offset: number): Promise<number> {
+  if (offset <= 0) {
+    return 0;
+  }
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    let position = 0;
+    let lineBreaks = 0;
+    while (position < offset) {
+      const bytesToRead = Math.min(buffer.length, offset - position);
+      const result = await handle.read(buffer, 0, bytesToRead, position);
+      if (result.bytesRead <= 0) {
+        break;
+      }
+      for (let index = 0; index < result.bytesRead; index += 1) {
+        if (buffer[index] === 10) {
+          lineBreaks += 1;
+        }
+      }
+      position += result.bytesRead;
+    }
+    return lineBreaks;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
 async function* readJsonlRecords(
   filePath: string,
   startOffset = 0,
   endOffset?: number,
-): AsyncGenerator<Record<string, unknown>> {
+): AsyncGenerator<UsageCostJsonlRecord> {
   if (endOffset !== undefined && endOffset <= startOffset) {
     return;
   }
+  let lineIndex = await countJsonlLineBreaksBeforeOffset(filePath, startOffset);
   const streamOptions: Parameters<typeof fs.createReadStream>[1] = {
     encoding: "utf-8",
     start: Math.max(0, startOffset),
@@ -1227,6 +2209,8 @@ async function* readJsonlRecords(
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
   try {
     for await (const line of rl) {
+      const currentLineIndex = lineIndex;
+      lineIndex += 1;
       const trimmed = line.trim();
       if (!trimmed) {
         continue;
@@ -1236,7 +2220,11 @@ async function* readJsonlRecords(
         if (!parsed || typeof parsed !== "object") {
           continue;
         }
-        yield parsed as Record<string, unknown>;
+        yield {
+          record: parsed as Record<string, unknown>,
+          lineIndex: currentLineIndex,
+          lineText: trimmed,
+        };
       } catch {
         // Ignore malformed lines
       }
@@ -1253,39 +2241,85 @@ async function scanTranscriptFile(params: {
   resolveCost?: UsageCostResolver;
   startOffset?: number;
   endOffset?: number;
+  usageIdentitySessionId?: string;
+  legacyRowOccurrences?: ReadonlyMap<string, number>;
   onEntry: (entry: ParsedTranscriptEntry) => void;
-}): Promise<void> {
+}): Promise<{ usageIdentitySessionId: string; legacyRowOccurrences: Map<string, number> }> {
   const resolveCost = params.resolveCost ?? createUsageCostResolver(params.config);
-  for await (const parsed of readJsonlRecords(
+  const sessionId =
+    parseUsageCountedSessionIdFromFileName(path.basename(params.filePath)) ??
+    path.basename(params.filePath);
+  let usageIdentitySessionId = params.usageIdentitySessionId ?? sessionId;
+  const legacyRowOccurrences = new Map(params.legacyRowOccurrences ?? []);
+  for await (const source of readJsonlRecords(
     params.filePath,
     params.startOffset,
     params.endOffset,
   )) {
-    const entry = parseTranscriptEntry(parsed);
-    if (!entry) {
+    const parsedEntry = parseTranscriptEntry(source.record);
+    if (source.record.type === "session") {
+      usageIdentitySessionId = resolveUsageCostTranscriptIdentitySessionId({
+        filePath: params.filePath,
+        fallbackSessionId: sessionId,
+        header: source.record,
+      });
+    }
+    if (!parsedEntry) {
       continue;
     }
+    let legacyRowFingerprint: string | undefined;
+    let legacyRowOccurrenceIndex: number | undefined;
+    if (!parsedEntry.entryId) {
+      legacyRowFingerprint = buildStableLegacyParsedRowFingerprint({
+        usageIdentitySessionId,
+        record: source.record,
+      });
+      legacyRowOccurrenceIndex = legacyRowOccurrences.get(legacyRowFingerprint) ?? 0;
+      legacyRowOccurrences.set(legacyRowFingerprint, legacyRowOccurrenceIndex + 1);
+    }
+    const entry: ParsedTranscriptEntry = {
+      ...parsedEntry,
+      sessionId: usageIdentitySessionId,
+      sourceFilePath: params.filePath,
+      sourceLineIndex: source.lineIndex,
+      sourceLineText: source.lineText,
+      ...(legacyRowFingerprint ? { legacyRowFingerprint } : {}),
+      ...(legacyRowOccurrenceIndex !== undefined ? { legacyRowOccurrenceIndex } : {}),
+    };
 
     if (entry.usage) {
       const cost = resolveCost({
         provider: entry.provider,
         model: entry.model,
       });
-      const usageTotals = computeUsageTokenTotals(entry.usage);
+      const tokenTotals = computeUsageTokenTotals(entry.usage);
       const pricingKnown = isModelPricingKnown(cost);
       const preserveRecordedZeroCost = shouldPreserveRecordedZeroCost(entry.costBreakdown);
-      if (cost?.tieredPricing && cost.tieredPricing.length > 0 && !preserveRecordedZeroCost) {
-        // When tiered pricing is configured, always recompute to override
-        // the flat-rate cost that the transport layer wrote into the transcript.
-        // Clear costBreakdown so downstream aggregation uses the recomputed total
-        // instead of the stale flat-rate breakdown from the transport layer.
-        entry.costTotal = estimateUsageCost({ usage: entry.usage, cost });
+      if (entry.usageBudgetUnpriceableCost) {
+        entry.costTotal = undefined;
+        entry.costBreakdown = undefined;
+      } else if (entry.usageBudgetRecordedCostTotal !== undefined) {
+        entry.costTotal = entry.usageBudgetRecordedCostTotal;
+        entry.costBreakdown = undefined;
+      } else if (
+        cost?.tieredPricing &&
+        cost.tieredPricing.length > 0 &&
+        !preserveRecordedZeroCost
+      ) {
+        // Tiered pricing must override stale flat-rate provider costs. The only
+        // recorded tiered cost we trust is the budget-owned bridge marker that
+        // already applied a provider dispatch multiplier.
+        entry.costTotal = estimateUsageCostWithRecordedMultiplier({
+          usage: entry.usage,
+          usageRaw: entry.message.usage,
+          cost,
+        });
         entry.costBreakdown = undefined;
       } else if (
         !pricingKnown &&
         !preserveRecordedZeroCost &&
         (entry.costTotal === undefined || entry.costTotal === 0) &&
-        usageTotals.totalTokens > 0
+        tokenTotals.totalTokens > 0
       ) {
         // Pricing for this model is unknown: it has no positive per-token rate and no
         // trustworthy recorded cost. The transport either recorded nothing or a
@@ -1308,13 +2342,18 @@ async function scanTranscriptFile(params: {
         // Fill in missing estimates and override fabricated API-provided zeros
         // for known-priced models such as DeepSeek V4. Providers that reconcile
         // only the total keep their authoritative zero when components are nonzero.
-        entry.costTotal = estimateUsageCost({ usage: entry.usage, cost });
+        entry.costTotal = estimateUsageCostWithRecordedMultiplier({
+          usage: entry.usage,
+          usageRaw: entry.message.usage,
+          cost,
+        });
         entry.costBreakdown = undefined;
       }
     }
 
     params.onEntry(entry);
   }
+  return { usageIdentitySessionId, legacyRowOccurrences };
 }
 
 async function scanUsageFile(params: {
@@ -1336,9 +2375,18 @@ async function scanUsageFile(params: {
         return;
       }
       params.onEntry({
+        entryId: entry.entryId ?? buildLegacyParsedUsageRecordId(entry),
+        dedupKey: buildParsedUsageDedupKey(entry),
+        ...(entry.sourceFilePath ? { sourceFilePath: entry.sourceFilePath } : {}),
+        ...(entry.sourceLineIndex !== undefined ? { sourceLineIndex: entry.sourceLineIndex } : {}),
+        source: entry.source,
+        ...(entry.usageBudgetOperationId
+          ? { usageBudgetOperationId: entry.usageBudgetOperationId }
+          : {}),
         usage: entry.usage,
         costTotal: entry.costTotal,
         costBreakdown: entry.costBreakdown,
+        usageBudgetRecordedCostTotal: entry.usageBudgetRecordedCostTotal,
         provider: entry.provider,
         model: entry.model,
         timestamp: entry.timestamp,
@@ -1437,9 +2485,10 @@ export async function loadCostUsageSummary(params?: {
   const dailyMap = new Map<string, CostUsageTotals>();
   const totals = emptyTotals();
   const resolveCost = createUsageCostResolver(params?.config);
+  const usageEntries: ParsedUsageEntry[] = [];
 
   const files = await listUsageCountedTranscriptFileStats(params?.agentId, {
-    minMtimeMs: sinceTime,
+    minMtimeMs: sinceTime - USAGE_COST_BRIDGE_RECONCILIATION_LOOKBACK_MS,
   });
 
   for (const file of files) {
@@ -1448,28 +2497,43 @@ export async function loadCostUsageSummary(params?: {
       config: params?.config,
       resolveCost,
       onEntry: (entry) => {
-        const ts = entry.timestamp?.getTime();
-        if (!ts || ts < sinceTime || ts > untilTime) {
-          return;
-        }
-        const dayKey = formatDayKey(entry.timestamp ?? now);
-        const bucket = dailyMap.get(dayKey) ?? emptyTotals();
-        applyUsageTotals(bucket, entry.usage);
-        if (entry.costBreakdown?.total !== undefined) {
-          applyCostBreakdown(bucket, entry.costBreakdown);
-        } else {
-          applyCostTotal(bucket, entry.costTotal);
-        }
-        dailyMap.set(dayKey, bucket);
-
-        applyUsageTotals(totals, entry.usage);
-        if (entry.costBreakdown?.total !== undefined) {
-          applyCostBreakdown(totals, entry.costBreakdown);
-        } else {
-          applyCostTotal(totals, entry.costTotal);
-        }
+        usageEntries.push(entry);
       },
     });
+  }
+  for (const ledgerEntry of loadAgentUsageBudgetLedgerAccountedEntries({
+    agentId: params?.agentId,
+    minStartMs: sinceTime - USAGE_COST_BRIDGE_RECONCILIATION_LOOKBACK_MS,
+    config: params?.config,
+  })) {
+    const entry = parsedUsageEntryFromLedger(ledgerEntry);
+    if (!entry) {
+      continue;
+    }
+    usageEntries.push(entry);
+  }
+
+  for (const entry of collectCanonicalUsageBridgeEntries(usageEntries)) {
+    const ts = entry.timestamp?.getTime();
+    if (!ts || ts < sinceTime || ts > untilTime) {
+      continue;
+    }
+    const dayKey = formatDayKey(entry.timestamp ?? now);
+    const bucket = dailyMap.get(dayKey) ?? emptyTotals();
+    applyUsageTotals(bucket, entry.usage);
+    if (entry.costBreakdown?.total !== undefined) {
+      applyCostBreakdown(bucket, entry.costBreakdown);
+    } else {
+      applyCostTotal(bucket, entry.costTotal);
+    }
+    dailyMap.set(dayKey, bucket);
+
+    applyUsageTotals(totals, entry.usage);
+    if (entry.costBreakdown?.total !== undefined) {
+      applyCostBreakdown(totals, entry.costBreakdown);
+    } else {
+      applyCostTotal(totals, entry.costTotal);
+    }
   }
 
   fillMissingDays(dailyMap, sinceTime, untilTime);
@@ -1525,12 +2589,17 @@ async function scanUsageFileForCache(params: {
       ? appendOnlyPrevious.size
       : undefined;
 
-  await scanTranscriptFile({
+  const transcriptScan = await scanTranscriptFile({
     filePath: params.file.filePath,
     config: params.config,
     resolveCost: params.resolveCost,
     startOffset,
     endOffset: params.file.size,
+    usageIdentitySessionId: appendOnlyPrevious?.usageIdentitySessionId,
+    legacyRowOccurrences:
+      appendOnlyPrevious && startOffset !== undefined
+        ? new Map(Object.entries(appendOnlyPrevious.legacyRowOccurrences ?? {}))
+        : undefined,
     onEntry: (entry) => {
       const ts = entry.timestamp?.getTime();
       let entryTotals: CostUsageTotals | undefined;
@@ -1546,7 +2615,21 @@ async function scanUsageFileForCache(params: {
         addTotals(totals, entryTotals);
         if (ts !== undefined) {
           countedRecords += 1;
+          const dedupKey = buildParsedUsageDedupKey(entry);
           usageEntries.push({
+            entryId: entry.entryId ?? buildLegacyParsedUsageRecordId(entry),
+            ...(dedupKey ? { dedupKey } : {}),
+            ...(entry.sourceFilePath ? { sourceFilePath: entry.sourceFilePath } : {}),
+            ...(entry.sourceLineIndex !== undefined
+              ? { sourceLineIndex: entry.sourceLineIndex }
+              : {}),
+            source: entry.source,
+            ...(entry.usageBudgetOperationId
+              ? { usageBudgetOperationId: entry.usageBudgetOperationId }
+              : {}),
+            ...(entry.usageBudgetRecordedCostTotal !== undefined
+              ? { usageBudgetRecordedCostTotal: entry.usageBudgetRecordedCostTotal }
+              : {}),
             timestamp: ts,
             provider: entry.provider,
             model: entry.model,
@@ -1556,6 +2639,10 @@ async function scanUsageFileForCache(params: {
       }
 
       transcriptEntries?.push({
+        source: entry.source,
+        ...(entry.usageBudgetOperationId
+          ? { usageBudgetOperationId: entry.usageBudgetOperationId }
+          : {}),
         timestamp: ts,
         role: entry.role,
         durationMs: entry.durationMs,
@@ -1568,6 +2655,7 @@ async function scanUsageFileForCache(params: {
       });
     },
   });
+  const { usageIdentitySessionId, legacyRowOccurrences } = transcriptScan;
 
   const sessionId =
     parseUsageCountedSessionIdFromFileName(path.basename(params.file.filePath)) ?? undefined;
@@ -1589,6 +2677,7 @@ async function scanUsageFileForCache(params: {
             mtimeMs: params.file.mtimeMs,
             pricingFingerprint,
             scannedAt: Date.now(),
+            usageIdentitySessionId,
             parsedRecords,
             countedRecords,
             usageEntries,
@@ -1612,6 +2701,8 @@ async function scanUsageFileForCache(params: {
       mtimeMs: params.file.mtimeMs,
       pricingFingerprint,
       scannedAt: Date.now(),
+      usageIdentitySessionId,
+      legacyRowOccurrences: Object.fromEntries(legacyRowOccurrences),
       parsedRecords: appendOnlyPrevious.parsedRecords + parsedRecords,
       countedRecords: appendOnlyPrevious.countedRecords + countedRecords,
       usageEntries: [...appendOnlyPrevious.usageEntries, ...usageEntries],
@@ -1627,6 +2718,8 @@ async function scanUsageFileForCache(params: {
     mtimeMs: params.file.mtimeMs,
     pricingFingerprint,
     scannedAt: Date.now(),
+    usageIdentitySessionId,
+    legacyRowOccurrences: Object.fromEntries(legacyRowOccurrences),
     parsedRecords,
     countedRecords,
     usageEntries,
@@ -1793,9 +2886,15 @@ export async function loadCostUsageSummaryFromCache(params: {
     }
   }
   const refreshRunning = await isUsageCostCacheRefreshRunning(cachePath);
+  const ledgerEntries = loadAgentUsageBudgetLedgerAccountedEntries({
+    agentId: params.agentId,
+    minStartMs: params.startMs - USAGE_COST_BRIDGE_RECONCILIATION_LOOKBACK_MS,
+    config: params.config,
+  });
   return buildCostUsageSummaryFromCache({
     cache,
     files,
+    ledgerEntries,
     startMs: params.startMs,
     endMs: params.endMs,
     pricingFingerprint,
@@ -2163,8 +3262,9 @@ export async function discoverAllSessions(params?: {
     let firstUserMessage: string | undefined;
     if (params?.includeFirstUserMessage !== false) {
       try {
-        for await (const parsed of readJsonlRecords(filePath)) {
+        for await (const source of readJsonlRecords(filePath)) {
           try {
+            const parsed = source.record;
             const message = parsed.message as Record<string, unknown> | undefined;
             if (message?.role === "user") {
               const content = message.content;
@@ -2264,6 +3364,7 @@ export async function loadSessionCostSummary(params: {
   let lastUserTimestamp: number | undefined;
   const MAX_LATENCY_MS = 12 * 60 * 60 * 1000;
   const resolveCost = createUsageCostResolver(params.config);
+  const usageEntries: ParsedTranscriptEntry[] = [];
 
   await scanTranscriptFile({
     filePath: sessionFile,
@@ -2272,11 +3373,14 @@ export async function loadSessionCostSummary(params: {
     onEntry: (entry) => {
       const ts = entry.timestamp?.getTime();
 
-      // Filter by date range if specified
-      if (params.startMs !== undefined && ts !== undefined && ts < params.startMs) {
-        return;
-      }
-      if (params.endMs !== undefined && ts !== undefined && ts > params.endMs) {
+      if (!timestampInReportRange(ts, params.startMs, params.endMs)) {
+        if (
+          entry.usage &&
+          entry.source === "model_call_custom" &&
+          timestampInUsageBridgeReconciliationRange(ts, params.startMs, params.endMs)
+        ) {
+          usageEntries.push(entry);
+        }
         return;
       }
 
@@ -2371,94 +3475,115 @@ export async function loadSessionCostSummary(params: {
         return;
       }
 
-      applyUsageTotals(totals, entry.usage);
-      if (entry.costBreakdown?.total !== undefined) {
-        applyCostBreakdown(totals, entry.costBreakdown);
-      } else {
-        applyCostTotal(totals, entry.costTotal);
-      }
-
-      if (entry.timestamp) {
-        const dayKey = formatDayKey(entry.timestamp);
-        const entryTokenTotals = computeUsageTokenTotals(entry.usage);
-        // Preserve the legacy dailyBreakdown token basis until daily metrics are
-        // refactored separately. The precise quarter-hour bucket below uses
-        // entryTokenTotals.totalTokens so Usage Mosaic matches session totals.
-        const entryTokens = entryTokenTotals.componentTotal;
-        const entryCost =
-          entry.costBreakdown?.total ??
-          (entry.costBreakdown
-            ? (entry.costBreakdown.input ?? 0) +
-              (entry.costBreakdown.output ?? 0) +
-              (entry.costBreakdown.cacheRead ?? 0) +
-              (entry.costBreakdown.cacheWrite ?? 0)
-            : (entry.costTotal ?? 0));
-
-        const quarterBucket = getUtcQuarterHourBucketKey(entry.timestamp);
-        const utcQuarterHourToken = utcQuarterHourTokenMap.get(quarterBucket.key) ?? {
-          date: quarterBucket.date,
-          quarterIndex: quarterBucket.quarterIndex,
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          totalCost: 0,
-        };
-        utcQuarterHourToken.input += entryTokenTotals.input;
-        utcQuarterHourToken.output += entryTokenTotals.output;
-        utcQuarterHourToken.cacheRead += entryTokenTotals.cacheRead;
-        utcQuarterHourToken.cacheWrite += entryTokenTotals.cacheWrite;
-        utcQuarterHourToken.totalTokens += entryTokenTotals.totalTokens;
-        utcQuarterHourToken.totalCost += entryCost;
-        utcQuarterHourTokenMap.set(quarterBucket.key, utcQuarterHourToken);
-
-        const existing = dailyMap.get(dayKey) ?? { tokens: 0, cost: 0 };
-        dailyMap.set(dayKey, {
-          tokens: existing.tokens + entryTokens,
-          cost: existing.cost + entryCost,
-        });
-
-        if (entry.provider || entry.model) {
-          const modelKey = `${dayKey}::${entry.provider ?? "unknown"}::${entry.model ?? "unknown"}`;
-          const dailyModel =
-            dailyModelUsageMap.get(modelKey) ??
-            ({
-              date: dayKey,
-              provider: entry.provider,
-              model: entry.model,
-              tokens: 0,
-              cost: 0,
-              count: 0,
-            } as SessionDailyModelUsage);
-          dailyModel.tokens += entryTokens;
-          dailyModel.cost += entryCost;
-          dailyModel.count += 1;
-          dailyModelUsageMap.set(modelKey, dailyModel);
-        }
-      }
-
-      if (entry.provider || entry.model) {
-        const key = `${entry.provider ?? "unknown"}::${entry.model ?? "unknown"}`;
-        const existing =
-          modelUsageMap.get(key) ??
-          ({
-            provider: entry.provider,
-            model: entry.model,
-            count: 0,
-            totals: emptyTotals(),
-          } as SessionModelUsage);
-        existing.count += 1;
-        applyUsageTotals(existing.totals, entry.usage);
-        if (entry.costBreakdown?.total !== undefined) {
-          applyCostBreakdown(existing.totals, entry.costBreakdown);
-        } else {
-          applyCostTotal(existing.totals, entry.costTotal);
-        }
-        modelUsageMap.set(key, existing);
-      }
+      usageEntries.push(entry);
     },
   });
+
+  const consumedModelCallBridgeOwnerIndexes = new Set<number>();
+  const consumedModelCallBridgeIndexes = new Set<number>();
+  for (const [entryIndex, entry] of usageEntries.entries()) {
+    if (
+      skipModelCallBridgeUsageEntry({
+        entry,
+        entryIndex,
+        entries: usageEntries,
+        consumedOwnerIndexes: consumedModelCallBridgeOwnerIndexes,
+        consumedBridgeIndexes: consumedModelCallBridgeIndexes,
+      })
+    ) {
+      continue;
+    }
+    if (!entry.usage) {
+      continue;
+    }
+
+    applyUsageTotals(totals, entry.usage);
+    if (entry.costBreakdown?.total !== undefined) {
+      applyCostBreakdown(totals, entry.costBreakdown);
+    } else {
+      applyCostTotal(totals, entry.costTotal);
+    }
+
+    if (entry.timestamp) {
+      const dayKey = formatDayKey(entry.timestamp);
+      const entryTokenTotals = computeUsageTokenTotals(entry.usage);
+      // Preserve the legacy dailyBreakdown token basis until daily metrics are
+      // refactored separately. The precise quarter-hour bucket below uses
+      // entryTokenTotals.totalTokens so Usage Mosaic matches session totals.
+      const entryTokens = entryTokenTotals.componentTotal;
+      const entryCost =
+        entry.costBreakdown?.total ??
+        (entry.costBreakdown
+          ? (entry.costBreakdown.input ?? 0) +
+            (entry.costBreakdown.output ?? 0) +
+            (entry.costBreakdown.cacheRead ?? 0) +
+            (entry.costBreakdown.cacheWrite ?? 0)
+          : (entry.costTotal ?? 0));
+
+      const quarterBucket = getUtcQuarterHourBucketKey(entry.timestamp);
+      const utcQuarterHourToken = utcQuarterHourTokenMap.get(quarterBucket.key) ?? {
+        date: quarterBucket.date,
+        quarterIndex: quarterBucket.quarterIndex,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        totalCost: 0,
+      };
+      utcQuarterHourToken.input += entryTokenTotals.input;
+      utcQuarterHourToken.output += entryTokenTotals.output;
+      utcQuarterHourToken.cacheRead += entryTokenTotals.cacheRead;
+      utcQuarterHourToken.cacheWrite += entryTokenTotals.cacheWrite;
+      utcQuarterHourToken.totalTokens += entryTokenTotals.totalTokens;
+      utcQuarterHourToken.totalCost += entryCost;
+      utcQuarterHourTokenMap.set(quarterBucket.key, utcQuarterHourToken);
+
+      const existing = dailyMap.get(dayKey) ?? { tokens: 0, cost: 0 };
+      dailyMap.set(dayKey, {
+        tokens: existing.tokens + entryTokens,
+        cost: existing.cost + entryCost,
+      });
+
+      if (entry.provider || entry.model) {
+        const modelKey = `${dayKey}::${entry.provider ?? "unknown"}::${entry.model ?? "unknown"}`;
+        const dailyModel =
+          dailyModelUsageMap.get(modelKey) ??
+          ({
+            date: dayKey,
+            provider: entry.provider,
+            model: entry.model,
+            tokens: 0,
+            cost: 0,
+            count: 0,
+          } as SessionDailyModelUsage);
+        dailyModel.tokens += entryTokens;
+        dailyModel.cost += entryCost;
+        dailyModel.count += 1;
+        dailyModelUsageMap.set(modelKey, dailyModel);
+      }
+    }
+
+    if (entry.provider || entry.model) {
+      const key = `${entry.provider ?? "unknown"}::${entry.model ?? "unknown"}`;
+      const existing =
+        modelUsageMap.get(key) ??
+        ({
+          provider: entry.provider,
+          model: entry.model,
+          count: 0,
+          totals: emptyTotals(),
+        } as SessionModelUsage);
+      existing.count += 1;
+      applyUsageTotals(existing.totals, entry.usage);
+      if (entry.costBreakdown?.total !== undefined) {
+        applyCostBreakdown(existing.totals, entry.costBreakdown);
+      } else {
+        applyCostTotal(existing.totals, entry.costTotal);
+      }
+      modelUsageMap.set(key, existing);
+    }
+  }
 
   // Convert daily map to sorted array
   const dailyBreakdown: SessionDailyUsage[] = Array.from(dailyMap.entries())
@@ -2563,38 +3688,57 @@ export async function loadSessionUsageTimeSeries(params: {
   let cumulativeTokens = 0;
   let cumulativeCost = 0;
   const resolveCost = createUsageCostResolver(params.config);
+  const usageEntries: ParsedUsageEntry[] = [];
 
   await scanUsageFile({
     filePath: sessionFile,
     config: params.config,
     resolveCost,
     onEntry: (entry) => {
-      const ts = entry.timestamp?.getTime();
-      if (!ts) {
-        return;
-      }
-
-      const { input, output, cacheRead, cacheWrite, totalTokens } = computeUsageTokenTotals(
-        entry.usage,
-      );
-      const cost = entry.costTotal ?? 0;
-
-      cumulativeTokens += totalTokens;
-      cumulativeCost += cost;
-
-      points.push({
-        timestamp: ts,
-        input,
-        output,
-        cacheRead,
-        cacheWrite,
-        totalTokens,
-        cost,
-        cumulativeTokens,
-        cumulativeCost,
-      });
+      usageEntries.push(entry);
     },
   });
+
+  const consumedModelCallBridgeOwnerIndexes = new Set<number>();
+  const consumedModelCallBridgeIndexes = new Set<number>();
+  for (const [entryIndex, entry] of usageEntries.entries()) {
+    if (
+      skipModelCallBridgeUsageEntry({
+        entry,
+        entryIndex,
+        entries: usageEntries,
+        consumedOwnerIndexes: consumedModelCallBridgeOwnerIndexes,
+        consumedBridgeIndexes: consumedModelCallBridgeIndexes,
+      })
+    ) {
+      continue;
+    }
+
+    const ts = entry.timestamp?.getTime();
+    if (!ts) {
+      continue;
+    }
+
+    const { input, output, cacheRead, cacheWrite, totalTokens } = computeUsageTokenTotals(
+      entry.usage,
+    );
+    const cost = entry.costTotal ?? 0;
+
+    cumulativeTokens += totalTokens;
+    cumulativeCost += cost;
+
+    points.push({
+      timestamp: ts,
+      input,
+      output,
+      cacheRead,
+      cacheWrite,
+      totalTokens,
+      cost,
+      cumulativeTokens,
+      cumulativeCost,
+    });
+  }
 
   // Sort by timestamp
   const sortedPoints = points.toSorted((a, b) => a.timestamp - b.timestamp);
@@ -2673,8 +3817,9 @@ export async function loadSessionLogs(params: {
   const retentionLimit = limit * 2;
   const resolveCost = createUsageCostResolver(params.config);
 
-  for await (const parsed of readJsonlRecords(sessionFile)) {
+  for await (const source of readJsonlRecords(sessionFile)) {
     try {
+      const parsed = source.record;
       const message = parsed.message as Record<string, unknown> | undefined;
       if (!message) {
         continue;

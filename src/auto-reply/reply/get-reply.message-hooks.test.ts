@@ -197,6 +197,31 @@ describe("getReplyFromConfig message hooks", () => {
     expect(triggerCount).toBe(2);
   });
 
+  it("skips media understanding for budgeted agents", async () => {
+    const reply = await getReplyFromConfig(
+      buildCtx(),
+      undefined,
+      withFastReplyConfig({
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 100 },
+            },
+          },
+        },
+      }),
+    );
+
+    expect(reply).toEqual({ text: "ok" });
+    expect(mocks.applyMediaUnderstanding).not.toHaveBeenCalled();
+    expect(mocks.resolveReplyDirectives).toHaveBeenCalledOnce();
+    expect(
+      verboseMessages().some((message) =>
+        message.includes("media understanding skipped because agent usage budgets are enabled"),
+      ),
+    ).toBe(true);
+  });
+
   it("enriches staged text-only images before reply without switching the reply model", async () => {
     const enrichedBody = "describe image\n\n[Image 1]\na tiny dot image";
     const extractedPdfPage = {

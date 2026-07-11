@@ -100,6 +100,7 @@ export type TtsTelephonyRequestParams = {
   cfg: OpenClawConfig;
   prefsPath?: string;
   overrides?: TtsDirectiveOverrides;
+  agentId?: string;
 };
 
 /** Inputs for listing voices from a speech provider with optional resolved config. */

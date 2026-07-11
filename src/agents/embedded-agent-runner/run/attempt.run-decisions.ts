@@ -67,12 +67,21 @@ export function resolveUnknownToolGuardThreshold(loopDetection?: {
 }
 
 /**
- * Skips `llm_output` hooks only when `before_agent_run` blocked the prompt
- * before any model submission; later prompt errors can still have model output
- * or tool state that downstream hooks need to observe.
+ * Skips `llm_output` hooks when policy blocks the prompt before any model
+ * submission; later prompt errors can still have model output or tool state
+ * that downstream hooks need to observe.
  */
-export function shouldRunLlmOutputHooksForAttempt(params: { promptErrorSource: string | null }) {
-  return params.promptErrorSource !== "hook:before_agent_run";
+export function shouldRunLlmOutputHooksForAttempt(params: {
+  promptErrorSource: string | null;
+  hasAttemptOutput: boolean;
+}) {
+  if (params.promptErrorSource === "hook:before_agent_run") {
+    return false;
+  }
+  if (params.promptErrorSource === "budget") {
+    return params.hasAttemptOutput;
+  }
+  return true;
 }
 
 /**

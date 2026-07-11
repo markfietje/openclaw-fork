@@ -1,5 +1,5 @@
 // Video generation runtime tests cover provider execution and fallback behavior.
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.js";
 import {
   generateVideo,
@@ -115,6 +115,40 @@ describe("video-generation runtime", () => {
         fileName: "sample.mp4",
       },
     ]);
+  });
+
+  it("rejects raw runtime calls while the target agent has an active usage budget", async () => {
+    const generate = vi.fn();
+    providers = [
+      {
+        id: "video-plugin",
+        capabilities: {},
+        generateVideo: generate,
+      },
+    ];
+
+    await expect(
+      runGenerateVideo({
+        cfg: {
+          agents: {
+            defaults: {
+              videoGenerationModel: { primary: "video-plugin/vid-v1" },
+              usageBudget: { daily: { usd: 1 } },
+            },
+          },
+        } as OpenClawConfig,
+        agentId: "main",
+        prompt: "animate a cat",
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        harnessId: "video-generation-runtime",
+        reason: "unsupported_harness",
+      },
+    });
+    expect(generate).not.toHaveBeenCalled();
   });
 
   it("uses configured video-generation timeout when call omits timeoutMs", async () => {

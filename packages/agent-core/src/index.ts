@@ -36,6 +36,7 @@ export {
   findCutPoint,
   findTurnStartIndex,
   generateSummary,
+  generateSummaryWithUsage,
   getLastAssistantUsage,
   prepareCompaction,
   serializeConversation,
@@ -45,5 +46,6 @@ export {
   type CompactionResult,
   type CompactionSettings,
   type ContextUsageEstimate,
+  type GeneratedSummary,
 } from "./harness/compaction/compaction.js";
 export * from "./harness/utils/truncate.js";

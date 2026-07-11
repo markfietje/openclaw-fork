@@ -14,12 +14,24 @@ const hoisted = vi.hoisted(() => ({
   setRuntimeApiKeyMock: vi.fn(),
   resolveCopilotApiTokenMock: vi.fn(),
   prepareProviderRuntimeAuthMock: vi.fn(),
+  getRuntimeConfigMock: vi.fn(),
   prepareModelForSimpleCompletionMock: vi.fn((params: { model: unknown }) => params.model),
+  streamSimpleMock: vi.fn(),
   completeMock: vi.fn(),
+  acquireAgentUsageBudgetAdmissionMock: vi.fn(),
+  recordAgentUsageBudgetAdmissionResultMock: vi.fn(),
+  resolveUsageBudgetCostMultiplierUsageMock: vi.fn((params: { usage?: unknown }) => params.usage),
+  resolveAgentUsageBudgetConfigMock: vi.fn(),
+  hasAnyActiveAgentUsageBudgetConfigMock: vi.fn(),
+  isAgentUsageBudgetErrorMock: vi.fn(),
+  isModelProviderDispatchObservableStreamFnMock: vi.fn(),
+  resolveProviderDispatchModelForStreamFnMock: vi.fn((params: { model: unknown }) => params.model),
+  resolveProviderDispatchCostMultiplierForStreamFnMock: vi.fn(() => 1),
+  resolveProviderDispatchReservationCostMultiplierForStreamFnMock: vi.fn(() => 1),
 }));
 
 vi.mock("../llm/stream.js", () => ({
-  completeSimple: hoisted.completeMock,
+  streamSimple: (...args: unknown[]) => hoisted.streamSimpleMock(...args),
 }));
 
 vi.mock("./embedded-agent-runner/model.js", () => ({
@@ -48,11 +60,62 @@ vi.mock("../plugins/provider-runtime.runtime.js", () => ({
   prepareProviderRuntimeAuth: hoisted.prepareProviderRuntimeAuthMock,
 }));
 
+vi.mock("../config/config.js", () => ({
+  getRuntimeConfig: hoisted.getRuntimeConfigMock,
+}));
+
+vi.mock("./usage-budget.js", () => {
+  class AgentUsageBudgetError extends Error {
+    readonly code = "agent_usage_budget_blocked";
+    readonly details: unknown;
+
+    constructor(message: string, details: unknown) {
+      super(message);
+      this.name = "AgentUsageBudgetError";
+      this.details = details;
+    }
+  }
+
+  return {
+    acquireAgentUsageBudgetAdmission: hoisted.acquireAgentUsageBudgetAdmissionMock,
+    AgentUsageBudgetError,
+    buildUnsupportedAgentUsageBudgetStreamError: (params: {
+      agentId?: string | null;
+      provider: string;
+      model: string;
+    }) =>
+      new AgentUsageBudgetError("unsupported stream", {
+        agentId: params.agentId ?? "main",
+        provider: params.provider,
+        model: params.model,
+        reason: "unsupported_stream",
+      }),
+    hasAnyActiveAgentUsageBudgetConfig: hoisted.hasAnyActiveAgentUsageBudgetConfigMock,
+    recordAgentUsageBudgetAdmissionResult: hoisted.recordAgentUsageBudgetAdmissionResultMock,
+    resolveUsageBudgetCostMultiplierUsage: hoisted.resolveUsageBudgetCostMultiplierUsageMock,
+    resolveAgentUsageBudgetConfig: hoisted.resolveAgentUsageBudgetConfigMock,
+    isAgentUsageBudgetError: hoisted.isAgentUsageBudgetErrorMock,
+  };
+});
+
+vi.mock("./provider-dispatch-observable-stream.js", () => ({
+  isModelProviderDispatchObservableStreamFn: hoisted.isModelProviderDispatchObservableStreamFnMock,
+  resolveProviderDispatchModelForStreamFn: hoisted.resolveProviderDispatchModelForStreamFnMock,
+  resolveProviderDispatchCostMultiplierForStreamFn:
+    hoisted.resolveProviderDispatchCostMultiplierForStreamFnMock,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn:
+    hoisted.resolveProviderDispatchReservationCostMultiplierForStreamFnMock,
+}));
+
 import {
   completeWithPreparedSimpleCompletionModel,
   prepareSimpleCompletionModel,
   prepareSimpleCompletionModelForAgent,
 } from "./simple-completion-runtime.js";
+
+function createBudgetAdmissionRelease(timestampMs = 12345) {
+  return Object.assign(vi.fn(), { timestampMs });
+}
 
 beforeEach(() => {
   hoisted.resolveModelMock.mockReset();
@@ -62,14 +125,44 @@ beforeEach(() => {
   hoisted.setRuntimeApiKeyMock.mockReset();
   hoisted.resolveCopilotApiTokenMock.mockReset();
   hoisted.prepareProviderRuntimeAuthMock.mockReset();
+  hoisted.getRuntimeConfigMock.mockReset();
   hoisted.prepareModelForSimpleCompletionMock.mockReset();
+  hoisted.streamSimpleMock.mockReset();
   hoisted.completeMock.mockReset();
+  hoisted.acquireAgentUsageBudgetAdmissionMock.mockReset();
+  hoisted.recordAgentUsageBudgetAdmissionResultMock.mockReset();
+  hoisted.resolveUsageBudgetCostMultiplierUsageMock.mockReset();
+  hoisted.resolveAgentUsageBudgetConfigMock.mockReset();
+  hoisted.hasAnyActiveAgentUsageBudgetConfigMock.mockReset();
+  hoisted.isAgentUsageBudgetErrorMock.mockReset();
+  hoisted.isModelProviderDispatchObservableStreamFnMock.mockReset();
+  hoisted.resolveProviderDispatchModelForStreamFnMock.mockReset();
+  hoisted.resolveProviderDispatchCostMultiplierForStreamFnMock.mockReset();
+  hoisted.resolveProviderDispatchReservationCostMultiplierForStreamFnMock.mockReset();
 
   hoisted.applyLocalNoAuthHeaderOverrideMock.mockImplementation((model: unknown) => model);
   hoisted.prepareModelForSimpleCompletionMock.mockImplementation(
     (params: { model: unknown }) => params.model,
   );
   hoisted.completeMock.mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
+  hoisted.streamSimpleMock.mockImplementation((...args: unknown[]) => ({
+    result: () => hoisted.completeMock(...args),
+  }));
+  hoisted.acquireAgentUsageBudgetAdmissionMock.mockResolvedValue(undefined);
+  hoisted.resolveAgentUsageBudgetConfigMock.mockReturnValue(undefined);
+  hoisted.hasAnyActiveAgentUsageBudgetConfigMock.mockReturnValue(false);
+  hoisted.isAgentUsageBudgetErrorMock.mockReturnValue(false);
+  hoisted.isModelProviderDispatchObservableStreamFnMock.mockReturnValue(true);
+  hoisted.resolveProviderDispatchModelForStreamFnMock.mockImplementation(
+    (params: { model: unknown }) => params.model,
+  );
+  hoisted.resolveProviderDispatchCostMultiplierForStreamFnMock.mockReturnValue(1);
+  hoisted.resolveProviderDispatchReservationCostMultiplierForStreamFnMock.mockImplementation(() =>
+    hoisted.resolveProviderDispatchCostMultiplierForStreamFnMock(),
+  );
+  hoisted.resolveUsageBudgetCostMultiplierUsageMock.mockImplementation(
+    (params: { usage?: unknown }) => params.usage,
+  );
 
   hoisted.resolveModelMock.mockReturnValue({
     model: {
@@ -96,6 +189,7 @@ beforeEach(() => {
     baseUrl: "https://api.individual.githubcopilot.com",
   });
   hoisted.prepareProviderRuntimeAuthMock.mockResolvedValue(undefined);
+  hoisted.getRuntimeConfigMock.mockReturnValue({});
 });
 
 function expectPreparedModelResult(
@@ -643,6 +737,619 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
         apiKey: "ollama-local",
       },
     );
+  });
+
+  it("enforces and records agent usage budgets at the shared simple-completion boundary", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 100 } },
+        },
+      },
+    } as OpenClawConfig;
+    const release = createBudgetAdmissionRelease(12345);
+    const usage = {
+      input: 3,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 8,
+      cost: {
+        input: 0.000003,
+        output: 0.00001,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 0.000013,
+      },
+    };
+    hoisted.acquireAgentUsageBudgetAdmissionMock.mockResolvedValueOnce(release);
+    hoisted.resolveAgentUsageBudgetConfigMock.mockReturnValueOnce({ daily: { tokens: 100 } });
+    hoisted.completeMock.mockResolvedValueOnce({
+      content: [{ type: "text", text: "ok" }],
+      usage,
+    });
+
+    await completeWithPreparedSimpleCompletionModel({
+      model,
+      auth: {
+        apiKey: "sk-test",
+        source: "env:OPENAI_API_KEY",
+        mode: "api-key",
+      },
+      cfg,
+      context: {
+        messages: [{ role: "user", content: "pong", timestamp: 1 }],
+      },
+      usageBudget: {
+        config: cfg,
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5",
+        recordIdPrefix: "test-simple",
+      },
+    });
+
+    expect(hoisted.acquireAgentUsageBudgetAdmissionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: cfg,
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5",
+        reservation: expect.objectContaining({ outputTokens: 4096 }),
+        signal: undefined,
+      }),
+    );
+    const admissionArgs = hoisted.acquireAgentUsageBudgetAdmissionMock.mock.calls[0]?.[0] as {
+      usageBudgetOperationId?: string;
+    };
+    const recordArgs = hoisted.recordAgentUsageBudgetAdmissionResultMock.mock.calls[0]?.[0] as {
+      usageBudgetOperationId?: string;
+    };
+    expect(recordArgs.usageBudgetOperationId).toBe(admissionArgs.usageBudgetOperationId);
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: cfg,
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5",
+        usage,
+        timestampMs: 12345,
+        recordId: expect.stringMatching(/^test-simple:12345:/),
+      }),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses dispatch-resolved simple-completion model identity and cost multiplier for budgets", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.5 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const dispatchModel = {
+      ...model,
+      id: "gpt-5.5-priority-dispatch",
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { usd: 0.01 } },
+        },
+      },
+    } as OpenClawConfig;
+    const usage = {
+      input: 3,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 8,
+      cost: {
+        input: 0.000003,
+        output: 0.00001,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 0.000013,
+      },
+    };
+    const adjustedUsage = {
+      ...usage,
+      cost: { ...usage.cost, total: 0.000026 },
+    };
+    const release = createBudgetAdmissionRelease();
+    hoisted.resolveProviderDispatchModelForStreamFnMock.mockReturnValueOnce(dispatchModel);
+    hoisted.resolveProviderDispatchCostMultiplierForStreamFnMock.mockReturnValueOnce(2);
+    hoisted.resolveProviderDispatchReservationCostMultiplierForStreamFnMock.mockReturnValueOnce(
+      2.5,
+    );
+    hoisted.resolveUsageBudgetCostMultiplierUsageMock.mockReturnValueOnce(adjustedUsage);
+    hoisted.acquireAgentUsageBudgetAdmissionMock.mockResolvedValueOnce(release);
+    hoisted.resolveAgentUsageBudgetConfigMock.mockReturnValueOnce({ daily: { usd: 0.01 } });
+    hoisted.completeMock.mockResolvedValueOnce({
+      content: [{ type: "text", text: "ok" }],
+      usage,
+    });
+
+    await completeWithPreparedSimpleCompletionModel({
+      model,
+      auth: {
+        apiKey: "sk-test",
+        source: "env:OPENAI_API_KEY",
+        mode: "api-key",
+      },
+      cfg,
+      context: {
+        messages: [{ role: "user", content: "pong", timestamp: 1 }],
+      },
+      usageBudget: {
+        config: cfg,
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5",
+        recordIdPrefix: "test-simple",
+      },
+    });
+
+    expect(hoisted.acquireAgentUsageBudgetAdmissionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: cfg,
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5-priority-dispatch",
+        costMultiplier: 2.5,
+        reservation: expect.objectContaining({ outputTokens: 4096 }),
+      }),
+    );
+    expect(hoisted.resolveUsageBudgetCostMultiplierUsageMock).toHaveBeenCalledWith({
+      config: cfg,
+      provider: "openai",
+      model: "gpt-5.5-priority-dispatch",
+      usage,
+      costMultiplier: 2,
+    });
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: cfg,
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5-priority-dispatch",
+        usage: adjustedUsage,
+      }),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows attributed simple completions without dispatch observability when no budget is active", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {},
+      },
+    } as OpenClawConfig;
+    hoisted.isModelProviderDispatchObservableStreamFnMock.mockReturnValueOnce(false);
+
+    await completeWithPreparedSimpleCompletionModel({
+      model,
+      auth: {
+        apiKey: "sk-test",
+        source: "env:OPENAI_API_KEY",
+        mode: "api-key",
+      },
+      cfg,
+      context: {
+        messages: [{ role: "user", content: "pong", timestamp: 1 }],
+      },
+      usageBudget: {
+        config: cfg,
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5",
+      },
+    });
+
+    expect(hoisted.resolveAgentUsageBudgetConfigMock).toHaveBeenCalledWith({
+      config: cfg,
+      agentId: "ops",
+    });
+    expect(hoisted.isModelProviderDispatchObservableStreamFnMock).not.toHaveBeenCalled();
+    expect(hoisted.streamSimpleMock).toHaveBeenCalledOnce();
+    expect(hoisted.acquireAgentUsageBudgetAdmissionMock).not.toHaveBeenCalled();
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects unattributed simple completions before dispatch when any agent budget is configured", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        list: [
+          {
+            id: "ops",
+            usageBudget: { daily: { tokens: 100 } },
+          },
+        ],
+      },
+    } as OpenClawConfig;
+    hoisted.hasAnyActiveAgentUsageBudgetConfigMock.mockReturnValueOnce(true);
+
+    await expect(
+      completeWithPreparedSimpleCompletionModel({
+        model,
+        auth: {
+          apiKey: "sk-test",
+          source: "env:OPENAI_API_KEY",
+          mode: "api-key",
+        },
+        cfg,
+        context: {
+          messages: [{ role: "user", content: "pong", timestamp: 1 }],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "unknown",
+        provider: "openai",
+        model: "gpt-5.5",
+        reason: "unsupported_harness",
+      },
+    });
+
+    expect(hoisted.hasAnyActiveAgentUsageBudgetConfigMock).toHaveBeenCalledWith(cfg);
+    expect(hoisted.streamSimpleMock).not.toHaveBeenCalled();
+    expect(hoisted.acquireAgentUsageBudgetAdmissionMock).not.toHaveBeenCalled();
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects unattributed prepared completions with active runtime-config budgets", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 100 } },
+        },
+      },
+    } as OpenClawConfig;
+    hoisted.getRuntimeConfigMock.mockReturnValueOnce(cfg);
+    hoisted.hasAnyActiveAgentUsageBudgetConfigMock.mockReturnValueOnce(true);
+
+    await expect(
+      completeWithPreparedSimpleCompletionModel({
+        model,
+        auth: {
+          apiKey: "sk-test",
+          source: "env:OPENAI_API_KEY",
+          mode: "api-key",
+        },
+        context: {
+          messages: [{ role: "user", content: "pong", timestamp: 1 }],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "unknown",
+        provider: "openai",
+        model: "gpt-5.5",
+        reason: "unsupported_harness",
+      },
+    });
+
+    expect(hoisted.getRuntimeConfigMock).toHaveBeenCalledOnce();
+    expect(hoisted.prepareModelForSimpleCompletionMock).toHaveBeenCalledWith({ model, cfg });
+    expect(hoisted.hasAnyActiveAgentUsageBudgetConfigMock).toHaveBeenCalledWith(cfg);
+    expect(hoisted.streamSimpleMock).not.toHaveBeenCalled();
+    expect(hoisted.acquireAgentUsageBudgetAdmissionMock).not.toHaveBeenCalled();
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+  });
+
+  it("does not persist unknown budget usage for pre-dispatch simple-completion failures", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.05 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 100 } },
+        },
+      },
+    } as OpenClawConfig;
+    const release = createBudgetAdmissionRelease();
+    const preDispatchError = Object.assign(
+      new Error("No API provider registered for api: openai-responses"),
+      {
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+    );
+    hoisted.acquireAgentUsageBudgetAdmissionMock.mockResolvedValueOnce(release);
+    hoisted.resolveAgentUsageBudgetConfigMock.mockReturnValueOnce({ daily: { tokens: 100 } });
+    hoisted.streamSimpleMock.mockImplementationOnce(() => {
+      throw preDispatchError;
+    });
+
+    await expect(
+      completeWithPreparedSimpleCompletionModel({
+        model,
+        auth: {
+          apiKey: "sk-test",
+          source: "env:OPENAI_API_KEY",
+          mode: "api-key",
+        },
+        cfg,
+        context: {
+          messages: [{ role: "user", content: "pong", timestamp: 1 }],
+        },
+        usageBudget: {
+          config: cfg,
+          agentId: "ops",
+          provider: "openai",
+          model: "gpt-5.5",
+        },
+      }),
+    ).rejects.toBe(preDispatchError);
+
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not persist unknown budget usage for resolved pre-dispatch terminal errors", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.05 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 100 } },
+        },
+      },
+    } as OpenClawConfig;
+    const release = createBudgetAdmissionRelease();
+    const terminalError = {
+      role: "assistant",
+      content: [],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.5",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "error",
+      errorMessage: "No API provider registered for api: openai-responses",
+      timestamp: Date.UTC(2026, 6, 15, 12),
+    } as const;
+    hoisted.acquireAgentUsageBudgetAdmissionMock.mockResolvedValueOnce(release);
+    hoisted.resolveAgentUsageBudgetConfigMock.mockReturnValueOnce({ daily: { tokens: 100 } });
+    hoisted.completeMock.mockResolvedValueOnce(terminalError);
+
+    await expect(
+      completeWithPreparedSimpleCompletionModel({
+        model,
+        auth: {
+          apiKey: "sk-test",
+          source: "env:OPENAI_API_KEY",
+          mode: "api-key",
+        },
+        cfg,
+        context: {
+          messages: [{ role: "user", content: "pong", timestamp: 1 }],
+        },
+        usageBudget: {
+          config: cfg,
+          agentId: "ops",
+          provider: "openai",
+          model: "gpt-5.5",
+        },
+      }),
+    ).resolves.toBe(terminalError);
+
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables provider retries and records unknown usage when budgeted simple completions dispatch twice", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.05 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 100 } },
+        },
+      },
+    } as OpenClawConfig;
+    const release = createBudgetAdmissionRelease();
+    hoisted.acquireAgentUsageBudgetAdmissionMock.mockResolvedValueOnce(release);
+    hoisted.resolveAgentUsageBudgetConfigMock.mockReturnValueOnce({ daily: { tokens: 100 } });
+    hoisted.streamSimpleMock.mockImplementationOnce((_model, _context, options) => {
+      const streamOptions = options as { maxRetries?: number; onProviderDispatch?: () => void };
+      expect(streamOptions.maxRetries).toBe(0);
+      streamOptions.onProviderDispatch?.();
+      streamOptions.onProviderDispatch?.();
+      return { result: async () => ({ content: [] }) };
+    });
+
+    await expect(
+      completeWithPreparedSimpleCompletionModel({
+        model,
+        auth: {
+          apiKey: "sk-test",
+          source: "env:OPENAI_API_KEY",
+          mode: "api-key",
+        },
+        cfg,
+        context: {
+          messages: [{ role: "user", content: "pong", timestamp: 1 }],
+        },
+        usageBudget: {
+          config: cfg,
+          agentId: "ops",
+          provider: "openai",
+          model: "gpt-5.5",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        harnessId: "provider-retry",
+        reason: "unsupported_harness",
+      },
+    });
+
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5",
+        usage: undefined,
+      }),
+    );
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects budgeted simple completions before unobservable stream dispatch", async () => {
+    const model = {
+      provider: "openai",
+      id: "gpt-5.5",
+      name: "gpt-5.5",
+      api: "openai-responses",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.05 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    } satisfies Model<"openai-responses">;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 100 } },
+        },
+      },
+    } as OpenClawConfig;
+    hoisted.isModelProviderDispatchObservableStreamFnMock.mockReturnValueOnce(false);
+    hoisted.resolveAgentUsageBudgetConfigMock.mockReturnValueOnce({ daily: { tokens: 100 } });
+
+    await expect(
+      completeWithPreparedSimpleCompletionModel({
+        model,
+        auth: {
+          apiKey: "sk-test",
+          source: "env:OPENAI_API_KEY",
+          mode: "api-key",
+        },
+        cfg,
+        context: {
+          messages: [{ role: "user", content: "pong", timestamp: 1 }],
+        },
+        usageBudget: {
+          config: cfg,
+          agentId: "ops",
+          provider: "openai",
+          model: "gpt-5.5",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.5",
+        reason: "unsupported_stream",
+      },
+    });
+
+    expect(hoisted.streamSimpleMock).not.toHaveBeenCalled();
+    expect(hoisted.acquireAgentUsageBudgetAdmissionMock).not.toHaveBeenCalled();
+    expect(hoisted.recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
   });
 
   it("normalizes OpenClaw-only thinking levels before using shared model runtime simple completion", async () => {

@@ -53,6 +53,7 @@ const BROWSER_CLI_DESCRIPTOR = {
 function createLazyBrowserTool(opts?: {
   sandboxBridgeUrl?: string;
   allowHostControl?: boolean;
+  agentId?: string;
   agentSessionKey?: string;
   agentDir?: string;
   workspaceDir?: string;
@@ -97,6 +98,7 @@ function createLazyBrowserTool(opts?: {
 function createBrowserToolOptions(ctx: OpenClawPluginToolContext): {
   sandboxBridgeUrl?: string;
   allowHostControl?: boolean;
+  agentId?: string;
   agentSessionKey?: string;
   agentDir?: string;
   workspaceDir?: string;
@@ -117,6 +119,7 @@ function createBrowserToolOptions(ctx: OpenClawPluginToolContext): {
     ...(ctx.browser?.allowHostControl !== undefined
       ? { allowHostControl: ctx.browser.allowHostControl }
       : {}),
+    ...(ctx.agentId ? { agentId: ctx.agentId } : {}),
     ...(ctx.sessionKey ? { agentSessionKey: ctx.sessionKey } : {}),
     ...(ctx.agentDir ? { agentDir: ctx.agentDir } : {}),
     ...(ctx.workspaceDir ? { workspaceDir: ctx.workspaceDir } : {}),

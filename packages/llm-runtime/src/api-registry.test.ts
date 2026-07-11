@@ -1,5 +1,10 @@
 // LLM Runtime tests cover api registry behavior.
-import { createAssistantMessageEventStream, type Model } from "@openclaw/llm-core";
+import {
+  createAssistantMessageEventStream,
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+  type Model,
+} from "@openclaw/llm-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { getApiProvider, registerApiProvider, unregisterApiProviders } from "./api-registry.js";
 
@@ -38,5 +43,22 @@ describe("LLM API registry", () => {
     expect(() => provider?.streamSimple({ ...model, api: "other-api" }, { messages: [] })).toThrow(
       "Mismatched api: other-api expected test-api",
     );
+  });
+
+  it("preserves provider-dispatch observability on registered wrappers", () => {
+    const streamSimple = markProviderDispatchObservableStreamFn(() =>
+      createAssistantMessageEventStream(),
+    );
+    registerApiProvider(
+      {
+        api: "test-api",
+        stream: () => createAssistantMessageEventStream(),
+        streamSimple,
+      },
+      TEST_SOURCE_ID,
+    );
+
+    const provider = getApiProvider("test-api");
+    expect(isProviderDispatchObservableStreamFn(provider?.streamSimple)).toBe(true);
   });
 });

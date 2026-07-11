@@ -374,6 +374,47 @@ describe("createVideoGenerateTool", () => {
     );
   });
 
+  it("denies generation actions when usage budgets are active", async () => {
+    const reason = "Model-backed generation is unavailable for budgeted agents.";
+    const tool = expectVideoGenerateTool(
+      createVideoGenerateTool({
+        config: asConfig({
+          agents: {
+            defaults: {
+              videoGenerationModel: { primary: "qwen/wan2.6-t2v" },
+            },
+          },
+        }),
+        usageBudgetUnsupportedReason: reason,
+      }),
+    );
+
+    await expect(tool.execute("call-1", { prompt: "city flythrough" })).resolves.toEqual({
+      content: [{ type: "text", text: reason }],
+      details: { error: "usage_budget_unsupported_model_tool", tool: "video_generate" },
+    });
+  });
+
+  it("passes the tool agent id into the video generation runtime", async () => {
+    const generateVideo = mockSavedVideoResult("agent-owned.mp4");
+    const tool = expectVideoGenerateTool(
+      createVideoGenerateTool({
+        config: asConfig({
+          agents: {
+            defaults: {
+              videoGenerationModel: { primary: "qwen/wan2.6-t2v" },
+            },
+          },
+        }),
+        agentId: "cinema",
+      }),
+    );
+
+    await tool.execute("call-agent-video", { prompt: "city flythrough" });
+
+    expect((firstMockCallArg(generateVideo) as Record<string, unknown>).agentId).toBe("cinema");
+  });
+
   it("does not load runtime providers while registering an explicitly configured tool", () => {
     const listProviders = vi
       .spyOn(videoGenerationRuntime, "listRuntimeVideoGenerationProviders")

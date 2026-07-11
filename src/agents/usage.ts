@@ -12,6 +12,13 @@ export type UsageLike = {
   cacheRead?: number;
   cacheWrite?: number;
   total?: number;
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
   // Common alternates across providers/SDKs.
   inputTokens?: number;
   outputTokens?: number;
@@ -113,6 +120,11 @@ export function hasNonzeroUsage(usage?: NormalizedUsage | null): usage is Normal
     usage.reasoningTokens,
     usage.total,
   ].some((v) => typeof v === "number" && Number.isFinite(v) && v > 0);
+}
+
+/** Return true when any raw provider usage bucket normalizes to a positive count. */
+export function hasNonzeroUsageLike(usage?: UsageLike | null): boolean {
+  return hasNonzeroUsage(normalizeUsage(usage));
 }
 
 const normalizeTokenCount = (value: unknown): number | undefined => {

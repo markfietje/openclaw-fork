@@ -1,9 +1,19 @@
 // Stream resolution tests cover how embedded runs choose provider, boundary,
 // native Codex, or custom stream functions and pass auth/cache/signal options.
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchModelResolverStreamFn,
+  markProviderDispatchObservableStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getApiProvider } from "../../llm/api-registry.js";
 import { streamSimple } from "../../llm/stream.js";
+import {
+  resolveProviderDispatchModelForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "../provider-dispatch-observable-stream.js";
 import * as providerTransportStream from "../provider-transport-stream.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../system-prompt-cache-boundary.js";
 import {
@@ -140,17 +150,26 @@ describe("resolveEmbeddedAgentStreamFn", () => {
   });
 
   it("still routes supported streamSimple fallbacks through boundary-aware transports", () => {
+    const model = {
+      api: "openai-responses",
+      provider: "openai",
+      id: "gpt-5.5",
+    } as never;
     const streamFn = resolveEmbeddedAgentStreamFn({
       currentStreamFn: undefined,
       sessionId: "session-1",
-      model: {
-        api: "openai-responses",
-        provider: "openai",
-        id: "gpt-5.4",
-      } as never,
+      model,
     });
 
     expect(streamFn).not.toBe(streamSimple);
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn,
+        model,
+        context: {} as never,
+        options: {} as never,
+      }),
+    ).toBeUndefined();
   });
 
   it("routes Codex responses fallbacks through OpenClaw native transport", async () => {
@@ -253,6 +272,61 @@ describe("resolveEmbeddedAgentStreamFn", () => {
     expect(result.apiKey).toBe("anthropic-runtime-key");
     expect(currentStreamFn).not.toHaveBeenCalled();
     expect(innerStreamFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps dispatch metadata from the boundary-aware stream that actually runs", async () => {
+    const model = {
+      api: "anthropic-messages",
+      provider: "cloudflare-ai-gateway",
+      id: "claude-sonnet-4-6",
+    } as never;
+    const currentStreamFn = vi.fn(async (): Promise<never> => {
+      throw new Error("skipped current stream must not run");
+    }) as StreamFn;
+    markProviderDispatchObservableStreamFn(currentStreamFn);
+    markProviderDispatchModelResolverStreamFn(currentStreamFn, ({ model }) => ({
+      ...model,
+      id: "skipped-wrapper-model",
+    }));
+    markProviderDispatchReservationCostMultiplierResolverStreamFn(currentStreamFn, () => 9);
+
+    const boundaryAwareStreamFn = vi.fn(async (_model, _context, options) => options) as StreamFn;
+    markProviderDispatchObservableStreamFn(boundaryAwareStreamFn);
+    markProviderDispatchModelResolverStreamFn(boundaryAwareStreamFn, ({ model }) => ({
+      ...model,
+      id: "managed-transport-model",
+    }));
+    markProviderDispatchReservationCostMultiplierResolverStreamFn(boundaryAwareStreamFn, () => 2);
+    overrideBoundaryAwareStreamFnOnce(boundaryAwareStreamFn);
+
+    const streamFn = resolveEmbeddedAgentStreamFn({
+      currentStreamFn,
+      sessionId: "session-1",
+      model,
+      resolvedApiKey: "runtime-key",
+    });
+
+    expect(isProviderDispatchObservableStreamFn(streamFn)).toBe(true);
+    expect(
+      resolveProviderDispatchModelForStreamFn({
+        streamFn,
+        model,
+        context: {} as never,
+        options: {} as never,
+      }).id,
+    ).toBe("managed-transport-model");
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn,
+        model,
+        context: {} as never,
+        options: {} as never,
+      }),
+    ).toBe(2);
+
+    await streamFn(model, {} as never, {});
+    expect(boundaryAwareStreamFn).toHaveBeenCalledOnce();
+    expect(currentStreamFn).not.toHaveBeenCalled();
   });
 
   it("injects the resolved run api key into provider-owned stream functions", async () => {

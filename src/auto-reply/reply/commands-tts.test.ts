@@ -295,6 +295,23 @@ describe("handleTtsCommands status fallback reporting", () => {
     expect(speechCall.accountId).toBe("feishu-main");
   });
 
+  it("blocks /tts audio while agent usage budgets are enabled", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 1_000 } },
+        },
+      },
+    } as OpenClawConfig;
+
+    const result = await handleTtsCommands(buildTtsParams("/tts audio hello", cfg, "reader"), true);
+
+    expect(expectReply(result).text).toContain(
+      "TTS audio commands are unavailable while agent usage budgets are enabled",
+    );
+    expect(ttsMocks.textToSpeech).not.toHaveBeenCalled();
+  });
+
   it("lists and sets configured TTS personas", async () => {
     ttsMocks.listTtsPersonas.mockReturnValue([
       {
@@ -378,6 +395,42 @@ describe("handleTtsCommands status fallback reporting", () => {
     expect(speechCall.text).toBe("latest visible reply");
     expect(sessionEntry.lastTtsReadLatestHash).toMatch(/^[a-f0-9]{64}$/);
     expect(sessionEntry.lastTtsReadLatestAt).toBeGreaterThanOrEqual(beforeTtsRead);
+  });
+
+  it("blocks /tts latest while agent usage budgets are enabled", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-tts-latest-"));
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    fs.writeFileSync(
+      sessionFile,
+      [
+        JSON.stringify({ type: "session", id: "s1" }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "read me" }] },
+        }),
+      ].join("\n") + "\n",
+      "utf-8",
+    );
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 1_000 } },
+        },
+      },
+    } as OpenClawConfig;
+    const sessionEntry: SessionEntry = { sessionId: "s1", updatedAt: 1, sessionFile };
+    const sessionStore = { "session-key": sessionEntry };
+
+    const result = await handleTtsCommands(
+      buildTtsParams("/tts latest", cfg, "reader", { sessionEntry, sessionStore }),
+      true,
+    );
+
+    expect(expectReply(result).text).toContain(
+      "TTS audio commands are unavailable while agent usage budgets are enabled",
+    );
+    expect(ttsMocks.textToSpeech).not.toHaveBeenCalled();
+    expect(sessionEntry.lastTtsReadLatestHash).toBeUndefined();
   });
 
   it("does not resend /tts latest for the same assistant reply", async () => {

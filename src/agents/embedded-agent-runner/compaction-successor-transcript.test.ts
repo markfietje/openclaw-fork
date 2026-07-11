@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+} from "../compaction-usage-accounting.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import {
   rotateTranscriptAfterCompaction,
@@ -274,6 +278,92 @@ describe("rotateTranscriptAfterCompaction", () => {
     expect(context.thinkingLevel).toBe("medium");
     expect(successor.getLabel(firstKeptId)).toBe("kept bookmark");
     expect(successor.getLabel(oldUserId)).toBeUndefined();
+  });
+
+  it("does not copy hidden compaction usage accounting entries into the successor", async () => {
+    const dir = await createTmpDir();
+    const { manager } = createCompactedSession(dir);
+    const accountingId = manager.appendCompactionUsageAccounting({
+      schemaVersion: 1,
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: { input: 10, output: 5, totalTokens: 15, cost: { total: 0.01 } },
+      },
+    });
+    const modelCallAccountingId = manager.appendCustomEntry(
+      MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: { input: 6, output: 4, totalTokens: 10, cost: { total: 0.005 } },
+        },
+      },
+    );
+    const afterAccountingId = manager.appendMessage({
+      role: "user",
+      content: "after accounting",
+      timestamp: 7,
+    });
+
+    const result = await rotateTranscriptAfterCompaction({
+      sessionManager: manager,
+      sessionFile: requireString(manager.getSessionFile(), "session file"),
+      now: () => new Date("2026-04-27T12:00:00.000Z"),
+    });
+
+    expect(result.rotated).toBe(true);
+    expect(
+      manager
+        .getEntries()
+        .some(
+          (entry) =>
+            entry.type === "custom" && entry.customType === COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+        ),
+    ).toBe(true);
+    expect(
+      manager
+        .getEntries()
+        .some(
+          (entry) =>
+            entry.type === "custom" && entry.customType === MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+        ),
+    ).toBe(true);
+    const successor = SessionManager.open(requireString(result.sessionFile, "successor file"));
+    expect(
+      successor
+        .getEntries()
+        .some(
+          (entry) =>
+            entry.type === "custom" && entry.customType === COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+        ),
+    ).toBe(false);
+    expect(
+      successor
+        .getEntries()
+        .some(
+          (entry) =>
+            entry.type === "custom" && entry.customType === MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+        ),
+    ).toBe(false);
+    const successorEntries = successor.getEntries();
+    const afterAccounting = requireEntryByIdAndType(
+      successorEntries,
+      afterAccountingId,
+      "message",
+      "successor post-accounting",
+    );
+    expect(afterAccounting.parentId).not.toBe(accountingId);
+    expect(afterAccounting.parentId).not.toBe(modelCallAccountingId);
+    const successorIds = new Set(successorEntries.map((entry) => entry.id));
+    for (const entry of successorEntries) {
+      expect(entry.parentId === null || successorIds.has(entry.parentId)).toBe(true);
+    }
   });
 
   it("rotates with a fallback timestamp when the injected clock is invalid", async () => {

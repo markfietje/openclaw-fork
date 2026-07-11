@@ -3,6 +3,7 @@ import {
   applyAnthropicEphemeralCacheControlMarkers,
   streamWithPayloadPatch,
 } from "openclaw/plugin-sdk/provider-stream";
+import { preserveProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 
 // StreamFn isn't re-exported via the plugin SDK; derive it from a helper that
 // accepts it so we stay on the SDK boundary.
@@ -13,7 +14,7 @@ type StreamFn = Parameters<typeof streamWithPayloadPatch>[0];
 // check, so DeepInfra advertises isCacheTtlEligible but the payload patch
 // never fires. Gating on the model id instead fixes that.
 export function createDeepInfraAnthropicCacheWrapper(baseStreamFn: StreamFn): StreamFn {
-  return ((model, context, options) => {
+  const wrapped = ((model, context, options) => {
     const modelIdRaw = (model as { id?: unknown }).id;
     const modelId = typeof modelIdRaw === "string" ? modelIdRaw.toLowerCase() : "";
     if (!modelId.startsWith("anthropic/")) {
@@ -23,4 +24,5 @@ export function createDeepInfraAnthropicCacheWrapper(baseStreamFn: StreamFn): St
       applyAnthropicEphemeralCacheControlMarkers(payload);
     });
   }) as StreamFn;
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseStreamFn);
 }

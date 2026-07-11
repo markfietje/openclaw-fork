@@ -300,6 +300,26 @@ describe("anthropic transport stream", () => {
     );
   });
 
+  it("preserves provider dispatch attribution through resolved transport options", async () => {
+    const model = makeAnthropicTransportModel();
+    const onProviderDispatch = vi.fn();
+
+    await runTransportStream(
+      model,
+      {
+        messages: [{ role: "user", content: "hello" }],
+      } as AnthropicStreamContext,
+      {
+        apiKey: "sk-ant-api",
+        onProviderDispatch,
+      } as AnthropicStreamOptions,
+    );
+
+    expect(buildGuardedModelFetchMock).toHaveBeenCalledWith(model, undefined, {
+      onProviderDispatch,
+    });
+  });
+
   it("uses bearer auth for Microsoft Foundry Anthropic transport requests", async () => {
     const model = makeAnthropicTransportModel({
       provider: "microsoft-foundry",

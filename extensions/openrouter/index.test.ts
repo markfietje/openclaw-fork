@@ -7,6 +7,11 @@ import {
   resolveProviderPluginChoice,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
+  attachUsageBudgetProviderBilledCostMetadata,
+  isProviderDispatchObservableStreamFn,
+  USAGE_BUDGET_RECORDED_COST_METADATA_KEY,
+} from "openclaw/plugin-sdk/provider-stream-shared";
+import {
   expectPassthroughReplayPolicy,
   expectUnifiedModelCatalogProviderRegistration,
 } from "openclaw/plugin-sdk/provider-test-contracts";
@@ -36,9 +41,24 @@ import {
 } from "./provider-catalog.js";
 import { resolveThinkingProfile } from "./provider-policy-api.js";
 
-function createOpenRouterDoneStream(params: { responseId: string; totalCost: number }) {
+function createOpenRouterDoneStream(params: {
+  responseId: string;
+  totalCost: number;
+  providerBilled?: boolean;
+}) {
   const stream = createAssistantMessageEventStream();
   queueMicrotask(() => {
+    const usage = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: params.totalCost },
+    };
+    if (params.providerBilled) {
+      attachUsageBudgetProviderBilledCostMetadata(usage);
+    }
     stream.push({
       type: "done",
       reason: "stop",
@@ -51,14 +71,7 @@ function createOpenRouterDoneStream(params: { responseId: string; totalCost: num
         responseId: params.responseId,
         stopReason: "stop",
         timestamp: Date.now(),
-        usage: {
-          input: 1,
-          output: 1,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 2,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: params.totalCost },
-        },
+        usage,
       } as never,
     });
   });
@@ -79,6 +92,34 @@ function createOpenRouterDoneStreamWithoutGeneration() {
         content: [{ type: "text", text: "ok" }],
         stopReason: "stop",
         timestamp: Date.now(),
+      } as never,
+    });
+  });
+  return stream;
+}
+
+function createOpenRouterDoneStreamWithoutResponseId(params: { totalCost: number }) {
+  const stream = createAssistantMessageEventStream();
+  queueMicrotask(() => {
+    stream.push({
+      type: "done",
+      reason: "stop",
+      message: {
+        role: "assistant",
+        api: "openai-completions",
+        provider: "openrouter",
+        model: "openrouter/auto",
+        content: [{ type: "text", text: "ok" }],
+        stopReason: "stop",
+        timestamp: Date.now(),
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: params.totalCost },
+        },
       } as never,
     });
   });
@@ -804,6 +845,44 @@ describe("openrouter provider hooks", () => {
     expect(headers.get("x-openrouter-title")).toBe("OpenClaw");
   });
 
+  it("preserves provider-dispatch observability through OpenRouter wrappers", async () => {
+    const provider = await registerSingleProviderPlugin(openrouterPlugin);
+    const onProviderDispatch = vi.fn();
+    const baseStreamFn = vi.fn(
+      (_model, _context, options?: { onProviderDispatch?: () => void }) => {
+        options?.onProviderDispatch?.();
+        return createOpenRouterDoneStreamWithoutGeneration();
+      },
+    );
+
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "openrouter",
+      modelId: "openrouter/auto",
+      providerDispatchObservable: true,
+      streamFn: baseStreamFn,
+    } as never);
+    if (!wrapped) {
+      throw new Error("expected OpenRouter wrapper");
+    }
+
+    expect(isProviderDispatchObservableStreamFn(wrapped as never)).toBe(true);
+    const stream = await wrapped(
+      {
+        provider: "openrouter",
+        api: "openai-completions",
+        id: "openrouter/auto",
+        baseUrl: "https://openrouter.ai/api/v1",
+        compat: {},
+      } as never,
+      { messages: [] } as never,
+      { apiKey: "or-test-key", onProviderDispatch } as never,
+    );
+    await stream.result();
+
+    expect(baseStreamFn).toHaveBeenCalledOnce();
+    expect(onProviderDispatch).toHaveBeenCalledOnce();
+  });
+
   it("reconciles OpenRouter streamed usage with generation metadata cost", async () => {
     const provider = await registerSingleProviderPlugin(openrouterPlugin);
     const fetchMock = vi.fn(async (url: string) => {
@@ -842,15 +921,74 @@ describe("openrouter provider hooks", () => {
 
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(message.usage.cost.total).toBe(0.0042);
+      expect(
+        (message.usage as unknown as Record<string, unknown>)[
+          USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+        ],
+      ).toEqual({
+        schemaVersion: 1,
+        kind: "provider-billed-model-call-cost",
+        costMultiplier: 1,
+      });
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it("falls back to streamed cost estimate when generation metadata response is oversized", async () => {
+  it("uses in-response OpenRouter billed usage without generation lookup", async () => {
+    const provider = await registerSingleProviderPlugin(openrouterPlugin);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const baseStreamFn = vi.fn(() =>
+      createOpenRouterDoneStream({
+        responseId: "gen-in-response-cost-1",
+        totalCost: 0.001,
+        providerBilled: true,
+      }),
+    );
+
+    try {
+      const wrapped = provider.wrapStreamFn?.({
+        provider: "openrouter",
+        modelId: "openrouter/auto",
+        streamFn: baseStreamFn,
+      } as never);
+      if (!wrapped) {
+        throw new Error("expected OpenRouter wrapper");
+      }
+      const stream = await wrapped(
+        {
+          provider: "openrouter",
+          api: "openai-completions",
+          id: "openrouter/auto",
+          baseUrl: "https://openrouter.ai/api/v1",
+          compat: {},
+        } as never,
+        { messages: [] } as never,
+        { apiKey: "or-test-key" } as never,
+      );
+      const message = await stream.result();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(message.usage.cost.total).toBe(0.001);
+      expect(
+        (message.usage as unknown as Record<string, unknown>)[
+          USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+        ],
+      ).toEqual({
+        schemaVersion: 1,
+        kind: "provider-billed-model-call-cost",
+        costMultiplier: 1,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("marks verified OpenRouter usage unpriceable when generation metadata is unavailable", async () => {
     const provider = await registerSingleProviderPlugin(openrouterPlugin);
     // Body exceeds the 16 MiB cap; readProviderJsonResponse must reject it and
-    // applyOpenRouterBilledCost must fall back to the streamed estimate.
+    // verified OpenRouter billing must fail closed instead of trusting estimates.
     const oversizedBody = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new Uint8Array(16 * 1024 * 1024 + 1).fill(0x78));
@@ -893,6 +1031,61 @@ describe("openrouter provider hooks", () => {
 
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(message.usage.cost.total).toBe(0.001);
+      expect(
+        (message.usage as unknown as Record<string, unknown>)[
+          USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+        ],
+      ).toEqual({
+        schemaVersion: 1,
+        kind: "unpriceable-model-call-cost",
+        reason: "provider-billed-cost-unavailable",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("marks verified OpenRouter usage unpriceable when the generation id is missing", async () => {
+    const provider = await registerSingleProviderPlugin(openrouterPlugin);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const baseStreamFn = vi.fn(() =>
+      createOpenRouterDoneStreamWithoutResponseId({ totalCost: 0.001 }),
+    );
+
+    try {
+      const wrapped = provider.wrapStreamFn?.({
+        provider: "openrouter",
+        modelId: "openrouter/auto",
+        streamFn: baseStreamFn,
+      } as never);
+      if (!wrapped) {
+        throw new Error("expected OpenRouter wrapper");
+      }
+      const stream = await wrapped(
+        {
+          provider: "openrouter",
+          api: "openai-completions",
+          id: "openrouter/auto",
+          baseUrl: "https://openrouter.ai/api/v1",
+          compat: {},
+        } as never,
+        { messages: [] } as never,
+        { apiKey: "or-test-key" } as never,
+      );
+      const message = await stream.result();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(message.usage.cost.total).toBe(0.001);
+      expect(
+        (message.usage as unknown as Record<string, unknown>)[
+          USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+        ],
+      ).toEqual({
+        schemaVersion: 1,
+        kind: "unpriceable-model-call-cost",
+        reason: "provider-billed-cost-unavailable",
+      });
     } finally {
       vi.unstubAllGlobals();
     }
@@ -935,9 +1128,15 @@ describe("openrouter provider hooks", () => {
     }
   });
 
-  it("does not fetch generation metadata for aborted stream errors", async () => {
+  it("reconciles generation metadata for aborted stream errors", async () => {
     const provider = await registerSingleProviderPlugin(openrouterPlugin);
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async (url: string) => {
+      expect(url).toBe("https://openrouter.ai/api/v1/generation?id=gen-aborted");
+      return new Response(JSON.stringify({ data: { total_cost: 0.0042 } }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200,
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
     const baseStreamFn = vi.fn(() => createOpenRouterAbortedStream());
 
@@ -963,8 +1162,18 @@ describe("openrouter provider hooks", () => {
       );
       const message = await stream.result();
 
-      expect(fetchMock).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledOnce();
       expect(message.stopReason).toBe("aborted");
+      expect(message.usage.cost.total).toBe(0.0042);
+      expect(
+        (message.usage as unknown as Record<string, unknown>)[
+          USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+        ],
+      ).toEqual({
+        schemaVersion: 1,
+        kind: "provider-billed-model-call-cost",
+        costMultiplier: 1,
+      });
     } finally {
       vi.unstubAllGlobals();
     }

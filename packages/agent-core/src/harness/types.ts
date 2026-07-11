@@ -6,6 +6,7 @@ import type {
   StreamFn,
   TextContent,
   Transport,
+  Usage,
 } from "../../../llm-core/src/index.js";
 import type { AgentEvent, AgentMessage, AgentTool, QueueMode, ThinkingLevel } from "../index.js";
 import type { AgentCoreCompletionRuntimeDeps, AgentCoreRuntimeDeps } from "../runtime-deps.js";
@@ -171,11 +172,16 @@ export type CompactionErrorCode =
 export class CompactionError extends Error {
   /** Backend-independent error code. */
   public code: CompactionErrorCode;
+  /** Provider-reported usage from failed compaction model call(s), when available. */
+  public usage?: Usage;
+  /** Internal id that ties aggregate usage to hidden per-call accounting rows. */
+  public usageBudgetOperationId?: string;
 
-  constructor(code: CompactionErrorCode, message: string, cause?: Error) {
+  constructor(code: CompactionErrorCode, message: string, cause?: Error, usage?: Usage) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "CompactionError";
     this.code = code;
+    this.usage = usage;
   }
 }
 
@@ -186,11 +192,16 @@ export type BranchSummaryErrorCode = "aborted" | "summarization_failed" | "inval
 export class BranchSummaryError extends Error {
   /** Backend-independent error code. */
   public code: BranchSummaryErrorCode;
+  /** Provider-reported usage from failed branch-summary model calls, when available. */
+  public usage?: Usage;
+  /** Internal id that ties aggregate usage to hidden per-call accounting rows. */
+  public usageBudgetOperationId?: string;
 
-  constructor(code: BranchSummaryErrorCode, message: string, cause?: Error) {
+  constructor(code: BranchSummaryErrorCode, message: string, cause?: Error, usage?: Usage) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = "BranchSummaryError";
     this.code = code;
+    this.usage = usage;
   }
 }
 
@@ -388,8 +399,18 @@ export interface CompactionEntry<T = unknown> extends SessionTreeEntryBase {
   summary: string;
   firstKeptEntryId: string;
   tokensBefore: number;
+  usageAccounting?: CompactionUsageAccounting;
   details?: T;
   fromHook?: boolean;
+}
+
+export interface CompactionUsageAccounting {
+  api?: string;
+  provider?: string;
+  model?: string;
+  usage: Usage;
+  /** Internal id that ties aggregate usage to hidden per-call accounting rows. */
+  usageBudgetOperationId?: string;
 }
 
 /** Persisted summary of an abandoned branch when navigating the session tree. */
@@ -397,6 +418,7 @@ export interface BranchSummaryEntry<T = unknown> extends SessionTreeEntryBase {
   type: "branch_summary";
   fromId: string;
   summary: string;
+  usageAccounting?: CompactionUsageAccounting;
   details?: T;
   fromHook?: boolean;
 }
@@ -690,6 +712,8 @@ export interface ToolResultPatch {
 export interface SessionBeforeCompactResult {
   cancel?: boolean;
   compaction?: CompactResult;
+  usage?: Usage;
+  usageBudgetOperationId?: string;
 }
 
 /** Hook result for cancelling, labeling, or supplying branch-summary behavior before tree navigation. */
@@ -734,6 +758,8 @@ export interface CompactResult {
   summary: string;
   firstKeptEntryId: string;
   tokensBefore: number;
+  usage?: Usage;
+  usageBudgetOperationId?: string;
   details?: unknown;
 }
 
@@ -800,6 +826,9 @@ export interface BranchSummaryResult {
   summary: string;
   readFiles: string[];
   modifiedFiles: string[];
+  usage?: Usage;
+  /** Internal id that ties aggregate usage to hidden per-call accounting rows. */
+  usageBudgetOperationId?: string;
 }
 
 /** Construction options for AgentHarness. */

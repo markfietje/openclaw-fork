@@ -6,6 +6,10 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { NON_ENV_SECRETREF_MARKER } from "openclaw/plugin-sdk/provider-auth-runtime";
 import { clearLiveCatalogCacheForTests } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { expectPassthroughReplayPolicy } from "openclaw/plugin-sdk/provider-test-contracts";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "./index.js";
@@ -363,16 +367,20 @@ describe("opencode-go provider plugin", () => {
   it("disables invalid DeepSeek V4 reasoning_effort off payloads on OpenCode Go", async () => {
     const provider = await registerSingleProviderPlugin(plugin);
     const capturedPayloads: Record<string, unknown>[] = [];
-    const baseStreamFn = (_model: unknown, _context: unknown, options: unknown) => {
-      const payload = {
-        model: "deepseek-v4-flash",
-        reasoning_effort: "off",
-        reasoning: "off",
-      };
-      (options as { onPayload?: (payload: Record<string, unknown>) => void })?.onPayload?.(payload);
-      capturedPayloads.push(payload);
-      return {} as never;
-    };
+    const baseStreamFn = markProviderDispatchObservableStreamFn(
+      (_model: unknown, _context: unknown, options: unknown) => {
+        const payload = {
+          model: "deepseek-v4-flash",
+          reasoning_effort: "off",
+          reasoning: "off",
+        };
+        (options as { onPayload?: (payload: Record<string, unknown>) => void })?.onPayload?.(
+          payload,
+        );
+        capturedPayloads.push(payload);
+        return {} as never;
+      },
+    );
 
     const streamFn = provider.wrapStreamFn?.({
       streamFn: baseStreamFn as never,
@@ -382,6 +390,7 @@ describe("opencode-go provider plugin", () => {
     } as never);
 
     expect(streamFn).toBeTypeOf("function");
+    expect(isProviderDispatchObservableStreamFn(streamFn as never)).toBe(true);
     await streamFn?.(
       { provider: "opencode-go", id: "deepseek-v4-flash" } as never,
       {} as never,
@@ -399,17 +408,21 @@ describe("opencode-go provider plugin", () => {
   it("strips unsupported Kimi reasoning payloads on OpenCode Go", async () => {
     const provider = await registerSingleProviderPlugin(plugin);
     const capturedPayloads: Record<string, unknown>[] = [];
-    const baseStreamFn = (_model: unknown, _context: unknown, options: unknown) => {
-      const payload = {
-        model: "kimi-k2.6",
-        reasoning_effort: "high",
-        reasoning: { effort: "high" },
-        reasoningEffort: "high",
-      };
-      (options as { onPayload?: (payload: Record<string, unknown>) => void })?.onPayload?.(payload);
-      capturedPayloads.push(payload);
-      return {} as never;
-    };
+    const baseStreamFn = markProviderDispatchObservableStreamFn(
+      (_model: unknown, _context: unknown, options: unknown) => {
+        const payload = {
+          model: "kimi-k2.6",
+          reasoning_effort: "high",
+          reasoning: { effort: "high" },
+          reasoningEffort: "high",
+        };
+        (options as { onPayload?: (payload: Record<string, unknown>) => void })?.onPayload?.(
+          payload,
+        );
+        capturedPayloads.push(payload);
+        return {} as never;
+      },
+    );
 
     const streamFn = provider.wrapStreamFn?.({
       streamFn: baseStreamFn as never,
@@ -419,6 +432,7 @@ describe("opencode-go provider plugin", () => {
     } as never);
 
     expect(streamFn).toBeTypeOf("function");
+    expect(isProviderDispatchObservableStreamFn(streamFn as never)).toBe(true);
     await streamFn?.(
       { provider: "opencode-go", id: "kimi-k2.6", api: "openai-completions" } as never,
       {} as never,

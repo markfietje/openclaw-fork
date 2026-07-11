@@ -4,7 +4,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -194,6 +194,43 @@ describe("Agent-specific exec tool defaults", () => {
         command: "echo blocked",
       }),
     ).rejects.toThrow(/allowlist miss/);
+  });
+
+  it("does not call custom exec auto reviewers when usage budgets are active", async () => {
+    const autoReviewer = vi.fn(async () => ({
+      decision: "allow-once" as const,
+      risk: "low" as const,
+      rationale: "custom reviewer would approve",
+    }));
+    const tools = createOpenClawCodingTools({
+      config: {
+        tools: {
+          exec: {
+            mode: "auto",
+            safeBins: [],
+          },
+        },
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 1000 },
+            },
+          },
+        },
+      },
+      exec: { autoReviewer },
+      sessionKey: "agent:main:main",
+      ...createTempAgentDirs("test-main-budget-exec-reviewer"),
+    });
+    const execTool = requireExecTool(tools);
+
+    await expect(
+      execTool.execute("call-budget-exec-reviewer", {
+        command: "echo blocked",
+      }),
+    ).rejects.toThrow(/Exec approval registration failed/);
+
+    expect(autoReviewer).not.toHaveBeenCalled();
   });
 
   it("lets session legacy exec overrides clear inherited mode", async () => {

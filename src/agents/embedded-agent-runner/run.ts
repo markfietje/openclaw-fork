@@ -141,6 +141,7 @@ import {
   type SessionSuspensionParams,
 } from "../session-suspension.js";
 import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
+import { AGENT_USAGE_BUDGET_VISIBLE_DENIAL, isAgentUsageBudgetError } from "../usage-budget.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { runPostCompactionSideEffects } from "./compaction-hooks.js";
@@ -610,12 +611,7 @@ const POST_RUN_AUTH_PROFILE_SUCCESS_SLOW_MS = 1_000;
 export function runEmbeddedAgent(
   paramsInput: RunEmbeddedAgentParams,
 ): Promise<EmbeddedAgentRunResult> {
-  const requestedProvider = normalizeOptionalString(paramsInput.provider);
-  const requestedModel = normalizeOptionalString(paramsInput.model);
-  const needsConfiguredDefault = !paramsInput.config && !requestedProvider && !requestedModel;
-  const config =
-    paramsInput.config ??
-    (needsConfiguredDefault ? (getRuntimeConfigSnapshot() ?? undefined) : undefined);
+  const config = paramsInput.config ?? getRuntimeConfigSnapshot() ?? undefined;
   const lifecycleGeneration =
     paramsInput.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(paramsInput.runId);
   return withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
@@ -1936,6 +1932,7 @@ async function runEmbeddedAgentInternal(
         let accumulatedReplayState = createEmbeddedRunReplayState();
         // Hoisted so the retry-limit error path can use the most recent API total.
         let lastTurnTotal: number | undefined;
+        let diagnosticModelCallSeq = 0;
         while (true) {
           if (runLoopIterations >= MAX_RUN_LOOP_ITERATIONS) {
             const message =
@@ -2215,6 +2212,8 @@ async function runEmbeddedAgentInternal(
             timeoutMs: params.timeoutMs,
             runTimeoutOverrideMs: params.runTimeoutOverrideMs,
             runId: params.runId,
+            nextDiagnosticModelCallId: () =>
+              `${params.runId}:model:${(diagnosticModelCallSeq += 1)}`,
             lifecycleGeneration,
             abortSignal: attemptAbortController.signal,
             onAttemptTimeoutArmed: pluginHarnessOwnsTransport
@@ -2664,9 +2663,9 @@ async function runEmbeddedAgentInternal(
 
           if (contextOverflowError) {
             const overflowDiagId = createCompactionDiagId();
-            const errorText = contextOverflowError.text;
+            const contextOverflowText = contextOverflowError.text;
             const msgCount = attempt.messagesSnapshot?.length ?? 0;
-            const observedOverflowTokens = extractObservedOverflowTokenCount(errorText);
+            const observedOverflowTokens = extractObservedOverflowTokenCount(contextOverflowText);
             const overflowTokenCountForCompaction =
               observedOverflowTokens ??
               (ctxInfo.tokens > 0
@@ -2681,9 +2680,9 @@ async function runEmbeddedAgentInternal(
                 `diagId=${overflowDiagId} compactionAttempts=${overflowCompactionAttempts} ` +
                 `observedTokens=${observedOverflowTokens ?? "unknown"} ` +
                 `compactionTokens=${overflowTokenCountForCompaction ?? "unknown"} ` +
-                `error=${errorText.slice(0, 200)}`,
+                `error=${contextOverflowText.slice(0, 200)}`,
             );
-            const isCompactionFailure = isCompactionFailureError(errorText);
+            const isCompactionFailure = isCompactionFailureError(contextOverflowText);
             const hadAttemptLevelCompaction = attemptCompactionCount > 0;
             // If this attempt already compacted (SDK auto-compaction), avoid immediately
             // running another explicit compaction for the same overflow trigger.
@@ -2720,6 +2719,7 @@ async function runEmbeddedAgentInternal(
                 `context overflow detected (attempt ${overflowCompactionAttempts}/${MAX_OVERFLOW_COMPACTION_ATTEMPTS}); attempting auto-compaction for ${provider}/${modelId}`,
               );
               let compactResult: Awaited<ReturnType<typeof contextEngine.compact>>;
+              let overflowCompactionBudgetError: unknown;
               await runOwnsCompactionBeforeHook("overflow recovery");
               try {
                 const overflowCompactionRuntimeContext = {
@@ -2817,6 +2817,9 @@ async function runEmbeddedAgentInternal(
                   });
                 }
               } catch (compactErr) {
+                if (isAgentUsageBudgetError(compactErr)) {
+                  overflowCompactionBudgetError = compactErr;
+                }
                 log.warn(
                   `contextEngine.compact() threw during overflow recovery for ${provider}/${modelId}: ${String(compactErr)}`,
                 );
@@ -2827,6 +2830,39 @@ async function runEmbeddedAgentInternal(
                 };
               }
               await runOwnsCompactionAfterHook("overflow recovery", compactResult);
+              if (overflowCompactionBudgetError && !aborted) {
+                const errorText = formatErrorMessage(overflowCompactionBudgetError);
+                const visibleErrorText = AGENT_USAGE_BUDGET_VISIBLE_DENIAL;
+                const replayInvalid = resolveReplayInvalidForAttempt();
+                setTerminalLifecycleMeta({
+                  replayInvalid,
+                  livenessState: "blocked",
+                });
+                return {
+                  payloads: [{ text: visibleErrorText, isError: true }],
+                  meta: {
+                    durationMs: Date.now() - started,
+                    agentMeta: buildErrorAgentMeta({
+                      sessionId: sessionIdUsed,
+                      sessionFile: activeSessionFile,
+                      provider,
+                      model: model.id,
+                      contextTokens: ctxInfo.tokens,
+                      usageAccumulator,
+                      lastRunPromptUsage,
+                      lastAssistant: sessionLastAssistant,
+                      lastTurnTotal,
+                    }),
+                    systemPromptReport: attempt.systemPromptReport,
+                    finalAssistantVisibleText: visibleErrorText,
+                    finalAssistantRawText: visibleErrorText,
+                    finalPromptText: undefined,
+                    replayInvalid,
+                    livenessState: "blocked",
+                    error: { kind: "usage_budget", message: errorText },
+                  },
+                };
+              }
               if (preflightRecovery && isNoRealConversationCompactionNoop(compactResult)) {
                 lastCompactionTokensAfter = undefined;
                 lastContextBudgetStatus = undefined;
@@ -2993,7 +3029,7 @@ async function runEmbeddedAgentInternal(
                 finalPromptText: attempt.finalPromptText,
                 replayInvalid: resolveReplayInvalidForAttempt(),
                 livenessState: "blocked",
-                error: { kind, message: errorText },
+                error: { kind, message: contextOverflowText },
               },
             };
           }
@@ -3027,6 +3063,40 @@ async function runEmbeddedAgentInternal(
                 replayInvalid,
                 livenessState: "blocked",
                 error: { kind: "hook_block", message: errorText },
+              },
+            };
+          }
+
+          if (promptErrorSource === "budget" && !aborted) {
+            const errorText = formatErrorMessage(promptError);
+            const visibleErrorText = AGENT_USAGE_BUDGET_VISIBLE_DENIAL;
+            const replayInvalid = resolveReplayInvalidForAttempt();
+            setTerminalLifecycleMeta({
+              replayInvalid,
+              livenessState: "blocked",
+            });
+            return {
+              payloads: [{ text: visibleErrorText, isError: true }],
+              meta: {
+                durationMs: Date.now() - started,
+                agentMeta: buildErrorAgentMeta({
+                  sessionId: sessionIdUsed,
+                  sessionFile: activeSessionFile,
+                  provider,
+                  model: model.id,
+                  contextTokens: ctxInfo.tokens,
+                  usageAccumulator,
+                  lastRunPromptUsage,
+                  lastAssistant: sessionLastAssistant,
+                  lastTurnTotal,
+                }),
+                systemPromptReport: attempt.systemPromptReport,
+                finalAssistantVisibleText: visibleErrorText,
+                finalAssistantRawText: visibleErrorText,
+                finalPromptText: undefined,
+                replayInvalid,
+                livenessState: "blocked",
+                error: { kind: "usage_budget", message: errorText },
               },
             };
           }

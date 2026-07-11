@@ -5,6 +5,7 @@ import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-ent
 import { buildCopilotIdeHeaders, COPILOT_INTEGRATION_ID } from "openclaw/plugin-sdk/provider-auth";
 import {
   applyAnthropicEphemeralCacheControlMarkers,
+  preserveProviderDispatchObservableStreamFn,
   streamWithPayloadPatch,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { rewriteCopilotResponsePayloadConnectionBoundIds } from "./connection-bound-ids.js";
@@ -97,7 +98,7 @@ export function wrapCopilotAnthropicStream(
     return undefined;
   }
   const underlying = baseStreamFn;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.provider !== "github-copilot" || model.api !== "anthropic-messages") {
       return underlying(model, context, options);
     }
@@ -113,6 +114,7 @@ export function wrapCopilotAnthropicStream(
       patchCopilotAnthropicPayload,
     );
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 export function wrapCopilotOpenAIResponsesStream(
@@ -122,7 +124,7 @@ export function wrapCopilotOpenAIResponsesStream(
     return undefined;
   }
   const underlying = baseStreamFn;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.provider !== "github-copilot" || model.api !== "openai-responses") {
       return underlying(model, context, options);
     }
@@ -138,6 +140,7 @@ export function wrapCopilotOpenAIResponsesStream(
     };
     return underlying(model, context, wrappedOptions);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 export function wrapCopilotOpenAICompletionsStream(
@@ -147,7 +150,7 @@ export function wrapCopilotOpenAICompletionsStream(
     return undefined;
   }
   const underlying = baseStreamFn;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.provider !== "github-copilot" || model.api !== "openai-completions") {
       return underlying(model, context, options);
     }
@@ -157,6 +160,7 @@ export function wrapCopilotOpenAICompletionsStream(
       headers: buildCopilotRequestHeaders(context, options?.headers),
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 export function wrapCopilotProviderStream(ctx: ProviderWrapStreamFnContext): StreamFn | undefined {

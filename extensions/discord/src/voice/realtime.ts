@@ -500,6 +500,8 @@ export class DiscordRealtimeVoiceSession implements VoiceRealtimeSession {
     });
     this.bridge = createRealtimeVoiceBridgeSession({
       provider: resolved.provider,
+      cfg: this.params.cfg,
+      agentId: this.params.entry.route.agentId,
       providerConfig: resolved.providerConfig,
       audioFormat: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
       instructions,

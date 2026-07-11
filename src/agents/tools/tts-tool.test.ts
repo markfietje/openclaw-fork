@@ -144,6 +144,19 @@ describe("createTtsTool", () => {
     expect(args.accountId).toBe("feishu-main");
   });
 
+  it("fails closed before speech generation when usage budgets are active", async () => {
+    const tool = createTtsTool({
+      usageBudgetUnsupportedReason: "Budgeted agents cannot use this tool.",
+    });
+    const result = await tool.execute("call-1", { text: "hello" });
+
+    expect(result.content).toEqual([
+      { type: "text", text: "Budgeted agents cannot use this tool." },
+    ]);
+    expect(result.details).toEqual({ error: "usage_budget_unsupported_model_tool", tool: "tts" });
+    expect(textToSpeechSpy).not.toHaveBeenCalled();
+  });
+
   it("echoes longer utterances verbatim into the tool-result content", async () => {
     textToSpeechSpy.mockResolvedValue({
       success: true,

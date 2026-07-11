@@ -811,6 +811,12 @@ function ensureAdditiveStateColumns(db: DatabaseSync): void {
   ensureColumn(db, "gateway_restart_sentinel", "continuation_json TEXT");
   ensureColumn(db, "gateway_restart_sentinel", "doctor_hint TEXT");
   ensureColumn(db, "gateway_restart_sentinel", "stats_json TEXT");
+  ensureColumn(
+    db,
+    "agent_usage_budget_ledger",
+    "usage_accounting_source TEXT NOT NULL DEFAULT 'message'",
+  );
+  ensureColumn(db, "agent_usage_budget_ledger", "usage_budget_operation_id TEXT");
   runSqliteImmediateTransactionSync(db, () => {
     const addedTaskRequesterAgentId = ensureColumn(db, "task_runs", "requester_agent_id TEXT");
     if (addedTaskRequesterAgentId) {

@@ -149,6 +149,10 @@ export const createOpenClawCodingToolsMock = vi.fn(() => []);
 export const guardSessionManagerMock = vi.fn(() => ({
   flushPendingToolResults: vi.fn(),
 }));
+export const buildEmbeddedExtensionFactoriesMock = vi.fn(() => []);
+export const acquireAgentUsageBudgetAdmissionMock = vi.fn(async () => async () => undefined);
+export const recordAgentUsageBudgetAdmissionResultMock = vi.fn();
+export const wrapStreamFnWithDiagnosticModelCallEventsMock = vi.fn((streamFn: unknown) => streamFn);
 export const applyAgentCompactionSettingsFromConfigMock = vi.fn();
 export const createPreparedEmbeddedAgentSettingsManagerMock = vi.fn(() => ({
   getGlobalSettings: vi.fn(() => ({})),
@@ -405,6 +409,13 @@ export function resetCompactHooksHarnessMocks(): void {
   guardSessionManagerMock.mockReturnValue({
     flushPendingToolResults: vi.fn(),
   });
+  buildEmbeddedExtensionFactoriesMock.mockReset();
+  buildEmbeddedExtensionFactoriesMock.mockReturnValue([]);
+  acquireAgentUsageBudgetAdmissionMock.mockReset();
+  acquireAgentUsageBudgetAdmissionMock.mockResolvedValue(async () => undefined);
+  recordAgentUsageBudgetAdmissionResultMock.mockReset();
+  wrapStreamFnWithDiagnosticModelCallEventsMock.mockReset();
+  wrapStreamFnWithDiagnosticModelCallEventsMock.mockImplementation((streamFn: unknown) => streamFn);
   applyAgentCompactionSettingsFromConfigMock.mockReset();
   createPreparedEmbeddedAgentSettingsManagerMock.mockReset();
   createPreparedEmbeddedAgentSettingsManagerMock.mockReturnValue({
@@ -665,6 +676,10 @@ export async function loadCompactHooksHarness(): Promise<{
     resolvePreparedExtraParams: vi.fn(() => ({})),
   }));
 
+  vi.doMock("./run/attempt.model-diagnostic-events.js", () => ({
+    wrapStreamFnWithDiagnosticModelCallEvents: wrapStreamFnWithDiagnosticModelCallEventsMock,
+  }));
+
   vi.doMock("./tool-split.js", () => ({
     splitSdkTools: vi.fn(({ tools }: { tools?: unknown[] }) => ({
       customTools: createMockToolDefinitions(tools),
@@ -753,8 +768,17 @@ export async function loadCompactHooksHarness(): Promise<{
   }));
 
   vi.doMock("./extensions.js", () => ({
-    buildEmbeddedExtensionFactories: vi.fn(() => []),
+    buildEmbeddedExtensionFactories: buildEmbeddedExtensionFactoriesMock,
   }));
+
+  vi.doMock("../usage-budget.js", async () => {
+    const actual = await vi.importActual<typeof import("../usage-budget.js")>("../usage-budget.js");
+    return {
+      ...actual,
+      acquireAgentUsageBudgetAdmission: acquireAgentUsageBudgetAdmissionMock,
+      recordAgentUsageBudgetAdmissionResult: recordAgentUsageBudgetAdmissionResultMock,
+    };
+  });
 
   vi.doMock("./history.js", () => ({
     getHistoryLimitFromSessionKey: vi.fn(() => undefined),

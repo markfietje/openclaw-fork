@@ -766,6 +766,7 @@ export function createImageTool(options?: {
    * tool. The concrete image model is still resolved before execution.
    */
   deferAutoModelResolution?: boolean;
+  usageBudgetUnsupportedReason?: string;
 }): AnyAgentTool | null {
   const agentDir = options?.agentDir?.trim();
   const explicit = coerceImageModelConfig(options?.config);
@@ -822,6 +823,12 @@ export function createImageTool(options?: {
     }),
     execute: async (_toolCallId, args) => {
       const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+      if (options?.usageBudgetUnsupportedReason) {
+        return {
+          content: [{ type: "text", text: options.usageBudgetUnsupportedReason }],
+          details: { error: "usage_budget_unsupported_model_tool", tool: "image" },
+        };
+      }
 
       // MARK: - Normalize image + images input and dedupe while preserving order
       const imageCandidates: string[] = [];

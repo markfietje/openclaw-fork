@@ -9,6 +9,7 @@ import {
   completeWithPreparedSimpleCompletionModel,
   prepareSimpleCompletionModelForAgent,
 } from "../agents/simple-completion-runtime.js";
+import { isAgentUsageBudgetError } from "../agents/usage-budget.js";
 import { readConfigFileSnapshot } from "../config/config.js";
 import { selectCrestodianLocalPlannerBackends } from "./assistant-backends.js";
 import {
@@ -119,6 +120,13 @@ export async function planCrestodianCommandWithConfiguredModel(params: {
         maxTokens: CRESTODIAN_ASSISTANT_MAX_TOKENS,
         signal: controller.signal,
       },
+      usageBudget: {
+        config: cfg,
+        agentId,
+        provider: prepared.selection.provider,
+        model: prepared.selection.modelId,
+        recordIdPrefix: "crestodian-assistant",
+      },
     });
     const parsed = parseCrestodianAssistantPlanText(extractAssistantText(response));
     if (!parsed) {
@@ -128,7 +136,10 @@ export async function planCrestodianCommandWithConfiguredModel(params: {
       ...parsed,
       modelLabel: `${prepared.selection.provider}/${prepared.selection.modelId}`,
     };
-  } catch {
+  } catch (error) {
+    if (isAgentUsageBudgetError(error)) {
+      throw error;
+    }
     return null;
   } finally {
     clearTimeout(timer);

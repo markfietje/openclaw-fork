@@ -1,6 +1,6 @@
+import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 // Defines agent routing, model, and runtime configuration types.
 import type { ChatType } from "../channels/chat-type.js";
-import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 import type {
   AgentContextLimitsConfig,
   AgentDefaultsConfig,
@@ -125,6 +125,8 @@ export type AgentConfig = {
   skillsLimits?: Pick<SkillsLimitsConfig, "maxSkillsPromptChars">;
   /** Optional per-agent overrides for selected context/token-heavy limits. */
   contextLimits?: AgentContextLimitsConfig;
+  /** Optional per-agent usage-budget override. Omitted fields inherit agents.defaults.usageBudget. */
+  usageBudget?: AgentDefaultsConfig["usageBudget"];
   contextTokens?: number;
   /** Optional per-agent heartbeat overrides. */
   heartbeat?: AgentDefaultsConfig["heartbeat"];

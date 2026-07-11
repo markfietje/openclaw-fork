@@ -617,7 +617,7 @@ export class TwilioProvider implements VoiceCallProvider {
       }
 
       try {
-        await this.playTtsViaStream(input.text, streamSid);
+        await this.playTtsViaStream(input.text, streamSid, input.agentId);
         return;
       } catch (err) {
         console.warn(
@@ -670,7 +670,7 @@ export class TwilioProvider implements VoiceCallProvider {
    * Generates audio with core TTS, converts to mu-law, and streams via WebSocket.
    * Uses a queue to serialize playback and prevent overlapping audio.
    */
-  private async playTtsViaStream(text: string, streamSid: string): Promise<void> {
+  private async playTtsViaStream(text: string, streamSid: string, agentId?: string): Promise<void> {
     if (!this.ttsProvider || !this.mediaStreamHandler) {
       throw new Error("TTS provider and media stream handler required");
     }
@@ -727,7 +727,7 @@ export class TwilioProvider implements VoiceCallProvider {
       let synthTimeout: ReturnType<typeof setTimeout> | null = null;
       const synthTimeoutMs = ttsProvider.synthesisTimeoutMs;
       try {
-        const synthPromise = ttsProvider.synthesizeForTelephony(text);
+        const synthPromise = ttsProvider.synthesizeForTelephony(text, agentId);
         const timeoutPromise = new Promise<Buffer>((_, reject) => {
           synthTimeout = setTimeout(() => {
             reject(new Error(`Telephony TTS synthesis timed out after ${synthTimeoutMs}ms`));

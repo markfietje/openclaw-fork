@@ -1,6 +1,9 @@
 // Amazon Bedrock tests cover stream plugin behavior.
 import { BedrockRuntimeClient, ConversationRole } from "@aws-sdk/client-bedrock-runtime";
-import { onLlmRequestActivity } from "openclaw/plugin-sdk/provider-stream-shared";
+import {
+  onLlmRequestActivity,
+  USAGE_BUDGET_RECORDED_COST_METADATA_KEY,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { streamBedrock, streamSimpleBedrock, testing } from "./stream.runtime.js";
 
@@ -306,6 +309,211 @@ describe("Bedrock thinking effort mapping", () => {
         "xhigh",
       ),
     ).toBe("xhigh");
+  });
+});
+
+describe("Bedrock dispatch observability", () => {
+  it("maps retry opt-outs to a single AWS SDK attempt", async () => {
+    let maxAttempts: unknown;
+    vi.spyOn(BedrockRuntimeClient.prototype, "send").mockImplementation(
+      function (this: BedrockRuntimeClient) {
+        const configuredMaxAttempts = this.config.maxAttempts;
+        maxAttempts =
+          typeof configuredMaxAttempts === "function"
+            ? configuredMaxAttempts()
+            : configuredMaxAttempts;
+        return Promise.resolve({
+          $metadata: { httpStatusCode: 200 },
+          stream: streamEvents([
+            { messageStart: { role: ConversationRole.ASSISTANT } },
+            { messageStop: { stopReason: "end_turn" } },
+          ]),
+        }) as never;
+      },
+    );
+    const onProviderDispatch = vi.fn();
+
+    await streamBedrock(
+      bedrockModel({}),
+      { messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }] } as never,
+      {
+        maxRetries: 0,
+        onProviderDispatch,
+      } as never,
+    ).result();
+
+    expect(onProviderDispatch).toHaveBeenCalledTimes(1);
+    await expect(Promise.resolve(maxAttempts)).resolves.toBe(1);
+  });
+});
+
+describe("Bedrock service tier pricing", () => {
+  it("marks resolved priority-tier usage cost for budget accounting", async () => {
+    vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: streamEvents([
+        { messageStart: { role: ConversationRole.ASSISTANT } },
+        {
+          metadata: {
+            usage: {
+              inputTokens: 1000,
+              outputTokens: 500,
+              cacheReadInputTokens: 200,
+              cacheWriteInputTokens: 100,
+              totalTokens: 1800,
+            },
+            serviceTier: { type: "priority" },
+          },
+        },
+        { messageStop: { stopReason: "end_turn" } },
+      ]),
+    } as never);
+
+    const message = await streamBedrock(
+      bedrockModel({ cost: { input: 2, output: 4, cacheRead: 1, cacheWrite: 3 } }),
+      { messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }] } as never,
+    ).result();
+
+    expect(message.usage.cost.input).toBeCloseTo(0.0035);
+    expect(message.usage.cost.output).toBeCloseTo(0.0035);
+    expect(message.usage.cost.cacheRead).toBeCloseTo(0.00035);
+    expect(message.usage.cost.cacheWrite).toBeCloseTo(0.000525);
+    expect(message.usage.cost.total).toBeCloseTo(0.007875);
+    expect(
+      (message.usage as unknown as Record<string, unknown>)[
+        USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+      ],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "estimated-model-call-cost",
+      costMultiplier: 1.75,
+    });
+  });
+
+  it("uses the requested service tier when Bedrock omits resolved metadata", async () => {
+    vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: streamEvents([
+        { messageStart: { role: ConversationRole.ASSISTANT } },
+        {
+          metadata: {
+            usage: {
+              inputTokens: 1000,
+              outputTokens: 500,
+              totalTokens: 1500,
+            },
+          },
+        },
+        { messageStop: { stopReason: "end_turn" } },
+      ]),
+    } as never);
+
+    const message = await streamBedrock(
+      bedrockModel({ cost: { input: 2, output: 4, cacheRead: 1, cacheWrite: 3 } }),
+      { messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }] } as never,
+      {
+        onPayload(payload: unknown) {
+          (payload as Record<string, unknown>).serviceTier = { type: "flex" };
+        },
+      } as never,
+    ).result();
+
+    expect(message.usage.cost.input).toBeCloseTo(0.001);
+    expect(message.usage.cost.output).toBeCloseTo(0.001);
+    expect(message.usage.cost.total).toBeCloseTo(0.002);
+    expect(
+      (message.usage as unknown as Record<string, unknown>)[
+        USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+      ],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "estimated-model-call-cost",
+      costMultiplier: 0.5,
+    });
+  });
+
+  it("marks requested standard-tier usage cost as authoritative", async () => {
+    vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: streamEvents([
+        { messageStart: { role: ConversationRole.ASSISTANT } },
+        {
+          metadata: {
+            usage: {
+              inputTokens: 1000,
+              outputTokens: 500,
+              totalTokens: 1500,
+            },
+          },
+        },
+        { messageStop: { stopReason: "end_turn" } },
+      ]),
+    } as never);
+
+    const message = await streamBedrock(
+      bedrockModel({ cost: { input: 2, output: 4, cacheRead: 1, cacheWrite: 3 } }),
+      { messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }] } as never,
+      {
+        onPayload(payload: unknown) {
+          (payload as Record<string, unknown>).serviceTier = { type: "default" };
+        },
+      } as never,
+    ).result();
+
+    expect(message.usage.cost.input).toBeCloseTo(0.002);
+    expect(message.usage.cost.output).toBeCloseTo(0.002);
+    expect(message.usage.cost.total).toBeCloseTo(0.004);
+    expect(
+      (message.usage as unknown as Record<string, unknown>)[
+        USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+      ],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "estimated-model-call-cost",
+      costMultiplier: 1,
+    });
+  });
+
+  it("marks requested reserved-tier usage cost as unpriceable", async () => {
+    vi.spyOn(BedrockRuntimeClient.prototype, "send").mockResolvedValue({
+      $metadata: { httpStatusCode: 200 },
+      stream: streamEvents([
+        { messageStart: { role: ConversationRole.ASSISTANT } },
+        {
+          metadata: {
+            usage: {
+              inputTokens: 1000,
+              outputTokens: 500,
+              totalTokens: 1500,
+            },
+          },
+        },
+        { messageStop: { stopReason: "end_turn" } },
+      ]),
+    } as never);
+
+    const message = await streamBedrock(
+      bedrockModel({ cost: { input: 2, output: 4, cacheRead: 1, cacheWrite: 3 } }),
+      { messages: [{ role: "user", content: "Reply briefly.", timestamp: 0 }] } as never,
+      {
+        onPayload(payload: unknown) {
+          (payload as Record<string, unknown>).serviceTier = { type: "reserved" };
+        },
+      } as never,
+    ).result();
+
+    expect(message.usage.cost.input).toBeCloseTo(0.002);
+    expect(message.usage.cost.output).toBeCloseTo(0.002);
+    expect(message.usage.cost.total).toBeCloseTo(0.004);
+    expect(
+      (message.usage as unknown as Record<string, unknown>)[
+        USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+      ],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "unpriceable-model-call-cost",
+      reason: "capacity-billed-service-tier",
+    });
   });
 });
 

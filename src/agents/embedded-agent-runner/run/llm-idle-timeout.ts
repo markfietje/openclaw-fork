@@ -6,6 +6,7 @@ import {
   clampTimerTimeoutMs,
   MAX_TIMER_TIMEOUT_MS,
 } from "@openclaw/normalization-core/number-coercion";
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { toErrorObject } from "../../../infra/errors.js";
 import { onLlmRequestActivity } from "../../../shared/llm-request-activity.js";
@@ -373,7 +374,7 @@ export function streamWithIdleTimeout(
   timeoutMs: number,
   onIdleTimeout?: (error: Error) => void,
 ): StreamFn {
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const createIdleTimeoutError = () =>
       new Error(`LLM idle timeout (${Math.floor(timeoutMs / 1000)}s): no response from model`);
 
@@ -531,4 +532,5 @@ export function streamWithIdleTimeout(
     }
     return wrapStream(maybeStream);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, baseFn);
 }

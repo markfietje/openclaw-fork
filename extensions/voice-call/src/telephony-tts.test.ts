@@ -140,6 +140,27 @@ describe("createTelephonyTtsProvider deepMerge hardening", () => {
     expect(requestText).toBe("Hello caller");
   });
 
+  it("passes the request agent id to telephony synthesis", async () => {
+    let requestAgentId: string | undefined;
+    const provider = createTelephonyTtsProvider({
+      coreConfig: createCoreConfig(),
+      runtime: {
+        textToSpeechTelephony: async ({ agentId }) => {
+          requestAgentId = agentId;
+          return {
+            success: true,
+            audioBuffer: Buffer.alloc(2),
+            sampleRate: 8000,
+          };
+        },
+      },
+    });
+
+    await provider.synthesizeForTelephony("hello", "support-agent");
+
+    expect(requestAgentId).toBe("support-agent");
+  });
+
   it("uses hidden telephony TTS directive text for synthesis", async () => {
     let requestText: string | undefined;
     let requestOverrides: unknown;

@@ -15,6 +15,7 @@ export type RunMediaUnderstandingFileParams = {
   filePath: string;
   mediaUrl?: string;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   workspaceDir?: string;
   mime?: string;
@@ -42,6 +43,7 @@ export type DescribeImageFileParams = {
   filePath: string;
   mediaUrl?: string;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   workspaceDir?: string;
   mime?: string;
@@ -55,6 +57,7 @@ export type DescribeImageFileWithModelParams = {
   filePath: string;
   mediaUrl?: string;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   workspaceDir?: string;
   mime?: string;
@@ -95,6 +98,7 @@ export type ExtractStructuredWithModelParams = {
   jsonSchema?: unknown;
   jsonMode?: boolean;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   provider: string;
   model: string;
@@ -111,6 +115,7 @@ type ExtractStructuredWithModelResult = Awaited<
 export type DescribeVideoFileParams = {
   filePath: string;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   workspaceDir?: string;
   mime?: string;
@@ -120,6 +125,7 @@ export type DescribeVideoFileParams = {
 export type TranscribeAudioFileParams = {
   filePath: string;
   cfg: OpenClawConfig;
+  agentId?: string;
   agentDir?: string;
   workspaceDir?: string;
   mime?: string;

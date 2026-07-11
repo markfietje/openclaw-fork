@@ -42,7 +42,6 @@ import type {
   SimpleStreamOptions,
   StreamFunction,
   StreamOptions,
-  Usage,
 } from "../types.js";
 import {
   appendAssistantMessageDiagnostic,
@@ -59,6 +58,7 @@ import {
   processResponsesStream,
   resolveResponsesReasoningEffort,
 } from "./openai-responses-shared.js";
+import { applyOpenAIServiceTierPricing } from "./openai-service-tier-pricing.js";
 import { buildBaseOptions } from "./simple-options.js";
 
 // ============================================================================
@@ -83,6 +83,20 @@ const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
   "queued",
   "in_progress",
 ]);
+
+function resolveChatGptResponsesMaxRetries(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? Math.min(value, MAX_RETRIES)
+    : MAX_RETRIES;
+}
+
+function isAgentUsageBudgetDispatchError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "agent_usage_budget_blocked"
+  );
+}
 
 // ============================================================================
 // Types
@@ -330,13 +344,15 @@ export const streamOpenAICodexResponses: StreamFunction<
       // Fetch with retry logic for rate limits and transient errors
       let response: Response | undefined;
       let lastError: Error | undefined;
+      const maxRetries = resolveChatGptResponsesMaxRetries(options?.maxRetries);
 
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (activeSignal?.aborted) {
           throw new Error("Request was aborted");
         }
 
         try {
+          options?.onProviderDispatch?.();
           response = await fetch(resolveCodexUrl(model.baseUrl), {
             method: "POST",
             headers: sseHeaders,
@@ -353,7 +369,7 @@ export const streamOpenAICodexResponses: StreamFunction<
           }
 
           const errorText = await readChatGptResponsesErrorTextLimited(response);
-          if (attempt < MAX_RETRIES && isRetryableError(response.status, errorText)) {
+          if (attempt < maxRetries && isRetryableError(response.status, errorText)) {
             let delayMs = BASE_DELAY_MS * 2 ** attempt;
 
             const retryAfterMs = response.headers.get("retry-after-ms");
@@ -391,6 +407,9 @@ export const streamOpenAICodexResponses: StreamFunction<
           const info = await parseErrorResponse(fakeResponse);
           throw new Error(info.friendlyMessage || info.message);
         } catch (error) {
+          if (isAgentUsageBudgetDispatchError(error)) {
+            throw error;
+          }
           if (error instanceof Error) {
             if (
               isRequestTimeoutError(
@@ -412,7 +431,7 @@ export const streamOpenAICodexResponses: StreamFunction<
           }
           lastError = error instanceof Error ? error : new Error(String(error));
           // Network errors are retryable
-          if (attempt < MAX_RETRIES && !lastError.message.includes("usage limit")) {
+          if (attempt < maxRetries && !lastError.message.includes("usage limit")) {
             const delayMs = BASE_DELAY_MS * 2 ** attempt;
             await sleep(delayMs, activeSignal);
             continue;
@@ -548,38 +567,6 @@ function buildRequestBody(
   return body;
 }
 
-function getServiceTierCostMultiplier(
-  model: Pick<Model<"openai-chatgpt-responses">, "id">,
-  serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-): number {
-  switch (serviceTier) {
-    case "flex":
-      return 0.5;
-    case "priority":
-      return model.id === "gpt-5.5" ? 2.5 : 2;
-    default:
-      return 1;
-  }
-}
-
-function applyServiceTierPricing(
-  usage: Usage,
-  serviceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
-  model: Pick<Model<"openai-chatgpt-responses">, "id">,
-) {
-  const multiplier = getServiceTierCostMultiplier(model, serviceTier);
-  if (multiplier === 1) {
-    return;
-  }
-
-  usage.cost.input *= multiplier;
-  usage.cost.output *= multiplier;
-  usage.cost.cacheRead *= multiplier;
-  usage.cost.cacheWrite *= multiplier;
-  usage.cost.total =
-    usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
-}
-
 function resolveCodexServiceTier(
   responseServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
   requestServiceTier: ResponseCreateParamsStreaming["service_tier"] | undefined,
@@ -635,7 +622,7 @@ async function processStream(
     onFirstEventTimeout: getFirstStreamEventTimeoutHandler(options),
     resolveServiceTier: resolveCodexServiceTier,
     applyServiceTierPricing: (usage, serviceTier) =>
-      applyServiceTierPricing(usage, serviceTier, model),
+      applyOpenAIServiceTierPricing(usage, serviceTier, model),
   });
 }
 
@@ -1500,6 +1487,7 @@ async function processWebSocketStream(
     if (options?.signal?.aborted) {
       throw new Error("Request was aborted");
     }
+    options?.onProviderDispatch?.();
     socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
     await processResponsesStream(
       startWebSocketOutputOnFirstEvent(
@@ -1518,7 +1506,7 @@ async function processWebSocketStream(
         onFirstEventTimeout: getFirstStreamEventTimeoutHandler(options),
         resolveServiceTier: resolveCodexServiceTier,
         applyServiceTierPricing: (usage, serviceTier) =>
-          applyServiceTierPricing(usage, serviceTier, model),
+          applyOpenAIServiceTierPricing(usage, serviceTier, model),
       },
     );
     if (options?.signal?.aborted) {

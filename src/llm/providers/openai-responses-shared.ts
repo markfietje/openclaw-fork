@@ -210,7 +210,7 @@ type ResponsesStreamClient = {
 
 type ResponsesLifecycleStreamOptions = Pick<
   StreamOptions,
-  "signal" | "timeoutMs" | "maxRetries" | "onPayload" | "onResponse"
+  "signal" | "timeoutMs" | "maxRetries" | "onPayload" | "onResponse" | "onProviderDispatch"
 > &
   FirstStreamEventInternalOptions;
 

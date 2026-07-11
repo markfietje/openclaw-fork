@@ -1,3 +1,7 @@
+import {
+  markProviderDispatchModelResolverStreamFn,
+  preserveProviderDispatchObservableStreamFn,
+} from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import type { StreamFn } from "../../../agents/runtime/index.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
 import { streamSimple } from "../../stream.js";
@@ -68,22 +72,24 @@ export function createMinimaxFastModeWrapper(
   fastMode: DynamicFastMode,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const resolveFastDispatchModel = (model: Parameters<StreamFn>[0]) => {
     if (
       (typeof fastMode === "function" ? fastMode() : fastMode) !== true ||
       model.api !== "anthropic-messages" ||
       (model.provider !== "minimax" && model.provider !== "minimax-portal")
     ) {
-      return underlying(model, context, options);
+      return model;
     }
-
     const fastModelId = resolveMinimaxFastModelId(model.id);
-    if (!fastModelId) {
-      return underlying(model, context, options);
-    }
-
-    return underlying({ ...model, id: fastModelId }, context, options);
+    return fastModelId ? { ...model, id: fastModelId } : model;
   };
+  const wrapped: StreamFn = (model, context, options) => {
+    return underlying(resolveFastDispatchModel(model), context, options);
+  };
+  return markProviderDispatchModelResolverStreamFn(
+    preserveProviderDispatchObservableStreamFn(wrapped, underlying),
+    ({ model }) => resolveFastDispatchModel(model),
+  );
 }
 
 /**
@@ -106,7 +112,7 @@ export function createMinimaxThinkingDisabledWrapper(
   thinkingLevel?: ThinkLevel,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!isMinimaxAnthropicMessagesModel(model)) {
       return underlying(model, context, options);
     }
@@ -143,4 +149,5 @@ export function createMinimaxThinkingDisabledWrapper(
       },
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }

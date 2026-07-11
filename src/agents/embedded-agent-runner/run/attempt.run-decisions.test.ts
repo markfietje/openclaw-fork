@@ -64,12 +64,37 @@ describe("resolveAttemptToolPolicyMessageProvider", () => {
 });
 
 describe("shouldRunLlmOutputHooksForAttempt", () => {
-  it("skips llm_output after before_agent_run blocks before model submission", () => {
-    expect(shouldRunLlmOutputHooksForAttempt({ promptErrorSource: "hook:before_agent_run" })).toBe(
-      false,
-    );
-    expect(shouldRunLlmOutputHooksForAttempt({ promptErrorSource: "prompt" })).toBe(true);
-    expect(shouldRunLlmOutputHooksForAttempt({ promptErrorSource: null })).toBe(true);
+  it("skips llm_output after policy blocks before model submission", () => {
+    expect(
+      shouldRunLlmOutputHooksForAttempt({
+        promptErrorSource: "hook:before_agent_run",
+        hasAttemptOutput: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRunLlmOutputHooksForAttempt({
+        promptErrorSource: "budget",
+        hasAttemptOutput: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRunLlmOutputHooksForAttempt({
+        promptErrorSource: "budget",
+        hasAttemptOutput: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRunLlmOutputHooksForAttempt({
+        promptErrorSource: "prompt",
+        hasAttemptOutput: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRunLlmOutputHooksForAttempt({
+        promptErrorSource: null,
+        hasAttemptOutput: false,
+      }),
+    ).toBe(true);
   });
 });
 

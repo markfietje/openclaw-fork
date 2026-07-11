@@ -126,6 +126,36 @@ describe("buildEmbeddedExtensionFactories", () => {
     );
   });
 
+  it("preserves usage-budget context when direct compaction disables safeguard self-metering", () => {
+    const sessionManager = {} as SessionManager;
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 1_000 } },
+          compaction: { mode: "safeguard" },
+        },
+      },
+    } as OpenClawConfig;
+
+    buildEmbeddedExtensionFactories({
+      cfg,
+      sessionManager,
+      provider: "anthropic",
+      modelId: "claude-sonnet-4-20250514",
+      model: {
+        id: "claude-sonnet-4-20250514",
+        contextWindow: 200_000,
+      } as Model,
+      agentId: "budgeted-agent",
+      meterCompactionSafeguardUsage: false,
+    });
+
+    const runtime = getCompactionSafeguardRuntime(sessionManager);
+    expect(runtime?.config).toBe(cfg);
+    expect(runtime?.agentId).toBe("budgeted-agent");
+    expect(runtime?.meterUsageBudgetModelCalls).toBe(false);
+  });
+
   it("enables cache-ttl pruning for custom anthropic-messages providers", () => {
     const factories = buildEmbeddedExtensionFactories({
       cfg: {

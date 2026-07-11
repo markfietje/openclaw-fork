@@ -1,6 +1,10 @@
 // Covers dynamic registration of custom model API providers.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "../../packages/llm-core/src/provider-dispatch-observable-stream.js";
+import {
   clearApiProviders,
   getApiProvider,
   registerApiProvider,
@@ -12,6 +16,7 @@ import {
 } from "../llm/providers/register-builtins.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
+import type { StreamFn } from "./runtime/index.js";
 import { buildAssistantMessageWithZeroUsage } from "./stream-message-shared.js";
 
 function getRegisteredTestProvider() {
@@ -57,6 +62,17 @@ describe("ensureCustomApiRegistered", () => {
     expect(streamFn).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves provider-dispatch observability on registered custom adapters", () => {
+    const streamFn = vi.fn<StreamFn>(() => createAssistantMessageEventStream());
+    markProviderDispatchObservableStreamFn(streamFn);
+
+    ensureCustomApiRegistered("test-custom-api", streamFn);
+
+    const provider = getRegisteredTestProvider();
+    expect(isProviderDispatchObservableStreamFn(provider.stream as never)).toBe(true);
+    expect(isProviderDispatchObservableStreamFn(provider.streamSimple as never)).toBe(true);
+  });
+
   it("adapts async stream factories to the synchronous provider contract", async () => {
     const message = buildAssistantMessageWithZeroUsage({
       model: { api: "test-custom-api", provider: "custom", id: "m" },
@@ -99,6 +115,29 @@ describe("ensureCustomApiRegistered", () => {
       stopReason: "error",
       errorMessage: "factory failed",
     });
+  });
+
+  it("keeps dispatch callbacks when async custom factories fail as terminal streams", async () => {
+    const onProviderDispatch = vi.fn();
+    const streamFn = vi.fn<StreamFn>(async (_model, _context, options) => {
+      options?.onProviderDispatch?.();
+      throw new Error("factory failed");
+    });
+    markProviderDispatchObservableStreamFn(streamFn);
+    ensureCustomApiRegistered("test-custom-api", streamFn);
+
+    const provider = getRegisteredTestProvider();
+    const stream = provider.stream(
+      { api: "test-custom-api", provider: "custom", id: "m" } as never,
+      { messages: [] },
+      { onProviderDispatch },
+    );
+
+    await expect(stream.result()).resolves.toMatchObject({
+      stopReason: "error",
+      errorMessage: "factory failed",
+    });
+    expect(onProviderDispatch).toHaveBeenCalledTimes(1);
   });
 
   it("keeps plugin api providers when refreshing built-ins", () => {

@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { preserveProviderDispatchObservableStreamFn } from "../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 /**
  * Plugin-defined text replacement transforms for stream boundaries.
  *
@@ -197,7 +198,7 @@ export function wrapStreamFnTextTransforms(params: {
   output?: PluginTextReplacement[];
   transformSystemPrompt?: boolean;
 }): StreamFn {
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const nextContext = transformStreamContextText(context, params.input, {
       systemPrompt: params.transformSystemPrompt,
     });
@@ -209,4 +210,5 @@ export function wrapStreamFnTextTransforms(params: {
     }
     return wrapStreamTextTransforms(maybeStream, params.output);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, params.streamFn);
 }

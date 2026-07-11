@@ -8,6 +8,8 @@ import {
   resolveThinkingDefaultForModel,
   type ThinkingCatalogEntry,
 } from "../../auto-reply/thinking.js";
+import { loadConfig } from "../../config/config.js";
+import type { OpenClawConfig } from "../../config/types.js";
 import { clampThinkingLevel } from "../../llm/model-utils.js";
 import { streamSimple } from "../../llm/stream.js";
 import type { Message, Model } from "../../llm/types.js";
@@ -18,6 +20,7 @@ import {
   type AgentOptions,
   type ThinkingLevel,
 } from "../runtime/index.js";
+import { assertNoActiveAgentUsageBudgetForUnsupportedHarness } from "../usage-budget.js";
 import { AgentSession, type AgentSessionWriteLockRunner } from "./agent-session.js";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
 import { AuthStorage } from "./auth-storage.js";
@@ -33,6 +36,7 @@ import { ModelRegistry } from "./model-registry.js";
 import { findInitialModel } from "./model-resolver.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import { DefaultResourceLoader } from "./resource-loader.js";
+import { hasAgentSessionModelCallUsageBudgetEnforcement } from "./sdk-usage-budget-internal.js";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 import { isInstallTelemetryEnabled } from "./telemetry.js";
@@ -73,6 +77,10 @@ function projectThinkingCatalogCompat(compat: Model["compat"]) {
 }
 
 export interface CreateAgentSessionOptions {
+  /** OpenClaw runtime config for session-local model-call helpers. */
+  config?: OpenClawConfig;
+  /** Agent whose session-local model-call helpers should be budgeted. */
+  agentId?: string;
   /** Working directory for project-local discovery. Default: process.cwd() */
   cwd?: string;
   /** Global config directory. Default: ~/.openclaw/agents/default */
@@ -253,6 +261,17 @@ export async function createAgentSession(
   const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
   const sessionManager =
     options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
+
+  const config = options.config ?? loadConfig({ skipPluginValidation: true });
+  if (!hasAgentSessionModelCallUsageBudgetEnforcement(options)) {
+    assertNoActiveAgentUsageBudgetForUnsupportedHarness({
+      config,
+      agentId: options.agentId,
+      provider: options.model?.provider ?? "session-sdk",
+      model: options.model?.id ?? "unspecified",
+      harnessId: "agent-session-sdk",
+    });
+  }
 
   if (!resourceLoader) {
     resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
@@ -486,6 +505,8 @@ export async function createAgentSession(
   }
 
   const session = new AgentSession({
+    config: options.config,
+    agentId: options.agentId,
     agent,
     sessionManager,
     settingsManager,

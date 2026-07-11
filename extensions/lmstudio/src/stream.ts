@@ -6,6 +6,7 @@ import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-ent
 import {
   createOpenAICompatibleCompletionsThinkingOffWrapper,
   createPlainTextToolCallCompatWrapper,
+  preserveProviderDispatchObservableStreamFn,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { ssrfPolicyFromHttpBaseUrlAllowedHostname } from "openclaw/plugin-sdk/ssrf-runtime";
 import { asPositiveSafeInteger } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -222,7 +223,7 @@ export function wrapLmstudioInferencePreload(ctx: ProviderWrapStreamFnContext): 
     createPlainTextToolCallCompatWrapper(underlying),
     ctx.thinkingLevel,
   );
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (model.provider !== LMSTUDIO_PROVIDER_ID) {
       return underlying(model, context, options);
     }
@@ -323,4 +324,5 @@ export function wrapLmstudioInferencePreload(ctx: ProviderWrapStreamFnContext): 
       return resolvedStream;
     })();
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, streamWithThinkingLevel);
 }

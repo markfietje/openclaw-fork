@@ -3,6 +3,7 @@ import {
   normalizeOptionalLowercaseString,
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { resolveProviderRequestPolicy } from "../../../agents/provider-attribution.js";
 import { resolveProviderRequestPolicyConfig } from "../../../agents/provider-request-config.js";
 import type { StreamFn } from "../../../agents/runtime/index.js";
@@ -136,7 +137,7 @@ export function createOpenRouterSystemCacheWrapper(
   extraParams?: Record<string, unknown>,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const provider = readStringValue(model.provider);
     const modelId = readStringValue(model.id);
     // Keep OpenRouter-specific cache markers on verified OpenRouter routes
@@ -176,6 +177,7 @@ export function createOpenRouterSystemCacheWrapper(
       },
     );
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 function readCacheRetention(value: unknown): "long" | "none" | "short" | undefined {
@@ -197,7 +199,7 @@ export function createOpenRouterWrapper(
   extraParams?: Record<string, unknown>,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const providerHeaders = resolveOpenRouterResponseCacheHeaders(model, extraParams);
     const headers = resolveProviderRequestPolicyConfig({
       provider: readStringValue(model.provider) ?? "openrouter",
@@ -222,6 +224,7 @@ export function createOpenRouterWrapper(
       },
     );
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated Proxy provider-owned stream helper; do not use from third-party plugins. */
@@ -237,7 +240,7 @@ export function createKilocodeWrapper(
   thinkingLevel?: ThinkLevel,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const headers = resolveProviderRequestPolicyConfig({
       provider: readStringValue(model.provider) ?? "kilocode",
       api: readStringValue(model.api),
@@ -261,4 +264,5 @@ export function createKilocodeWrapper(
       },
     );
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }

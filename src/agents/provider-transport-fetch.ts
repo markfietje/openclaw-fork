@@ -777,7 +777,7 @@ export function resolveProviderTransportSsrFPolicy(params: {
 export function buildGuardedModelFetch(
   model: Model,
   timeoutMs?: number,
-  options?: { sanitizeSse?: boolean },
+  options?: { sanitizeSse?: boolean; onProviderDispatch?: () => void },
 ): typeof fetch {
   const requestConfig = resolveModelRequestPolicy(model);
   const dispatcherPolicy = buildProviderRequestDispatcherPolicy(requestConfig);
@@ -854,6 +854,7 @@ export function buildGuardedModelFetch(
       // replays unsafe request bodies across cross-origin redirects.
       allowCrossOriginUnsafeRedirectReplay: false,
       ...(policy ? { policy } : {}),
+      ...(options?.onProviderDispatch ? { onNetworkDispatch: options.onProviderDispatch } : {}),
     };
     let result: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
     const fetchStartedAt = Date.now();

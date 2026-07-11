@@ -3,6 +3,7 @@
 import path from "node:path";
 import { kindFromMime, mimeTypeFromFilePath } from "@openclaw/media-core/mime";
 import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
+import { hasActiveAgentUsageBudgetForScope } from "../agents/usage-budget.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { readLocalFileSafely } from "../infra/fs-safe.js";
 import { DEFAULT_MAX_BYTES } from "./defaults.constants.js";
@@ -53,6 +54,23 @@ const KIND_BY_CAPABILITY: Record<MediaUnderstandingCapability, MediaUnderstandin
   image: "image.description",
   video: "video.description",
 };
+
+const USAGE_BUDGET_MEDIA_UNDERSTANDING_DENIAL =
+  "Media understanding provider calls are unavailable while agent usage budgets are enabled because media provider calls are not yet individually budget-metered.";
+
+function assertMediaUnderstandingUsageBudgetAllowed(params: {
+  cfg: OpenClawConfig;
+  agentId?: string | null;
+}): void {
+  if (
+    hasActiveAgentUsageBudgetForScope({
+      config: params.cfg,
+      agentId: params.agentId,
+    })
+  ) {
+    throw new Error(USAGE_BUDGET_MEDIA_UNDERSTANDING_DENIAL);
+  }
+}
 
 function resolveDecisionFailureReason(
   decision: Awaited<ReturnType<typeof runCapability>>["decision"],
@@ -141,6 +159,7 @@ function hasStructuredImageInput(input: ExtractStructuredWithModelParams["input"
 export async function runMediaUnderstandingFile(
   params: RunMediaUnderstandingFileParams,
 ): Promise<RunMediaUnderstandingFileResult> {
+  assertMediaUnderstandingUsageBudgetAllowed(params);
   const requestPrompt = params.prompt?.trim();
   const requestTimeoutSeconds =
     typeof params.timeoutMs === "number" &&
@@ -271,6 +290,7 @@ export async function prepareImageDescriptionInput(params: PrepareImageDescripti
 
 /** Describes a prepared image with an explicit provider/model. */
 export async function describePreparedImageWithModel(params: DescribePreparedImageWithModelParams) {
+  assertMediaUnderstandingUsageBudgetAllowed(params);
   const timeoutMs = resolveMediaRuntimeTimeoutMs(params.timeoutMs);
   const providerRegistry = buildProviderRegistry(undefined, params.cfg);
   const provider = providerRegistry.get(normalizeMediaProviderId(params.provider));
@@ -292,6 +312,7 @@ export async function describePreparedImageWithModel(params: DescribePreparedIma
 
 /** Describes one image with an explicit provider/model, bypassing configured media model selection. */
 export async function describeImageFileWithModel(params: DescribeImageFileWithModelParams) {
+  assertMediaUnderstandingUsageBudgetAllowed(params);
   const image = await prepareImageDescriptionInput(params);
   return await describePreparedImageWithModel({
     ...params,
@@ -340,6 +361,7 @@ async function readImageDescriptionInput(params: {
 
 /** Runs provider-backed structured extraction for multimodal text/image input. */
 export async function extractStructuredWithModel(params: ExtractStructuredWithModelParams) {
+  assertMediaUnderstandingUsageBudgetAllowed(params);
   const timeoutMs = resolveMediaRuntimeTimeoutMs(params.timeoutMs);
   if (!hasStructuredImageInput(params.input)) {
     throw new Error("Structured extraction requires at least one image input.");

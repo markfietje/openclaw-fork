@@ -4,26 +4,35 @@ import type { Model } from "openclaw/plugin-sdk/llm";
 import { createAssistantMessageEventStream } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
 import {
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
+import { streamOpenAIResponses, streamSimpleOpenAIResponses } from "../register-builtins.js";
+import {
   createOpenAIAttributionHeadersWrapper,
   createOpenAICompletionsStrictMessageKeysWrapper,
   createOpenAICompletionsToolsCompatWrapper,
   createOpenAIFastModeWrapper,
+  createOpenAIServiceTierWrapper,
   createOpenAIThinkingLevelWrapper,
   createCodexNativeWebSearchWrapper,
 } from "./openai.js";
 
 function createPayloadCapture(opts?: { initialReasoning?: unknown }) {
   const payloads: Array<Record<string, unknown>> = [];
+  const serviceTiers: unknown[] = [];
   const baseStreamFn: StreamFn = (model, context, options) => {
     const payload: Record<string, unknown> = { model: model.id };
     if (opts?.initialReasoning !== undefined) {
       payload.reasoning = structuredClone(opts.initialReasoning);
     }
-    options?.onPayload?.(payload, model);
-    payloads.push(structuredClone(payload));
+    const result = options?.onPayload?.(payload, model);
+    payloads.push(structuredClone((result ?? payload) as Record<string, unknown>));
+    serviceTiers.push((options as { serviceTier?: unknown } | undefined)?.serviceTier);
     return createAssistantMessageEventStream();
   };
-  return { baseStreamFn, payloads };
+  return { baseStreamFn, payloads, serviceTiers };
 }
 
 const codexModel = {
@@ -39,9 +48,41 @@ const openaiModel = {
   baseUrl: "https://api.openai.com/v1",
 } as Model<"openai-responses">;
 
+describe("built-in OpenAI service-tier reservation", () => {
+  it("marks account-default OpenAI response streams unpriceable for reservations", () => {
+    const priorityDefaultModel = {
+      ...openaiModel,
+      id: "gpt-5.5",
+    } as Model<"openai-responses">;
+    const proxyModel = {
+      ...priorityDefaultModel,
+      baseUrl: "https://openai-proxy.example/v1",
+    } as Model<"openai-responses">;
+
+    for (const streamFn of [streamOpenAIResponses, streamSimpleOpenAIResponses]) {
+      expect(
+        resolveProviderDispatchReservationCostMultiplierForStreamFn({
+          streamFn: streamFn as unknown as StreamFn,
+          model: priorityDefaultModel,
+          context: { messages: [] },
+          options: {},
+        }),
+      ).toBeUndefined();
+      expect(
+        resolveProviderDispatchReservationCostMultiplierForStreamFn({
+          streamFn: streamFn as unknown as StreamFn,
+          model: proxyModel,
+          context: { messages: [] },
+          options: {},
+        }),
+      ).toBe(1);
+    }
+  });
+});
+
 describe("createOpenAIFastModeWrapper", () => {
   it("resolves dynamic fast mode for each stream call", () => {
-    const { baseStreamFn, payloads } = createPayloadCapture();
+    const { baseStreamFn, payloads, serviceTiers } = createPayloadCapture();
     let enabled = true;
     const wrapped = createOpenAIFastModeWrapper(baseStreamFn, () => enabled);
 
@@ -50,7 +91,85 @@ describe("createOpenAIFastModeWrapper", () => {
     void wrapped(openaiModel, { messages: [] }, {});
 
     expect(payloads[0]?.service_tier).toBe("priority");
+    expect(serviceTiers[0]).toBe("priority");
     expect(payloads[1]).not.toHaveProperty("service_tier");
+    expect(serviceTiers[1]).toBeUndefined();
+  });
+
+  it("records caller-provided service tiers for completed fast-mode pricing", () => {
+    const { baseStreamFn, payloads, serviceTiers } = createPayloadCapture();
+    const wrapped = createOpenAIFastModeWrapper(baseStreamFn, true);
+
+    void wrapped(
+      openaiModel,
+      { messages: [] },
+      {
+        onPayload(payload) {
+          (payload as Record<string, unknown>).service_tier = "default";
+        },
+      },
+    );
+
+    expect(payloads[0]?.service_tier).toBe("default");
+    expect(serviceTiers[0]).toBe("default");
+  });
+
+  it("marks unsupported priority models unpriceable for reservations", () => {
+    const { baseStreamFn } = createPayloadCapture();
+    const wrapped = createOpenAIFastModeWrapper(baseStreamFn, true);
+    const futureModel = {
+      api: "openai-responses",
+      provider: "openai",
+      id: "gpt-future",
+      baseUrl: "https://api.openai.com/v1",
+    } as Model<"openai-responses">;
+
+    expect(
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn: wrapped,
+        model: futureModel,
+        context: { messages: [] },
+        options: {},
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("createOpenAIServiceTierWrapper", () => {
+  it("uses requested service tiers only for reservation multipliers", () => {
+    const { baseStreamFn } = createPayloadCapture();
+    const observedBaseStreamFn = markProviderDispatchCostMultiplierResolverStreamFn(
+      baseStreamFn,
+      () => 1.75,
+    );
+    const wrapped = createOpenAIServiceTierWrapper(observedBaseStreamFn, "priority");
+    const params = {
+      streamFn: wrapped,
+      model: openaiModel,
+      context: { messages: [] },
+      options: {},
+    };
+
+    expect(resolveProviderDispatchCostMultiplierForStreamFn(params)).toBe(1.75);
+    expect(resolveProviderDispatchReservationCostMultiplierForStreamFn(params)).toBe(2);
+  });
+
+  it("records configured service tiers on replacement payloads", () => {
+    const { baseStreamFn, payloads, serviceTiers } = createPayloadCapture();
+    const wrapped = createOpenAIServiceTierWrapper(baseStreamFn, "flex");
+
+    void wrapped(
+      openaiModel,
+      { messages: [] },
+      {
+        onPayload() {
+          return { model: "replacement", service_tier: "default" };
+        },
+      },
+    );
+
+    expect(payloads[0]).toEqual({ model: "replacement", service_tier: "flex" });
+    expect(serviceTiers[0]).toBe("flex");
   });
 });
 

@@ -1,5 +1,5 @@
 // Agent Core module implements branch summarization behavior.
-import type { Model, StreamFn } from "../../../../llm-core/src/index.js";
+import type { Model, SimpleStreamOptions, StreamFn } from "../../../../llm-core/src/index.js";
 import {
   type AgentCoreCompletionRuntimeDeps,
   resolveAgentCoreCompleteFn,
@@ -12,6 +12,7 @@ import {
   createCompactionSummaryMessage,
   createCustomMessage,
 } from "../messages.js";
+import { uuidv7 } from "../session/uuid.js";
 import type { BranchSummaryResult, Session, SessionTreeEntry } from "../types.js";
 import { BranchSummaryError, err, ok, type Result } from "../types.js";
 import { estimateTokens, SUMMARIZATION_SYSTEM_PROMPT } from "./compaction.js";
@@ -290,22 +291,36 @@ export async function generateBranchSummary(
     },
   ];
   const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
-  const streamOptions = { apiKey, headers, signal, maxTokens: 2048 };
+  const streamOptions: SimpleStreamOptions = { apiKey, headers, signal, maxTokens: 2048 };
+  const usageBudgetOperationId = `branch-summary:${uuidv7()}`;
   const response = options.streamFn
-    ? await (await options.streamFn(model, context, streamOptions)).result()
+    ? await (
+        await options.streamFn(model, context, { ...streamOptions, usageBudgetOperationId })
+      ).result()
     : await resolveAgentCoreCompleteFn(options.runtime)(model, context, streamOptions);
   if (response.stopReason === "aborted") {
-    return err(
-      new BranchSummaryError("aborted", response.errorMessage || "Branch summary aborted"),
+    const error = new BranchSummaryError(
+      "aborted",
+      response.errorMessage || "Branch summary aborted",
+      undefined,
+      response.usage,
     );
+    if (response.usage) {
+      error.usageBudgetOperationId = usageBudgetOperationId;
+    }
+    return err(error);
   }
   if (response.stopReason === "error") {
-    return err(
-      new BranchSummaryError(
-        "summarization_failed",
-        `Branch summary failed: ${response.errorMessage || "Unknown error"}`,
-      ),
+    const error = new BranchSummaryError(
+      "summarization_failed",
+      `Branch summary failed: ${response.errorMessage || "Unknown error"}`,
+      undefined,
+      response.usage,
     );
+    if (response.usage) {
+      error.usageBudgetOperationId = usageBudgetOperationId;
+    }
+    return err(error);
   }
 
   let summary = response.content
@@ -320,5 +335,7 @@ export async function generateBranchSummary(
     summary: summary || "No summary generated",
     readFiles,
     modifiedFiles,
+    usage: response.usage,
+    ...(response.usage ? { usageBudgetOperationId } : {}),
   });
 }

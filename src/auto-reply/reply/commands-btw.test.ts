@@ -20,6 +20,8 @@ vi.mock("../../agents/btw.js", () => ({
 }));
 
 const { handleBtwCommand } = await import("./commands-btw.js");
+const { AgentUsageBudgetError, AGENT_USAGE_BUDGET_VISIBLE_DENIAL } =
+  await import("../../agents/usage-budget.js");
 
 function buildParams(commandBody: string) {
   const cfg = {
@@ -115,6 +117,44 @@ describe("handleBtwCommand", () => {
     await handleBtwCommand(params, true);
 
     expect(typing.startTypingLoop).toHaveBeenCalledTimes(1);
+  });
+
+  it("redacts usage-budget details from channel-visible failures", async () => {
+    const params = buildParams("/btw what changed?");
+    params.agentDir = "/tmp/agent";
+    params.sessionEntry = {
+      sessionId: "session-1",
+      updatedAt: Date.now(),
+    };
+    runBtwSideQuestionMock.mockRejectedValue(
+      new AgentUsageBudgetError(
+        "Agent main exceeded daily token budget: 123 of 100 tokens used; resets at 2026-07-16T00:00:00.000Z.",
+        {
+          agentId: "main",
+          provider: "budget-test",
+          model: "priced",
+          reason: "exceeded",
+          window: "daily",
+          limitKind: "tokens",
+          used: 123,
+          limit: 100,
+          resetAt: "2026-07-16T00:00:00.000Z",
+        },
+      ),
+    );
+
+    const result = await handleBtwCommand(params, true);
+
+    expect(result).toEqual({
+      shouldContinue: false,
+      reply: {
+        text: `⚠️ ${AGENT_USAGE_BUDGET_VISIBLE_DENIAL}`,
+        btw: { question: "what changed?" },
+        isError: true,
+      },
+    });
+    expect(result?.reply?.text).not.toContain("123");
+    expect(result?.reply?.text).not.toContain("2026-07-16");
   });
 
   it("delegates to the side-question runner", async () => {

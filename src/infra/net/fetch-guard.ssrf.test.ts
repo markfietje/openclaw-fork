@@ -949,6 +949,27 @@ describe("fetchWithSsrFGuard hardening", () => {
     await result.release();
   });
 
+  it("reports one network dispatch for a redirected logical request", async () => {
+    const lookupFn = createPublicLookup();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(redirectResponse("https://cdn.example.com/asset"))
+      .mockResolvedValueOnce(okResponse());
+    const onNetworkDispatch = vi.fn();
+
+    const result = await fetchWithSsrFGuard({
+      url: "https://api.example.com/start",
+      fetchImpl,
+      lookupFn,
+      onNetworkDispatch,
+    });
+
+    expect(result.response.status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(onNetworkDispatch).toHaveBeenCalledOnce();
+    await result.release();
+  });
+
   it("does not restore authorization across HTTPS-to-HTTP redirects", async () => {
     const lookupFn = createPublicLookup();
     const fetchImpl = vi

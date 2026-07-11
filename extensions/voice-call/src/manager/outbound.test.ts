@@ -327,6 +327,7 @@ describe("voice-call outbound helpers", () => {
       callId: "call-1",
       providerCallId: "provider-1",
       text: "hello",
+      agentId: "main",
       voice: "alloy",
     });
     expect(addTranscriptEntryMock).toHaveBeenCalledWith(call, "bot", "hello");
@@ -367,6 +368,7 @@ describe("voice-call outbound helpers", () => {
       callId: "call-1",
       providerCallId: "provider-1",
       text: "hello",
+      agentId: "main",
       voice: "Telnyx.Qwen3TTS.12345678-1234-1234-1234-123456789abc",
     });
   });
@@ -421,6 +423,7 @@ describe("voice-call outbound helpers", () => {
         tts: { provider: "openai", providers: { openai: { voice: "coral" } } },
         numbers: {
           "+15550002222": {
+            agentId: "support-agent",
             tts: {
               providers: {
                 openai: { voice: "alloy" },
@@ -438,6 +441,7 @@ describe("voice-call outbound helpers", () => {
       callId: "call-1",
       providerCallId: "provider-1",
       text: "hello",
+      agentId: "support-agent",
       voice: "alloy",
     });
   });
@@ -472,6 +476,7 @@ describe("voice-call outbound helpers", () => {
       callId: "call-1",
       providerCallId: "provider-1",
       text: "hello",
+      agentId: "main",
       voice: "coral",
     });
   });

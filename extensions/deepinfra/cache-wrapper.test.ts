@@ -1,4 +1,8 @@
 // Deepinfra tests cover cache wrapper plugin behavior.
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { describe, expect, it } from "vitest";
 import { createDeepInfraAnthropicCacheWrapper } from "./cache-wrapper.js";
 
@@ -34,6 +38,16 @@ function capturePayload(params: { modelId: string; initialPayload: Record<string
 }
 
 describe("createDeepInfraAnthropicCacheWrapper", () => {
+  it("preserves provider dispatch observability", () => {
+    const baseStreamFn = markProviderDispatchObservableStreamFn(
+      (() => ({}) as ReturnType<StreamFn>) as StreamFn,
+    );
+
+    const wrapped = createDeepInfraAnthropicCacheWrapper(baseStreamFn);
+
+    expect(isProviderDispatchObservableStreamFn(wrapped)).toBe(true);
+  });
+
   it("injects ephemeral cache_control markers on the system message for anthropic/* models", () => {
     const { captured, baseCalls } = capturePayload({
       modelId: "anthropic/claude-sonnet-4-6",

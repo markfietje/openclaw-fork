@@ -29,6 +29,7 @@ import type {
   SimpleStreamOptions,
   TextContent,
   ToolResultMessage,
+  Usage,
 } from "openclaw/plugin-sdk/llm";
 import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
@@ -1120,6 +1121,8 @@ export interface SessionBeforeForkResult {
 export interface SessionBeforeCompactResult {
   cancel?: boolean;
   compaction?: CompactionResult;
+  usage?: Usage;
+  usageBudgetOperationId?: string;
 }
 
 export interface SessionBeforeTreeResult {

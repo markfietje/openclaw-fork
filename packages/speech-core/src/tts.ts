@@ -1761,12 +1761,14 @@ export async function textToSpeechTelephony(params: {
   prefsPath?: string;
   overrides?: TtsDirectiveOverrides;
   timeoutMs?: number;
+  agentId?: string;
 }): Promise<TtsTelephonyResult> {
   const setup = resolveTtsRequestSetup({
     text: params.text,
     cfg: params.cfg,
     prefsPath: params.prefsPath,
     providerOverride: params.overrides?.provider,
+    agentId: params.agentId,
   });
   if ("error" in setup) {
     return { success: false, error: setup.error };

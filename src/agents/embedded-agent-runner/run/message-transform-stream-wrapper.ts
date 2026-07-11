@@ -1,7 +1,8 @@
+import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 /**
  * Wraps stream functions with pre-call message transforms.
  */
-import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import type { AgentMessage } from "../../runtime/index.js";
 
 /**
@@ -14,7 +15,7 @@ export function wrapStreamFnWithMessageTransform(
   streamFn: StreamFn,
   transform: MessageTransform,
 ): StreamFn {
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const messages = (context as unknown as { messages?: unknown })?.messages;
     if (!Array.isArray(messages)) {
       return streamFn(model, context, options);
@@ -36,4 +37,5 @@ export function wrapStreamFnWithMessageTransform(
       options,
     );
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, streamFn);
 }

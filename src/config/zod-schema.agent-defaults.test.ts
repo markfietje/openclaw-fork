@@ -85,6 +85,43 @@ describe("agent defaults schema", () => {
     );
   });
 
+  it("accepts agent usage budgets and rejects nonpositive limits", () => {
+    expectSchemaSuccess(
+      AgentDefaultsSchema.safeParse({
+        usageBudget: {
+          daily: { tokens: 1000, usd: 1.5 },
+          monthly: { tokens: 30000, usd: 25 },
+        },
+      }),
+    );
+    expectSchemaSuccess(
+      AgentEntrySchema.safeParse({
+        id: "metered",
+        usageBudget: {
+          daily: { tokens: 500 },
+          monthly: { usd: 10 },
+        },
+      }),
+    );
+    expectSchemaFailurePath(
+      AgentDefaultsSchema.safeParse({
+        usageBudget: {
+          daily: { tokens: 0 },
+        },
+      }),
+      "usageBudget.daily.tokens",
+    );
+    expectSchemaFailurePath(
+      AgentEntrySchema.safeParse({
+        id: "metered",
+        usageBudget: {
+          monthly: { usd: 0 },
+        },
+      }),
+      "usageBudget.monthly.usd",
+    );
+  });
+
   it("accepts imageGenerationModel timeoutMs", () => {
     const defaults = AgentDefaultsSchema.parse({
       imageGenerationModel: {

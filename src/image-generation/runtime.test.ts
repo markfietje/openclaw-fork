@@ -1,5 +1,5 @@
 /** Tests image-generation runtime fallback, overrides, and error reporting. */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   generateImage,
@@ -98,6 +98,40 @@ describe("image-generation runtime", () => {
       },
     ]);
     expect(result.ignoredOverrides).toStrictEqual([]);
+  });
+
+  it("rejects raw runtime calls while the target agent has an active usage budget", async () => {
+    const generate = vi.fn();
+    providers = [
+      {
+        id: "image-plugin",
+        capabilities: { generate: {}, edit: { enabled: false } },
+        generateImage: generate,
+      },
+    ];
+
+    await expect(
+      runGenerateImage({
+        cfg: {
+          agents: {
+            defaults: {
+              imageGenerationModel: { primary: "image-plugin/img-v1" },
+              usageBudget: { daily: { usd: 1 } },
+            },
+          },
+        } as OpenClawConfig,
+        agentId: "main",
+        prompt: "draw a cat",
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        harnessId: "image-generation-runtime",
+        reason: "unsupported_harness",
+      },
+    });
+    expect(generate).not.toHaveBeenCalled();
   });
 
   it("does not list providers when explicit config disables auto provider fallback", async () => {

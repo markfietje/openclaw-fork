@@ -4,7 +4,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
+import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { markProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { resolveSessionTranscriptPathInDir } from "../../../config/sessions/paths.js";
 import {
   appendSessionTranscriptEvent,
@@ -13,9 +15,14 @@ import {
 import {
   runWithOwnedSessionTranscriptWriteLock,
   runWithOwnedSessionTranscriptWritePublication,
+  type OwnedSessionTranscriptWriteOptions,
   withOwnedSessionTranscriptWrites,
 } from "../../../config/sessions/transcript-write-context.js";
 import { appendExactAssistantMessageToSessionTranscript } from "../../../config/sessions/transcript.js";
+import {
+  onInternalDiagnosticEvent,
+  resetDiagnosticEventsForTest,
+} from "../../../infra/diagnostic-events.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import {
   SessionWriteLockStaleError,
@@ -26,6 +33,7 @@ import {
   resetSessionWriteLockStateForTest,
 } from "../../session-write-lock.js";
 import { SessionManager } from "../../sessions/session-manager.js";
+import { wrapStreamFnWithDiagnosticModelCallEvents } from "./attempt.model-diagnostic-events.js";
 import {
   acquireEmbeddedAttemptSessionFileOwner,
   createEmbeddedAttemptSessionLockController,
@@ -45,6 +53,7 @@ const tempDirs: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  resetDiagnosticEventsForTest();
   resetEmbeddedAttemptSessionFileOwnersForTest();
   resetSessionWriteLockStateForTest();
   for (const dir of tempDirs.splice(0)) {
@@ -4219,6 +4228,132 @@ describe("embedded attempt session lock lifecycle", () => {
     expect(reacquireAfterPrompt).toHaveBeenCalledTimes(1);
     expect(streamFn).toHaveBeenCalledWith("model", "context");
     expect(events).toEqual(["drain", "release", "stream", "drain", "reacquire"]);
+  });
+
+  it("reacquires the prompt lock after owned transcript prompt submission", async () => {
+    const events: string[] = [];
+    const streamResult = { ok: true };
+    const streamFn = vi.fn(async (..._args: unknown[]) => {
+      events.push("stream");
+      await runWithOwnedSessionTranscriptWritePublication(
+        { sessionFile: "session.jsonl", sessionKey: "session-key" },
+        async () => {
+          events.push("published-write");
+        },
+      );
+      return streamResult;
+    });
+    const waitForSessionEvents = vi.fn(async () => {
+      events.push("drain");
+    });
+    const releaseForPrompt = vi.fn(async () => {
+      events.push("release");
+    });
+    const reacquireAfterPrompt = vi.fn(async () => {
+      events.push("reacquire");
+    });
+    const withSessionWriteLock = vi.fn(
+      async <T>(
+        run: () => Promise<T> | T,
+        _options?: OwnedSessionTranscriptWriteOptions<T>,
+      ): Promise<T> => {
+        events.push("owned-write");
+        return await run();
+      },
+    ) as <T>(
+      run: () => Promise<T> | T,
+      options?: OwnedSessionTranscriptWriteOptions<T>,
+    ) => Promise<T>;
+    const session = { agent: { streamFn } };
+
+    installPromptSubmissionLockRelease({
+      session,
+      waitForSessionEvents,
+      releaseForPrompt,
+      reacquireAfterPrompt,
+      sessionFile: "session.jsonl",
+      sessionKey: "session-key",
+      withSessionWriteLock,
+    });
+
+    await expect(session.agent.streamFn("model", "context")).resolves.toBe(streamResult);
+
+    expect(waitForSessionEvents).toHaveBeenCalledWith(session);
+    expect(releaseForPrompt).toHaveBeenCalledTimes(1);
+    expect(withSessionWriteLock).toHaveBeenCalledTimes(1);
+    expect(reacquireAfterPrompt).toHaveBeenCalledTimes(1);
+    expect(streamFn).toHaveBeenCalledWith("model", "context");
+    expect(events).toEqual([
+      "drain",
+      "release",
+      "stream",
+      "owned-write",
+      "published-write",
+      "drain",
+      "reacquire",
+    ]);
+  });
+
+  it("closes returned observed streams when prompt lock reacquire fails", async () => {
+    resetDiagnosticEventsForTest();
+    const events: string[] = [];
+    const diagnosticEvents: string[] = [];
+    const stopDiagnostics = onInternalDiagnosticEvent((event) => {
+      if (event.type.startsWith("model.call.")) {
+        diagnosticEvents.push(event.type);
+      }
+    });
+    try {
+      async function* stream() {
+        yield { type: "text_delta", delta: "unused" };
+      }
+      const providerStreamFn = vi.fn<StreamFn>(() => stream() as never);
+      markProviderDispatchObservableStreamFn(providerStreamFn);
+      const streamFn = wrapStreamFnWithDiagnosticModelCallEvents(providerStreamFn, {
+        runId: "run-prompt-reacquire-failure",
+        sessionId: "session-id",
+        provider: "openai",
+        model: "gpt-5.4",
+        api: "openai-responses",
+        transport: "http",
+        trace: {
+          traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+          spanId: "00f067aa0ba902b7",
+        },
+        nextCallId: () => "call-prompt-reacquire-failure",
+      });
+      const waitForSessionEvents = vi.fn(async () => {
+        events.push("drain");
+      });
+      const releaseForPrompt = vi.fn(async () => {
+        events.push("release");
+      });
+      const reacquireAfterPrompt = vi.fn(async () => {
+        events.push("reacquire");
+        throw new Error("reacquire failed");
+      });
+      const session = { agent: { streamFn } };
+
+      installPromptSubmissionLockRelease({
+        session,
+        waitForSessionEvents,
+        releaseForPrompt,
+        reacquireAfterPrompt,
+      });
+
+      await expect(session.agent.streamFn({} as never, {} as never, {} as never)).rejects.toThrow(
+        "reacquire failed",
+      );
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+
+      expect(providerStreamFn).toHaveBeenCalledTimes(1);
+      expect(events).toEqual(["drain", "release", "drain", "reacquire"]);
+      expect(diagnosticEvents).toEqual(["model.call.started", "model.call.completed"]);
+    } finally {
+      stopDiagnostics();
+    }
   });
 
   it("rewraps provider stream submission after the stream function is rebuilt", async () => {

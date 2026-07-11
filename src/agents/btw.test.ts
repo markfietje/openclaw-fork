@@ -30,6 +30,15 @@ const prepareCliRunContextMock = vi.fn();
 const executePreparedCliRunMock = vi.fn();
 const diagDebugMock = vi.fn();
 const ensureSelectedAgentHarnessPluginMock = vi.fn();
+const appendSessionTranscriptEventMock = vi.fn();
+const acquireAgentUsageBudgetAdmissionMock = vi.fn();
+const recordAgentUsageBudgetAdmissionResultMock = vi.fn();
+const resolveAgentUsageBudgetConfigMock = vi.fn();
+const resolveUsageBudgetCostMultiplierUsageMock = vi.fn();
+const isModelProviderDispatchObservableStreamFnMock = vi.fn();
+const resolveProviderDispatchModelForStreamFnMock = vi.fn();
+const resolveProviderDispatchCostMultiplierForStreamFnMock = vi.fn();
+const resolveProviderDispatchReservationCostMultiplierForStreamFnMock = vi.fn();
 
 vi.mock("../llm/stream.js", async () => {
   const original = await vi.importActual<typeof import("../llm/stream.js")>("../llm/stream.js");
@@ -154,6 +163,10 @@ vi.mock("../plugins/provider-runtime.js", () => ({
   prepareProviderRuntimeAuth: (...args: unknown[]) => prepareProviderRuntimeAuthMock(...args),
 }));
 
+vi.mock("../config/sessions/transcript-append.js", () => ({
+  appendSessionTranscriptEvent: (...args: unknown[]) => appendSessionTranscriptEventMock(...args),
+}));
+
 vi.mock("./provider-stream.js", () => ({
   registerProviderStreamForModel: (...args: unknown[]) =>
     registerProviderStreamForModelMock(...args),
@@ -161,6 +174,17 @@ vi.mock("./provider-stream.js", () => ({
 
 vi.mock("./embedded-agent-runner/stream-resolution.js", () => ({
   resolveEmbeddedAgentStreamFn: (...args: unknown[]) => resolveEmbeddedAgentStreamFnMock(...args),
+}));
+
+vi.mock("./provider-dispatch-observable-stream.js", () => ({
+  isModelProviderDispatchObservableStreamFn: (...args: unknown[]) =>
+    isModelProviderDispatchObservableStreamFnMock(...args),
+  resolveProviderDispatchModelForStreamFn: (...args: unknown[]) =>
+    resolveProviderDispatchModelForStreamFnMock(...args),
+  resolveProviderDispatchCostMultiplierForStreamFn: (...args: unknown[]) =>
+    resolveProviderDispatchCostMultiplierForStreamFnMock(...args),
+  resolveProviderDispatchReservationCostMultiplierForStreamFn: (...args: unknown[]) =>
+    resolveProviderDispatchReservationCostMultiplierForStreamFnMock(...args),
 }));
 
 vi.mock("./auth-profiles/session-override.js", () => ({
@@ -173,6 +197,21 @@ vi.mock("../logging/diagnostic.js", () => ({
     debug: (...args: unknown[]) => diagDebugMock(...args),
   },
 }));
+
+vi.mock("./usage-budget.js", async () => {
+  const actual = await vi.importActual<typeof import("./usage-budget.js")>("./usage-budget.js");
+  return {
+    ...actual,
+    acquireAgentUsageBudgetAdmission: (...args: unknown[]) =>
+      acquireAgentUsageBudgetAdmissionMock(...args),
+    recordAgentUsageBudgetAdmissionResult: (...args: unknown[]) =>
+      recordAgentUsageBudgetAdmissionResultMock(...args),
+    resolveAgentUsageBudgetConfig: (...args: unknown[]) =>
+      resolveAgentUsageBudgetConfigMock(...args),
+    resolveUsageBudgetCostMultiplierUsage: (...args: unknown[]) =>
+      resolveUsageBudgetCostMultiplierUsageMock(...args),
+  };
+});
 
 const { runBtwSideQuestion } = await import("./btw.js");
 const { clearAgentHarnesses, registerAgentHarness } = await import("./harness/registry.js");
@@ -247,6 +286,10 @@ function createThinkingOnlyDoneEvent(thinking: string) {
 
 function mockDoneAnswer(text: string) {
   streamSimpleMock.mockReturnValue(makeAsyncEvents([createDoneEvent(text)]));
+}
+
+function createBudgetAdmissionRelease(timestampMs = 12345) {
+  return Object.assign(vi.fn(), { timestampMs });
 }
 
 function runSideQuestion(overrides: Partial<RunBtwSideQuestionParams> = {}) {
@@ -462,6 +505,15 @@ describe("runBtwSideQuestion", () => {
     executePreparedCliRunMock.mockReset();
     diagDebugMock.mockReset();
     ensureSelectedAgentHarnessPluginMock.mockReset();
+    appendSessionTranscriptEventMock.mockReset();
+    acquireAgentUsageBudgetAdmissionMock.mockReset();
+    recordAgentUsageBudgetAdmissionResultMock.mockReset();
+    resolveAgentUsageBudgetConfigMock.mockReset();
+    resolveUsageBudgetCostMultiplierUsageMock.mockReset();
+    isModelProviderDispatchObservableStreamFnMock.mockReset();
+    resolveProviderDispatchModelForStreamFnMock.mockReset();
+    resolveProviderDispatchCostMultiplierForStreamFnMock.mockReset();
+    resolveProviderDispatchReservationCostMultiplierForStreamFnMock.mockReset();
     clearAgentHarnesses();
 
     readFileMock.mockResolvedValue("mock transcript");
@@ -504,6 +556,20 @@ describe("runBtwSideQuestion", () => {
       (params: { currentStreamFn: unknown; providerStreamFn?: unknown }) => {
         return params.providerStreamFn ?? params.currentStreamFn;
       },
+    );
+    appendSessionTranscriptEventMock.mockResolvedValue(undefined);
+    acquireAgentUsageBudgetAdmissionMock.mockResolvedValue(undefined);
+    resolveAgentUsageBudgetConfigMock.mockReturnValue(undefined);
+    resolveUsageBudgetCostMultiplierUsageMock.mockImplementation(
+      (_params: { usage?: unknown }) => _params.usage,
+    );
+    isModelProviderDispatchObservableStreamFnMock.mockReturnValue(true);
+    resolveProviderDispatchModelForStreamFnMock.mockImplementation(
+      (params: { model: unknown }) => params.model,
+    );
+    resolveProviderDispatchCostMultiplierForStreamFnMock.mockReturnValue(1);
+    resolveProviderDispatchReservationCostMultiplierForStreamFnMock.mockImplementation(
+      (...args: unknown[]) => resolveProviderDispatchCostMultiplierForStreamFnMock(...args),
     );
   });
 
@@ -1495,6 +1561,225 @@ describe("runBtwSideQuestion", () => {
     streamSimpleMock.mockReturnValue(makeAsyncEvents([]));
 
     await expect(runSideQuestion()).rejects.toThrow("No active session context.");
+  });
+
+  it("keeps a successful budgeted answer when usage transcript mirroring fails", async () => {
+    const releaseAdmission = createBudgetAdmissionRelease();
+    resolveAgentUsageBudgetConfigMock.mockReturnValue({ daily: { tokens: 100 } });
+    acquireAgentUsageBudgetAdmissionMock.mockResolvedValue(releaseAdmission);
+    appendSessionTranscriptEventMock.mockRejectedValueOnce(new Error("transcript locked"));
+    mockDoneAnswer(MATH_ANSWER);
+
+    const result = await runMathSideQuestion({
+      cfg: {
+        agents: {
+          defaults: {
+            usageBudget: { daily: { tokens: 100 } },
+          },
+        },
+      } as never,
+      sessionKey: DEFAULT_SESSION_KEY,
+      storePath: DEFAULT_STORE_PATH,
+    });
+
+    expect(result).toEqual({ text: MATH_ANSWER });
+    expect(recordAgentUsageBudgetAdmissionResultMock).toHaveBeenCalledTimes(1);
+    expect(appendSessionTranscriptEventMock).toHaveBeenCalledTimes(1);
+    expect(releaseAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits and records budgeted BTW usage against the resolved dispatch identity", async () => {
+    const releaseAdmission = createBudgetAdmissionRelease(12345);
+    const dispatchModel = {
+      provider: "openai",
+      id: "gpt-5.5-priority-dispatch",
+      api: "openai-responses",
+      maxTokens: 4096,
+    };
+    const adjustedUsage = {
+      ...DEFAULT_USAGE,
+      cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+    };
+    resolveAgentUsageBudgetConfigMock.mockReturnValue({ daily: { usd: 1 } });
+    resolveProviderDispatchModelForStreamFnMock.mockReturnValue(dispatchModel);
+    resolveProviderDispatchCostMultiplierForStreamFnMock.mockReturnValue(2);
+    resolveProviderDispatchReservationCostMultiplierForStreamFnMock.mockReturnValue(2.5);
+    resolveUsageBudgetCostMultiplierUsageMock.mockReturnValue(adjustedUsage);
+    acquireAgentUsageBudgetAdmissionMock.mockResolvedValue(releaseAdmission);
+    mockDoneAnswer(MATH_ANSWER);
+
+    const result = await runMathSideQuestion({
+      cfg: {
+        agents: {
+          defaults: {
+            usageBudget: { daily: { usd: 1 } },
+          },
+        },
+      } as never,
+      sessionKey: DEFAULT_SESSION_KEY,
+      storePath: DEFAULT_STORE_PATH,
+    });
+
+    expect(result).toEqual({ text: MATH_ANSWER });
+    expect(acquireAgentUsageBudgetAdmissionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        model: "gpt-5.5-priority-dispatch",
+        costMultiplier: 2.5,
+      }),
+    );
+    expect(resolveUsageBudgetCostMultiplierUsageMock).toHaveBeenCalledWith({
+      config: expect.any(Object),
+      provider: "openai",
+      model: "gpt-5.5-priority-dispatch",
+      usage: DEFAULT_USAGE,
+      costMultiplier: 2,
+    });
+    expect(recordAgentUsageBudgetAdmissionResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        model: "gpt-5.5-priority-dispatch",
+        usage: adjustedUsage,
+        timestampMs: 12345,
+      }),
+    );
+    expect(appendSessionTranscriptEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: expect.objectContaining({
+          timestamp: new Date(12345).toISOString(),
+          data: expect.objectContaining({
+            message: expect.objectContaining({
+              provider: "openai",
+              model: "gpt-5.5-priority-dispatch",
+              usage: adjustedUsage,
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("disables provider retries and blocks repeated budgeted BTW dispatches", async () => {
+    const releaseAdmission = createBudgetAdmissionRelease();
+    resolveAgentUsageBudgetConfigMock.mockReturnValue({ daily: { tokens: 100 } });
+    acquireAgentUsageBudgetAdmissionMock.mockResolvedValue(releaseAdmission);
+    streamSimpleMock.mockImplementation(
+      (_model, _context, options?: { maxRetries?: number; onProviderDispatch?: () => void }) => {
+        expect(options?.maxRetries).toBe(0);
+        expect(options?.onProviderDispatch).toEqual(expect.any(Function));
+        options?.onProviderDispatch?.();
+        options?.onProviderDispatch?.();
+        return makeAsyncEvents([createDoneEvent(MATH_ANSWER)]);
+      },
+    );
+
+    await expect(
+      runMathSideQuestion({
+        cfg: {
+          agents: {
+            defaults: {
+              usageBudget: { daily: { tokens: 100 } },
+            },
+          },
+        } as never,
+        sessionKey: DEFAULT_SESSION_KEY,
+        storePath: DEFAULT_STORE_PATH,
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        harnessId: "provider-retry",
+        reason: "unsupported_harness",
+      },
+    });
+
+    expect(recordAgentUsageBudgetAdmissionResultMock).toHaveBeenCalledTimes(1);
+    expect(recordAgentUsageBudgetAdmissionResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        usage: undefined,
+      }),
+    );
+    expect(appendSessionTranscriptEventMock).toHaveBeenCalledTimes(1);
+    expect(releaseAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not persist unknown budget usage for pre-dispatch BTW failures", async () => {
+    const releaseAdmission = createBudgetAdmissionRelease();
+    const setupError = Object.assign(new Error("provider setup failed"), {
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    });
+    resolveAgentUsageBudgetConfigMock.mockReturnValue({ daily: { tokens: 100 } });
+    acquireAgentUsageBudgetAdmissionMock.mockResolvedValue(releaseAdmission);
+    streamSimpleMock.mockImplementation(
+      (_model, _context, options?: { onProviderDispatch?: () => void }) => {
+        expect(options?.onProviderDispatch).toEqual(expect.any(Function));
+        throw setupError;
+      },
+    );
+
+    await expect(
+      runMathSideQuestion({
+        cfg: {
+          agents: {
+            defaults: {
+              usageBudget: { daily: { tokens: 100 } },
+            },
+          },
+        } as never,
+        sessionKey: DEFAULT_SESSION_KEY,
+        storePath: DEFAULT_STORE_PATH,
+      }),
+    ).rejects.toBe(setupError);
+
+    expect(recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+    expect(appendSessionTranscriptEventMock).not.toHaveBeenCalled();
+    expect(releaseAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects budgeted BTW calls before unobservable stream dispatch", async () => {
+    resolveAgentUsageBudgetConfigMock.mockReturnValue({ daily: { tokens: 100 } });
+    isModelProviderDispatchObservableStreamFnMock.mockReturnValue(false);
+    mockDoneAnswer(MATH_ANSWER);
+
+    await expect(
+      runMathSideQuestion({
+        cfg: {
+          agents: {
+            defaults: {
+              usageBudget: { daily: { tokens: 100 } },
+            },
+          },
+        } as never,
+        sessionKey: DEFAULT_SESSION_KEY,
+        storePath: DEFAULT_STORE_PATH,
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        reason: "unsupported_stream",
+      },
+    });
+
+    expect(streamSimpleMock).not.toHaveBeenCalled();
+    expect(acquireAgentUsageBudgetAdmissionMock).not.toHaveBeenCalled();
+    expect(recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+    expect(appendSessionTranscriptEventMock).not.toHaveBeenCalled();
   });
 
   it("uses active-run snapshot messages for BTW context while the main run is in flight", async () => {

@@ -18,6 +18,7 @@ import {
   supportsClaudeNativeMaxEffort,
   supportsClaudeNativeXhighEffort,
 } from "openclaw/plugin-sdk/provider-model-shared";
+import { markProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 import { resolveAnthropicVertexClientRegion, resolveAnthropicVertexProjectId } from "./region.js";
 
 type AnthropicVertexTransportOptions = ProviderStreamOptions & {
@@ -134,7 +135,7 @@ export function createAnthropicVertexStreamFn(
     ...(projectId ? { projectId } : {}),
   });
 
-  return (model, context, options) => {
+  const streamFn: StreamFn = (model, context, options) => {
     // Simple completions use a synthetic registry API to select this plugin.
     // The shared Anthropic transport must receive its canonical API or it recurses.
     const transportModel = (
@@ -173,6 +174,9 @@ export function createAnthropicVertexStreamFn(
       // cache boundary and budgets all cache_control markers; re-applying the
       // payload policy here marked the uncached suffix and breached the 4-marker cap.
       onPayload: options?.onPayload,
+      onProviderDispatch: options?.onProviderDispatch,
+      onResponse: options?.onResponse,
+      maxRetries: options?.maxRetries,
       maxRetryDelayMs: options?.maxRetryDelayMs,
       metadata: options?.metadata,
     };
@@ -202,6 +206,7 @@ export function createAnthropicVertexStreamFn(
 
     return deps.streamAnthropic(transportModel, context, opts);
   };
+  return markProviderDispatchObservableStreamFn(streamFn);
 }
 
 function resolveAnthropicVertexSdkBaseUrl(baseUrl?: string): string | undefined {

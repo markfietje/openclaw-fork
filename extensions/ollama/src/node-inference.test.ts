@@ -327,4 +327,56 @@ describe("node_inference agent tool", () => {
       response: "done",
     });
   });
+
+  it("passes agent usage-budget scope to node runtime invocations", async () => {
+    const invoke = vi.fn(async () => ({
+      payload: { provider: "ollama", model: "chat:small", response: "done" },
+    }));
+    const api = createTestPluginApi({
+      runtime: {
+        nodes: {
+          list: async () => ({
+            nodes: [
+              {
+                nodeId: "node-1",
+                connected: true,
+                commands: [OLLAMA_MODELS_COMMAND, OLLAMA_CHAT_COMMAND],
+              },
+            ],
+          }),
+          invoke,
+        },
+      } as never,
+    });
+    const cfg = {
+      agents: {
+        defaults: { usageBudget: { daily: { tokens: 1_000 } } },
+        list: [{ id: "free", usageBudget: { enabled: false } }],
+      },
+    };
+
+    await createOllamaNodeInferenceTool(api, { agentId: "free", config: cfg } as never).execute(
+      "call-3",
+      {
+        action: "run",
+        model: "chat:small",
+        prompt: "answer fast",
+      },
+    );
+
+    expect(invoke).toHaveBeenCalledWith({
+      nodeId: "node-1",
+      command: OLLAMA_CHAT_COMMAND,
+      params: {
+        model: "chat:small",
+        prompt: "answer fast",
+        maxTokens: 512,
+        timeoutMs: 120_000,
+      },
+      timeoutMs: 130_000,
+      scopes: ["operator.write"],
+      cfg,
+      agentId: "free",
+    });
+  });
 });

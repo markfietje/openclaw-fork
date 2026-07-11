@@ -1,5 +1,6 @@
 // Runs music generation requests through provider runtimes and fallbacks.
 import type { FallbackAttempt } from "../agents/model-fallback.types.js";
+import { assertNoActiveAgentUsageBudgetForUnsupportedHarness } from "../agents/usage-budget.js";
 import { resolveAgentModelTimeoutMsValue } from "../config/model-input.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -49,6 +50,13 @@ export async function generateMusic(
   params: GenerateMusicParams,
   deps: MusicGenerationRuntimeDeps = {},
 ): Promise<GenerateMusicRuntimeResult> {
+  assertNoActiveAgentUsageBudgetForUnsupportedHarness({
+    config: params.cfg,
+    agentId: params.agentId,
+    provider: "music-generation",
+    model: params.modelOverride ?? "configured",
+    harnessId: "music-generation-runtime",
+  });
   const getProvider = deps.getProvider ?? getMusicGenerationProvider;
   const listProviders = deps.listProviders ?? listMusicGenerationProviders;
   const logger = deps.log ?? log;

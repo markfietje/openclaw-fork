@@ -5,9 +5,11 @@ import type {
   Context,
   Model,
   SimpleStreamOptions,
+  StreamFn,
   StreamFunction,
   StreamOptions,
 } from "../../llm-core/src/index.js";
+import { preserveProviderDispatchObservableStreamFn } from "../../llm-core/src/provider-dispatch-observable-stream.js";
 
 /** Runtime stream adapter signature stored in the API provider registry. */
 export type ApiStreamFunction = (
@@ -53,24 +55,26 @@ function wrapStream<TApi extends Api, TOptions extends StreamOptions>(
   api: TApi,
   stream: StreamFunction<TApi, TOptions>,
 ): ApiStreamFunction {
-  return (model, context, options) => {
+  const wrapped: ApiStreamFunction = (model, context, options) => {
     if (model.api !== api) {
       throw new Error(`Mismatched api: ${model.api} expected ${api}`);
     }
     return stream(model as Model<TApi>, context, options as TOptions);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, stream as unknown as StreamFn);
 }
 
 function wrapStreamSimple<TApi extends Api>(
   api: TApi,
   streamSimple: StreamFunction<TApi, SimpleStreamOptions>,
 ): ApiStreamSimpleFunction {
-  return (model, context, options) => {
+  const wrapped: ApiStreamSimpleFunction = (model, context, options) => {
     if (model.api !== api) {
       throw new Error(`Mismatched api: ${model.api} expected ${api}`);
     }
     return streamSimple(model as Model<TApi>, context, options);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, streamSimple as unknown as StreamFn);
 }
 
 /** Registers or replaces the provider implementation for an API id. */

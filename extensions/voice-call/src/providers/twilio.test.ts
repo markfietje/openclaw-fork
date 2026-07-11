@@ -544,6 +544,7 @@ describe("TwilioProvider", () => {
 
       const sendAudio = vi.fn();
       const sendMark = vi.fn();
+      const synthesizeForTelephony = vi.fn(async () => await new Promise<Buffer>(() => {}));
       const mediaStreamHandler = {
         queueTts: async (
           _streamSid: string,
@@ -558,7 +559,7 @@ describe("TwilioProvider", () => {
       provider.setMediaStreamHandler(mediaStreamHandler as never);
       provider.setTTSProvider({
         synthesisTimeoutMs: 5000,
-        synthesizeForTelephony: async () => await new Promise<Buffer>(() => {}),
+        synthesizeForTelephony,
       });
 
       const playExpectation = expect(
@@ -566,10 +567,12 @@ describe("TwilioProvider", () => {
           callId: "call-timeout",
           providerCallId: "CA-timeout",
           text: "Timeout me",
+          agentId: "routed-agent",
         }),
       ).rejects.toThrow("Telephony TTS synthesis timed out after 5000ms");
       await vi.advanceTimersByTimeAsync(5_100);
       await playExpectation;
+      expect(synthesizeForTelephony).toHaveBeenCalledWith("Timeout me", "routed-agent");
       expect(sendAudio).toHaveBeenCalled();
       expect(sendMark).not.toHaveBeenCalled();
     } finally {

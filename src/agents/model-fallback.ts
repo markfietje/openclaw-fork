@@ -82,6 +82,7 @@ import {
   suspendSession,
   type SessionSuspensionParams,
 } from "./session-suspension.js";
+import { isAgentUsageBudgetError } from "./usage-budget.js";
 
 const log = createSubsystemLogger("model-fallback");
 
@@ -346,6 +347,9 @@ async function runFallbackCandidate<T>(params: {
     };
   } catch (err) {
     if (isCommandLaneTaskTimeoutError(err)) {
+      throw err;
+    }
+    if (isAgentUsageBudgetError(err)) {
       throw err;
     }
     if (isNonProviderRuntimeCoordinationError(err)) {
@@ -1311,6 +1315,7 @@ function shouldDiscardDeferredSessionSuspension(params: {
     isAgentRunDirectAbortReason(params.error) ||
     isAgentRunRestartAbortReason(params.error) ||
     isCommandLaneTaskTimeoutError(params.error) ||
+    isAgentUsageBudgetError(params.error) ||
     isNonProviderRuntimeCoordinationError(params.error) ||
     isLikelyContextOverflowError(formatErrorMessage(params.error))
   );
@@ -1704,6 +1709,9 @@ async function runWithModelFallbackInternal<T>(
       // here prevents the fallback chain from consuming candidates retrying
       // the same local condition and surfacing a misleading "All models
       // failed" summary. See #83510.
+      if (isAgentUsageBudgetError(err)) {
+        throw err;
+      }
       if (isNonProviderRuntimeCoordinationError(err)) {
         throw err;
       }

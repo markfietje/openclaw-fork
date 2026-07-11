@@ -26,6 +26,8 @@ import {
 import {
   createMoonshotThinkingWrapper,
   createPlainTextToolCallCompatWrapper,
+  markProviderDispatchObservableStreamFn,
+  preserveProviderDispatchObservableStreamFn,
   resolveMoonshotThinkingType,
   streamWithPayloadPatch,
 } from "openclaw/plugin-sdk/provider-stream-shared";
@@ -241,13 +243,14 @@ export function shouldInjectOllamaCompatNumCtx(params: {
 
 export function wrapOllamaCompatNumCtx(baseFn: StreamFn | undefined, numCtx: number): StreamFn {
   const streamFn = baseFn ?? streamSimple;
-  return (model, context, options) =>
+  const wrapped: StreamFn = (model, context, options) =>
     streamWithPayloadPatch(streamFn, model, context, options, (payloadRecord) => {
       if (!payloadRecord.options || typeof payloadRecord.options !== "object") {
         payloadRecord.options = {};
       }
       (payloadRecord.options as Record<string, unknown>).num_ctx = numCtx;
     });
+  return preserveProviderDispatchObservableStreamFn(wrapped, streamFn);
 }
 
 type OllamaThinkValue = boolean | "low" | "medium" | "high";
@@ -281,10 +284,11 @@ function createOllamaThinkingWrapper(
   think: OllamaThinkValue,
 ): StreamFn {
   const streamFn = baseFn ?? streamSimple;
-  return (model, context, options) =>
+  const wrapped: StreamFn = (model, context, options) =>
     streamWithPayloadPatch(streamFn, model, context, options, (payloadRecord) => {
       payloadRecord.think = think;
     });
+  return preserveProviderDispatchObservableStreamFn(wrapped, streamFn);
 }
 
 function resolveOllamaThinkValue(thinkingLevel: unknown): OllamaThinkValue | undefined {
@@ -1173,6 +1177,7 @@ function createRawOllamaStreamFn(
             options as { requestTimeoutMs?: unknown; timeoutMs?: unknown } | undefined,
           ),
           auditContext: "ollama-stream.chat",
+          ...(options?.onProviderDispatch ? { onNetworkDispatch: options.onProviderDispatch } : {}),
         });
 
         try {
@@ -1449,7 +1454,9 @@ export function createOllamaStreamFn(
   baseUrl: string,
   defaultHeaders?: Record<string, string>,
 ): StreamFn {
-  return createPlainTextToolCallCompatWrapper(createRawOllamaStreamFn(baseUrl, defaultHeaders));
+  return createPlainTextToolCallCompatWrapper(
+    markProviderDispatchObservableStreamFn(createRawOllamaStreamFn(baseUrl, defaultHeaders)),
+  );
 }
 
 export function createConfiguredOllamaStreamFn(params: {

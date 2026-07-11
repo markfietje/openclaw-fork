@@ -202,6 +202,91 @@ describe("media-understanding runtime", () => {
     expect(mocks.cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects file media provider calls while agent usage budgets are enabled", async () => {
+    await expect(
+      describeImageFile({
+        filePath: "/tmp/sample.jpg",
+        mime: "image/jpeg",
+        cfg: {
+          agents: {
+            defaults: {
+              usageBudget: { daily: { tokens: 1_000 } },
+            },
+          },
+        } as OpenClawConfig,
+        agentId: "budgeted-agent",
+        agentDir: "/tmp/agent",
+      }),
+    ).rejects.toThrow("Media understanding provider calls are unavailable");
+
+    expect(mocks.runCapability).not.toHaveBeenCalled();
+  });
+
+  it("rejects unattributed file media provider calls when any agent usage budget is enabled", async () => {
+    await expect(
+      describeImageFile({
+        filePath: "/tmp/sample.jpg",
+        mime: "image/jpeg",
+        cfg: {
+          agents: {
+            list: [
+              {
+                id: "media-worker",
+                usageBudget: { daily: { tokens: 1_000 } },
+              },
+            ],
+          },
+        } as OpenClawConfig,
+        agentDir: "/tmp/agent",
+      }),
+    ).rejects.toThrow("Media understanding provider calls are unavailable");
+
+    expect(mocks.runCapability).not.toHaveBeenCalled();
+  });
+
+  it("allows explicitly attributed unbudgeted file media calls when another agent has a budget", async () => {
+    const output: MediaUnderstandingOutput = {
+      kind: "image.description",
+      attachmentIndex: 0,
+      provider: "vision-plugin",
+      model: "vision-v1",
+      text: "image ok",
+    };
+    mocks.normalizeMediaAttachments.mockReturnValue([
+      { index: 0, path: "/tmp/sample.jpg", mime: "image/jpeg" },
+    ]);
+    mocks.runCapability.mockResolvedValue({
+      outputs: [output],
+    });
+
+    await expect(
+      describeImageFile({
+        filePath: "/tmp/sample.jpg",
+        mime: "image/jpeg",
+        cfg: {
+          agents: {
+            list: [
+              {
+                id: "budgeted",
+                usageBudget: { daily: { tokens: 1_000 } },
+              },
+              { id: "free" },
+            ],
+          },
+        } as OpenClawConfig,
+        agentId: "free",
+        agentDir: "/tmp/agent",
+      }),
+    ).resolves.toEqual({
+      text: "image ok",
+      provider: "vision-plugin",
+      model: "vision-v1",
+      output,
+    });
+
+    expect(mocks.runCapability).toHaveBeenCalledTimes(1);
+  });
+
   it("classifies extensionless remote image URLs before capability filtering", async () => {
     const output: MediaUnderstandingOutput = {
       kind: "image.description",

@@ -1,4 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { appendSessionTranscriptEvent } from "../../../config/sessions/transcript-append.js";
+import type { OpenClawConfig } from "../../../config/types.js";
 /**
  * Emits diagnostic model-call events around embedded-agent stream functions.
  */
@@ -27,6 +29,7 @@ import {
   type DiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
 import { markDiagnosticRunProgress } from "../../../logging/diagnostic-run-activity.js";
+import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import type {
   PluginHookAgentContext,
@@ -34,13 +37,42 @@ import type {
   PluginHookModelCallEndedEvent,
   PluginHookModelCallStartedEvent,
 } from "../../../plugins/hook-types.js";
+import { USAGE_BUDGET_RECORDED_COST_METADATA_KEY } from "../../../shared/usage-budget-recorded-cost.js";
+import {
+  MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  USAGE_BUDGET_OPERATION_ID_KEY,
+} from "../../compaction-usage-accounting.js";
+import {
+  isModelProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchModelForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "../../provider-dispatch-observable-stream.js";
 import type { StreamFn } from "../../runtime/index.js";
-import { derivePromptTokens, normalizeUsage, type UsageLike } from "../../usage.js";
+import {
+  acquireAgentUsageBudgetAdmission,
+  AgentUsageBudgetError,
+  buildUnsupportedAgentUsageBudgetStreamError,
+  recordAgentUsageBudgetAdmissionResult,
+  resolveAgentUsageBudgetConfig,
+  resolveUsageBudgetCostMultiplierUsage,
+  type AgentUsageBudgetAdmissionRelease,
+  type AgentUsageBudgetAdmissionReservation,
+} from "../../usage-budget.js";
+import {
+  derivePromptTokens,
+  hasNonzeroUsage,
+  normalizeUsage,
+  type UsageLike,
+} from "../../usage.js";
+
+const log = createSubsystemLogger("agents/model-call-diagnostics");
 
 type ModelCallDiagnosticContext = {
   runId: string;
   sessionKey?: string;
   sessionId?: string;
+  transcriptPath?: string;
   provider: string;
   model: string;
   api?: string;
@@ -49,6 +81,9 @@ type ModelCallDiagnosticContext = {
   contextWindowSource?: PluginHookContextWindowSource;
   contextWindowReferenceTokens?: number;
   trace: DiagnosticTraceContext;
+  config?: OpenClawConfig;
+  agentId?: string;
+  signal?: AbortSignal;
   contentCapture?: DiagnosticModelContentCapturePolicy;
   nextCallId: () => string;
   onStarted?: () => void;
@@ -90,16 +125,46 @@ type ModelCallObservationState = {
   modelContent?: DiagnosticModelCallContent;
   outputMessages?: unknown[];
   usage?: ModelCallUsage;
+  usageBudgetAccountingUsage?: UsageLike;
   contentCapture?: DiagnosticModelContentCapturePolicy;
+  budgetContext?: Pick<
+    ModelCallDiagnosticContext,
+    "agentId" | "provider" | "model" | "config" | "transcriptPath"
+  > & {
+    usageBudgetOperationId?: string;
+    costMultiplier?: number;
+  };
   lastStreamProgressAt?: number;
   terminalEventEmitted?: boolean;
+  releaseUsageBudgetAdmission?: AgentUsageBudgetAdmissionRelease;
+  usageBudgetTimestampMs?: number;
+  providerDispatchStarted?: boolean;
+  providerResponseReceived?: boolean;
+  providerCancellationUnconfirmed?: boolean;
+  abortProviderRequest?: () => void;
 };
+type ProviderRetryUsageBudgetBlock = Pick<
+  ModelCallDiagnosticContext,
+  "agentId" | "provider" | "model"
+>;
 
 const MODEL_CALL_STREAM_PROGRESS_INTERVAL_MS = 30_000;
 const MODEL_CALL_STREAM_PROGRESS_REASON = "model_call:stream_progress";
 const MODEL_CALL_STREAM_RETURN_TIMEOUT_MS = 1000;
+const OBSERVED_MODEL_CALL_STREAM_CANCEL = Symbol.for("openclaw.modelCallStream.cancel");
 const TRACEPARENT_HEADER_NAME = "traceparent";
 type ModelCallStreamOptions = Parameters<StreamFn>[2];
+
+function resolveModelCallUsageBudgetOperationId(
+  options: ModelCallStreamOptions,
+  fallbackCallId?: string,
+): string | undefined {
+  const id = options?.usageBudgetOperationId;
+  if (typeof id === "string" && id.trim()) {
+    return id;
+  }
+  return fallbackCallId ? `model-call:${fallbackCallId}` : undefined;
+}
 
 function utf8JsonByteLength(value: unknown): number | undefined {
   try {
@@ -217,6 +282,38 @@ function streamContextModelPromptStats(streamContext: unknown): ModelCallPromptS
   };
 }
 
+function streamContextUsageBudgetReservation(
+  streamContext: unknown,
+  model: Parameters<StreamFn>[0],
+  options: Parameters<StreamFn>[2],
+): AgentUsageBudgetAdmissionReservation | undefined {
+  const inputTokens = utf8JsonByteLength(streamContext);
+  const outputTokens =
+    typeof options?.maxTokens === "number" &&
+    Number.isFinite(options.maxTokens) &&
+    options.maxTokens > 0
+      ? Math.ceil(options.maxTokens)
+      : model.maxTokens;
+  const reservation = {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+  };
+  return Object.keys(reservation).length > 0 ? reservation : undefined;
+}
+
+function modelCallUsageBudgetIdentity(
+  ctx: ModelCallDiagnosticContext,
+  model: Parameters<StreamFn>[0],
+): Pick<ModelCallDiagnosticContext, "provider" | "model"> {
+  const provider =
+    typeof model.provider === "string" && model.provider.trim() ? model.provider : ctx.provider;
+  const modelId = typeof model.id === "string" && model.id.trim() ? model.id : ctx.model;
+  return {
+    provider,
+    model: modelId,
+  };
+}
+
 function normalizedModelCallUsage(rawUsage: unknown): ModelCallUsage | undefined {
   if (!isRecord(rawUsage)) {
     return undefined;
@@ -232,6 +329,22 @@ function normalizedModelCallUsage(rawUsage: unknown): ModelCallUsage | undefined
   };
 }
 
+function usageBudgetAccountingUsage(
+  rawUsage: Record<string, unknown>,
+  usage: ModelCallUsage,
+): UsageLike {
+  const result: Record<string, unknown> = { ...usage };
+  const cost = rawUsage.cost;
+  if (isRecord(cost)) {
+    result.cost = { ...cost };
+  }
+  const recordedCostMetadata = rawUsage[USAGE_BUDGET_RECORDED_COST_METADATA_KEY];
+  if (isRecord(recordedCostMetadata)) {
+    result[USAGE_BUDGET_RECORDED_COST_METADATA_KEY] = { ...recordedCostMetadata };
+  }
+  return result as UsageLike;
+}
+
 function observeModelCallUsage(state: ModelCallObservationState, value: unknown): void {
   if (!isRecord(value)) {
     return;
@@ -243,9 +356,21 @@ function observeModelCallUsage(state: ModelCallObservationState, value: unknown)
     return;
   }
   const usage = normalizedModelCallUsage(rawUsage);
-  if (usage) {
-    state.usage = usage;
+  if (!usage || !isRecord(rawUsage)) {
+    return;
   }
+  state.usage = usage;
+  // Diagnostics stay token-normalized, but budget admission must retain
+  // provider-recorded price evidence for auto-tier and late-priced calls.
+  state.usageBudgetAccountingUsage = usageBudgetAccountingUsage(rawUsage, usage);
+}
+
+function attachUsageBudgetOperationId(state: ModelCallObservationState, value: unknown): void {
+  const operationId = state.budgetContext?.usageBudgetOperationId;
+  if (!operationId || !isRecord(value) || value.role !== "assistant") {
+    return;
+  }
+  value[USAGE_BUDGET_OPERATION_ID_KEY] = operationId;
 }
 
 function observeOutputMessageContent(state: ModelCallObservationState, chunk: unknown): void {
@@ -265,6 +390,7 @@ function observeOutputMessageContent(state: ModelCallObservationState, chunk: un
   // iterated error-terminated calls still report the per-call usage that the
   // model.call.error event and its OTel span already expose.
   if (message !== undefined) {
+    attachUsageBudgetOperationId(state, message);
     observeModelCallUsage(state, message);
     if (state.contentCapture?.outputMessages) {
       state.outputMessages = [cloneDiagnosticContentValue(message)];
@@ -278,6 +404,7 @@ function observeResultMessageContent(
   result: unknown,
 ): void {
   state.timeToFirstByteMs ??= Math.max(0, Date.now() - startedAt);
+  attachUsageBudgetOperationId(state, result);
   observeModelCallUsage(state, result);
   if (state.contentCapture?.outputMessages && state.outputMessages === undefined) {
     state.outputMessages = [cloneDiagnosticContentValue(result)];
@@ -526,11 +653,11 @@ function emitModelCallStarted(
   dispatchModelCallStartedHook(eventBase);
 }
 
-function emitModelCallCompleted(
+async function emitModelCallCompleted(
   eventBase: ModelCallEventBase,
   startedAt: number,
   state: ModelCallObservationState,
-): void {
+): Promise<void> {
   if (state.terminalEventEmitted) {
     return;
   }
@@ -552,14 +679,15 @@ function emitModelCallCompleted(
     outcome: "completed",
     ...sizeTimingFields,
   });
+  await releaseModelCallUsageBudgetAdmission(state, eventBase, startedAt);
 }
 
-function emitModelCallError(
+async function emitModelCallError(
   eventBase: ModelCallEventBase,
   startedAt: number,
   state: ModelCallObservationState,
   fields: ModelCallErrorFields,
-): void {
+): Promise<void> {
   if (state.terminalEventEmitted) {
     return;
   }
@@ -583,15 +711,49 @@ function emitModelCallError(
     ...sizeTimingFields,
     ...fields,
   });
+  await releaseModelCallUsageBudgetAdmission(state, eventBase, startedAt);
 }
 
 function withDiagnosticTraceparentHeader(
   options: ModelCallStreamOptions,
   trace: DiagnosticTraceContext,
   state: ModelCallObservationState,
+  usageBudgetRetryBlock?: ProviderRetryUsageBudgetBlock,
 ): ModelCallStreamOptions {
   const traceparent = formatDiagnosticTraceparent(trace);
-  const originalOnPayload = options?.onPayload;
+  const {
+    usageBudgetOperationId: _usageBudgetOperationId,
+    onProviderDispatch: originalOnProviderDispatch,
+    onResponse: originalOnResponse,
+    ...providerOptions
+  } = options ?? {};
+  const dispatchOptions = usageBudgetRetryBlock
+    ? { ...providerOptions, maxRetries: 0 }
+    : providerOptions;
+  const onProviderDispatch: NonNullable<ModelCallStreamOptions>["onProviderDispatch"] = () => {
+    if (state.providerDispatchStarted) {
+      if (usageBudgetRetryBlock) {
+        throw new AgentUsageBudgetError(
+          `Usage budget blocked for agent "${usageBudgetRetryBlock.agentId ?? "unknown"}": provider retry dispatch cannot be safely attributed.`,
+          {
+            agentId: usageBudgetRetryBlock.agentId ?? "unknown",
+            provider: usageBudgetRetryBlock.provider,
+            model: usageBudgetRetryBlock.model,
+            harnessId: "provider-retry",
+            reason: "unsupported_harness",
+          },
+        );
+      }
+      return;
+    }
+    state.providerDispatchStarted = true;
+    originalOnProviderDispatch?.();
+  };
+  const originalOnPayload = dispatchOptions.onPayload;
+  const onResponse: NonNullable<ModelCallStreamOptions>["onResponse"] = (response, model) => {
+    state.providerResponseReceived = true;
+    return originalOnResponse?.(response, model);
+  };
   const onPayload: NonNullable<ModelCallStreamOptions>["onPayload"] = (payload, model) => {
     if (!originalOnPayload) {
       assignRequestPayloadBytes(state, payload);
@@ -610,13 +772,15 @@ function withDiagnosticTraceparentHeader(
 
   if (!traceparent) {
     return {
-      ...options,
+      ...dispatchOptions,
+      onProviderDispatch,
+      onResponse,
       onPayload,
     };
   }
 
   const headers: Record<string, string> = {};
-  for (const [key, value] of Object.entries(options?.headers ?? {})) {
+  for (const [key, value] of Object.entries(dispatchOptions.headers ?? {})) {
     if (key.toLowerCase() === TRACEPARENT_HEADER_NAME) {
       continue;
     }
@@ -624,28 +788,183 @@ function withDiagnosticTraceparentHeader(
   }
   headers[TRACEPARENT_HEADER_NAME] = traceparent;
   return {
-    ...options,
+    ...dispatchOptions,
     headers,
+    onProviderDispatch,
+    onResponse,
     onPayload,
   };
 }
 
-async function safeReturnIterator(iterator: AsyncIterator<unknown>): Promise<void> {
+function combineAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (present.length === 0) {
+    return undefined;
+  }
+  if (present.length === 1) {
+    return present[0];
+  }
+  return AbortSignal.any(present);
+}
+
+function createAgentUsageBudgetAdmission(
+  ctx: ModelCallDiagnosticContext,
+  budgetConfig: ReturnType<typeof resolveAgentUsageBudgetConfig>,
+  signal: AbortSignal | undefined,
+  model: Parameters<StreamFn>[0],
+  reservation?: AgentUsageBudgetAdmissionReservation,
+  costMultiplier?: number,
+  reservationCostKnown?: boolean,
+  usageBudgetOperationId?: string,
+): Promise<AgentUsageBudgetAdmissionRelease | undefined> | undefined {
+  if (!budgetConfig) {
+    return undefined;
+  }
+  const identity = modelCallUsageBudgetIdentity(ctx, model);
+  return acquireAgentUsageBudgetAdmission({
+    config: ctx.config,
+    agentId: ctx.agentId,
+    provider: identity.provider,
+    model: identity.model,
+    transcriptPath: ctx.transcriptPath,
+    reservation,
+    costMultiplier,
+    reservationCostKnown,
+    ...(usageBudgetOperationId ? { usageBudgetOperationId } : {}),
+    signal: signal ?? ctx.signal,
+  });
+}
+
+async function appendModelCallUsageAccountingEntry(params: {
+  eventBase: ModelCallEventBase;
+  state: ModelCallObservationState;
+  timestampMs: number;
+}): Promise<void> {
+  const budgetContext = params.state.budgetContext;
+  if (!budgetContext?.transcriptPath) {
+    return;
+  }
+  const usage = resolveUsageBudgetCostMultiplierUsage({
+    config: budgetContext.config,
+    provider: budgetContext.provider,
+    model: budgetContext.model,
+    usage: params.state.usageBudgetAccountingUsage ?? params.state.usage,
+    costMultiplier: budgetContext.costMultiplier,
+  });
+  await appendSessionTranscriptEvent({
+    config: budgetContext.config,
+    transcriptPath: budgetContext.transcriptPath,
+    event: {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: `${params.eventBase.callId}:usage`,
+      parentId: null,
+      timestamp: new Date(params.timestampMs).toISOString(),
+      appendMode: "side",
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        ...(budgetContext.usageBudgetOperationId
+          ? { [USAGE_BUDGET_OPERATION_ID_KEY]: budgetContext.usageBudgetOperationId }
+          : {}),
+        message: {
+          role: "assistant",
+          content: [],
+          provider: budgetContext.provider,
+          model: budgetContext.model,
+          usage,
+          stopReason: usage ? "stop" : "error",
+          timestamp: params.timestampMs,
+        },
+      },
+    },
+  });
+}
+
+async function releaseModelCallUsageBudgetAdmission(
+  state: ModelCallObservationState,
+  eventBase: ModelCallEventBase,
+  timestampMs: number,
+): Promise<void> {
+  const release = state.releaseUsageBudgetAdmission;
+  if (!release) {
+    return;
+  }
+  state.releaseUsageBudgetAdmission = undefined;
+  const usageBudgetTimestampMs = state.usageBudgetTimestampMs ?? timestampMs;
+  const budgetContext = state.budgetContext;
+  const hasProviderEvidence = state.providerDispatchStarted || state.providerResponseReceived;
+  const shouldRecordUsageBudgetResult = Boolean(
+    budgetContext && (hasNonzeroUsage(state.usage) || hasProviderEvidence),
+  );
+  let preserveInFlightUsageBudgetAdmission =
+    state.providerCancellationUnconfirmed && !hasProviderEvidence;
+  try {
+    if (shouldRecordUsageBudgetResult) {
+      if (budgetContext) {
+        const usage = resolveUsageBudgetCostMultiplierUsage({
+          config: budgetContext.config,
+          provider: budgetContext.provider,
+          model: budgetContext.model,
+          usage: state.usageBudgetAccountingUsage ?? state.usage,
+          costMultiplier: budgetContext.costMultiplier,
+        });
+        try {
+          await appendModelCallUsageAccountingEntry({
+            eventBase,
+            state,
+            timestampMs: usageBudgetTimestampMs,
+          });
+        } catch (error) {
+          log.warn("failed to persist model-call usage accounting transcript", { error });
+        }
+        try {
+          recordAgentUsageBudgetAdmissionResult({
+            config: budgetContext.config,
+            agentId: budgetContext.agentId,
+            provider: budgetContext.provider,
+            model: budgetContext.model,
+            usage,
+            timestampMs: usageBudgetTimestampMs,
+            recordId: `${eventBase.callId}:usage`,
+            usageBudgetBridge: true,
+            ...(budgetContext.usageBudgetOperationId
+              ? { usageBudgetOperationId: budgetContext.usageBudgetOperationId }
+              : {}),
+          });
+        } catch (error) {
+          preserveInFlightUsageBudgetAdmission = true;
+          throw error;
+        }
+      }
+    }
+  } finally {
+    await release({ preserveInFlight: preserveInFlightUsageBudgetAdmission });
+  }
+}
+
+async function safeReturnIterator(iterator: AsyncIterator<unknown>): Promise<boolean> {
   let returnResult: unknown;
   try {
     returnResult = iterator.return?.();
   } catch {
-    return;
+    return false;
   }
   if (!returnResult) {
-    return;
+    return true;
   }
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let settled = false;
   try {
     // Early consumer return should not hang diagnostic completion forever; give
     // provider cleanup a short chance, then emit completion for the observed call.
     await Promise.race([
-      Promise.resolve(returnResult).catch(() => undefined),
+      Promise.resolve(returnResult).then(
+        () => {
+          settled = true;
+        },
+        () => undefined,
+      ),
       new Promise<void>((resolve) => {
         timeout = setTimeout(resolve, MODEL_CALL_STREAM_RETURN_TIMEOUT_MS);
         const unref =
@@ -661,6 +980,17 @@ async function safeReturnIterator(iterator: AsyncIterator<unknown>): Promise<voi
     if (timeout) {
       clearTimeout(timeout);
     }
+  }
+  return settled;
+}
+
+export async function cancelObservedModelCallStream(result: unknown): Promise<void> {
+  if (!isRecord(result)) {
+    return;
+  }
+  const cancel = (result as { [key: symbol]: unknown })[OBSERVED_MODEL_CALL_STREAM_CANCEL];
+  if (typeof cancel === "function") {
+    await cancel();
   }
 }
 
@@ -685,10 +1015,10 @@ async function* observeModelCallIterator<T>(
       maybeEmitModelCallStreamProgress(eventBase, state);
       yield next.value;
     }
-    emitModelCallCompleted(eventBase, startedAt, state);
+    await emitModelCallCompleted(eventBase, startedAt, state);
   } catch (err) {
     iteratorSettled = true;
-    emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+    await emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
     throw err;
   } finally {
     if (!iteratorSettled) {
@@ -697,20 +1027,23 @@ async function* observeModelCallIterator<T>(
       // Close the underlying iterator for provider cleanup (idle-timeout abort
       // listeners, SSE readers) even when result() already emitted the terminal
       // event; emitModelCallCompleted self-dedupes via state.terminalEventEmitted.
-      await safeReturnIterator(iterator);
-      emitModelCallCompleted(eventBase, startedAt, state);
+      const cleanupSettled = await safeReturnIterator(iterator);
+      if (!cleanupSettled) {
+        state.providerCancellationUnconfirmed = true;
+      }
+      await emitModelCallCompleted(eventBase, startedAt, state);
     }
   }
 }
 
-function observeModelCallFinalResult<T>(
+async function observeModelCallFinalResult<T>(
   result: T,
   eventBase: ModelCallEventBase,
   startedAt: number,
   state: ModelCallObservationState,
-): T {
+): Promise<T> {
   observeResultMessageContent(state, startedAt, result);
-  emitModelCallCompleted(eventBase, startedAt, state);
+  await emitModelCallCompleted(eventBase, startedAt, state);
   return result;
 }
 
@@ -730,16 +1063,17 @@ function createObservedResultFunction(
       if (isPromiseLike(result)) {
         return result.then(
           (resolved) => observeModelCallFinalResult(resolved, eventBase, startedAt, state),
-          (err: unknown) => {
-            emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+          async (err: unknown) => {
+            await emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
             throw err;
           },
         );
       }
       return observeModelCallFinalResult(result, eventBase, startedAt, state);
     } catch (err) {
-      emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
-      throw err;
+      return emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err)).then(() => {
+        throw err;
+      });
     }
   };
 }
@@ -751,9 +1085,32 @@ function observeModelCallStream<T extends AsyncIterable<unknown>>(
   startedAt: number,
   state: ModelCallObservationState,
 ): T {
+  const activeIterators = new Set<AsyncIterator<unknown>>();
   const observedIterator = () =>
-    observeModelCallIterator(createIterator(), eventBase, startedAt, state)[Symbol.asyncIterator]();
+    (() => {
+      const iterator = observeModelCallIterator(createIterator(), eventBase, startedAt, state)[
+        Symbol.asyncIterator
+      ]();
+      activeIterators.add(iterator);
+      return iterator;
+    })();
   const observedResult = createObservedResultFunction(stream, eventBase, startedAt, state);
+  let cancelPromise: Promise<void> | undefined;
+  const cancelObservedStream = () => {
+    cancelPromise ??= (async () => {
+      state.abortProviderRequest?.();
+      const hadActiveIterators = activeIterators.size > 0;
+      let cleanupSettled = hadActiveIterators;
+      for (const iterator of activeIterators) {
+        cleanupSettled = (await safeReturnIterator(iterator)) && cleanupSettled;
+      }
+      if (!cleanupSettled) {
+        state.providerCancellationUnconfirmed = true;
+      }
+      await emitModelCallCompleted(eventBase, startedAt, state);
+    })();
+    return cancelPromise;
+  };
   let hasNonConfigurableIterator;
   try {
     hasNonConfigurableIterator =
@@ -764,13 +1121,17 @@ function observeModelCallStream<T extends AsyncIterable<unknown>>(
   if (hasNonConfigurableIterator) {
     return {
       [Symbol.asyncIterator]: observedIterator,
+      [OBSERVED_MODEL_CALL_STREAM_CANCEL]: cancelObservedStream,
       ...(observedResult ? { result: observedResult } : {}),
-    } as T;
+    } as unknown as T;
   }
   return new Proxy(stream, {
     get(target, property, receiver) {
       if (property === Symbol.asyncIterator) {
         return observedIterator;
+      }
+      if (property === OBSERVED_MODEL_CALL_STREAM_CANCEL) {
+        return cancelObservedStream;
       }
       if (property === "result" && observedResult) {
         return observedResult;
@@ -797,8 +1158,7 @@ function observeModelCallResult(
       state,
     );
   }
-  emitModelCallCompleted(eventBase, startedAt, state);
-  return result;
+  return observeModelCallFinalResult(result, eventBase, startedAt, state);
 }
 
 /**
@@ -813,6 +1173,14 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
   return ((model, streamContext, options) => {
     const callId = ctx.nextCallId();
     const trace = freezeDiagnosticTraceContext(createChildDiagnosticTraceContext(ctx.trace));
+    const usageBudgetConfig = resolveAgentUsageBudgetConfig({
+      config: ctx.config,
+      agentId: ctx.agentId,
+    });
+    const usageBudgetOperationId = resolveModelCallUsageBudgetOperationId(
+      options,
+      usageBudgetConfig ? callId : undefined,
+    );
     // Prompt stats JSON-stringify the input messages and tool definitions; only
     // the diagnostic events consume them (plugin hooks never receive prompt
     // stats), so skip the work when diagnostics are disabled and those events
@@ -830,22 +1198,135 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
       modelContent,
       contentCapture: ctx.contentCapture,
     };
-    const propagatedOptions = withDiagnosticTraceparentHeader(options, trace, state);
+    const providerAbortController = usageBudgetConfig ? new AbortController() : undefined;
+    if (providerAbortController) {
+      state.abortProviderRequest = () => {
+        if (!providerAbortController.signal.aborted) {
+          providerAbortController.abort(new Error("Model call stream was canceled."));
+        }
+      };
+    }
+    const providerSignal = providerAbortController
+      ? combineAbortSignals([options?.signal, ctx.signal, providerAbortController.signal])
+      : options?.signal;
+    const signalOptions =
+      providerSignal && providerSignal !== options?.signal
+        ? { ...options, signal: providerSignal }
+        : options;
+    const propagatedOptions = withDiagnosticTraceparentHeader(
+      signalOptions,
+      trace,
+      state,
+      usageBudgetConfig ? ctx : undefined,
+    );
 
     try {
-      const result = streamFn(model, streamContext, propagatedOptions);
+      if (
+        usageBudgetConfig &&
+        !isModelProviderDispatchObservableStreamFn({ streamFn, model: model as never })
+      ) {
+        throw buildUnsupportedAgentUsageBudgetStreamError({
+          agentId: ctx.agentId,
+          provider: ctx.provider,
+          model: ctx.model,
+        });
+      }
+      const usageBudgetDispatchModel = usageBudgetConfig
+        ? resolveProviderDispatchModelForStreamFn({
+            streamFn,
+            model: model as never,
+            context: streamContext,
+            options: propagatedOptions,
+          })
+        : model;
+      const usageBudgetDispatchIdentity = modelCallUsageBudgetIdentity(
+        ctx,
+        usageBudgetDispatchModel,
+      );
+      const usageBudgetCostMultiplier = usageBudgetConfig
+        ? resolveProviderDispatchCostMultiplierForStreamFn({
+            streamFn,
+            model: model as never,
+            context: streamContext,
+            options: propagatedOptions,
+          })
+        : 1;
+      const usageBudgetReservationCostMultiplier = usageBudgetConfig
+        ? resolveProviderDispatchReservationCostMultiplierForStreamFn({
+            streamFn,
+            model: model as never,
+            context: streamContext,
+            options: propagatedOptions,
+          })
+        : 1;
+      const callStreamFn = () => streamFn(model, streamContext, propagatedOptions);
+      const admission = createAgentUsageBudgetAdmission(
+        ctx,
+        usageBudgetConfig,
+        propagatedOptions?.signal,
+        usageBudgetDispatchModel,
+        usageBudgetConfig
+          ? streamContextUsageBudgetReservation(
+              streamContext,
+              usageBudgetDispatchModel,
+              propagatedOptions,
+            )
+          : undefined,
+        usageBudgetReservationCostMultiplier,
+        usageBudgetConfig ? usageBudgetReservationCostMultiplier !== undefined : undefined,
+        usageBudgetOperationId,
+      );
+      if (admission) {
+        return admission.then(
+          async (release) => {
+            state.releaseUsageBudgetAdmission = release;
+            state.usageBudgetTimestampMs = release?.timestampMs;
+            state.budgetContext = {
+              agentId: ctx.agentId,
+              provider: usageBudgetDispatchIdentity.provider,
+              model: usageBudgetDispatchIdentity.model,
+              config: ctx.config,
+              transcriptPath: ctx.transcriptPath,
+              costMultiplier: usageBudgetCostMultiplier,
+              ...(usageBudgetOperationId ? { usageBudgetOperationId } : {}),
+            };
+            let result: ReturnType<StreamFn>;
+            try {
+              result = callStreamFn();
+            } catch (err) {
+              await emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+              throw err;
+            }
+            if (isPromiseLike(result)) {
+              return result.then(
+                (resolved) => observeModelCallResult(resolved, eventBase, startedAt, state),
+                async (err: unknown) => {
+                  await emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+                  throw err;
+                },
+              );
+            }
+            return observeModelCallResult(result, eventBase, startedAt, state);
+          },
+          async (err: unknown) => {
+            await emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+            throw err;
+          },
+        );
+      }
+      const result = callStreamFn();
       if (isPromiseLike(result)) {
         return result.then(
           (resolved) => observeModelCallResult(resolved, eventBase, startedAt, state),
-          (err: unknown) => {
-            emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+          async (err: unknown) => {
+            await emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
             throw err;
           },
         );
       }
       return observeModelCallResult(result, eventBase, startedAt, state);
     } catch (err) {
-      emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
+      void emitModelCallError(eventBase, startedAt, state, modelCallErrorFields(err));
       throw err;
     }
   }) as StreamFn;

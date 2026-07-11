@@ -14,6 +14,7 @@ import type { AcpTurnAttachment } from "../../acp/control-plane/manager.types.js
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../../acp/policy.js";
 import { AcpRuntimeError, toAcpRuntimeError } from "../../acp/runtime/errors.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
+import { resolveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import type { ChatType } from "../../channels/chat-type.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
@@ -323,7 +324,9 @@ async function finalizeAcpTurnOutput(params: {
     accountId: params.ttsAccountId,
   });
   const canAttemptFinalTts =
-    ttsStatus != null && !(ttsStatus.autoMode === "inbound" && !params.inboundAudio);
+    ttsStatus != null &&
+    !(ttsStatus.autoMode === "inbound" && !params.inboundAudio) &&
+    !resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.agentId });
 
   let finalMediaDelivered = false;
   if (ttsMode === "final" && hasAccumulatedBlockText && canAttemptFinalTts) {
@@ -579,6 +582,12 @@ export async function tryDispatchAcpReply(params: {
     const agentPolicyError = resolveAcpAgentPolicyError(params.cfg, resolvedAcpAgent);
     if (agentPolicyError) {
       throw agentPolicyError;
+    }
+    if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: acpAgentId })) {
+      throw new AcpRuntimeError(
+        "ACP_DISPATCH_DISABLED",
+        "ACP dispatch is unavailable while agent usage budgets are enabled because ACP runtime model calls are not yet budget-metered.",
+      );
     }
     let extractedFileImages = params.extractedFileImages ?? [];
     if (hasInboundMediaForUnderstanding(params.ctx) && !params.ctx.MediaUnderstanding?.length) {

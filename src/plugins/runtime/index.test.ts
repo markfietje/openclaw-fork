@@ -26,7 +26,25 @@ const runtimeModelAuthMocks = vi.hoisted(() => ({
   resolveApiKeyForProvider: vi.fn(),
 }));
 
+const ttsRuntimeMocks = vi.hoisted(() => ({
+  textToSpeech: vi.fn(),
+  textToSpeechStream: vi.fn(),
+  textToSpeechTelephony: vi.fn(),
+  listSpeechVoices: vi.fn(),
+}));
+
+const mediaUnderstandingRuntimeMocks = vi.hoisted(() => ({
+  runMediaUnderstandingFile: vi.fn(),
+  describeImageFile: vi.fn(),
+  describeImageFileWithModel: vi.fn(),
+  extractStructuredWithModel: vi.fn(),
+  describeVideoFile: vi.fn(),
+  transcribeAudioFile: vi.fn(),
+}));
+
 vi.mock("./runtime-model-auth.runtime.js", () => runtimeModelAuthMocks);
+vi.mock("../../tts/tts.js", () => ttsRuntimeMocks);
+vi.mock("../../media-understanding/runtime.js", () => mediaUnderstandingRuntimeMocks);
 
 import {
   clearGatewaySubagentRuntime,
@@ -128,6 +146,16 @@ describe("plugin runtime command execution", () => {
     runtimeModelAuthMocks.getApiKeyForModel.mockReset();
     runtimeModelAuthMocks.getRuntimeAuthForModel.mockReset();
     runtimeModelAuthMocks.resolveApiKeyForProvider.mockReset();
+    ttsRuntimeMocks.textToSpeech.mockReset();
+    ttsRuntimeMocks.textToSpeechStream.mockReset();
+    ttsRuntimeMocks.textToSpeechTelephony.mockReset();
+    ttsRuntimeMocks.listSpeechVoices.mockReset();
+    mediaUnderstandingRuntimeMocks.runMediaUnderstandingFile.mockReset();
+    mediaUnderstandingRuntimeMocks.describeImageFile.mockReset();
+    mediaUnderstandingRuntimeMocks.describeImageFileWithModel.mockReset();
+    mediaUnderstandingRuntimeMocks.extractStructuredWithModel.mockReset();
+    mediaUnderstandingRuntimeMocks.describeVideoFile.mockReset();
+    mediaUnderstandingRuntimeMocks.transcribeAudioFile.mockReset();
     resetConfigRuntimeState();
     clearGatewaySubagentRuntime();
   });
@@ -348,6 +376,149 @@ describe("plugin runtime command execution", () => {
     expectRuntimeShape(assert);
   });
 
+  it("rejects plugin media-understanding provider calls while agent usage budgets are enabled", async () => {
+    const runtime = createPluginRuntime();
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 1_000 } },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    await expect(
+      runtime.mediaUnderstanding.transcribeAudioFile({
+        filePath: "/tmp/input.wav",
+        cfg,
+        agentId: "budgeted-agent",
+      }),
+    ).rejects.toThrow("Plugin runtime media provider calls are unavailable");
+
+    expect(mediaUnderstandingRuntimeMocks.transcribeAudioFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects plugin generation provider calls while agent usage budgets are enabled", async () => {
+    const runtime = createPluginRuntime();
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { usd: 1 } },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    await expect(
+      runtime.imageGeneration.generate({
+        cfg,
+        agentId: "budgeted-agent",
+        prompt: "diagram",
+      }),
+    ).rejects.toThrow("Plugin runtime media provider calls are unavailable");
+  });
+
+  it("returns plugin TTS failures while agent usage budgets are enabled", async () => {
+    const runtime = createPluginRuntime();
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { monthly: { tokens: 10_000 } },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    const fileResult = await runtime.tts.textToSpeech({
+      text: "hello",
+      cfg,
+      agentId: "budgeted-agent",
+    });
+    const streamResult = await runtime.tts.textToSpeechStream({
+      text: "hello",
+      cfg,
+      agentId: "budgeted-agent",
+    });
+    const telephonyResult = await runtime.tts.textToSpeechTelephony({
+      text: "hello",
+      cfg,
+      agentId: "budgeted-agent",
+    });
+
+    expect(fileResult).toEqual({
+      success: false,
+      error: expect.stringContaining("Plugin runtime TTS provider calls are unavailable"),
+    });
+    expect(streamResult).toEqual({
+      success: false,
+      error: expect.stringContaining("Plugin runtime TTS provider calls are unavailable"),
+    });
+    expect(telephonyResult).toEqual({
+      success: false,
+      error: expect.stringContaining("Plugin runtime TTS provider calls are unavailable"),
+    });
+    expect(ttsRuntimeMocks.textToSpeech).not.toHaveBeenCalled();
+    expect(ttsRuntimeMocks.textToSpeechStream).not.toHaveBeenCalled();
+    expect(ttsRuntimeMocks.textToSpeechTelephony).not.toHaveBeenCalled();
+  });
+
+  it("uses runtime config to reject unattributed plugin TTS calls", async () => {
+    setRuntimeConfigSnapshot({
+      agents: {
+        list: [
+          {
+            id: "ops",
+            usageBudget: { daily: { tokens: 1_000 } },
+          },
+        ],
+      },
+    } satisfies OpenClawConfig);
+    const runtime = createPluginRuntime();
+
+    const result = await runtime.tts.textToSpeech({ text: "hello" });
+
+    expect(result).toEqual({
+      success: false,
+      error: expect.stringContaining("Plugin runtime TTS provider calls are unavailable"),
+    });
+    expect(ttsRuntimeMocks.textToSpeech).not.toHaveBeenCalled();
+  });
+
+  it("rejects unattributed plugin provider calls when any agent usage budget is configured", async () => {
+    const runtime = createPluginRuntime();
+    const cfg = {
+      agents: {
+        list: [
+          {
+            id: "ops",
+            usageBudget: { daily: { tokens: 1_000 } },
+          },
+        ],
+      },
+    } satisfies OpenClawConfig;
+
+    await expect(
+      runtime.mediaUnderstanding.describeImageFile({
+        filePath: "/tmp/input.png",
+        cfg,
+      }),
+    ).rejects.toThrow("Plugin runtime media provider calls are unavailable");
+    await expect(
+      runtime.imageGeneration.generate({
+        cfg,
+        prompt: "diagram",
+      }),
+    ).rejects.toThrow("Plugin runtime media provider calls are unavailable");
+    const ttsResult = await runtime.tts.textToSpeech({
+      text: "hello",
+      cfg,
+    });
+
+    expect(ttsResult).toEqual({
+      success: false,
+      error: expect.stringContaining("Plugin runtime TTS provider calls are unavailable"),
+    });
+    expect(mediaUnderstandingRuntimeMocks.describeImageFile).not.toHaveBeenCalled();
+    expect(ttsRuntimeMocks.textToSpeech).not.toHaveBeenCalled();
+  });
+
   it("preserves requireWriteSuccess through runtime session entry updates", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-runtime-session-store-"));
     const storePath = path.join(tempDir, "sessions.json");
@@ -475,6 +646,76 @@ describe("plugin runtime command execution", () => {
     ).resolves.toEqual({ ok: true });
     expect(nodes.list).toHaveBeenCalledWith({ connected: true });
     expect(nodes.invoke).toHaveBeenCalledWith({ nodeId: "node-1", command: "browser.proxy" });
+  });
+
+  it("rejects unattributed plugin runtime node invocations while any agent usage budget is configured", async () => {
+    setRuntimeConfigSnapshot({
+      agents: {
+        list: [
+          {
+            id: "ops",
+            usageBudget: { daily: { tokens: 1_000 } },
+          },
+        ],
+      },
+    } satisfies OpenClawConfig);
+    const nodes = {
+      list: vi.fn().mockResolvedValue({ nodes: [{ nodeId: "node-1" }] }),
+      invoke: vi.fn().mockResolvedValue({ ok: true }),
+    };
+    const runtime = createPluginRuntime({ nodes });
+
+    await expect(runtime.nodes.list({ connected: true })).resolves.toEqual({
+      nodes: [{ nodeId: "node-1" }],
+    });
+    await expect(
+      runtime.nodes.invoke({ nodeId: "node-1", command: "ollama.chat" }),
+    ).rejects.toThrow("Plugin runtime node invocations are unavailable");
+    expect(nodes.invoke).not.toHaveBeenCalled();
+  });
+
+  it("scopes plugin runtime node budget checks to the calling agent", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          usageBudget: { daily: { tokens: 1_000 } },
+        },
+        list: [
+          {
+            id: "free",
+            usageBudget: { enabled: false },
+          },
+        ],
+      },
+    } satisfies OpenClawConfig;
+    const nodes = {
+      list: vi.fn().mockResolvedValue({ nodes: [{ nodeId: "node-1" }] }),
+      invoke: vi.fn().mockResolvedValue({ ok: true }),
+    };
+    const runtime = createPluginRuntime({ nodes });
+
+    await expect(
+      runtime.nodes.invoke({
+        nodeId: "node-1",
+        command: "device.status",
+        cfg,
+        agentId: "budgeted",
+      }),
+    ).rejects.toThrow("Plugin runtime node invocations are unavailable");
+    await expect(
+      runtime.nodes.invoke({
+        nodeId: "node-1",
+        command: "device.status",
+        cfg,
+        agentId: "free",
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    expect(nodes.invoke).toHaveBeenCalledTimes(1);
+    expect(nodes.invoke).toHaveBeenCalledWith({
+      nodeId: "node-1",
+      command: "device.status",
+    });
   });
 
   it("late-binds to gateway nodes when explicitly enabled", async () => {

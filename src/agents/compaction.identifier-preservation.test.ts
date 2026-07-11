@@ -5,15 +5,25 @@ import type { ExtensionContext } from "openclaw/plugin-sdk/agent-sessions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as agentSessions from "./sessions/index.js";
 
+const summaryMocks = vi.hoisted(() => {
+  const generateSummary = vi.fn();
+  const generateSummaryWithUsage = vi.fn(async (...args: unknown[]) => ({
+    summary: await generateSummary(...args),
+  }));
+  return { generateSummary, generateSummaryWithUsage };
+});
+
 vi.mock("./sessions/index.js", async () => {
   const actual = await vi.importActual<typeof agentSessions>("./sessions/index.js");
   return {
     ...actual,
-    generateSummary: vi.fn(),
+    generateSummary: summaryMocks.generateSummary,
+    generateSummaryWithUsage: summaryMocks.generateSummaryWithUsage,
   };
 });
 
 const mockGenerateSummary = vi.mocked(agentSessions.generateSummary);
+const mockGenerateSummaryWithUsage = vi.mocked(agentSessions.generateSummaryWithUsage);
 type SummarizeInStagesInput = Parameters<typeof import("./compaction.js").summarizeInStages>[0];
 
 const { buildCompactionSummarizationInstructions, summarizeInStages } =
@@ -45,6 +55,13 @@ describe("compaction identifier-preservation instructions", () => {
   beforeEach(() => {
     mockGenerateSummary.mockReset();
     mockGenerateSummary.mockResolvedValue("summary");
+    mockGenerateSummaryWithUsage.mockReset();
+    mockGenerateSummaryWithUsage.mockImplementation(async (...args) => {
+      const summaryArgs = [...args.slice(0, 11), args[12]] as unknown as Parameters<
+        typeof agentSessions.generateSummary
+      >;
+      return { summary: await mockGenerateSummary(...summaryArgs) };
+    });
   });
 
   async function runSummary(

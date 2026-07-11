@@ -5,6 +5,7 @@
  */
 import crypto from "node:crypto";
 import path from "node:path";
+import { preserveProviderDispatchObservableStreamFn } from "../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import { resolveStateDir } from "../config/paths.js";
 import type { Model } from "../llm/types.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -166,7 +167,7 @@ export function createAnthropicPayloadLogger(params: {
         onPayload: nextOnPayload,
       });
     };
-    return wrapped;
+    return preserveProviderDispatchObservableStreamFn(wrapped, streamFn);
   };
 
   const recordUsage: AnthropicPayloadLogger["recordUsage"] = (messages, error) => {

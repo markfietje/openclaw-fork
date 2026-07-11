@@ -1,7 +1,7 @@
 // Usage reporting tests cover run-level metadata attribution, runtime plugin
 // bootstrap inputs, and forwarding fields into embedded attempts.
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import {
   loadRunOverflowCompactionHarness,
@@ -12,6 +12,8 @@ import {
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
 
 let runEmbeddedAgent: typeof import("./run.js").runEmbeddedAgent;
+let clearRuntimeConfigSnapshot: typeof import("../../config/config.js").clearRuntimeConfigSnapshot;
+let setRuntimeConfigSnapshot: typeof import("../../config/config.js").setRuntimeConfigSnapshot;
 
 function makeAssistantMessage(
   overrides: Partial<AssistantMessage> = {},
@@ -44,11 +46,18 @@ function firstAttemptInput(): Record<string, unknown> {
 describe("runEmbeddedAgent usage reporting", () => {
   beforeAll(async () => {
     ({ runEmbeddedAgent } = await loadRunOverflowCompactionHarness());
+    ({ clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } =
+      await import("../../config/config.js"));
   });
 
   beforeEach(() => {
+    clearRuntimeConfigSnapshot();
     mockedEnsureRuntimePluginsLoaded.mockReset();
     mockedRunEmbeddedAttempt.mockReset();
+  });
+
+  afterEach(() => {
+    clearRuntimeConfigSnapshot();
   });
 
   it("bootstraps runtime plugins with the resolved workspace before running", async () => {
@@ -71,6 +80,46 @@ describe("runEmbeddedAgent usage reporting", () => {
     expect(mockedEnsureRuntimePluginsLoaded).toHaveBeenCalledWith({
       config: undefined,
       workspaceDir: "/tmp/workspace",
+    });
+  });
+
+  it("uses the runtime config snapshot for explicit provider and model runs", async () => {
+    const config = {
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 1_000 },
+          },
+        },
+      },
+    } as never;
+    setRuntimeConfigSnapshot(config);
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["Response 1"],
+      }),
+    );
+
+    const result = await runEmbeddedAgent({
+      sessionId: "test-session",
+      sessionKey: "test-key",
+      sessionFile: "/tmp/session.json",
+      workspaceDir: "/tmp/workspace",
+      prompt: "hello",
+      provider: "openai",
+      model: "gpt-5.4",
+      timeoutMs: 30000,
+      runId: "run-explicit-model-budget-config",
+    });
+
+    expect(mockedEnsureRuntimePluginsLoaded).toHaveBeenCalledWith({
+      config,
+      workspaceDir: "/tmp/workspace",
+    });
+    expect(mockedRunEmbeddedAttempt).not.toHaveBeenCalled();
+    expect(result.payloads?.[0]?.isError).toBe(true);
+    expect(result.meta.error).toMatchObject({
+      kind: "usage_budget",
     });
   });
 

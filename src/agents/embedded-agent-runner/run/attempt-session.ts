@@ -2,11 +2,15 @@
  * Creates embedded-agent sessions with the runner resource loader installed.
  */
 import type { CreateAgentSessionOptions } from "../../sessions/index.js";
+import type { AgentSessionUsageBudgetEnforcementOptions } from "../../sessions/sdk-usage-budget-internal.js";
 
 /**
  * Session construction bridge for embedded-attempt runs.
  */
 type EmbeddedAgentSessionOptions = {
+  config?: CreateAgentSessionOptions["config"];
+  agentId?: CreateAgentSessionOptions["agentId"];
+  usageBudgetEnforcement?: AgentSessionUsageBudgetEnforcementOptions["usageBudgetEnforcement"];
   cwd: string;
   agentDir: string;
   authStorage: unknown;

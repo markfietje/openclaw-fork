@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import type { ChatCompletionChunk } from "openai/resources/chat/completions.js";
 import type { Api, Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
+import { USAGE_BUDGET_RECORDED_COST_METADATA_KEY } from "../shared/usage-budget-recorded-cost.js";
 import {
   classifyAssistantFailoverReason,
   formatUserFacingAssistantErrorText,
@@ -484,6 +485,53 @@ describe("openai transport stream", () => {
     expect(output.usage.cost.cacheRead).toBeCloseTo(0.00001);
     expect(output.usage.cost.cacheWrite).toBeCloseTo(0.0001875);
     expect(output.usage.cost.total).toBeCloseTo(0.0007475);
+  });
+
+  it("uses canonical gpt-5.5 Priority pricing for Responses service tiers", async () => {
+    const model = {
+      ...createAzureResponsesModel(),
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+    } satisfies Model<"azure-openai-responses">;
+    const output = createResponsesAssistantOutput(model);
+
+    await testing.processResponsesStream(
+      streamChunks([
+        {
+          type: "response.completed",
+          response: {
+            id: "resp-priority",
+            status: "completed",
+            service_tier: "priority",
+            usage: {
+              input_tokens: 100,
+              output_tokens: 10,
+              total_tokens: 110,
+              input_tokens_details: { cached_tokens: 20, cache_write_tokens: 30 },
+              output_tokens_details: { reasoning_tokens: 0 },
+            },
+          },
+        },
+      ]),
+      output,
+      { push: vi.fn() },
+      model,
+      { applyServiceTierPricing: testing.applyServiceTierPricing },
+    );
+
+    expect(output.usage.cost.input).toBeCloseTo(0.000625);
+    expect(output.usage.cost.output).toBeCloseTo(0.00075);
+    expect(output.usage.cost.cacheRead).toBeCloseTo(0.000025);
+    expect(output.usage.cost.cacheWrite).toBeCloseTo(0.00046875);
+    expect(output.usage.cost.total).toBeCloseTo(0.00186875);
+    expect(
+      (output.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "model-call-cost-multiplier",
+      costMultiplier: 2.5,
+    });
   });
 
   it("backfills Azure Responses completed message output when item events are absent", async () => {
@@ -1407,6 +1455,47 @@ describe("openai transport stream", () => {
     expect(testing.buildOpenAISdkClientOptions(completionsModel).timeout).toBe(requestTimeoutMs);
   });
 
+  it("passes zero retry ceilings to every OpenAI SDK client", () => {
+    const context = { systemPrompt: "system", messages: [], tools: [] } as never;
+    const responsesModel = {
+      ...createAzureResponsesModel(),
+      api: "openai-responses",
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+    } satisfies Model<"openai-responses">;
+
+    const responsesClient = testing.createOpenAIResponsesClient(
+      responsesModel,
+      context,
+      "test-key",
+      undefined,
+      undefined,
+      undefined,
+      0,
+    );
+    const azureClient = testing.createAzureOpenAIClient(
+      createAzureResponsesModel(),
+      context,
+      "test-key",
+      undefined,
+      undefined,
+      undefined,
+      0,
+    );
+    const completionsClient = testing.createOpenAICompletionsClient(
+      createDeepSeekCompletionsModel(),
+      context,
+      "test-key",
+      undefined,
+      undefined,
+      0,
+    );
+
+    expect(responsesClient.maxRetries).toBe(0);
+    expect(azureClient.maxRetries).toBe(0);
+    expect(completionsClient.maxRetries).toBe(0);
+  });
+
   it("passes provider request timeouts to OpenAI SDK per-request options", () => {
     const signal = new AbortController().signal;
     const model = {
@@ -2202,6 +2291,146 @@ describe("openai transport stream", () => {
       output: 10,
       cacheRead: 0,
       totalTokens: 18,
+    });
+  });
+
+  it("applies returned service tier pricing to OpenAI-compatible streaming usage chunks", async () => {
+    const model = {
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      api: "openai-completions",
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    } satisfies Model<"openai-completions">;
+    const output = createAssistantOutput(model);
+
+    await testing.processOpenAICompletionsStream(
+      streamChunks([
+        {
+          id: "chatcmpl-priority",
+          object: "chat.completion.chunk" as const,
+          created: 1775425651,
+          model: model.id,
+          service_tier: "priority",
+          choices: [],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            total_tokens: 110,
+          },
+        },
+      ]),
+      output,
+      model,
+      { push: vi.fn() },
+    );
+
+    expect(output.usage.cost.input).toBeCloseTo(0.00125);
+    expect(output.usage.cost.output).toBeCloseTo(0.00075);
+    expect(output.usage.cost.total).toBeCloseTo(0.002);
+    expect(
+      (output.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "model-call-cost-multiplier",
+      costMultiplier: 2.5,
+    });
+  });
+
+  it("marks returned capacity-billed OpenAI-compatible service tiers unpriceable", async () => {
+    const model = {
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      api: "openai-completions",
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    } satisfies Model<"openai-completions">;
+    const output = createAssistantOutput(model);
+
+    await testing.processOpenAICompletionsStream(
+      streamChunks([
+        {
+          id: "chatcmpl-scale",
+          object: "chat.completion.chunk" as const,
+          created: 1775425651,
+          model: model.id,
+          service_tier: "scale",
+          choices: [],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            total_tokens: 110,
+          },
+        },
+      ]),
+      output,
+      model,
+      { push: vi.fn() },
+    );
+
+    expect(output.usage.cost.total).toBeCloseTo(0.0008);
+    expect(
+      (output.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "unpriceable-model-call-cost",
+      reason: "capacity-billed-service-tier",
+    });
+  });
+
+  it("preserves verified OpenRouter in-response billed cost from usage chunks", async () => {
+    const model = {
+      id: "openrouter/auto",
+      name: "OpenRouter Auto",
+      api: "openai-completions",
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 8192,
+    } satisfies Model<"openai-completions">;
+    const output = createAssistantOutput(model);
+
+    await testing.processOpenAICompletionsStream(
+      streamChunks([
+        {
+          id: "chatcmpl-openrouter-billed",
+          object: "chat.completion.chunk" as const,
+          created: 1775425651,
+          model: model.id,
+          choices: [],
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            total_tokens: 110,
+            cost: 0.0042,
+          },
+        },
+      ]),
+      output,
+      model,
+      { push: vi.fn() },
+    );
+
+    expect(output.usage.cost.total).toBe(0.0042);
+    expect(
+      (output.usage as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+    ).toStrictEqual({
+      schemaVersion: 1,
+      kind: "provider-billed-model-call-cost",
+      costMultiplier: 1,
     });
   });
 
@@ -5032,21 +5261,32 @@ describe("openai transport stream", () => {
       ],
     };
     const recoveredStream = streamChunks([]);
+    const encryptedContentError = new OpenAI.BadRequestError(
+      400,
+      {
+        code: "thinking_signature_invalid",
+        message:
+          "The encrypted content for item rs_prior could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+        type: "invalid_request_error",
+      },
+      undefined,
+      new Headers(),
+    );
+    const model = {
+      id: "gpt-5.5",
+      name: "GPT-5.5",
+      api: "openai-responses",
+      provider: "openai",
+      baseUrl: "https://api.openai.com/v1",
+      reasoning: true,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200_000,
+      maxTokens: 8192,
+    } satisfies Model<"openai-responses">;
     const create = vi
       .fn()
-      .mockRejectedValueOnce(
-        new OpenAI.BadRequestError(
-          400,
-          {
-            code: "thinking_signature_invalid",
-            message:
-              "The encrypted content for item rs_prior could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
-            type: "invalid_request_error",
-          },
-          undefined,
-          new Headers(),
-        ),
-      )
+      .mockRejectedValueOnce(encryptedContentError)
       .mockResolvedValueOnce(recoveredStream);
 
     await expect(
@@ -5054,18 +5294,7 @@ describe("openai transport stream", () => {
         client: { responses: { create } } as never,
         request: request as never,
         requestOptions: undefined,
-        model: {
-          id: "gpt-5.5",
-          name: "GPT-5.5",
-          api: "openai-responses",
-          provider: "openai",
-          baseUrl: "https://api.openai.com/v1",
-          reasoning: true,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 200_000,
-          maxTokens: 8192,
-        },
+        model,
       }),
     ).resolves.toBe(recoveredStream);
 
@@ -5083,6 +5312,18 @@ describe("openai transport stream", () => {
         request.input[2],
       ],
     });
+
+    const noRetryCreate = vi.fn().mockRejectedValueOnce(encryptedContentError);
+    await expect(
+      testing.createResponsesStreamWithEncryptedContentRetry({
+        client: { responses: { create: noRetryCreate } } as never,
+        request: request as never,
+        requestOptions: undefined,
+        model,
+        allowRetry: false,
+      }),
+    ).rejects.toBe(encryptedContentError);
+    expect(noRetryCreate).toHaveBeenCalledTimes(1);
   });
 
   it("normalizes overlong Copilot Responses replay tool ids before dispatch", () => {

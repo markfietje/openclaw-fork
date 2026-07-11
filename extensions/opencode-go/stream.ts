@@ -2,6 +2,7 @@
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import {
   createDeepSeekV4OpenAICompatibleThinkingWrapper,
+  preserveProviderDispatchObservableStreamFn,
   streamWithPayloadPatch,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { isOpencodeGoKimiNoReasoningModelId } from "./provider-catalog.js";
@@ -39,12 +40,17 @@ export function createOpencodeGoKimiNoReasoningWrapper(
     return undefined;
   }
   const underlying = baseStreamFn;
-  return (model, context, options) => {
+  const wrapped: NonNullable<ProviderWrapStreamFnContext["streamFn"]> = (
+    model,
+    context,
+    options,
+  ) => {
     if (model.provider !== "opencode-go" || !isOpencodeGoKimiNoReasoningModelId(model.id)) {
       return underlying(model, context, options);
     }
     return streamWithPayloadPatch(underlying, model, context, options, stripReasoningParams);
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 export function createOpencodeGoWrapper(
@@ -60,9 +66,12 @@ export function createOpencodeGoWrapper(
   // Outermost layer: provider-owned stalled SSE termination so the underlying
   // OpenAI SDK request is aborted at the raw opencode-go boundary instead of
   // waiting for the shared runtime stuck-session recovery.
-  return createOpencodeGoStalledStreamWrapper(deepSeekWrapped, {
-    provider: "opencode-go",
-    idleTimeoutMs: OPENCODE_GO_STREAM_IDLE_TIMEOUT_MS_DEFAULT,
-    firstEventTimeoutMs: OPENCODE_GO_STREAM_FIRST_EVENT_TIMEOUT_MS_DEFAULT,
-  });
+  return preserveProviderDispatchObservableStreamFn(
+    createOpencodeGoStalledStreamWrapper(deepSeekWrapped, {
+      provider: "opencode-go",
+      idleTimeoutMs: OPENCODE_GO_STREAM_IDLE_TIMEOUT_MS_DEFAULT,
+      firstEventTimeoutMs: OPENCODE_GO_STREAM_FIRST_EVENT_TIMEOUT_MS_DEFAULT,
+    }),
+    deepSeekWrapped,
+  );
 }

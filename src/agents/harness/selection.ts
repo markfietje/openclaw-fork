@@ -23,7 +23,7 @@ import type {
 import { isCliRuntimeAliasForProvider } from "../model-runtime-aliases.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { expandToolGroups, mergeAlsoAllowPolicy, normalizeToolName } from "../tool-policy.js";
-import { createOpenClawAgentHarness } from "./builtin-openclaw.js";
+import { createOpenClawAgentHarness, isBuiltinOpenClawAgentHarness } from "./builtin-openclaw.js";
 import { MissingAgentHarnessError } from "./errors.js";
 import { runAgentHarnessLifecycleAttempt } from "./lifecycle.js";
 import {
@@ -361,8 +361,9 @@ export async function runAgentHarnessAttempt(
     agentHarnessRuntimeOverride: params.agentHarnessRuntimeOverride,
   });
   const harness = selection.harness;
-  const attemptParams =
-    harness.id === "openclaw" ? params : applyPluginHarnessDenyAllToolPolicy(params);
+  const attemptParams = isBuiltinOpenClawAgentHarness(harness)
+    ? params
+    : applyPluginHarnessDenyAllToolPolicy(params);
   logAgentHarnessSelection(selection, {
     provider: params.provider,
     modelId: params.modelId,
@@ -370,7 +371,7 @@ export async function runAgentHarnessAttempt(
     agentId: params.agentId,
   });
   const runAttempt = () => runAgentHarnessLifecycleAttempt(harness, attemptParams);
-  if (harness.id === "openclaw") {
+  if (isBuiltinOpenClawAgentHarness(harness)) {
     return await runWithDiagnosticTraceContext(harnessTrace, runAttempt);
   }
 

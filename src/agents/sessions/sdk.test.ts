@@ -3,6 +3,7 @@
 import { Type } from "typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context, Model, SimpleStreamOptions } from "../../llm/types.js";
+import { USAGE_BUDGET_OPERATION_ID_KEY } from "../compaction-usage-accounting.js";
 
 const thinkingMocks = vi.hoisted(() => ({
   resolveThinkingDefaultForModel: vi.fn(() => "medium"),
@@ -12,22 +13,35 @@ const streamMocks = vi.hoisted(() => ({
     (_model: Model, _context: Context, _options?: SimpleStreamOptions) => "stream",
   ),
 }));
+const configMocks = vi.hoisted(() => ({
+  loadConfig: vi.fn(() => ({})),
+}));
 
 vi.mock("../../auto-reply/thinking.js", () => ({
   resolveThinkingDefaultForModel: thinkingMocks.resolveThinkingDefaultForModel,
 }));
+vi.mock("../../config/config.js", () => ({
+  loadConfig: configMocks.loadConfig,
+}));
 vi.mock("../../llm/stream.js", () => ({
   streamSimple: streamMocks.streamSimple,
 }));
+import { createAgentSessionFromServices } from "./agent-session-services.js";
 import { AuthStorage } from "./auth-storage.js";
 import { createExtensionRuntime } from "./extensions/loader.js";
 import type { LoadExtensionsResult, ToolDefinition } from "./extensions/types.js";
 import { ModelRegistry } from "./model-registry.js";
 import type { ResourceLoader } from "./resource-loader.js";
+import { AGENT_SESSION_MODEL_CALL_USAGE_BUDGET_ENFORCEMENT } from "./sdk-usage-budget-internal.js";
 import { createAgentSession } from "./sdk.js";
 import { SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 import { createSyntheticSourceInfo } from "./source-info.js";
+
+beforeEach(() => {
+  configMocks.loadConfig.mockReset();
+  configMocks.loadConfig.mockReturnValue({});
+});
 
 const testModel: Model = {
   id: "test-model",
@@ -244,6 +258,156 @@ describe("createAgentSession attribution headers", () => {
 });
 
 describe("createAgentSession tool defaults", () => {
+  it("rejects active usage budgets because public SDK sessions do not enforce them", async () => {
+    await expect(
+      createAgentSession({
+        model: testModel,
+        config: {
+          agents: {
+            defaults: {
+              usageBudget: {
+                daily: { tokens: 1 },
+              },
+            },
+          },
+        },
+        resourceLoader: createEmptyResourceLoader(),
+        sessionManager: SessionManager.inMemory(),
+        settingsManager: SettingsManager.inMemory(),
+        modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        harnessId: "agent-session-sdk",
+        reason: "unsupported_harness",
+      },
+    });
+  });
+
+  it("rejects forgeable model-call enforcement markers", async () => {
+    await expect(
+      createAgentSession({
+        model: testModel,
+        config: {
+          agents: {
+            defaults: {
+              usageBudget: {
+                daily: { tokens: 1 },
+              },
+            },
+          },
+        },
+        usageBudgetEnforcement: "model-call",
+        resourceLoader: createEmptyResourceLoader(),
+        sessionManager: SessionManager.inMemory(),
+        settingsManager: SettingsManager.inMemory(),
+        modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
+      } as Parameters<typeof createAgentSession>[0] & { usageBudgetEnforcement: string }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        harnessId: "agent-session-sdk",
+        reason: "unsupported_harness",
+      },
+    });
+  });
+
+  it("rejects active usage budgets loaded from canonical config when public session omits config", async () => {
+    configMocks.loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 1 },
+          },
+        },
+      },
+    });
+
+    await expect(
+      createAgentSession({
+        model: testModel,
+        agentId: "main",
+        resourceLoader: createEmptyResourceLoader(),
+        sessionManager: SessionManager.inMemory(),
+        settingsManager: SettingsManager.inMemory(),
+        modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        harnessId: "agent-session-sdk",
+        reason: "unsupported_harness",
+      },
+    });
+    expect(configMocks.loadConfig).toHaveBeenCalledWith({ skipPluginValidation: true });
+  });
+
+  it("rejects active usage budgets through the public service-backed factory", async () => {
+    const authStorage = AuthStorage.inMemory();
+    const settingsManager = SettingsManager.inMemory();
+    const modelRegistry = ModelRegistry.inMemory(authStorage);
+
+    await expect(
+      createAgentSessionFromServices({
+        services: {
+          cwd: process.cwd(),
+          agentDir: "/tmp/agent",
+          authStorage,
+          settingsManager,
+          modelRegistry,
+          resourceLoader: createEmptyResourceLoader(),
+          diagnostics: [],
+        },
+        sessionManager: SessionManager.inMemory(),
+        model: testModel,
+        config: {
+          agents: {
+            defaults: {
+              usageBudget: {
+                daily: { tokens: 1 },
+              },
+            },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        harnessId: "agent-session-sdk",
+        reason: "unsupported_harness",
+      },
+    });
+  });
+
+  it("allows active usage budgets with the private model-call enforcement token", async () => {
+    const { session } = await createAgentSession({
+      model: testModel,
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 1 },
+            },
+          },
+        },
+      },
+      usageBudgetEnforcement: AGENT_SESSION_MODEL_CALL_USAGE_BUDGET_ENFORCEMENT,
+      resourceLoader: createEmptyResourceLoader(),
+      sessionManager: SessionManager.inMemory(),
+      settingsManager: SettingsManager.inMemory(),
+      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
+    } as Parameters<typeof createAgentSession>[0] & {
+      usageBudgetEnforcement: typeof AGENT_SESSION_MODEL_CALL_USAGE_BUDGET_ENFORCEMENT;
+    });
+
+    expect(session.agent.state.model).toBe(testModel);
+  });
+
   it("forwards max thinking budgets from settings to the agent", async () => {
     const { session } = await createAgentSession({
       model: testModel,
@@ -381,6 +545,69 @@ describe("createAgentSession tool defaults", () => {
 
     expect(events).toEqual(["lock:start", "lock:end"]);
     expect(sessionManager.getEntries().some((entry) => entry.type === "message")).toBe(true);
+  });
+
+  it("preserves usage-budget operation ids when message_end hooks replace assistant messages", async () => {
+    const operationId = "model-call:message-end-rewrite";
+    const handlers = new Map<string, Array<(...args: unknown[]) => Promise<unknown>>>([
+      [
+        "message_end",
+        [
+          async (event) => {
+            const message = (event as { message: Record<string, unknown> }).message;
+            return {
+              message: {
+                ...message,
+                content: [{ type: "text", text: "rewritten" }],
+              },
+            };
+          },
+        ],
+      ],
+    ]);
+    const sessionManager = SessionManager.inMemory();
+    const { session } = await createAgentSession({
+      model: testModel,
+      resourceLoader: createResourceLoaderWithHandlers(handlers),
+      sessionManager,
+      settingsManager: SettingsManager.inMemory(),
+      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
+    });
+
+    const assistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "original" }],
+      api: testModel.api,
+      provider: testModel.provider,
+      model: testModel.id,
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+      [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+    };
+    const handleAgentEvent = (
+      session as unknown as { handleAgentEvent(event: unknown): Promise<void> }
+    )["handleAgentEvent"];
+
+    await handleAgentEvent({ type: "message_end", message: assistantMessage });
+
+    expect(assistantMessage[USAGE_BUDGET_OPERATION_ID_KEY]).toBe(operationId);
+    expect(assistantMessage.content).toEqual([{ type: "text", text: "rewritten" }]);
+    const persisted = sessionManager.getEntries().find((entry) => entry.type === "message");
+    expect(persisted?.type).toBe("message");
+    if (persisted?.type !== "message") {
+      throw new Error("expected persisted message");
+    }
+    expect(
+      (persisted.message as unknown as Record<string, unknown>)[USAGE_BUDGET_OPERATION_ID_KEY],
+    ).toBe(operationId);
   });
 
   it("runs write-capable tool hooks under the configured write lock", async () => {

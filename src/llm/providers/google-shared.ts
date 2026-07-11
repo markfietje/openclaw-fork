@@ -438,7 +438,7 @@ export async function runGoogleGenerateContentLifecycle<T extends GoogleApiType>
   stream: AssistantMessageEventStream;
   model: Model<T>;
   output: AssistantMessage;
-  options?: Pick<StreamOptions, "signal" | "onPayload">;
+  options?: Pick<StreamOptions, "signal" | "onPayload" | "onProviderDispatch">;
   createClient: () => GoogleGenerateContentClient;
   buildParams: () => GenerateContentParameters;
   nextToolCallId: (name: string | undefined) => string;
@@ -452,6 +452,7 @@ export async function runGoogleGenerateContentLifecycle<T extends GoogleApiType>
     if (nextParams !== undefined) {
       requestParams = nextParams as GenerateContentParameters;
     }
+    options?.onProviderDispatch?.();
     const googleStream = await client.models.generateContentStream(requestParams);
     await consumeGoogleGenerateContentStream({
       chunks: googleStream,

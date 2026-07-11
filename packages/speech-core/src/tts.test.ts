@@ -1221,6 +1221,67 @@ describe("speech-core native voice-note routing", () => {
     });
   });
 
+  it("uses agent-scoped TTS config for telephony synthesis", async () => {
+    const synthesizeTelephonyMock = vi.fn(async (_request: SpeechTelephonySynthesisRequest) => ({
+      audioBuffer: Buffer.from("voice"),
+      outputFormat: "pcm",
+      sampleRate: 24_000,
+    }));
+    installSpeechProviders([
+      createMockSpeechProvider("mock", {
+        synthesizeTelephony: synthesizeTelephonyMock,
+      }),
+    ]);
+
+    const result = await textToSpeechTelephony({
+      text: "Use the reader telephony voice.",
+      cfg: {
+        messages: {
+          tts: {
+            enabled: true,
+            provider: "mock",
+            providers: {
+              mock: {
+                modelId: "default-telephony-model",
+                speakerVoice: "default-voice",
+              },
+            },
+          },
+        },
+        agents: {
+          list: [
+            {
+              id: "reader",
+              tts: {
+                providers: {
+                  mock: {
+                    modelId: "reader-telephony-model",
+                    speakerVoice: "reader-voice",
+                  },
+                },
+              },
+            },
+          ],
+        },
+      } satisfies OpenClawConfig,
+      agentId: "reader",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.providerModel).toBe("reader-telephony-model");
+    expect(result.providerVoice).toBe("reader-voice");
+    const telephonyRequest = requireRecord(
+      requireFirstCallParam(synthesizeTelephonyMock.mock.calls, "agent telephony synthesis"),
+      "agent telephony synthesis request",
+    );
+    expect(telephonyRequest.providerConfig).toMatchObject({
+      modelId: "reader-telephony-model",
+      speakerVoice: "reader-voice",
+      voice: "reader-voice",
+      voiceName: "reader-voice",
+    });
+  });
+
   it("uses provider defaults when fallback policy allows missing persona bindings", async () => {
     await synthesizeSpeech({
       text: "Use neutral provider defaults.",

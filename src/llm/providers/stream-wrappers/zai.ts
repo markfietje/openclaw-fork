@@ -1,4 +1,5 @@
 // Z.ai stream wrapper normalizes Z.ai provider stream chunks.
+import { preserveProviderDispatchObservableStreamFn } from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 import type { StreamFn } from "../../../agents/runtime/index.js";
 import { streamSimple } from "../../stream.js";
 import { streamWithPayloadPatch } from "./stream-payload-utils.js";
@@ -14,7 +15,7 @@ export function createToolStreamWrapper(
   enabled: boolean,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (!enabled) {
       return underlying(model, context, options);
     }
@@ -23,6 +24,7 @@ export function createToolStreamWrapper(
       payloadObj.tool_stream = true;
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** @deprecated Z.ai provider-owned stream helper; do not use from third-party plugins. */

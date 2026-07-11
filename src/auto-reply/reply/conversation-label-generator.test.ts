@@ -106,6 +106,27 @@ describe("generateConversationLabel", () => {
     });
   });
 
+  it("skips generated labels when usage budgets are enabled", async () => {
+    const label = await generateConversationLabel({
+      userMessage: "Need help with invoices",
+      prompt: "Generate a label",
+      cfg: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 100 },
+            },
+          },
+        },
+      },
+      agentId: "billing",
+    });
+
+    expect(label).toBeNull();
+    expect(resolveDefaultModelForAgent).not.toHaveBeenCalled();
+    expect(completeSimple).not.toHaveBeenCalled();
+  });
+
   it("passes the label prompt as systemPrompt and the user text as message content", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_710_000_000_000);

@@ -924,6 +924,25 @@ function findSchemaUnionKeywords(schema: unknown, pathLocal = "root"): string[] 
 }
 
 describe("image tool implicit imageModel config", () => {
+  it("fails closed before model-backed image analysis when usage budgets are active", async () => {
+    const imageTool = createImageTool({
+      agentDir: "/tmp/openclaw-agent-main",
+      deferAutoModelResolution: true,
+      usageBudgetUnsupportedReason: "Budgeted agents cannot use this tool.",
+    });
+
+    const result = await imageTool?.execute("call-1", { image: "/tmp/photo.png" });
+
+    expect(result?.content?.[0]).toEqual({
+      type: "text",
+      text: "Budgeted agents cannot use this tool.",
+    });
+    expect(result?.details).toEqual({
+      error: "usage_budget_unsupported_model_tool",
+      tool: "image",
+    });
+  });
+
   type Profiles = AuthProfileStore["profiles"];
   type ImplicitImageRoutingCase = {
     name: string;

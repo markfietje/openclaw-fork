@@ -10,6 +10,7 @@ import {
   type SessionHeader,
 } from "../../agents/sessions/session-manager.js";
 import { derivePromptTokens } from "../../agents/usage.js";
+import { resolveSessionFileUsageFamilyKey } from "../../config/sessions/artifacts.js";
 import {
   resolveSessionFilePath,
   resolveSessionFilePathOptions,
@@ -35,6 +36,7 @@ type ForkSourceTranscript = {
   appendParentId: string | null;
   appendMode?: "side";
   preserveLeafControl: boolean;
+  usageFamilyKey?: string;
   branchEntries: unknown[];
   labelsToWrite: Array<{ targetId: string; label: string; timestamp: string }>;
 };
@@ -201,9 +203,14 @@ async function readForkSourceTranscript(
   );
   const lastLeafUpdateNode = tree.nodes.findLast((node) => node.leafId !== undefined);
   const lastLeafUpdateEntry = lastLeafUpdateNode?.entry;
+  const usageFamilyKey = resolveSessionFileUsageFamilyKey({
+    header,
+    sessionFile: parentSessionFile,
+  });
   return {
     cwd: header?.cwd ?? process.cwd(),
     sessionDir: path.dirname(parentSessionFile),
+    ...(usageFamilyKey ? { usageFamilyKey } : {}),
     leafId,
     appendParentId: mergedPath.appendParentId,
     ...(lastLeafUpdateNode?.appendMode ? { appendMode: lastLeafUpdateNode.appendMode } : {}),
@@ -240,6 +247,7 @@ async function writeForkHeaderOnly(params: {
   parentSessionFile: string;
   sessionDir: string;
   cwd: string;
+  usageFamilyKey?: string;
 }): Promise<{ sessionId: string; sessionFile: string }> {
   const sessionId = crypto.randomUUID();
   const timestamp = new Date().toISOString();
@@ -252,6 +260,7 @@ async function writeForkHeaderOnly(params: {
     timestamp,
     cwd: params.cwd,
     parentSession: params.parentSessionFile,
+    ...(params.usageFamilyKey ? { usageFamilyKey: params.usageFamilyKey } : {}),
   } satisfies SessionHeader;
   await fs.mkdir(path.dirname(sessionFile), { recursive: true });
   await fs.writeFile(sessionFile, `${JSON.stringify(header)}\n`, {
@@ -291,6 +300,7 @@ async function writeBranchedSession(params: {
     timestamp,
     cwd: params.source.cwd,
     parentSession: params.parentSessionFile,
+    ...(params.source.usageFamilyKey ? { usageFamilyKey: params.source.usageFamilyKey } : {}),
   } satisfies SessionHeader;
   const leafEntry = params.source.preserveLeafControl
     ? {
@@ -340,6 +350,7 @@ export async function forkSessionFromParentRuntime(params: {
           parentSessionFile,
           sessionDir: source.sessionDir,
           cwd: source.cwd,
+          usageFamilyKey: source.usageFamilyKey,
         });
   } catch {
     return null;

@@ -1,9 +1,10 @@
 // Hook integration coverage for direct and queued embedded compaction.
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
-import { beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import {
   applyExtraParamsToAgentMock,
   applyAgentCompactionSettingsFromConfigMock,
+  buildEmbeddedExtensionFactoriesMock,
   buildEmbeddedSystemPromptMock,
   contextEngineCompactMock,
   createAgentSessionMock,
@@ -29,18 +30,22 @@ import {
   resolveSessionAgentIdMock,
   resolveSessionAgentIdsMock,
   rotateTranscriptAfterCompactionMock,
+  recordAgentUsageBudgetAdmissionResultMock,
   resetCompactHooksHarnessMocks,
   resetCompactSessionStateMocks,
   sessionAbortCompactionMock,
   sessionMessages,
   sessionCompactImpl,
   triggerInternalHook,
+  wrapStreamFnWithDiagnosticModelCallEventsMock,
 } from "./compact.hooks.harness.js";
 
 let compactEmbeddedAgentSessionDirect: typeof import("./compact.js").compactEmbeddedAgentSessionDirect;
 let compactEmbeddedAgentSession: typeof import("./compact.queued.js").compactEmbeddedAgentSession;
 let compactTesting: typeof import("./compact.js").testing;
 let onSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onSessionTranscriptUpdate;
+let clearRuntimeConfigSnapshot: typeof import("../../config/config.js").clearRuntimeConfigSnapshot;
+let setRuntimeConfigSnapshot: typeof import("../../config/config.js").setRuntimeConfigSnapshot;
 
 const TEST_SESSION_ID = "session-1";
 const TEST_SESSION_KEY = "agent:main:session-1";
@@ -188,10 +193,17 @@ beforeAll(async () => {
   compactEmbeddedAgentSession = loaded.compactEmbeddedAgentSession;
   compactTesting = loaded.testing;
   onSessionTranscriptUpdate = loaded.onSessionTranscriptUpdate;
+  ({ clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } =
+    await import("../../config/config.js"));
 });
 
 beforeEach(() => {
+  clearRuntimeConfigSnapshot();
   resetCompactHooksHarnessMocks();
+});
+
+afterEach(() => {
+  clearRuntimeConfigSnapshot();
 });
 
 describe("compactEmbeddedAgentSessionDirect hooks", () => {
@@ -232,6 +244,160 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
       config: undefined,
       workspaceDir: "/tmp/workspace",
     });
+  });
+
+  it("lets the compaction safeguard self-meter direct compaction model calls", async () => {
+    sessionCompactImpl.mockResolvedValueOnce({
+      summary: "summary",
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 120,
+      details: { ok: true },
+    });
+
+    const config = {
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 1_000 },
+          },
+          compaction: { mode: "safeguard" },
+        },
+      },
+    } as never;
+
+    const result = await compactEmbeddedAgentSessionDirect({
+      ...wrappedCompactionArgs(),
+      config,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(buildEmbeddedExtensionFactoriesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "main",
+      }),
+    );
+    const extensionFactoryParams = mockCallArg(buildEmbeddedExtensionFactoriesMock) as Record<
+      string,
+      unknown
+    >;
+    expect(extensionFactoryParams.meterCompactionSafeguardUsage).not.toBe(false);
+    const sessionOptions = mockCallArg(createAgentSessionMock) as Record<string, unknown>;
+    expect(String(sessionOptions.usageBudgetEnforcement)).toBe(
+      "Symbol(openclaw.agent-session.model-call-usage-budget-enforcement)",
+    );
+    expect(wrapStreamFnWithDiagnosticModelCallEventsMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        config,
+        agentId: "main",
+        transcriptPath: TEST_SESSION_FILE,
+      }),
+    );
+    expect(recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the runtime config snapshot before marking direct compaction model-call enforcement", async () => {
+    sessionCompactImpl.mockResolvedValueOnce({
+      summary: "summary",
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 120,
+      details: { ok: true },
+    });
+
+    const config = {
+      agents: {
+        defaults: {
+          usageBudget: {
+            daily: { tokens: 1_000 },
+          },
+          compaction: { mode: "safeguard" },
+        },
+      },
+    } as never;
+    setRuntimeConfigSnapshot(config);
+
+    const result = await compactEmbeddedAgentSessionDirect(wrappedCompactionArgs());
+
+    expect(result.ok).toBe(true);
+    const sessionOptions = mockCallArg(createAgentSessionMock) as Record<string, unknown>;
+    expect(sessionOptions.config).toBe(config);
+    expect(String(sessionOptions.usageBudgetEnforcement)).toBe(
+      "Symbol(openclaw.agent-session.model-call-usage-budget-enforcement)",
+    );
+    expect(wrapStreamFnWithDiagnosticModelCallEventsMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        config,
+        agentId: "main",
+        transcriptPath: TEST_SESSION_FILE,
+      }),
+    );
+  });
+
+  it("does not mark direct compaction model-call enforcement without resolved config", async () => {
+    sessionCompactImpl.mockResolvedValueOnce({
+      summary: "summary",
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 120,
+      details: { ok: true },
+    });
+
+    const result = await compactEmbeddedAgentSessionDirect(wrappedCompactionArgs());
+
+    expect(result.ok).toBe(true);
+    const sessionOptions = mockCallArg(createAgentSessionMock) as Record<string, unknown>;
+    expect(sessionOptions.config).toBeUndefined();
+    expect(sessionOptions.usageBudgetEnforcement).toBeUndefined();
+  });
+
+  it("does not aggregate-record direct compaction usage after a provider failure", async () => {
+    const usage = {
+      input: 11,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+    };
+    const compactionError = Object.assign(new Error("provider failed"), {
+      usage,
+      usageBudgetOperationId: "failed-direct-compaction-operation",
+    });
+    sessionCompactImpl.mockRejectedValueOnce(compactionError);
+
+    const result = await compactEmbeddedAgentSessionDirect({
+      ...wrappedCompactionArgs(),
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 1_000 },
+            },
+          },
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
+  });
+
+  it("does not record unknown usage for direct compaction cancellation without usage", async () => {
+    sessionCompactImpl.mockRejectedValueOnce(new Error("Compaction cancelled"));
+
+    const result = await compactEmbeddedAgentSessionDirect({
+      ...wrappedCompactionArgs(),
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 1_000 },
+            },
+          },
+        },
+      } as never,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(recordAgentUsageBudgetAdmissionResultMock).not.toHaveBeenCalled();
   });
 
   it("forwards gateway subagent binding opt-in during compaction bootstrap", async () => {

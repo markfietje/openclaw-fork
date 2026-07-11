@@ -41,6 +41,26 @@ sanctioned for this integration unless Anthropic publishes a new policy.
 Anthropic still does not expose a per-message dollar estimate that OpenClaw can
 show in `/usage full`.
 
+**Agent usage budgets**
+
+- `agents.defaults.usageBudget` and `agents.list[].usageBudget` can block future
+  model calls when an agent reaches configured daily or monthly token/spend
+  ceilings. Windows reset on UTC boundaries.
+- Token budgets rely on the same usage totals shown in cost summaries, with
+  completed calls durably recorded in a per-agent SQLite ledger so transcript
+  cleanup does not reset active budget windows. Spend budgets rely on local
+  pricing and fail closed when the selected model or prior in-window calls
+  cannot be priced. This avoids treating unknown costs as confident zero spend.
+- Custom `session.store` paths must put `{agentId}` in a directory component for
+  budget backfill; custom stores without an agent-scoped transcript directory
+  fail closed because transcript ownership is ambiguous.
+- Compaction summarization calls are checked and recorded as hidden accounting
+  usage so repeated compactions still advance the agent budget.
+- Budgets are enforced at the OpenClaw model-call wrapper. Harnesses and custom
+  provider streams without that per-call accounting boundary fail closed when a
+  budget is configured.
+- A denied turn returns a visible error and is not sent to the model provider.
+
 **CLI usage windows (provider quotas)**
 
 - `openclaw status --usage` and `openclaw channels list` show provider **usage windows**

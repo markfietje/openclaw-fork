@@ -66,12 +66,16 @@ function mergeTtsConfig(base: TtsConfig, override?: TtsConfig): TtsConfig {
   };
 }
 
-function resolveVoiceTtsConfig(params: { cfg: OpenClawConfig; override?: TtsConfig }): {
+function resolveVoiceTtsConfig(params: {
+  cfg: OpenClawConfig;
+  override?: TtsConfig;
+  agentId?: string;
+}): {
   cfg: OpenClawConfig;
   resolved: ResolvedTtsConfig;
 } {
   if (!params.override) {
-    return { cfg: params.cfg, resolved: resolveTtsConfig(params.cfg) };
+    return { cfg: params.cfg, resolved: resolveTtsConfig(params.cfg, params.agentId) };
   }
   const base = params.cfg.messages?.tts ?? {};
   const merged = mergeTtsConfig(base, params.override);
@@ -83,7 +87,7 @@ function resolveVoiceTtsConfig(params: { cfg: OpenClawConfig; override?: TtsConf
       tts: merged,
     },
   };
-  return { cfg, resolved: resolveTtsConfig(cfg) };
+  return { cfg, resolved: resolveTtsConfig(cfg, params.agentId) };
 }
 
 export async function transcribeVoiceAudio(params: {
@@ -94,6 +98,7 @@ export async function transcribeVoiceAudio(params: {
   const result = await getDiscordRuntime().mediaUnderstanding.transcribeAudioFile({
     filePath: params.filePath,
     cfg: params.cfg,
+    agentId: params.agentId,
     agentDir: resolveAgentDir(params.cfg, params.agentId),
     mime: "audio/wav",
   });
@@ -102,6 +107,7 @@ export async function transcribeVoiceAudio(params: {
 
 export async function synthesizeVoiceReplyAudio(params: {
   cfg: OpenClawConfig;
+  agentId: string;
   override?: TtsConfig;
   replyText: string;
   speakerLabel: string;
@@ -109,6 +115,7 @@ export async function synthesizeVoiceReplyAudio(params: {
   const { cfg: ttsCfg, resolved: ttsConfig } = resolveVoiceTtsConfig({
     cfg: params.cfg,
     override: params.override,
+    agentId: params.agentId,
   });
   const directive = parseTtsDirectives(params.replyText, ttsConfig.modelOverrides, {
     cfg: ttsCfg,
@@ -125,6 +132,7 @@ export async function synthesizeVoiceReplyAudio(params: {
   const streamResult = await runtime.tts.textToSpeechStream?.({
     text: speakText,
     cfg: ttsCfg,
+    agentId: params.agentId,
     channel: "discord",
     overrides: directive.overrides,
     disableFallback: true,
@@ -142,6 +150,7 @@ export async function synthesizeVoiceReplyAudio(params: {
   const result = await runtime.tts.textToSpeech({
     text: speakText,
     cfg: ttsCfg,
+    agentId: params.agentId,
     channel: "discord",
     overrides: directive.overrides,
   });

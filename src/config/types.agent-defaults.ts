@@ -125,6 +125,22 @@ export type AgentRunRetriesConfig = {
   max?: number;
 };
 
+export type AgentUsageBudgetWindowConfig = {
+  /** Maximum estimated USD spend allowed in this UTC reset window. */
+  usd?: number;
+  /** Maximum model-call tokens allowed in this UTC reset window. */
+  tokens?: number;
+};
+
+export type AgentUsageBudgetConfig = {
+  /** Set false on a per-agent entry to disable inherited usage budgets. */
+  enabled?: boolean;
+  /** Per-agent daily budget window, reset at 00:00 UTC. */
+  daily?: AgentUsageBudgetWindowConfig;
+  /** Per-agent monthly budget window, reset at 00:00 UTC on the first day. */
+  monthly?: AgentUsageBudgetWindowConfig;
+};
+
 export type CliBackendConfig = {
   /** CLI command to execute (absolute path or on PATH). */
   command: string;
@@ -306,6 +322,8 @@ export type AgentDefaultsConfig = {
   startupContext?: AgentStartupContextConfig;
   /** Focused context-budget overrides for high-volume injected/read surfaces. */
   contextLimits?: AgentContextLimitsConfig;
+  /** Agent-scoped model-call usage budgets enforced before provider dispatch. */
+  usageBudget?: AgentUsageBudgetConfig;
   /** Time format in system prompt: auto (OS preference), 12-hour, or 24-hour. */
   timeFormat?: "auto" | "12" | "24";
   /**

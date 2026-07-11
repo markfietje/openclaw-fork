@@ -4,6 +4,7 @@ import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { modelKey } from "../../agents/model-ref-shared.js";
 import { normalizeModelRef } from "../../agents/model-selection.js";
+import { hasAnyActiveAgentUsageBudgetConfig } from "../../agents/usage-budget.js";
 import type { NormalizedUsage, UsageLike } from "../../agents/usage.js";
 import { normalizeUsage } from "../../agents/usage.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -121,6 +122,11 @@ async function resolveAgentId(params: {
       throw new Error("Plugin LLM completion cannot override the target agent.");
     }
     return requestedAgentId;
+  }
+  if (hasAnyActiveAgentUsageBudgetConfig(params.cfg)) {
+    throw new Error(
+      "Plugin LLM completion requires an explicit agentId or active session agent when usage budgets are configured.",
+    );
   }
   const { resolveDefaultAgentId } = await import("../../agents/agent-scope.js");
   return resolveDefaultAgentId(params.cfg);
@@ -446,6 +452,13 @@ export function createRuntimeLlm(options: CreateRuntimeLlmOptions = {}): PluginR
           maxTokens: finiteOption(params.maxTokens),
           temperature: finiteOption(params.temperature),
           signal: params.signal,
+        },
+        usageBudget: {
+          config: cfg,
+          agentId,
+          provider: prepared.selection.provider,
+          model: prepared.selection.modelId,
+          recordIdPrefix: "runtime-llm",
         },
       });
 

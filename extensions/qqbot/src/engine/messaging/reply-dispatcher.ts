@@ -47,6 +47,7 @@ interface TTSProvider {
     cfg: unknown;
     channel: string;
     accountId?: string;
+    agentId?: string;
   }): Promise<{
     success: boolean;
     audioPath?: string;
@@ -77,6 +78,7 @@ interface MessageTarget {
 interface ReplyContext extends OutboundMediaAccessContext {
   target: MessageTarget;
   account: GatewayAccount;
+  agentId?: string;
   cfg: unknown;
   log?: {
     info: (msg: string) => void;
@@ -519,6 +521,7 @@ export async function sendTextAsVoiceReply(
       cfg,
       channel: "qqbot",
       accountId: account.accountId,
+      agentId: ctx.agentId,
     });
     if (!ttsResult.success || !ttsResult.audioPath) {
       log?.error(`TTS failed: ${ttsResult.error ?? "unknown"}`);

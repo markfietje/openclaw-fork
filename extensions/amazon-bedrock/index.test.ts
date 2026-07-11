@@ -7,6 +7,12 @@ import {
   buildPluginApi,
   registerSingleProviderPlugin,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
+import {
+  isProviderDispatchObservableStreamFn,
+  markProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import { withEnvAsync } from "openclaw/plugin-sdk/test-env";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { supportsBedrockPromptCaching } from "./bedrock-options.js";
@@ -672,6 +678,20 @@ describe("amazon-bedrock provider plugin", () => {
     expectWrappedResultFields(result, { region: "eu-central-1" });
   });
 
+  it("preserves dispatch observability through region and payload wrappers", async () => {
+    const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
+    const streamFn = vi.fn(spyStreamFn);
+    markProviderDispatchObservableStreamFn(streamFn as never);
+
+    const wrapped = provider.wrapStreamFn?.({
+      provider: "amazon-bedrock",
+      modelId: APP_INFERENCE_PROFILE_ARN,
+      streamFn,
+    } as never);
+
+    expect(isProviderDispatchObservableStreamFn(wrapped as never)).toBe(true);
+  });
+
   it("omits temperature for non-US Bedrock Opus 4.7 regional profiles", async () => {
     const provider = await registerSingleProviderPlugin(amazonBedrockPlugin);
     const wrapped = provider.wrapStreamFn?.({
@@ -1090,6 +1110,66 @@ describe("amazon-bedrock provider plugin", () => {
         { service_tier: "priority" },
       );
       expectPayloadServiceTier(result, "priority");
+    });
+
+    it("uses explicit service-tier multipliers for completed budget accounting", async () => {
+      const provider = await registerWithConfig(undefined);
+      const wrapped = provider.wrapStreamFn?.({
+        provider: "amazon-bedrock",
+        modelId: NON_ANTHROPIC_MODEL,
+        streamFn: spyStreamFn,
+        extraParams: { serviceTier: "priority" },
+      } as never);
+
+      expect(wrapped).toBeTypeOf("function");
+      expect(
+        resolveProviderDispatchCostMultiplierForStreamFn({
+          streamFn: wrapped!,
+          model: CONVERSE_MODEL_DESCRIPTOR,
+          context: { messages: [] } as never,
+          options: {},
+        }),
+      ).toBe(1.75);
+    });
+
+    it("uses the configured priced tier for budget reservations", async () => {
+      const provider = await registerWithConfig(undefined);
+      const wrapped = provider.wrapStreamFn?.({
+        provider: "amazon-bedrock",
+        modelId: NON_ANTHROPIC_MODEL,
+        streamFn: spyStreamFn,
+        extraParams: { serviceTier: "flex" },
+      } as never);
+
+      expect(wrapped).toBeTypeOf("function");
+      expect(
+        resolveProviderDispatchReservationCostMultiplierForStreamFn({
+          streamFn: wrapped!,
+          model: CONVERSE_MODEL_DESCRIPTOR,
+          context: { messages: [] } as never,
+          options: {},
+        }),
+      ).toBe(0.5);
+    });
+
+    it("marks capacity-billed service tiers unpriceable for budget reservations", async () => {
+      const provider = await registerWithConfig(undefined);
+      const wrapped = provider.wrapStreamFn?.({
+        provider: "amazon-bedrock",
+        modelId: NON_ANTHROPIC_MODEL,
+        streamFn: spyStreamFn,
+        extraParams: { serviceTier: "reserved" },
+      } as never);
+
+      expect(wrapped).toBeTypeOf("function");
+      expect(
+        resolveProviderDispatchReservationCostMultiplierForStreamFn({
+          streamFn: wrapped!,
+          model: CONVERSE_MODEL_DESCRIPTOR,
+          context: { messages: [] } as never,
+          options: {},
+        }),
+      ).toBeUndefined();
     });
 
     it("injects serviceTier for all valid tier names", async () => {

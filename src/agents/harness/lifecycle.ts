@@ -21,6 +21,11 @@ import {
   runWithDiagnosticTraceContext,
   type DiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
+import {
+  buildUnsupportedAgentUsageBudgetHarnessError,
+  resolveAgentUsageBudgetConfig,
+} from "../usage-budget.js";
+import { isBuiltinOpenClawAgentHarness } from "./builtin-openclaw.js";
 import { applyAgentHarnessResultClassification } from "./result-classification.js";
 import type {
   AgentHarness,
@@ -95,7 +100,7 @@ function agentHarnessRunOutcome(result: AgentHarnessAttemptResult): DiagnosticHa
 }
 
 function shouldEmitAgentRunDiagnostics(harness: AgentHarness): boolean {
-  return harness.id !== "openclaw";
+  return !isBuiltinOpenClawAgentHarness(harness);
 }
 
 function diagnosticChannel(params: AgentHarnessAttemptParams): string | undefined {
@@ -119,6 +124,9 @@ function agentRunDiagnosticBase(params: AgentHarnessAttemptParams, trace: Diagno
 function agentRunCompletion(result: AgentHarnessAttemptResult): AgentRunCompletion {
   if (result.promptErrorSource === "hook:before_agent_run") {
     return { outcome: "blocked", blockedBy: "before_agent_run" };
+  }
+  if (result.promptErrorSource === "budget") {
+    return { outcome: "blocked", blockedBy: "usage_budget" };
   }
   if (result.promptError) {
     return { outcome: "error", error: result.promptError };
@@ -198,6 +206,69 @@ function emitAgentHarnessRunError(params: {
   });
 }
 
+function buildUsageBudgetBlockedAttemptResult(params: {
+  harness: AgentHarness;
+  attemptParams: AgentHarnessAttemptParams;
+  error: unknown;
+  trace?: DiagnosticTraceContext;
+}): AgentHarnessAttemptResult {
+  const { harness, attemptParams, error, trace } = params;
+  return {
+    aborted: false,
+    externalAbort: false,
+    timedOut: false,
+    idleTimedOut: false,
+    timedOutDuringCompaction: false,
+    timedOutDuringToolExecution: false,
+    promptError: error,
+    promptErrorSource: "budget",
+    sessionIdUsed: attemptParams.sessionId,
+    sessionFileUsed: attemptParams.sessionFile,
+    diagnosticTrace: trace ? freezeDiagnosticTraceContext(trace) : undefined,
+    agentHarnessId: harness.id,
+    messagesSnapshot: [],
+    assistantTexts: [],
+    toolMetas: [],
+    lastAssistant: undefined,
+    didSendViaMessagingTool: false,
+    messagingToolSentTexts: [],
+    messagingToolSentMediaUrls: [],
+    messagingToolSentTargets: [],
+    cloudCodeAssistFormatError: false,
+    replayMetadata: { hadPotentialSideEffects: false, replaySafe: true },
+    itemLifecycle: { startedCount: 0, completedCount: 0, activeCount: 0 },
+  };
+}
+
+async function checkAgentHarnessUsageBudgetAdmission(params: {
+  harness: AgentHarness;
+  attemptParams: AgentHarnessAttemptParams;
+  trace?: DiagnosticTraceContext;
+}): Promise<AgentHarnessAttemptResult | undefined> {
+  if (!shouldEmitAgentRunDiagnostics(params.harness)) {
+    return undefined;
+  }
+  if (
+    !resolveAgentUsageBudgetConfig({
+      config: params.attemptParams.config,
+      agentId: params.attemptParams.agentId,
+    })
+  ) {
+    return undefined;
+  }
+  return buildUsageBudgetBlockedAttemptResult({
+    harness: params.harness,
+    attemptParams: params.attemptParams,
+    error: buildUnsupportedAgentUsageBudgetHarnessError({
+      agentId: params.attemptParams.agentId,
+      provider: params.attemptParams.provider,
+      model: params.attemptParams.modelId,
+      harnessId: params.harness.id,
+    }),
+    trace: params.trace,
+  });
+}
+
 /** Runs one harness attempt with diagnostics, tracing, and result classification. */
 export async function runAgentHarnessLifecycleAttempt(
   harness: AgentHarness,
@@ -244,6 +315,14 @@ export async function runAgentHarnessLifecycleAttempt(
       });
     }
     const runAndClassify = async () => {
+      const budgetBlockedResult = await checkAgentHarnessUsageBudgetAdmission({
+        harness,
+        attemptParams: params,
+        trace: agentRunTrace ?? activeHarnessTrace,
+      });
+      if (budgetBlockedResult) {
+        return budgetBlockedResult;
+      }
       phase = "send";
       const rawResult = await harness.runAttempt(params);
       phase = "resolve";

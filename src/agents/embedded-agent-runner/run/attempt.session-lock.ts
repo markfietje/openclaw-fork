@@ -26,6 +26,7 @@ import type {
   SessionMessageEntry,
 } from "../../sessions/session-manager.js";
 import { resolveEmbeddedSessionFileKey } from "../session-file-key.js";
+import { cancelObservedModelCallStream } from "./attempt.model-diagnostic-events.js";
 
 type SessionLock = Awaited<ReturnType<typeof acquireSessionWriteLock>>;
 type AcquireSessionWriteLock = typeof acquireSessionWriteLock;
@@ -2070,9 +2071,12 @@ export function installPromptSubmissionLockRelease(params: {
   const wrappedStreamFn: PromptReleaseStreamFn = async (...args: unknown[]) => {
     await params.waitForSessionEvents(params.session);
     await params.releaseForPrompt();
+    let promptResult: unknown;
+    let hasPromptResult = false;
+    let promptError: unknown;
     try {
       if (params.sessionFile && params.withSessionWriteLock) {
-        return await withOwnedSessionTranscriptWrites(
+        promptResult = await withOwnedSessionTranscriptWrites(
           {
             sessionFile: params.sessionFile,
             sessionKey: params.sessionKey,
@@ -2082,12 +2086,39 @@ export function installPromptSubmissionLockRelease(params: {
           },
           async () => await originalStreamFn(...args),
         );
+        hasPromptResult = true;
+      } else {
+        promptResult = await originalStreamFn(...args);
+        hasPromptResult = true;
       }
-      return await originalStreamFn(...args);
-    } finally {
+    } catch (error) {
+      promptError = error;
+    }
+
+    try {
       await params.waitForSessionEvents(params.session);
       await params.reacquireAfterPrompt();
+    } catch (error) {
+      if (hasPromptResult) {
+        try {
+          // The stream has not reached the agent loop yet; close observed model-call
+          // streams here so budget admission is not stranded behind the lost result.
+          await cancelObservedModelCallStream(promptResult);
+        } catch (cleanupError) {
+          const failure = new Error(
+            "Failed to reacquire prompt lock and clean up returned model stream",
+            { cause: cleanupError },
+          );
+          Object.assign(failure, { errors: [error, cleanupError] });
+          throw failure;
+        }
+      }
+      throw toErrorObject(error, "Failed to reacquire prompt lock");
     }
+    if (promptError) {
+      throw toErrorObject(promptError, "Prompt submission failed");
+    }
+    return promptResult;
   };
   wrappedStreamFn["__openclawSessionLockPromptReleaseInstalled"] = true;
   agent.streamFn = wrappedStreamFn;

@@ -3,11 +3,22 @@ import nodeFs from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  USAGE_BUDGET_OPERATION_ID_KEY,
+} from "../agents/compaction-usage-accounting.js";
+import {
+  checkAgentUsageBudgetAdmission,
+  recordAgentUsageBudgetAdmissionResult,
+} from "../agents/usage-budget.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   setGatewayModelPricingForTest,
   clearGatewayModelPricingCacheState,
 } from "../gateway/model-pricing-cache-state.js";
+import { USAGE_BUDGET_RECORDED_COST_METADATA_KEY } from "../shared/usage-budget-recorded-cost.js";
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import * as usageFormat from "../utils/usage-format.js";
@@ -152,6 +163,1668 @@ describe("session cost usage", () => {
       expect(populated).toHaveLength(1);
       expect(summary.totals.totalTokens).toBe(50);
       expect(summary.totals.totalCost).toBeCloseTo(0.03003, 5);
+    });
+  });
+
+  it("counts hidden compaction usage accounting entries", async () => {
+    const root = await makeSessionCostRoot("cost-compaction-usage");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    const entry = {
+      type: "custom",
+      customType: COMPACTION_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      timestamp: new Date().toISOString(),
+      data: {
+        schemaVersion: 1,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 40,
+            output: 10,
+            cacheRead: 5,
+            cacheWrite: 0,
+            totalTokens: 55,
+            cost: { total: 0.05 },
+          },
+        },
+      },
+    };
+
+    await fs.writeFile(sessionFile, transcriptText("sess-1", entry), "utf-8");
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(55);
+      expect(summary.totals.totalCost).toBe(0.05);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(55);
+      expect(session?.messageCounts).toEqual({
+        total: 0,
+        user: 0,
+        assistant: 0,
+        toolCalls: 0,
+        toolResults: 0,
+        errors: 0,
+      });
+      expect(session?.latency).toBeUndefined();
+    });
+  });
+
+  it("counts generic model-call usage accounting entries", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-usage");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    const entry = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      timestamp: new Date().toISOString(),
+      data: {
+        schemaVersion: 1,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 30,
+            output: 20,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 50,
+            cost: { total: 0.05 },
+          },
+        },
+      },
+    };
+
+    await fs.writeFile(sessionFile, transcriptText("sess-1", entry), "utf-8");
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(50);
+      expect(summary.totals.totalCost).toBe(0.05);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(50);
+      expect(session?.messageCounts?.total).toBe(0);
+    });
+  });
+
+  it("does not double count model-call accounting once canonical assistant usage is visible", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = new Date(Date.now() - 1000);
+
+    const bridge = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-1:usage",
+      timestamp: timestamp.toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 30,
+            output: 20,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 50,
+            cost: { total: 0.05 },
+          },
+        },
+      },
+    };
+    const assistant = {
+      type: "message",
+      id: "assistant-1",
+      timestamp: new Date(timestamp.getTime() + 10).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 30,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 50,
+          cost: { total: 0.05 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [JSON.stringify({ type: "session", version: 1, id: "sess-1" }), bridge, assistant, ""]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(50);
+      expect(summary.totals.totalCost).toBe(0.05);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(50);
+      expect(session?.messageCounts?.total).toBe(1);
+    });
+  });
+
+  it("deduplicates usage rows shared by transcripts and the durable budget ledger", async () => {
+    const root = await makeSessionCostRoot("cost-ledger-transcript-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestampMs = Date.now() - 1000;
+    const usage = {
+      input: 30,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 50,
+      cost: { total: 0.05 },
+    };
+    const assistant = {
+      type: "message",
+      id: "assistant-1",
+      timestamp: new Date(timestampMs).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage,
+      },
+    };
+
+    await fs.writeFile(sessionFile, transcriptText("sess-1", assistant), "utf-8");
+
+    await withStateDir(root, async () => {
+      recordAgentUsageBudgetAdmissionResult({
+        provider: "openai",
+        model: "gpt-5.4",
+        usage,
+        timestampMs,
+        recordId: "assistant-1",
+      });
+
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(50);
+      expect(summary.totals.totalCost).toBe(0.05);
+    });
+  });
+
+  it("keeps entry-id ledger transcript dedupe scoped by session", async () => {
+    const root = await makeSessionCostRoot("cost-ledger-entry-id-session-scope");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const timestampMs = Date.now() - 1000;
+    const usageA = {
+      input: 30,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 50,
+      cost: { total: 0.05 },
+    };
+    const usageB = {
+      input: 40,
+      output: 30,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 70,
+      cost: { total: 0.07 },
+    };
+    const makeAssistant = (usage: typeof usageA, timestampOffsetMs: number) => ({
+      type: "message",
+      id: "assistant-1",
+      timestamp: new Date(timestampMs + timestampOffsetMs).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage,
+      },
+    });
+    const sessionA = path.join(sessionsDir, "sess-a.jsonl");
+    const sessionB = path.join(sessionsDir, "sess-b.jsonl");
+    await fs.writeFile(sessionA, transcriptText("sess-a", makeAssistant(usageA, 0)), "utf-8");
+    await fs.writeFile(sessionB, transcriptText("sess-b", makeAssistant(usageB, 1)), "utf-8");
+
+    await withStateDir(root, async () => {
+      runOpenClawStateWriteTransaction(({ db }) => {
+        const statement = db.prepare(
+          `INSERT INTO agent_usage_budget_ledger (
+             dedup_key,
+             agent_id,
+             record_id,
+             provider,
+             model,
+             timestamp_ms,
+             usage_accounting_source,
+             usage_json,
+             usage_budget_bridge,
+             usage_budget_operation_id,
+             updated_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        );
+        for (const [sessionId, usage, offset] of [
+          ["sess-a", usageA, 0],
+          ["sess-b", usageB, 1],
+        ] as const) {
+          statement.run(
+            JSON.stringify(["main", `transcript-entry|${sessionId}|assistant-1|corrected`]),
+            "main",
+            "assistant-1",
+            "openai",
+            "gpt-5.4",
+            timestampMs + offset,
+            "message",
+            JSON.stringify(usage),
+            0,
+            null,
+            Date.now(),
+          );
+        }
+      });
+
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(120);
+      expect(summary.totals.totalCost).toBeCloseTo(0.12, 8);
+    });
+  });
+
+  it("includes non-main ledger-only usage only when scoped to that agent", async () => {
+    const root = await makeSessionCostRoot("cost-ledger-agent-scope");
+    const timestampMs = Date.now() - 1000;
+    const usage = {
+      input: 7,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 12,
+      cost: { total: 0.012 },
+    };
+
+    await withStateDir(root, async () => {
+      recordAgentUsageBudgetAdmissionResult({
+        agentId: "ops",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage,
+        timestampMs,
+        recordId: "ops-ledger-only",
+      });
+
+      const defaultSummary = await loadCostUsageSummary({ days: 30 });
+      expect(defaultSummary.totals.totalTokens).toBe(0);
+
+      const liveSummary = await loadCostUsageSummary({ days: 30, agentId: "ops" });
+      expect(liveSummary.totals.totalTokens).toBe(12);
+      expect(liveSummary.totals.totalCost).toBe(0.012);
+
+      await refreshCostUsageCache({ agentId: "ops" });
+      const cachedSummary = await loadCostUsageSummaryFromCache({
+        agentId: "ops",
+        startMs: timestampMs - 1000,
+        endMs: timestampMs + 1000,
+        requestRefresh: false,
+      });
+      expect(cachedSummary.totals.totalTokens).toBe(12);
+      expect(cachedSummary.totals.totalCost).toBe(0.012);
+    });
+  });
+
+  it("deduplicates idless transcript rows after usage budget ledger backfill", async () => {
+    const root = await makeSessionCostRoot("cost-ledger-idless-transcript-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestampMs = Date.now() - 1000;
+    const usage = {
+      input: 30,
+      output: 20,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 50,
+      cost: { total: 0.05 },
+    };
+    const assistant = {
+      type: "message",
+      timestamp: new Date(timestampMs).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage,
+      },
+    };
+
+    await fs.writeFile(sessionFile, transcriptText("sess-1", assistant), "utf-8");
+
+    await withStateDir(root, async () => {
+      await checkAgentUsageBudgetAdmission({
+        config: {
+          agents: {
+            defaults: {
+              usageBudget: {
+                daily: { tokens: 1000 },
+              },
+            },
+          },
+        } as OpenClawConfig,
+        provider: "openai",
+        model: "gpt-5.4",
+      });
+
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(50);
+      expect(summary.totals.totalCost).toBe(0.05);
+    });
+  });
+
+  it("counts standalone model-call accounting that only coincides with assistant usage", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-standalone-coincidence");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = new Date(Date.now() - 1000);
+
+    const standalone = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "standalone-usage",
+      timestamp: timestamp.toISOString(),
+      data: {
+        schemaVersion: 1,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 30,
+            output: 20,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 50,
+            cost: { total: 0.05 },
+          },
+        },
+      },
+    };
+    const assistant = {
+      type: "message",
+      id: "assistant-1",
+      timestamp: new Date(timestamp.getTime() + 10).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 30,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 50,
+          cost: { total: 0.05 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [JSON.stringify({ type: "session", version: 1, id: "sess-1" }), standalone, assistant, ""]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(100);
+      expect(summary.totals.totalCost).toBe(0.1);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(100);
+      expect(session?.messageCounts?.total).toBe(1);
+    });
+  });
+
+  it("deduplicates model-call bridge rows from session usage timeseries", async () => {
+    const root = await makeSessionCostRoot("timeseries-model-call-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = new Date(Date.now() - 1000);
+
+    const bridge = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-1:usage",
+      timestamp: timestamp.toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 30,
+            output: 20,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 50,
+            cost: { total: 0.05 },
+          },
+        },
+      },
+    };
+    const assistant = {
+      type: "message",
+      id: "assistant-1",
+      timestamp: new Date(timestamp.getTime() + 10).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 30,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 50,
+          cost: { total: 0.05 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [JSON.stringify({ type: "session", version: 1, id: "sess-1" }), bridge, assistant, ""]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const timeseries = await loadSessionUsageTimeSeries({ sessionFile });
+      expect(timeseries?.points).toHaveLength(1);
+      expect(timeseries?.points[0]?.totalTokens).toBe(50);
+      expect(timeseries?.points[0]?.cumulativeTokens).toBe(50);
+      expect(timeseries?.points[0]?.cumulativeCost).toBe(0.05);
+    });
+  });
+
+  it("does not double count model-call accounting covered by aggregate compaction usage", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-aggregate-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = new Date(Date.now() - 1000);
+
+    const bridgeA = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-1:usage",
+      timestamp: timestamp.toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 30,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 40,
+            cost: { total: 0.04 },
+          },
+        },
+      },
+    };
+    const bridgeB = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-2:usage",
+      timestamp: new Date(timestamp.getTime() + 10).toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 50,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 60,
+            cost: { total: 0.06 },
+          },
+        },
+      },
+    };
+    const compaction = {
+      type: "compaction",
+      id: "compaction-1",
+      parentId: "user-1",
+      timestamp: new Date(timestamp.getTime() + 20).toISOString(),
+      summary: "summary",
+      firstKeptEntryId: "user-2",
+      tokensBefore: 1000,
+      usageAccounting: {
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 80,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 100,
+          cost: { total: 0.1 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({ type: "session", version: 1, id: "sess-1" }),
+        bridgeA,
+        bridgeB,
+        compaction,
+        "",
+      ]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(100);
+      expect(summary.totals.totalCost).toBe(0.1);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(100);
+      expect(session?.totalCost).toBe(0.1);
+      expect(session?.messageCounts?.total).toBe(0);
+    });
+  });
+
+  it("reconciles aggregate compaction recorded component costs before applying report time ranges", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-aggregate-range-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const startMs = Date.UTC(2026, 1, 5, 12);
+    const endMs = startMs + 10 * 60 * 1000;
+    const operationId = "compaction-operation-range";
+
+    const bridgeA = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-1:usage",
+      timestamp: new Date(startMs - 60_000).toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4-priority-dispatch",
+          usage: {
+            input: 30,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 40,
+            cost: { total: 0.00008 },
+            usageBudgetRecordedCost: {
+              schemaVersion: 1,
+              kind: "estimated-model-call-cost",
+              costMultiplier: 2,
+            },
+          },
+        },
+      },
+    };
+    const bridgeB = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-2:usage",
+      timestamp: new Date(startMs + 60_000).toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4-priority-dispatch",
+          usage: {
+            input: 50,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 60,
+            cost: { total: 0.00012 },
+            usageBudgetRecordedCost: {
+              schemaVersion: 1,
+              kind: "estimated-model-call-cost",
+              costMultiplier: 2,
+            },
+          },
+        },
+      },
+    };
+    const compaction = {
+      type: "compaction",
+      id: "compaction-1",
+      parentId: "user-1",
+      timestamp: new Date(startMs + 120_000).toISOString(),
+      summary: "summary",
+      firstKeptEntryId: "user-2",
+      tokensBefore: 1000,
+      usageAccounting: {
+        provider: "openai",
+        model: "gpt-5.4",
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        usage: {
+          input: 80,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 100,
+          cost: { total: 0.999 },
+        },
+      },
+    };
+    const config = {
+      models: {
+        providers: {
+          openai: {
+            models: [
+              {
+                id: "gpt-5.4",
+                cost: {
+                  input: 1,
+                  output: 1,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  tieredPricing: [
+                    {
+                      input: 1,
+                      output: 1,
+                      cacheRead: 0,
+                      cacheWrite: 0,
+                      range: [0],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await fs.writeFile(
+      sessionFile,
+      [
+        JSON.stringify({ type: "session", version: 1, id: "sess-1" }),
+        bridgeA,
+        bridgeB,
+        compaction,
+        "",
+      ]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const liveSummary = await loadCostUsageSummary({ startMs, endMs, config });
+      expect(liveSummary.totals.totalTokens).toBe(100);
+      expect(liveSummary.totals.totalCost).toBeCloseTo(0.0002, 8);
+
+      const liveSession = await loadSessionCostSummary({ sessionFile, startMs, endMs, config });
+      expect(liveSession?.totalTokens).toBe(100);
+      expect(liveSession?.totalCost).toBeCloseTo(0.0002, 8);
+
+      await refreshCostUsageCache({ config, sessionFiles: [sessionFile] });
+      const cachedSummary = await loadCostUsageSummaryFromCache({
+        startMs,
+        endMs,
+        config,
+        requestRefresh: false,
+      });
+      expect(cachedSummary.totals.totalTokens).toBe(100);
+      expect(cachedSummary.totals.totalCost).toBeCloseTo(0.0002, 8);
+
+      const cachedSession = await loadSessionCostSummaryFromCache({
+        sessionId: "sess-1",
+        sessionFile,
+        startMs,
+        endMs,
+        config,
+        requestRefresh: false,
+      });
+      expect(cachedSession.summary?.totalTokens).toBe(100);
+      expect(cachedSession.summary?.totalCost).toBeCloseTo(0.0002, 8);
+    });
+  });
+
+  it("deduplicates long-running aggregate compaction usage by operation id", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-aggregate-operation-id");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = new Date(Date.now() - 20 * 60 * 1000);
+    const operationId = "compaction-operation-long";
+
+    const bridge = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-1:usage",
+      timestamp: timestamp.toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 80,
+            output: 20,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 100,
+            cost: { total: 0.1 },
+          },
+        },
+      },
+    };
+    const compaction = {
+      type: "compaction",
+      id: "compaction-1",
+      parentId: "user-1",
+      timestamp: new Date(timestamp.getTime() + 12 * 60 * 1000).toISOString(),
+      summary: "summary",
+      firstKeptEntryId: "user-2",
+      tokensBefore: 1000,
+      usageAccounting: {
+        provider: "openai",
+        model: "gpt-5.4",
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        usage: {
+          input: 80,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 100,
+          cost: { total: 0.1 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [JSON.stringify({ type: "session", version: 1, id: "sess-1" }), bridge, compaction, ""]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(100);
+      expect(summary.totals.totalCost).toBe(0.1);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(100);
+      expect(session?.totalCost).toBe(0.1);
+      const timeseries = await loadSessionUsageTimeSeries({ sessionFile });
+      expect(timeseries?.points).toHaveLength(1);
+      expect(timeseries?.points[0]?.totalTokens).toBe(100);
+    });
+  });
+
+  it("keeps aggregate compaction cost when operation-id bridge coverage is partial", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-aggregate-partial-bridge");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = new Date(Date.now() - 20 * 60 * 1000);
+    const operationId = "compaction-operation-partial";
+
+    const bridge = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-1:usage",
+      timestamp: timestamp.toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 30,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 40,
+            cost: { total: 0.04 },
+          },
+        },
+      },
+    };
+    const compaction = {
+      type: "compaction",
+      id: "compaction-1",
+      parentId: "user-1",
+      timestamp: new Date(timestamp.getTime() + 12 * 60 * 1000).toISOString(),
+      summary: "summary",
+      firstKeptEntryId: "user-2",
+      tokensBefore: 1000,
+      usageAccounting: {
+        provider: "openai",
+        model: "gpt-5.4",
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        usage: {
+          input: 80,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 100,
+          cost: { total: 0.1 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [JSON.stringify({ type: "session", version: 1, id: "sess-1" }), bridge, compaction, ""]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(100);
+      expect(summary.totals.totalCost).toBeCloseTo(0.1, 8);
+
+      await refreshCostUsageCache({ sessionFiles: [sessionFile] });
+      const cachedSummary = await loadCostUsageSummaryFromCache({
+        startMs: timestamp.getTime() - 1000,
+        endMs: timestamp.getTime() + 60 * 60 * 1000,
+        requestRefresh: false,
+      });
+      expect(cachedSummary.totals.totalTokens).toBe(100);
+      expect(cachedSummary.totals.totalCost).toBeCloseTo(0.1, 8);
+
+      const cachedSession = await loadSessionCostSummaryFromCache({
+        sessionId: "sess-1",
+        sessionFile,
+        requestRefresh: false,
+      });
+      expect(cachedSession.summary?.totalTokens).toBe(100);
+      expect(cachedSession.summary?.totalCost).toBeCloseTo(0.1, 8);
+    });
+  });
+
+  it("deduplicates aggregate compaction usage across many bridge rows", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-aggregate-many-bridges");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = Date.now() - 20 * 60 * 1000;
+    const operationId = "compaction-operation-many-bridges";
+    const bridges = Array.from({ length: 32 }, (_, index) => ({
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: `call-${index + 1}:usage`,
+      timestamp: new Date(timestamp + index * 10).toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 1,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 1,
+            cost: { total: 0.001 },
+          },
+        },
+      },
+    }));
+    const compaction = {
+      type: "compaction",
+      id: "compaction-1",
+      parentId: "user-1",
+      timestamp: new Date(timestamp + 60_000).toISOString(),
+      summary: "summary",
+      firstKeptEntryId: "user-2",
+      tokensBefore: 1000,
+      usageAccounting: {
+        provider: "openai",
+        model: "gpt-5.4",
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        usage: {
+          input: 32,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 32,
+          cost: { total: 0.032 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [JSON.stringify({ type: "session", version: 1, id: "sess-1" }), ...bridges, compaction, ""]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(32);
+      expect(summary.totals.totalCost).toBeCloseTo(0.032, 8);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(32);
+      expect(session?.totalCost).toBeCloseTo(0.032, 8);
+    });
+  });
+
+  it("deduplicates long-running assistant model-call usage by operation id", async () => {
+    const root = await makeSessionCostRoot("cost-model-call-assistant-operation-id");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+    const timestamp = new Date(Date.now() - 20 * 60 * 1000);
+    const operationId = "model-call-long";
+
+    const bridge = {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: "call-1:usage",
+      timestamp: timestamp.toISOString(),
+      data: {
+        schemaVersion: 1,
+        usageBudgetBridge: true,
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 80,
+            output: 20,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 100,
+            cost: { total: 0.1 },
+          },
+        },
+      },
+    };
+    const assistant = {
+      type: "message",
+      id: "assistant-1",
+      timestamp: new Date(timestamp.getTime() + 12 * 60 * 1000).toISOString(),
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        [USAGE_BUDGET_OPERATION_ID_KEY]: operationId,
+        usage: {
+          input: 80,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 100,
+          cost: { total: 0.1 },
+        },
+      },
+    };
+
+    await fs.writeFile(
+      sessionFile,
+      [JSON.stringify({ type: "session", version: 1, id: "sess-1" }), bridge, assistant, ""]
+        .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+        .join("\n"),
+      "utf-8",
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(100);
+      expect(summary.totals.totalCost).toBe(0.1);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(100);
+      expect(session?.totalCost).toBe(0.1);
+    });
+  });
+
+  it("counts compaction entry usage accounting without message metrics", async () => {
+    const root = await makeSessionCostRoot("cost-compaction-entry-usage");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    const entry = {
+      type: "compaction",
+      id: "compaction-1",
+      parentId: "user-1",
+      timestamp: new Date().toISOString(),
+      summary: "summary",
+      firstKeptEntryId: "user-2",
+      tokensBefore: 1000,
+      usageAccounting: {
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 20,
+          output: 5,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 25,
+          cost: { total: 0.025 },
+        },
+      },
+    };
+
+    await fs.writeFile(sessionFile, transcriptText("sess-1", entry), "utf-8");
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(25);
+      expect(summary.totals.totalCost).toBe(0.025);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(25);
+      expect(session?.messageCounts?.total).toBe(0);
+    });
+  });
+
+  it("counts branch summary usage accounting without message metrics", async () => {
+    const root = await makeSessionCostRoot("cost-branch-summary-entry-usage");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    const entry = {
+      type: "branch_summary",
+      id: "branch-summary-1",
+      parentId: "user-1",
+      timestamp: new Date().toISOString(),
+      fromId: "user-1",
+      summary: "summary",
+      usageAccounting: {
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 30,
+          output: 7,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 37,
+          cost: { total: 0.037 },
+        },
+      },
+    };
+
+    await fs.writeFile(sessionFile, transcriptText("sess-1", entry), "utf-8");
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30 });
+      expect(summary.totals.totalTokens).toBe(37);
+      expect(summary.totals.totalCost).toBe(0.037);
+      const session = await loadSessionCostSummary({ sessionFile });
+      expect(session?.totalTokens).toBe(37);
+      expect(session?.messageCounts?.total).toBe(0);
+    });
+  });
+
+  it("deduplicates rotated transcript usage entries by entry id", async () => {
+    const root = await makeSessionCostRoot("cost-rotated-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const timestamp = "2026-02-12T10:00:00.000Z";
+    const entry = {
+      id: "assistant-call-1",
+      type: "message",
+      timestamp,
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 40,
+          output: 2,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 42,
+          cost: { total: 0.042 },
+        },
+      },
+    };
+
+    await fs.writeFile(path.join(sessionsDir, "sess-1.jsonl"), transcriptText("sess-1", entry));
+    await fs.writeFile(
+      path.join(sessionsDir, "sess-1.jsonl.reset.2026-02-12T11-00-00.000Z"),
+      transcriptText("sess-1", entry),
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({
+        startMs: Date.UTC(2026, 1, 12),
+        endMs: Date.UTC(2026, 1, 12, 23, 59, 59, 999),
+      });
+      expect(summary.totals.totalTokens).toBe(42);
+      expect(summary.totals.totalCost).toBeCloseTo(0.042, 8);
+
+      await refreshCostUsageCache();
+      const cached = await loadCostUsageSummaryFromCache({
+        startMs: Date.UTC(2026, 1, 12),
+        endMs: Date.UTC(2026, 1, 12, 23, 59, 59, 999),
+        requestRefresh: false,
+      });
+      expect(cached.totals.totalTokens).toBe(42);
+      expect(cached.totals.totalCost).toBeCloseTo(0.042, 8);
+    });
+  });
+
+  it("uses one corrected active transcript entry when an archived copy keeps stale usage fields", async () => {
+    const root = await makeSessionCostRoot("cost-rotated-corrected-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const timestamp = "2026-02-12T10:00:00.000Z";
+    const entry = (input: number, output: number, totalCost: number) => ({
+      id: "assistant-call-1",
+      type: "message",
+      timestamp,
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input,
+          output,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: input + output,
+          cost: { total: totalCost },
+        },
+      },
+    });
+
+    await fs.writeFile(
+      path.join(sessionsDir, "sess-1.jsonl"),
+      transcriptText("sess-1", entry(40, 20, 0.06)),
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, "sess-1.jsonl.reset.2026-02-12T11-00-00.000Z"),
+      transcriptText("sess-1", entry(20, 10, 0.03)),
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({
+        startMs: Date.UTC(2026, 1, 12),
+        endMs: Date.UTC(2026, 1, 12, 23, 59, 59, 999),
+      });
+      expect(summary.totals.totalTokens).toBe(60);
+      expect(summary.totals.totalCost).toBeCloseTo(0.06, 8);
+
+      await refreshCostUsageCache();
+      const cached = await loadCostUsageSummaryFromCache({
+        startMs: Date.UTC(2026, 1, 12),
+        endMs: Date.UTC(2026, 1, 12, 23, 59, 59, 999),
+        requestRefresh: false,
+      });
+      expect(cached.totals.totalTokens).toBe(60);
+      expect(cached.totals.totalCost).toBeCloseTo(0.06, 8);
+    });
+  });
+
+  it("deduplicates copied entry ids across compacted successor transcript lineage", async () => {
+    const root = await makeSessionCostRoot("cost-successor-lineage-dedupe");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const originalFile = path.join(sessionsDir, "session-original.jsonl");
+    const successorFile = path.join(sessionsDir, "session-successor.jsonl");
+    const secondSuccessorFile = path.join(sessionsDir, "session-successor-2.jsonl");
+    const entry = {
+      id: "assistant-call-1",
+      type: "message",
+      timestamp: "2026-02-12T10:00:00.000Z",
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 40,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 60,
+          cost: { total: 0.06 },
+        },
+      },
+    };
+    const lines = (header: Record<string, unknown>) =>
+      [header, entry, ""]
+        .map((line) => (typeof line === "string" ? line : JSON.stringify(line)))
+        .join("\n");
+
+    await fs.writeFile(
+      originalFile,
+      lines({
+        type: "session",
+        id: "session-original",
+        timestamp: "2026-02-12T09:59:00.000Z",
+      }),
+    );
+    await fs.writeFile(
+      successorFile,
+      lines({
+        type: "session",
+        id: "session-successor",
+        timestamp: "2026-02-12T10:01:00.000Z",
+        parentSession: path.basename(originalFile),
+      }),
+    );
+    await fs.writeFile(
+      secondSuccessorFile,
+      lines({
+        type: "session",
+        id: "session-successor-2",
+        timestamp: "2026-02-12T10:02:00.000Z",
+        parentSession: path.basename(successorFile),
+      }),
+    );
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({
+        startMs: Date.UTC(2026, 1, 12),
+        endMs: Date.UTC(2026, 1, 12, 23, 59, 59, 999),
+      });
+      expect(summary.totals.totalTokens).toBe(60);
+      expect(summary.totals.totalCost).toBeCloseTo(0.06, 8);
+
+      await refreshCostUsageCache();
+      const cached = await loadCostUsageSummaryFromCache({
+        startMs: Date.UTC(2026, 1, 12),
+        endMs: Date.UTC(2026, 1, 12, 23, 59, 59, 999),
+        requestRefresh: false,
+      });
+      expect(cached.totals.totalTokens).toBe(60);
+      expect(cached.totals.totalCost).toBeCloseTo(0.06, 8);
+    });
+  });
+
+  it("reprices token-bearing zero-cost usage when local pricing is configured", async () => {
+    const root = await makeSessionCostRoot("cost-zero-reprice");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    await fs.writeFile(
+      sessionFile,
+      transcriptText("sess-1", {
+        type: "message",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.4",
+          usage: {
+            input: 100,
+            output: 50,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 150,
+            cost: { total: 0 },
+            usageBudgetRecordedCost: {
+              schemaVersion: 1,
+              kind: "estimated-model-call-cost",
+              costMultiplier: 2,
+            },
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const config = {
+      models: {
+        providers: {
+          openai: {
+            models: [
+              {
+                id: "gpt-5.4",
+                cost: {
+                  input: 1,
+                  output: 2,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30, config });
+      expect(summary.totals.totalTokens).toBe(150);
+      expect(summary.totals.totalCost).toBeCloseTo(0.0002, 8);
+      expect(summary.totals.missingCostEntries).toBe(0);
+    });
+  });
+
+  it("preserves provider-billed zero-cost usage when local pricing is configured", async () => {
+    const root = await makeSessionCostRoot("cost-zero-provider-billed");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    await fs.writeFile(
+      sessionFile,
+      transcriptText("sess-1", {
+        type: "message",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          provider: "openrouter",
+          model: "openrouter/free",
+          usage: {
+            input: 100,
+            output: 50,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 150,
+            cost: { total: 0 },
+            [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: {
+              schemaVersion: 1,
+              kind: "provider-billed-model-call-cost",
+              costMultiplier: 1,
+            },
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const config = {
+      models: {
+        providers: {
+          openrouter: {
+            models: [
+              {
+                id: "openrouter/free",
+                cost: {
+                  input: 1,
+                  output: 2,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30, config });
+      expect(summary.totals.totalTokens).toBe(150);
+      expect(summary.totals.totalCost).toBe(0);
+      expect(summary.totals.missingCostEntries).toBe(0);
+    });
+  });
+
+  it("counts unpriceable marked usage as missing cost even when local pricing exists", async () => {
+    const root = await makeSessionCostRoot("cost-unpriceable-marker");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    await fs.writeFile(
+      sessionFile,
+      transcriptText("sess-1", {
+        type: "message",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          provider: "amazon-bedrock",
+          model: "reserved-model",
+          usage: {
+            input: 100,
+            output: 50,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 150,
+            cost: { input: 0.001, output: 0.002, cacheRead: 0, cacheWrite: 0, total: 0.003 },
+            [USAGE_BUDGET_RECORDED_COST_METADATA_KEY]: {
+              schemaVersion: 1,
+              kind: "unpriceable-model-call-cost",
+              reason: "capacity-billed-service-tier",
+            },
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const config = {
+      models: {
+        providers: {
+          "amazon-bedrock": {
+            models: [
+              {
+                id: "reserved-model",
+                cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30, config });
+      expect(summary.totals.totalTokens).toBe(150);
+      expect(summary.totals.totalCost).toBe(0);
+      expect(summary.totals.missingCostEntries).toBe(1);
+    });
+  });
+
+  it("preserves usage-budget recorded tiered cost with provider dispatch multipliers", async () => {
+    const root = await makeSessionCostRoot("cost-tiered-budget-recorded-multiplier");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    await fs.writeFile(
+      sessionFile,
+      transcriptText("sess-1", {
+        type: "message",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.5",
+          usage: {
+            input: 10,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 10,
+            cost: { total: 0.00002 },
+            usageBudgetRecordedCost: {
+              schemaVersion: 1,
+              kind: "estimated-model-call-cost",
+              costMultiplier: 2,
+            },
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const config = {
+      models: {
+        providers: {
+          openai: {
+            models: [
+              {
+                id: "gpt-5.5",
+                cost: {
+                  input: 1,
+                  output: 1,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  tieredPricing: [
+                    {
+                      input: 1,
+                      output: 1,
+                      cacheRead: 0,
+                      cacheWrite: 0,
+                      range: [0],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30, config });
+      expect(summary.totals.totalTokens).toBe(10);
+      expect(summary.totals.totalCost).toBeCloseTo(0.00002, 8);
+
+      await refreshCostUsageCache({ config });
+      const endMs = Date.now() + 1000;
+      const cached = await loadCostUsageSummaryFromCache({
+        startMs: endMs - 30 * 24 * 60 * 60 * 1000,
+        endMs,
+        config,
+        requestRefresh: false,
+      });
+      expect(cached.totals.totalTokens).toBe(10);
+      expect(cached.totals.totalCost).toBeCloseTo(0.00002, 8);
+    });
+  });
+
+  it("applies usage-budget recorded multipliers to tiered session cost reports", async () => {
+    const root = await makeSessionCostRoot("cost-tiered-budget-multiplier-metadata");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-1.jsonl");
+
+    await fs.writeFile(
+      sessionFile,
+      transcriptText("sess-1", {
+        type: "message",
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "assistant",
+          provider: "openai",
+          model: "gpt-5.5",
+          usage: {
+            input: 10,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 10,
+            cost: { total: 0.9 },
+            usageBudgetRecordedCost: {
+              schemaVersion: 1,
+              kind: "model-call-cost-multiplier",
+              costMultiplier: 2,
+            },
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    const config = {
+      models: {
+        providers: {
+          openai: {
+            models: [
+              {
+                id: "gpt-5.5",
+                cost: {
+                  input: 1,
+                  output: 1,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  tieredPricing: [
+                    {
+                      input: 1,
+                      output: 1,
+                      cacheRead: 0,
+                      cacheWrite: 0,
+                      range: [0],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await withStateDir(root, async () => {
+      const summary = await loadCostUsageSummary({ days: 30, config });
+      expect(summary.totals.totalTokens).toBe(10);
+      expect(summary.totals.totalCost).toBeCloseTo(0.00002, 8);
+
+      await refreshCostUsageCache({ config });
+      const endMs = Date.now() + 1000;
+      const cached = await loadCostUsageSummaryFromCache({
+        startMs: endMs - 30 * 24 * 60 * 60 * 1000,
+        endMs,
+        config,
+        requestRefresh: false,
+      });
+      expect(cached.totals.totalTokens).toBe(10);
+      expect(cached.totals.totalCost).toBeCloseTo(0.00002, 8);
     });
   });
 
@@ -936,6 +2609,46 @@ describe("session cost usage", () => {
       expect(summary.cacheStatus?.status).toBe("fresh");
       expect(afterCache.files[sessionFile]?.parsedRecords).toBe(2);
       expect(afterCache.files[sessionFile]?.countedRecords).toBe(2);
+    });
+  });
+
+  it("keeps identical idless rows distinct during append-only durable cache refresh", async () => {
+    const root = await makeSessionCostRoot("cost-cache-append-idless");
+    const sessionsDir = path.join(root, "agents", "main", "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = path.join(sessionsDir, "sess-cache-append-idless.jsonl");
+    const entry = {
+      type: "message",
+      timestamp: "2026-02-05T12:00:00.000Z",
+      message: {
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5.4",
+        usage: {
+          input: 10,
+          output: 20,
+          totalTokens: 30,
+          cost: { total: 0.03 },
+        },
+      },
+    };
+
+    await fs.writeFile(sessionFile, transcriptText("sess-cache-append-idless", entry), "utf-8");
+
+    await withStateDir(root, async () => {
+      await refreshCostUsageCache();
+      await fs.appendFile(sessionFile, `${JSON.stringify(entry)}\n`, "utf-8");
+      await refreshCostUsageCache();
+
+      const summary = await loadCostUsageSummaryFromCache({
+        startMs: Date.UTC(2026, 1, 5),
+        endMs: Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1,
+        requestRefresh: false,
+      });
+
+      expect(summary.cacheStatus?.status).toBe("fresh");
+      expect(summary.totals.totalTokens).toBe(60);
+      expect(summary.totals.totalCost).toBeCloseTo(0.06, 8);
     });
   });
 

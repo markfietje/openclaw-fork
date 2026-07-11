@@ -31,6 +31,48 @@ function expectBridgeRequest(
 }
 
 describe("realtime voice bridge session runtime", () => {
+  it("fails closed before connecting realtime providers for budgeted agents", async () => {
+    const connect = vi.fn(async () => {});
+    const provider: RealtimeVoiceProviderPlugin = {
+      id: "test",
+      label: "Test",
+      defaultModel: "realtime-default",
+      isConfigured: () => true,
+      createBridge: () => makeBridge({ connect }),
+    };
+    const cfg = {
+      agents: {
+        list: [{ id: "budgeted", usageBudget: { daily: { tokens: 100 } } }, { id: "free" }],
+      },
+    } as never;
+    const createSession = (agentId?: string) =>
+      createRealtimeVoiceBridgeSession({
+        provider,
+        cfg,
+        agentId,
+        providerConfig: { model: "realtime-test" },
+        audioSink: { sendAudio: vi.fn() },
+      });
+
+    await expect(createSession("budgeted").connect()).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "budgeted",
+        provider: "test",
+        model: "realtime-test",
+        reason: "unsupported_stream",
+      },
+    });
+    await expect(createSession().connect()).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: { reason: "unsupported_stream" },
+    });
+    expect(connect).not.toHaveBeenCalled();
+
+    await expect(createSession("free").connect()).resolves.toBeUndefined();
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
   it("routes provider output through an open audio sink", () => {
     let callbacks: Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0] | undefined;
     const bridge = makeBridge();

@@ -4,6 +4,7 @@
  * Creates cwd-bound auth, settings, model registry, resource loader, and session instances for the CLI runtime.
  */
 import { join } from "node:path";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { Model } from "../../llm/types.js";
 import { getAgentDir } from "../config.js";
 import type { ThinkingLevel } from "../runtime/index.js";
@@ -64,6 +65,10 @@ export interface CreateAgentSessionServicesOptions {
 export interface CreateAgentSessionFromServicesOptions {
   services: AgentSessionServices;
   sessionManager: SessionManager;
+  /** OpenClaw runtime config for session-local model-call budget checks. */
+  config?: OpenClawConfig;
+  /** Agent whose session-local model-call helpers should be budgeted. */
+  agentId?: string;
   sessionStartEvent?: SessionStartEvent;
   model?: Model;
   thinkingLevel?: ThinkingLevel;
@@ -205,6 +210,8 @@ export async function createAgentSessionFromServices(
     modelRegistry: options.services.modelRegistry,
     resourceLoader: options.services.resourceLoader,
     sessionManager: options.sessionManager,
+    config: options.config,
+    agentId: options.agentId,
     model: options.model,
     thinkingLevel: options.thinkingLevel,
     scopedModels: options.scopedModels,

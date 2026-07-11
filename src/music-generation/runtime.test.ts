@@ -1,5 +1,5 @@
 // Tests music generation runtime dispatch and provider fallback behavior.
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.js";
 import {
   generateMusic,
@@ -84,6 +84,40 @@ describe("music-generation runtime", () => {
         fileName: "sample.mp3",
       },
     ]);
+  });
+
+  it("rejects raw runtime calls while the target agent has an active usage budget", async () => {
+    const generate = vi.fn();
+    providers = [
+      {
+        id: "music-plugin",
+        capabilities: {},
+        generateMusic: generate,
+      },
+    ];
+
+    await expect(
+      runGenerateMusic({
+        cfg: {
+          agents: {
+            defaults: {
+              musicGenerationModel: { primary: "music-plugin/track-v1" },
+              usageBudget: { daily: { usd: 1 } },
+            },
+          },
+        } as OpenClawConfig,
+        agentId: "main",
+        prompt: "play a synth line",
+      }),
+    ).rejects.toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: {
+        agentId: "main",
+        harnessId: "music-generation-runtime",
+        reason: "unsupported_harness",
+      },
+    });
+    expect(generate).not.toHaveBeenCalled();
   });
 
   it("uses configured music-generation timeout when call omits timeoutMs", async () => {

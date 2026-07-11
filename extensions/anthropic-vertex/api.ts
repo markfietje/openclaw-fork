@@ -4,6 +4,7 @@
  */
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { markProviderDispatchObservableStreamFn } from "openclaw/plugin-sdk/provider-stream-shared";
 import type { AnthropicVertexStreamDeps } from "./stream-runtime.js";
 
 export {
@@ -63,10 +64,10 @@ export function createAnthropicVertexStreamFn(
   const streamFnPromise = loadStreamRuntimeModule().then((runtime) =>
     runtime.createAnthropicVertexStreamFn(projectId, region, baseURL, deps),
   );
-  return async (model, context, options) => {
+  return markProviderDispatchObservableStreamFn(async (model, context, options) => {
     const streamFn = await streamFnPromise;
     return streamFn(model, context, options);
-  };
+  });
 }
 
 /** Create a lazy Anthropic Vertex stream function using model base URL and env hints. */
@@ -78,8 +79,8 @@ export function createAnthropicVertexStreamFnForModel(
   const streamFnPromise = loadStreamRuntimeModule().then((runtime) =>
     runtime.createAnthropicVertexStreamFnForModel(model, env, deps),
   );
-  return async (...args) => {
+  return markProviderDispatchObservableStreamFn(async (...args) => {
     const streamFn = await streamFnPromise;
     return streamFn(...args);
-  };
+  });
 }

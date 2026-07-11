@@ -23,6 +23,7 @@ import {
   type HarnessMessage,
 } from "../messages.js";
 import { buildSessionContext } from "../session/session.js";
+import { uuidv7 } from "../session/uuid.js";
 import {
   type CompactionEntry,
   CompactionError,
@@ -125,6 +126,10 @@ export interface CompactionResult<T = unknown> {
   firstKeptEntryId: string;
   /** Estimated context tokens before compaction. */
   tokensBefore: number;
+  /** Provider-reported usage for the summarization call(s), when available. */
+  usage?: Usage;
+  /** Internal accounting operation id for reconciling aggregate and per-call usage rows. */
+  usageBudgetOperationId?: string;
   /** Optional implementation-specific details stored with the compaction entry. */
   details?: T;
 }
@@ -524,8 +529,17 @@ function createSummarizationOptions(
   headers: Record<string, string> | undefined,
   signal: AbortSignal | undefined,
   thinkingLevel: ThinkingLevel | undefined,
+  onProviderDispatch?: () => void,
+  disableProviderRetries = false,
 ): SimpleStreamOptions {
-  const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers };
+  const options: SimpleStreamOptions = {
+    maxTokens,
+    signal,
+    apiKey,
+    headers,
+    ...(disableProviderRetries ? { maxRetries: 0 } : {}),
+    ...(onProviderDispatch ? { onProviderDispatch } : {}),
+  };
   const fableReasoning =
     (model.api === "anthropic-messages" || model.api === "bedrock-converse-stream") &&
     resolveClaudeFable5ModelIdentity(model) !== undefined;
@@ -541,15 +555,225 @@ async function completeSummarization(
   options: SimpleStreamOptions,
   streamFn?: StreamFn,
   runtime?: AgentCoreCompletionRuntimeDeps,
+  usageBudgetOperationId?: string,
 ): Promise<AssistantMessage> {
   if (streamFn) {
-    return (await streamFn(model, context, options)).result();
+    const streamOptions = usageBudgetOperationId ? { ...options, usageBudgetOperationId } : options;
+    return (await streamFn(model, context, streamOptions)).result();
   }
-  return await resolveAgentCoreCompleteFn(runtime)(model, context, options);
+  const completeOptions = usageBudgetOperationId ? { ...options, usageBudgetOperationId } : options;
+  return await resolveAgentCoreCompleteFn(runtime)(model, context, completeOptions);
 }
 
-/** Generate or update a conversation summary for compaction. */
-export async function generateSummary(
+export type GeneratedSummary = {
+  summary: string;
+  usage?: Usage;
+};
+
+const USAGE_BUDGET_RECORDED_COST_METADATA_KEY = "usageBudgetRecordedCost";
+const USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION = 1;
+
+type UsageBudgetRecordedCostMetadata = {
+  schemaVersion: typeof USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION;
+  kind: "estimated-model-call-cost" | "provider-billed-model-call-cost";
+  costMultiplier: number;
+};
+
+type UsageBudgetUnpriceableCostMetadata = {
+  schemaVersion: typeof USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION;
+  kind: "unpriceable-model-call-cost";
+  reason:
+    | "capacity-billed-service-tier"
+    | "provider-billed-cost-unavailable"
+    | "unknown-service-tier";
+};
+
+function readCompactionRecordedCostMetadata(
+  usage: Usage,
+): UsageBudgetRecordedCostMetadata | undefined {
+  const metadata = (usage as unknown as Record<string, unknown>)[
+    USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+  ];
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const record = metadata as Partial<UsageBudgetRecordedCostMetadata>;
+  if (
+    record.schemaVersion !== USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION ||
+    (record.kind !== "estimated-model-call-cost" &&
+      record.kind !== "provider-billed-model-call-cost") ||
+    typeof record.costMultiplier !== "number" ||
+    !Number.isFinite(record.costMultiplier) ||
+    record.costMultiplier <= 0
+  ) {
+    return undefined;
+  }
+  return {
+    schemaVersion: USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION,
+    kind: record.kind,
+    costMultiplier: record.costMultiplier,
+  };
+}
+
+function readCompactionUnpriceableCostMetadata(
+  usage: Usage,
+): UsageBudgetUnpriceableCostMetadata | undefined {
+  const metadata = (usage as unknown as Record<string, unknown>)[
+    USAGE_BUDGET_RECORDED_COST_METADATA_KEY
+  ];
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const record = metadata as Partial<UsageBudgetUnpriceableCostMetadata>;
+  if (
+    record.schemaVersion !== USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION ||
+    record.kind !== "unpriceable-model-call-cost" ||
+    (record.reason !== "capacity-billed-service-tier" &&
+      record.reason !== "provider-billed-cost-unavailable" &&
+      record.reason !== "unknown-service-tier")
+  ) {
+    return undefined;
+  }
+  return {
+    schemaVersion: USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION,
+    kind: "unpriceable-model-call-cost",
+    reason: record.reason,
+  };
+}
+
+function compactionUsageHasTokens(usage: Usage): boolean {
+  return (
+    usage.totalTokens > 0 ||
+    usage.input > 0 ||
+    usage.output > 0 ||
+    usage.cacheRead > 0 ||
+    usage.cacheWrite > 0
+  );
+}
+
+function compactionUsageHasCompleteCostEvidence(usage: Usage): boolean {
+  return (
+    readCompactionRecordedCostMetadata(usage) !== undefined ||
+    readCompactionUnpriceableCostMetadata(usage) !== undefined ||
+    usage.cost.total > 0
+  );
+}
+
+function compactionUsageHasIncompleteCostEvidence(usage: Usage): boolean {
+  return compactionUsageHasTokens(usage) && !compactionUsageHasCompleteCostEvidence(usage);
+}
+
+function mergeCompactionCostMetadata(
+  left: Usage,
+  right: Usage,
+): UsageBudgetRecordedCostMetadata | UsageBudgetUnpriceableCostMetadata | undefined {
+  const leftUnpriceableMetadata = readCompactionUnpriceableCostMetadata(left);
+  const rightUnpriceableMetadata = readCompactionUnpriceableCostMetadata(right);
+  if (leftUnpriceableMetadata || rightUnpriceableMetadata) {
+    const reason =
+      leftUnpriceableMetadata?.reason === "capacity-billed-service-tier" ||
+      rightUnpriceableMetadata?.reason === "capacity-billed-service-tier"
+        ? "capacity-billed-service-tier"
+        : leftUnpriceableMetadata?.reason === "provider-billed-cost-unavailable" ||
+            rightUnpriceableMetadata?.reason === "provider-billed-cost-unavailable"
+          ? "provider-billed-cost-unavailable"
+          : "unknown-service-tier";
+    return {
+      schemaVersion: USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION,
+      kind: "unpriceable-model-call-cost",
+      reason,
+    };
+  }
+  const leftMetadata = readCompactionRecordedCostMetadata(left);
+  const rightMetadata = readCompactionRecordedCostMetadata(right);
+  const leftTrusted = leftMetadata !== undefined || left.cost.total > 0;
+  const rightTrusted = rightMetadata !== undefined || right.cost.total > 0;
+  if (!leftTrusted || !rightTrusted) {
+    return undefined;
+  }
+  if (
+    leftMetadata &&
+    rightMetadata &&
+    leftMetadata.kind === rightMetadata.kind &&
+    leftMetadata.costMultiplier === rightMetadata.costMultiplier
+  ) {
+    return leftMetadata;
+  }
+  // Mixed service tiers do not have one truthful multiplier, but the summed
+  // cost is still the provider-recorded aggregate cost to preserve.
+  return {
+    schemaVersion: USAGE_BUDGET_RECORDED_COST_METADATA_SCHEMA_VERSION,
+    kind: "estimated-model-call-cost",
+    costMultiplier: 1,
+  };
+}
+
+function mergeUsage(left: Usage | undefined, right: Usage | undefined): Usage | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  const merged: Usage = {
+    input: left.input + right.input,
+    output: left.output + right.output,
+    cacheRead: left.cacheRead + right.cacheRead,
+    cacheWrite: left.cacheWrite + right.cacheWrite,
+    totalTokens: left.totalTokens + right.totalTokens,
+    cost: {
+      input: left.cost.input + right.cost.input,
+      output: left.cost.output + right.cost.output,
+      cacheRead: left.cost.cacheRead + right.cost.cacheRead,
+      cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
+      total: left.cost.total + right.cost.total,
+    },
+  };
+  const metadata = mergeCompactionCostMetadata(left, right);
+  if (metadata) {
+    (merged as unknown as Record<string, unknown>)[USAGE_BUDGET_RECORDED_COST_METADATA_KEY] =
+      metadata;
+  }
+  if (
+    compactionUsageHasIncompleteCostEvidence(left) ||
+    compactionUsageHasIncompleteCostEvidence(right)
+  ) {
+    // A positive partial aggregate would be trusted as complete recorded spend.
+    // Zero it so budget/reporting either reprices all tokens or fails closed.
+    merged.cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  }
+  return merged;
+}
+
+function withCompactionErrorUsage(
+  error: CompactionError,
+  usage: Usage | undefined,
+  usageBudgetOperationId?: string,
+): CompactionError {
+  if (!usage) {
+    if (error.usage && usageBudgetOperationId) {
+      error.usageBudgetOperationId = usageBudgetOperationId;
+    }
+    return error;
+  }
+  error.usage = mergeUsage(error.usage, usage);
+  if (usageBudgetOperationId) {
+    error.usageBudgetOperationId = usageBudgetOperationId;
+  }
+  return error;
+}
+
+function withCompactionErrorUsageBudgetOperationId(
+  error: CompactionError,
+  usageBudgetOperationId: string,
+): CompactionError {
+  if (error.usage) {
+    error.usageBudgetOperationId = usageBudgetOperationId;
+  }
+  return error;
+}
+
+export async function generateSummaryWithUsage(
   currentMessages: AgentMessage[],
   model: Model,
   reserveTokens: number,
@@ -561,7 +785,10 @@ export async function generateSummary(
   thinkingLevel?: ThinkingLevel,
   streamFn?: StreamFn,
   runtime?: AgentCoreCompletionRuntimeDeps,
-): Promise<Result<string, CompactionError>> {
+  usageBudgetOperationId?: string,
+  onProviderDispatch?: () => void,
+  disableProviderRetries?: boolean,
+): Promise<Result<GeneratedSummary, CompactionError>> {
   const maxTokens = Math.min(
     Math.floor(0.8 * reserveTokens),
     model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
@@ -589,18 +816,37 @@ export async function generateSummary(
   const response = await completeSummarization(
     model,
     { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages },
-    createSummarizationOptions(model, maxTokens, apiKey, headers, signal, thinkingLevel),
+    createSummarizationOptions(
+      model,
+      maxTokens,
+      apiKey,
+      headers,
+      signal,
+      thinkingLevel,
+      onProviderDispatch,
+      disableProviderRetries,
+    ),
     streamFn,
     runtime,
+    usageBudgetOperationId,
   );
   if (response.stopReason === "aborted") {
-    return err(new CompactionError("aborted", response.errorMessage || "Summarization aborted"));
+    return err(
+      new CompactionError(
+        "aborted",
+        response.errorMessage || "Summarization aborted",
+        undefined,
+        response.usage,
+      ),
+    );
   }
   if (response.stopReason === "error") {
     return err(
       new CompactionError(
         "summarization_failed",
         `Summarization failed: ${response.errorMessage || "Unknown error"}`,
+        undefined,
+        response.usage,
       ),
     );
   }
@@ -610,7 +856,40 @@ export async function generateSummary(
     .map((c) => c.text)
     .join("\n");
 
-  return ok(textContent);
+  return ok({ summary: textContent, usage: response.usage });
+}
+
+/** Generate or update a conversation summary for compaction. */
+export async function generateSummary(
+  currentMessages: AgentMessage[],
+  model: Model,
+  reserveTokens: number,
+  apiKey: string | undefined,
+  headers?: Record<string, string>,
+  signal?: AbortSignal,
+  customInstructions?: string,
+  previousSummary?: string,
+  thinkingLevel?: ThinkingLevel,
+  streamFn?: StreamFn,
+  runtime?: AgentCoreCompletionRuntimeDeps,
+  onProviderDispatch?: () => void,
+): Promise<Result<string, CompactionError>> {
+  const result = await generateSummaryWithUsage(
+    currentMessages,
+    model,
+    reserveTokens,
+    apiKey,
+    headers,
+    signal,
+    customInstructions,
+    previousSummary,
+    thinkingLevel,
+    streamFn,
+    runtime,
+    undefined,
+    onProviderDispatch,
+  );
+  return result.ok ? ok(result.value.summary) : result;
 }
 
 /** Prepared inputs for a compaction run. */
@@ -762,11 +1041,13 @@ export async function compact(
   }
 
   let summary: string;
+  let usage: Usage | undefined;
+  const usageBudgetOperationId = `compaction:${uuidv7()}`;
 
   if (isSplitTurn && turnPrefixMessages.length > 0) {
     const [historyResult, turnPrefixResult] = await Promise.all([
       messagesToSummarize.length > 0
-        ? generateSummary(
+        ? generateSummaryWithUsage(
             messagesToSummarize,
             model,
             settings.reserveTokens,
@@ -778,8 +1059,9 @@ export async function compact(
             thinkingLevel,
             streamFn,
             runtime,
+            usageBudgetOperationId,
           )
-        : Promise.resolve(ok<string, CompactionError>("No prior history.")),
+        : Promise.resolve(ok<GeneratedSummary, CompactionError>({ summary: "No prior history." })),
       generateTurnPrefixSummary(
         turnPrefixMessages,
         model,
@@ -790,17 +1072,31 @@ export async function compact(
         thinkingLevel,
         streamFn,
         runtime,
+        usageBudgetOperationId,
       ),
     ]);
     if (!historyResult.ok) {
-      return err(historyResult.error);
+      return err(
+        withCompactionErrorUsage(
+          historyResult.error,
+          turnPrefixResult.ok ? turnPrefixResult.value.usage : turnPrefixResult.error.usage,
+          usageBudgetOperationId,
+        ),
+      );
     }
     if (!turnPrefixResult.ok) {
-      return err(turnPrefixResult.error);
+      return err(
+        withCompactionErrorUsage(
+          turnPrefixResult.error,
+          historyResult.value.usage,
+          usageBudgetOperationId,
+        ),
+      );
     }
-    summary = `${historyResult.value}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value}`;
+    summary = `${historyResult.value.summary}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value.summary}`;
+    usage = mergeUsage(historyResult.value.usage, turnPrefixResult.value.usage);
   } else {
-    const summaryResult = await generateSummary(
+    const summaryResult = await generateSummaryWithUsage(
       messagesToSummarize,
       model,
       settings.reserveTokens,
@@ -812,11 +1108,15 @@ export async function compact(
       thinkingLevel,
       streamFn,
       runtime,
+      usageBudgetOperationId,
     );
     if (!summaryResult.ok) {
-      return err(summaryResult.error);
+      return err(
+        withCompactionErrorUsageBudgetOperationId(summaryResult.error, usageBudgetOperationId),
+      );
     }
-    summary = summaryResult.value;
+    summary = summaryResult.value.summary;
+    usage = summaryResult.value.usage;
   }
 
   const { readFiles, modifiedFiles } = computeFileLists(fileOps);
@@ -826,6 +1126,8 @@ export async function compact(
     summary,
     firstKeptEntryId,
     tokensBefore,
+    ...(usage ? { usage } : {}),
+    ...(usage ? { usageBudgetOperationId } : {}),
     details: { readFiles, modifiedFiles } as CompactionDetails,
   });
 }
@@ -839,7 +1141,8 @@ async function generateTurnPrefixSummary(
   thinkingLevel?: ThinkingLevel,
   streamFn?: StreamFn,
   runtime?: AgentCoreCompletionRuntimeDeps,
-): Promise<Result<string, CompactionError>> {
+  usageBudgetOperationId?: string,
+): Promise<Result<GeneratedSummary, CompactionError>> {
   const maxTokens = Math.min(
     Math.floor(0.5 * reserveTokens),
     model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,
@@ -861,10 +1164,16 @@ async function generateTurnPrefixSummary(
     createSummarizationOptions(model, maxTokens, apiKey, headers, signal, thinkingLevel),
     streamFn,
     runtime,
+    usageBudgetOperationId,
   );
   if (response.stopReason === "aborted") {
     return err(
-      new CompactionError("aborted", response.errorMessage || "Turn prefix summarization aborted"),
+      new CompactionError(
+        "aborted",
+        response.errorMessage || "Turn prefix summarization aborted",
+        undefined,
+        response.usage,
+      ),
     );
   }
   if (response.stopReason === "error") {
@@ -872,14 +1181,17 @@ async function generateTurnPrefixSummary(
       new CompactionError(
         "summarization_failed",
         `Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`,
+        undefined,
+        response.usage,
       ),
     );
   }
 
-  return ok(
-    response.content
+  return ok({
+    summary: response.content
       .filter((c): c is { type: "text"; text: string } => c.type === "text")
       .map((c) => c.text)
       .join("\n"),
-  );
+    usage: response.usage,
+  });
 }

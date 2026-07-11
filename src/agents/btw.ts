@@ -8,6 +8,7 @@ import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
 import type { SessionEntry as StoredSessionEntry } from "../config/sessions.js";
+import { appendSessionTranscriptEvent } from "../config/sessions/transcript-append.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { streamWithPayloadPatch } from "../llm/providers/stream-wrappers/stream-payload-utils.js";
 import { streamSimple } from "../llm/stream.js";
@@ -16,8 +17,11 @@ import type {
   ImageContent,
   Message,
   Model,
+  StopReason,
   TextContent,
+  Usage,
 } from "../llm/types.js";
+import { getChildLogger } from "../logging.js";
 import { prepareProviderRuntimeAuth } from "../plugins/provider-runtime.js";
 import { discoverAuthStorage, discoverModels } from "./agent-model-discovery.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "./agent-scope.js";
@@ -26,6 +30,7 @@ import { resolveSessionAuthProfileOverride } from "./auth-profiles/session-overr
 import { readBtwTranscriptMessages, resolveBtwSessionTranscriptPath } from "./btw-transcript.js";
 import { executePreparedCliRun } from "./cli-runner/execute.runtime.js";
 import { prepareCliRunContext } from "./cli-runner/prepare.runtime.js";
+import { MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE } from "./compaction-usage-accounting.js";
 import { EmbeddedBlockChunker, type BlockReplyChunking } from "./embedded-agent-block-chunker.js";
 import { resolveModelWithRegistry } from "./embedded-agent-runner/model.js";
 import { getActiveEmbeddedRunSnapshot } from "./embedded-agent-runner/runs.js";
@@ -53,11 +58,32 @@ import {
 } from "./model-runtime-aliases.js";
 import { ensureOpenClawModelsJson } from "./models-config.js";
 import { listOpenAIAuthProfileProvidersForAgentRuntime } from "./openai-routing.js";
+import {
+  isModelProviderDispatchObservableStreamFn,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchModelForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
+} from "./provider-dispatch-observable-stream.js";
 import { applyPreparedRuntimeAuthToModel } from "./provider-request-config.js";
 import { registerProviderStreamForModel } from "./provider-stream.js";
 import { stripToolResultDetails } from "./session-transcript-repair.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
 import { sanitizeImageBlocks } from "./tool-images.js";
+import {
+  AgentUsageBudgetError,
+  acquireAgentUsageBudgetAdmission,
+  buildUnsupportedAgentUsageBudgetHarnessError,
+  buildUnsupportedAgentUsageBudgetStreamError,
+  isAgentUsageBudgetError,
+  recordAgentUsageBudgetAdmissionResult,
+  resolveAgentUsageBudgetConfig,
+  resolveUsageBudgetCostMultiplierUsage,
+  type AgentUsageBudgetAdmissionRelease,
+  type AgentUsageBudgetAdmissionReservation,
+} from "./usage-budget.js";
+import { hasNonzeroUsageLike, type UsageLike } from "./usage.js";
+
+const log = getChildLogger({ capability: "agent.btw" });
 
 function collectTextContent(content: Array<{ type?: string; text?: string }>): string {
   return content
@@ -71,6 +97,102 @@ function collectThinkingContent(content: Array<{ type?: string; thinking?: strin
     .filter((part): part is { type: "thinking"; thinking: string } => part.type === "thinking")
     .map((part) => part.thinking)
     .join("");
+}
+
+function estimateJsonTokenUpperBound(value: unknown): number | undefined {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function buildBtwUsageBudgetReservation(params: {
+  messages: Message[];
+  model: Model;
+  question: string;
+  inFlightPrompt?: string;
+}): AgentUsageBudgetAdmissionReservation | undefined {
+  const inputTokens = estimateJsonTokenUpperBound({
+    systemPrompt: buildBtwSystemPrompt(),
+    messages: [
+      ...params.messages,
+      {
+        role: "user",
+        content: [
+          { type: "text", text: buildBtwQuestionPrompt(params.question, params.inFlightPrompt) },
+        ],
+      },
+    ],
+  });
+  const outputTokens = params.model.maxTokens;
+  const reservation = {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+  };
+  return Object.keys(reservation).length > 0 ? reservation : undefined;
+}
+
+function buildRepeatedBtwDispatchBudgetError(params: {
+  agentId?: string | null;
+  provider: string;
+  model: string;
+}): AgentUsageBudgetError {
+  return new AgentUsageBudgetError(
+    `Usage budget blocked for agent "${params.agentId ?? "unknown"}": provider retry dispatch cannot be safely attributed.`,
+    {
+      agentId: params.agentId ?? "unknown",
+      provider: params.provider,
+      model: params.model,
+      harnessId: "provider-retry",
+      reason: "unsupported_harness",
+    },
+  );
+}
+
+function isProviderRetryUsageBudgetError(error: unknown): boolean {
+  return (
+    isAgentUsageBudgetError(error) &&
+    typeof error === "object" &&
+    error !== null &&
+    (error as { details?: { harnessId?: unknown } }).details?.harnessId === "provider-retry"
+  );
+}
+
+async function appendBtwUsageAccounting(params: {
+  cfg: OpenClawConfig | undefined;
+  sessionFile: string;
+  recordId: string;
+  provider: string;
+  model: string;
+  usage?: UsageLike;
+  stopReason: StopReason;
+  timestampMs: number;
+}): Promise<void> {
+  await appendSessionTranscriptEvent({
+    config: params.cfg,
+    transcriptPath: params.sessionFile,
+    event: {
+      type: "custom",
+      customType: MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+      id: params.recordId,
+      parentId: null,
+      timestamp: new Date(params.timestampMs).toISOString(),
+      appendMode: "side",
+      data: {
+        schemaVersion: 1,
+        message: {
+          role: "assistant",
+          content: [],
+          provider: params.provider,
+          model: params.model,
+          usage: params.usage,
+          stopReason: params.stopReason,
+          timestamp: params.timestampMs,
+        },
+      },
+    },
+  });
 }
 
 function buildBtwSystemPrompt(): string {
@@ -411,6 +533,14 @@ async function runCliBtwSideQuestion(params: {
   messageProvider?: string;
   currentChannelId?: string;
 }): Promise<ReplyPayload> {
+  if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: params.sessionAgentId })) {
+    throw buildUnsupportedAgentUsageBudgetHarnessError({
+      agentId: params.sessionAgentId,
+      provider: params.cliProvider,
+      model: params.model,
+      harnessId: `cli:${params.cliProvider}`,
+    });
+  }
   const timeoutMs = resolveAgentTimeoutMs({
     cfg: params.cfg,
     overrideSeconds: params.opts?.timeoutOverrideSeconds,
@@ -529,6 +659,14 @@ export async function runBtwSideQuestion(
     selectedHarness: AgentHarness,
     runtime: Awaited<ReturnType<typeof resolveRuntimeModel>>,
   ): Promise<ReplyPayload | undefined> => {
+    if (resolveAgentUsageBudgetConfig({ config: params.cfg, agentId: sessionAgentId })) {
+      throw buildUnsupportedAgentUsageBudgetHarnessError({
+        agentId: sessionAgentId,
+        provider: runtime.model.provider,
+        model: runtime.model.id,
+        harnessId: selectedHarness.id,
+      });
+    }
     if (!selectedHarness.runSideQuestion) {
       throw new Error(
         `Selected agent harness "${selectedHarness.id}" does not support /btw side questions.`,
@@ -773,6 +911,20 @@ export async function runBtwSideQuestion(
     resolvedApiKey: apiKey,
     authProfileId: resolvedAuthProfileId,
   });
+  const usageBudgetConfig = resolveAgentUsageBudgetConfig({
+    config: params.cfg,
+    agentId: sessionAgentId,
+  });
+  if (
+    usageBudgetConfig &&
+    !isModelProviderDispatchObservableStreamFn({ streamFn, model: runtimeModel })
+  ) {
+    throw buildUnsupportedAgentUsageBudgetStreamError({
+      agentId: sessionAgentId,
+      provider: runtimeModel.provider,
+      model: runtimeModel.id,
+    });
+  }
 
   const chunker =
     params.opts?.onBlockReply && params.blockReplyChunking
@@ -800,80 +952,224 @@ export async function runBtwSideQuestion(
     await blockEmitChain;
   };
 
-  const stream = await streamWithPayloadPatch(
-    streamFn,
-    runtimeModel,
-    {
-      systemPrompt: buildBtwSystemPrompt(),
-      messages: [
-        ...messages,
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: buildBtwQuestionPrompt(params.question, inFlightPrompt),
-            },
-          ],
-          timestamp: Date.now(),
-        },
-      ],
-    },
-    {
-      apiKey,
-      // BTW is intentionally a lightweight side question path. Keep provider
-      // reasoning off so we reliably receive answer text instead of thinking-only output.
-      reasoning: undefined,
-      signal: params.opts?.abortSignal,
-    },
-    (payloadObj) => {
-      // BTW is intentionally tool-less. Some OpenAI-compatible providers reject
-      // the empty tools arrays injected for generic tool-history replay.
-      if (Array.isArray(payloadObj.tools) && payloadObj.tools.length === 0) {
-        delete payloadObj.tools;
-      }
-    },
-  );
-
   let finalEvent:
     | Extract<AssistantMessageEvent, { type: "done" }>
     | Extract<AssistantMessageEvent, { type: "error" }>
     | undefined;
-
-  for await (const event of stream) {
-    finalEvent = event.type === "done" || event.type === "error" ? event : finalEvent;
-
-    if (!assistantStarted && (event.type === "text_start" || event.type === "start")) {
-      assistantStarted = true;
-      await params.opts?.onAssistantMessageStart?.();
-    }
-
-    if (event.type === "text_delta") {
-      sawTextEvent = true;
-      answerText += event.delta;
-      chunker?.append(event.delta);
-      if (chunker && params.resolvedBlockStreamingBreak === "text_end") {
-        chunker.drain({ force: false, emit: (chunk) => void emitBlockChunk(chunk) });
+  const usageBudgetOperationId = randomUUID();
+  let usageBudgetTimestampMs: number | undefined;
+  let releaseUsageBudgetAdmission: AgentUsageBudgetAdmissionRelease | undefined;
+  let recordedUsageBudgetResult = false;
+  let preserveInFlightUsageBudgetAdmission = false;
+  let providerDispatchStarted = false;
+  let usageBudgetDispatchProvider = runtimeModel.provider;
+  let usageBudgetDispatchModelId = runtimeModel.id;
+  let usageBudgetCostMultiplier = 1;
+  let usageBudgetReservationCostMultiplier: number | undefined = 1;
+  const streamContext = {
+    systemPrompt: buildBtwSystemPrompt(),
+    messages: [
+      ...messages,
+      {
+        role: "user" as const,
+        content: [
+          {
+            type: "text" as const,
+            text: buildBtwQuestionPrompt(params.question, inFlightPrompt),
+          },
+        ],
+        timestamp: Date.now(),
+      },
+    ],
+  };
+  const streamOptions = {
+    apiKey,
+    // BTW is intentionally a lightweight side question path. Keep provider
+    // reasoning off so we reliably receive answer text instead of thinking-only output.
+    reasoning: undefined,
+    ...(usageBudgetConfig ? { maxRetries: 0 } : {}),
+    signal: params.opts?.abortSignal,
+    onProviderDispatch: () => {
+      if (providerDispatchStarted && usageBudgetConfig) {
+        throw buildRepeatedBtwDispatchBudgetError({
+          agentId: sessionAgentId,
+          provider: usageBudgetDispatchProvider,
+          model: usageBudgetDispatchModelId,
+        });
       }
-      continue;
+      providerDispatchStarted = true;
+    },
+  };
+  if (usageBudgetConfig) {
+    const usageBudgetDispatchModel = resolveProviderDispatchModelForStreamFn({
+      streamFn,
+      model: runtimeModel,
+      context: streamContext,
+      options: streamOptions,
+    });
+    usageBudgetDispatchProvider = usageBudgetDispatchModel.provider;
+    usageBudgetDispatchModelId = usageBudgetDispatchModel.id;
+    usageBudgetCostMultiplier = resolveProviderDispatchCostMultiplierForStreamFn({
+      streamFn,
+      model: runtimeModel,
+      context: streamContext,
+      options: streamOptions,
+    });
+    usageBudgetReservationCostMultiplier =
+      resolveProviderDispatchReservationCostMultiplierForStreamFn({
+        streamFn,
+        model: runtimeModel,
+        context: streamContext,
+        options: streamOptions,
+      });
+  }
+  const recordBtwUsageBudgetResult = async (usage: Usage | undefined, stopReason: StopReason) => {
+    if (
+      !releaseUsageBudgetAdmission ||
+      recordedUsageBudgetResult ||
+      usageBudgetTimestampMs === undefined
+    ) {
+      return;
     }
-
-    if (event.type === "text_end" && chunker && params.resolvedBlockStreamingBreak === "text_end") {
-      chunker.drain({ force: true, emit: (chunk) => void emitBlockChunk(chunk) });
-      continue;
+    recordedUsageBudgetResult = true;
+    const timestampMs = usageBudgetTimestampMs;
+    const recordId = randomUUID();
+    const recordedUsage = resolveUsageBudgetCostMultiplierUsage({
+      config: params.cfg,
+      provider: usageBudgetDispatchProvider,
+      model: usageBudgetDispatchModelId,
+      usage,
+      costMultiplier: usageBudgetCostMultiplier,
+    });
+    try {
+      recordAgentUsageBudgetAdmissionResult({
+        config: params.cfg,
+        agentId: sessionAgentId,
+        provider: usageBudgetDispatchProvider,
+        model: usageBudgetDispatchModelId,
+        usage: recordedUsage,
+        timestampMs,
+        recordId,
+        usageBudgetOperationId,
+      });
+    } catch (error) {
+      preserveInFlightUsageBudgetAdmission = true;
+      throw error;
     }
+    try {
+      await appendBtwUsageAccounting({
+        cfg: params.cfg,
+        sessionFile,
+        recordId,
+        provider: usageBudgetDispatchProvider,
+        model: usageBudgetDispatchModelId,
+        usage: recordedUsage,
+        stopReason,
+        timestampMs,
+      });
+    } catch (error) {
+      log.warn("failed to persist /btw usage accounting transcript", { error });
+    }
+  };
+  try {
+    releaseUsageBudgetAdmission = await acquireAgentUsageBudgetAdmission({
+      config: params.cfg,
+      agentId: sessionAgentId,
+      provider: usageBudgetDispatchProvider,
+      model: usageBudgetDispatchModelId,
+      transcriptPath: sessionFile,
+      reservation: buildBtwUsageBudgetReservation({
+        messages,
+        model: {
+          ...runtimeModel,
+          provider: usageBudgetDispatchProvider,
+          id: usageBudgetDispatchModelId,
+        },
+        question: params.question,
+        inFlightPrompt,
+      }),
+      costMultiplier: usageBudgetReservationCostMultiplier,
+      reservationCostKnown: usageBudgetReservationCostMultiplier !== undefined,
+      usageBudgetOperationId,
+      signal: params.opts?.abortSignal,
+    });
+    usageBudgetTimestampMs = releaseUsageBudgetAdmission?.timestampMs;
+    const stream = await streamWithPayloadPatch(
+      streamFn,
+      runtimeModel,
+      streamContext,
+      streamOptions,
+      (payloadObj) => {
+        // BTW is intentionally tool-less. Some OpenAI-compatible providers reject
+        // the empty tools arrays injected for generic tool-history replay.
+        if (Array.isArray(payloadObj.tools) && payloadObj.tools.length === 0) {
+          delete payloadObj.tools;
+        }
+      },
+    );
 
-    if (event.type === "thinking_delta") {
-      reasoningText += event.delta;
-      if (params.resolvedReasoningLevel !== "off") {
-        await params.opts?.onReasoningStream?.({ text: reasoningText, isReasoning: true });
+    for await (const event of stream) {
+      finalEvent = event.type === "done" || event.type === "error" ? event : finalEvent;
+
+      if (!assistantStarted && (event.type === "text_start" || event.type === "start")) {
+        assistantStarted = true;
+        await params.opts?.onAssistantMessageStart?.();
       }
-      continue;
-    }
 
-    if (event.type === "thinking_end" && params.resolvedReasoningLevel !== "off") {
-      await params.opts?.onReasoningEnd?.();
+      if (event.type === "text_delta") {
+        sawTextEvent = true;
+        answerText += event.delta;
+        chunker?.append(event.delta);
+        if (chunker && params.resolvedBlockStreamingBreak === "text_end") {
+          chunker.drain({ force: false, emit: (chunk) => void emitBlockChunk(chunk) });
+        }
+        continue;
+      }
+
+      if (
+        event.type === "text_end" &&
+        chunker &&
+        params.resolvedBlockStreamingBreak === "text_end"
+      ) {
+        chunker.drain({ force: true, emit: (chunk) => void emitBlockChunk(chunk) });
+        continue;
+      }
+
+      if (event.type === "thinking_delta") {
+        reasoningText += event.delta;
+        if (params.resolvedReasoningLevel !== "off") {
+          await params.opts?.onReasoningStream?.({ text: reasoningText, isReasoning: true });
+        }
+        continue;
+      }
+
+      if (event.type === "thinking_end" && params.resolvedReasoningLevel !== "off") {
+        await params.opts?.onReasoningEnd?.();
+      }
     }
+    const finalUsage =
+      finalEvent?.type === "done"
+        ? finalEvent.message.usage
+        : finalEvent?.type === "error"
+          ? finalEvent.error.usage
+          : undefined;
+    if (finalEvent?.type === "done" || providerDispatchStarted || hasNonzeroUsageLike(finalUsage)) {
+      await recordBtwUsageBudgetResult(finalUsage, finalEvent?.type === "error" ? "error" : "stop");
+    }
+  } catch (error) {
+    const errorUsage = readBtwErrorUsage(error);
+    if (
+      providerDispatchStarted ||
+      hasNonzeroUsageLike(errorUsage) ||
+      isProviderRetryUsageBudgetError(error)
+    ) {
+      await recordBtwUsageBudgetResult(errorUsage, "error");
+    }
+    throw error;
+  } finally {
+    await releaseUsageBudgetAdmission?.({
+      preserveInFlight: preserveInFlightUsageBudgetAdmission,
+    });
   }
 
   if (chunker && params.resolvedBlockStreamingBreak !== "text_end" && chunker.hasBuffered()) {
@@ -906,4 +1202,12 @@ export async function runBtwSideQuestion(
   }
 
   return { text: answer };
+}
+
+function readBtwErrorUsage(error: unknown): Usage | undefined {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  const carrier = error as { usage?: Usage; partialUsage?: Usage };
+  return carrier.partialUsage ?? carrier.usage;
 }

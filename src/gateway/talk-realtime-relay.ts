@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
 import type { OpenClawConfig } from "../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../plugins/types.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   buildRealtimeVoiceAgentConsultWorkingResponse,
@@ -432,6 +433,7 @@ export function createTalkRealtimeRelaySession(
   const bridge = createRealtimeVoiceBridgeSession({
     provider: params.provider,
     cfg: params.cfg,
+    agentId: resolveAgentIdFromSessionKey(params.sessionKey),
     providerConfig: params.providerConfig,
     audioFormat: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
     instructions: params.instructions,

@@ -13,7 +13,7 @@ import {
   estimateTokens,
   findCutPoint,
   findTurnStartIndex,
-  generateSummary as generateSummaryCore,
+  generateSummaryWithUsage as generateSummaryWithUsageCore,
   getLastAssistantUsage,
   prepareCompaction as prepareCompactionCore,
   serializeConversation,
@@ -24,6 +24,8 @@ import {
   type CompactionResult,
   type CompactionSettings,
   type ContextUsageEstimate,
+  type GeneratedSummary,
+  type AgentCoreCompletionRuntimeDeps,
   type Result,
 } from "../../runtime/index.js";
 import type { AgentMessage, StreamFn, ThinkingLevel } from "../../runtime/index.js";
@@ -44,6 +46,7 @@ export {
   type CompactionResult,
   type CompactionSettings,
   type ContextUsageEstimate,
+  type GeneratedSummary,
 };
 
 /** Converts agent-core Result values back to the legacy session compaction API shape. */
@@ -74,9 +77,46 @@ export async function generateSummary(
   previousSummary?: string,
   thinkingLevel?: ThinkingLevel,
   streamFn?: StreamFn,
+  onProviderDispatch?: () => void,
 ): Promise<string> {
+  return (
+    await generateSummaryWithUsage(
+      currentMessages,
+      model,
+      reserveTokens,
+      apiKey,
+      headers,
+      signal,
+      customInstructions,
+      previousSummary,
+      thinkingLevel,
+      streamFn,
+      undefined,
+      undefined,
+      onProviderDispatch,
+    )
+  ).summary;
+}
+
+/** Generates a compaction summary and returns provider-reported usage when available. */
+export async function generateSummaryWithUsage(
+  currentMessages: AgentMessage[],
+  model: Model,
+  reserveTokens: number,
+  apiKey: string | undefined,
+  headers?: Record<string, string>,
+  signal?: AbortSignal,
+  customInstructions?: string,
+  previousSummary?: string,
+  thinkingLevel?: ThinkingLevel,
+  streamFn?: StreamFn,
+  runtime?: AgentCoreCompletionRuntimeDeps,
+  usageBudgetOperationId?: string,
+  onProviderDispatch?: () => void,
+  disableProviderRetries?: boolean,
+): Promise<GeneratedSummary> {
   return unwrapCompactionResult(
-    await generateSummaryCore(
+    await generateSummaryWithUsageCore(
       currentMessages,
       model,
       reserveTokens,
@@ -87,7 +127,10 @@ export async function generateSummary(
       previousSummary,
       thinkingLevel,
       streamFn as unknown as CoreStreamFn | undefined,
-      openClawAgentCoreRuntime,
+      runtime ?? openClawAgentCoreRuntime,
+      usageBudgetOperationId,
+      onProviderDispatch,
+      disableProviderRetries,
     ),
   );
 }

@@ -1,6 +1,8 @@
 // Session artifact filename classifiers and archive timestamp helpers.
 // Cleanup, disk-budget, and usage accounting use these predicates to avoid deleting live transcripts.
 
+import { closeSync, openSync, readSync } from "node:fs";
+import path from "node:path";
 import { timestampMsToIsoFileStamp } from "@openclaw/normalization-core/number-coercion";
 import { escapeRegExp } from "../../shared/regexp.js";
 
@@ -132,6 +134,119 @@ export function parseUsageCountedSessionIdFromFileName(fileName: string): string
     }
   }
   return null;
+}
+
+type UsageFamilyHeaderLike = {
+  type?: unknown;
+  id?: unknown;
+  usageFamilyKey?: unknown;
+  parentSession?: unknown;
+};
+
+const USAGE_FAMILY_HEADER_READ_BYTES = 64 * 1024;
+
+function readUsageFamilyHeaderFromFile(filePath: string): UsageFamilyHeaderLike | undefined {
+  let fd: number;
+  try {
+    fd = openSync(filePath, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const buffer = Buffer.allocUnsafe(Math.min(8192, USAGE_FAMILY_HEADER_READ_BYTES));
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    while (totalBytes < USAGE_FAMILY_HEADER_READ_BYTES) {
+      const bytesToRead = Math.min(buffer.length, USAGE_FAMILY_HEADER_READ_BYTES - totalBytes);
+      const bytesRead = readSync(fd, buffer, 0, bytesToRead, totalBytes);
+      if (bytesRead === 0) {
+        break;
+      }
+      const newlineIndex = buffer.subarray(0, bytesRead).indexOf(0x0a);
+      if (newlineIndex >= 0) {
+        chunks.push(Buffer.from(buffer.subarray(0, newlineIndex)));
+        break;
+      }
+      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+      totalBytes += bytesRead;
+    }
+    if (chunks.length === 0) {
+      return undefined;
+    }
+    const header = JSON.parse(Buffer.concat(chunks).toString("utf8")) as UsageFamilyHeaderLike;
+    return header.type === "session" && typeof header.id === "string" ? header : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Resolves the canonical usage family a copied transcript should keep using. */
+export function resolveSessionHeaderUsageFamilyKey(params: {
+  header?: UsageFamilyHeaderLike | null;
+  parentSession?: string;
+  resolveParentUsageFamilyKey?: (parentSession: string) => string | undefined;
+}): string | undefined {
+  const explicit =
+    typeof params.header?.usageFamilyKey === "string" ? params.header.usageFamilyKey.trim() : "";
+  if (explicit) {
+    return explicit;
+  }
+  const parentSession =
+    (typeof params.header?.parentSession === "string" ? params.header.parentSession.trim() : "") ||
+    params.parentSession?.trim() ||
+    "";
+  if (!parentSession) {
+    return undefined;
+  }
+  const parentUsageFamilyKey = params.resolveParentUsageFamilyKey?.(parentSession);
+  if (parentUsageFamilyKey) {
+    return parentUsageFamilyKey;
+  }
+  return parseUsageCountedSessionIdFromFileName(path.basename(parentSession)) ?? undefined;
+}
+
+function resolveSessionFileUsageFamilyKeyInner(params: {
+  header?: UsageFamilyHeaderLike | null;
+  sessionFile: string;
+  visited: Set<string>;
+}): string | undefined {
+  const sessionFile = path.resolve(params.sessionFile);
+  if (params.visited.has(sessionFile)) {
+    return undefined;
+  }
+  params.visited.add(sessionFile);
+  return resolveSessionHeaderUsageFamilyKey({
+    header: params.header,
+    parentSession: sessionFile,
+    resolveParentUsageFamilyKey: (parentSession) => {
+      const parentPath = path.isAbsolute(parentSession)
+        ? parentSession
+        : path.resolve(path.dirname(sessionFile), parentSession);
+      const parentHeader = readUsageFamilyHeaderFromFile(parentPath);
+      if (!parentHeader) {
+        return undefined;
+      }
+      return resolveSessionFileUsageFamilyKeyInner({
+        header: parentHeader,
+        sessionFile: parentPath,
+        visited: params.visited,
+      });
+    },
+  });
+}
+
+/** Resolves the persisted usage family for a transcript file by following parent headers. */
+export function resolveSessionFileUsageFamilyKey(params: {
+  header?: UsageFamilyHeaderLike | null;
+  sessionFile: string;
+}): string | undefined {
+  return resolveSessionFileUsageFamilyKeyInner({
+    header: params.header,
+    sessionFile: params.sessionFile,
+    visited: new Set<string>(),
+  });
 }
 
 /** Formats an archive timestamp that is safe for filenames. */

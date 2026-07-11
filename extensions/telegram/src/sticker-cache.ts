@@ -156,6 +156,7 @@ export async function describeStickerImage(params: DescribeStickerParams): Promi
       filePath: imagePath,
       mime: "image/webp",
       cfg,
+      agentId,
       agentDir,
       provider,
       model,

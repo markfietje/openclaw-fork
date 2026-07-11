@@ -24,9 +24,7 @@ vi.mock("./custom-api-registry.js", () => ({
   ensureCustomApiRegistered,
 }));
 
-const { prepareGoogleSimpleCompletionModel } = await import(
-  "./google-simple-completion-stream.js"
-);
+const { prepareGoogleSimpleCompletionModel } = await import("./google-simple-completion-stream.js");
 
 const GOOGLE_SIMPLE_COMPLETION_API = "openclaw-google-generative-ai-simple";
 
@@ -87,6 +85,17 @@ describe("prepareGoogleSimpleCompletionModel", () => {
     });
     expect(ensureCustomApiRegistered).toHaveBeenCalledTimes(1);
     expect(ensureCustomApiRegistered.mock.calls[0]?.[0]).toBe(GOOGLE_SIMPLE_COMPLETION_API);
+  });
+
+  it("marks the registered alias as provider dispatch observable", async () => {
+    const { isProviderDispatchObservableStreamFn } =
+      await import("../plugin-sdk/provider-stream-shared.js");
+    const model = makeGoogleModel();
+
+    prepareGoogleSimpleCompletionModel(model);
+    const streamFn = ensureCustomApiRegistered.mock.calls[0]?.[1];
+
+    expect(isProviderDispatchObservableStreamFn(streamFn as never)).toBe(true);
   });
 
   it.each(["off", "low", "medium", "high", "adaptive"] as const)(

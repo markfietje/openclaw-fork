@@ -302,6 +302,13 @@ export function createModelExecAutoReviewer(params: {
             temperature: 0,
             signal: completionController.signal,
           },
+          usageBudget: {
+            config: cfg,
+            agentId,
+            provider: prepared.selection.provider,
+            model: prepared.selection.modelId,
+            recordIdPrefix: "exec-auto-reviewer",
+          },
         }),
         {
           timeoutMs,

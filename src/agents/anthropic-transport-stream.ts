@@ -57,6 +57,7 @@ import {
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./copilot-dynamic-headers.js";
 import { parseJsonObjectPreservingUnsafeIntegers } from "./json-unsafe-integers.js";
 import { resolveProviderEndpoint } from "./provider-attribution.js";
+import { markModelProviderDispatchObservableStreamFn } from "./provider-dispatch-observable-stream.js";
 import { buildGuardedModelFetch } from "./provider-transport-fetch.js";
 import type { StreamFn } from "./runtime/index.js";
 import { transformTransportMessages } from "./transport-message-transform.js";
@@ -104,7 +105,10 @@ type AnthropicTransportModel = Model<"anthropic-messages"> & {
 };
 
 type AnthropicTransportOptions = AnthropicOptions &
-  Pick<SimpleStreamOptions, "reasoning" | "thinkingBudgets" | "stop">;
+  Pick<
+    SimpleStreamOptions,
+    "maxRetries" | "onProviderDispatch" | "reasoning" | "thinkingBudgets" | "stop"
+  >;
 type AnthropicAdaptiveEffort = NonNullable<AnthropicOptions["effort"]> | "xhigh";
 type AnthropicMessagesClient = {
   messages: {
@@ -827,8 +831,17 @@ function createAnthropicTransportClient(params: {
   // the OpenAI SDK compatibility sanitizer can stall before the text block.
   const fetch =
     isKimiAnthropicProvider(model.provider) && options?.thinkingEnabled === true
-      ? buildGuardedModelFetch(model, undefined, { sanitizeSse: false })
-      : buildGuardedModelFetch(model);
+      ? buildGuardedModelFetch(model, undefined, {
+          sanitizeSse: false,
+          ...(options?.onProviderDispatch
+            ? { onProviderDispatch: options.onProviderDispatch }
+            : {}),
+        })
+      : options?.onProviderDispatch
+        ? buildGuardedModelFetch(model, undefined, {
+            onProviderDispatch: options.onProviderDispatch,
+          })
+        : buildGuardedModelFetch(model);
   if (model.provider === "github-copilot") {
     const betaFeatures = needsInterleavedBeta ? ["interleaved-thinking-2025-05-14"] : [];
     return {
@@ -1067,6 +1080,8 @@ function resolveAnthropicTransportOptions(
     sessionId: options?.sessionId,
     headers: options?.headers,
     onPayload: options?.onPayload,
+    onProviderDispatch: options?.onProviderDispatch,
+    maxRetries: options?.maxRetries,
     maxRetryDelayMs: options?.maxRetryDelayMs,
     metadata: options?.metadata,
     interleavedThinking: options?.interleavedThinking,
@@ -1102,7 +1117,7 @@ function resolveAnthropicTransportOptions(
 
 /** Create the stream function used by Anthropic Messages transport models. */
 export function createAnthropicMessagesTransportStreamFn(): StreamFn {
-  return (rawModel, context, rawOptions) => {
+  return markModelProviderDispatchObservableStreamFn((rawModel, context, rawOptions) => {
     const model = withEffectiveAnthropicBaseUrl(rawModel as AnthropicTransportModel);
     const options = rawOptions as AnthropicTransportOptions | undefined;
     const { eventStream, stream } = createWritableTransportEventStream();
@@ -1650,5 +1665,5 @@ export function createAnthropicMessagesTransportStreamFn(): StreamFn {
       }
     })();
     return eventStream as ReturnType<StreamFn>;
-  };
+  });
 }

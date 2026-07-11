@@ -1,6 +1,16 @@
 // Coverage for model-call diagnostic events around attempt stream functions.
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { createAssistantMessageEventStream, type AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchModelResolverStreamFn,
+  markProviderDispatchObservableStreamFn,
+} from "../../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
+import { withEnvOverride } from "../../../config/test-helpers.js";
+import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import {
   onInternalDiagnosticEvent,
   onTrustedInternalDiagnosticEvent,
@@ -20,7 +30,20 @@ import {
   resetGlobalHookRunner,
 } from "../../../plugins/hook-runner-global.js";
 import { createHookRunnerWithRegistry } from "../../../plugins/hooks.test-helpers.js";
-import { wrapStreamFnWithDiagnosticModelCallEvents } from "./attempt.model-diagnostic-events.js";
+import {
+  attachUsageBudgetRecordedCostMetadata,
+  USAGE_BUDGET_RECORDED_COST_METADATA_KEY,
+} from "../../../shared/usage-budget-recorded-cost.js";
+import { withTempDir } from "../../../test-helpers/temp-dir.js";
+import {
+  MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE,
+  USAGE_BUDGET_OPERATION_ID_KEY,
+} from "../../compaction-usage-accounting.js";
+import { prepareGooglePromptCacheStreamFn } from "../google-prompt-cache.js";
+import {
+  cancelObservedModelCallStream,
+  wrapStreamFnWithDiagnosticModelCallEvents,
+} from "./attempt.model-diagnostic-events.js";
 
 async function collectModelCallEvents(run: () => Promise<void>): Promise<DiagnosticEventPayload[]> {
   // Diagnostics are emitted asynchronously; collect only public model-call
@@ -97,6 +120,26 @@ function readRecordField(record: Record<string, unknown>, key: string, label: st
 
 function expectNumberField(record: Record<string, unknown>, key: string) {
   expect(typeof record[key]).toBe("number");
+}
+
+function createUsageBudgetAssistantMessage(timestamp: number): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: "ok" }],
+    provider: "openai",
+    model: "gpt-5.4",
+    api: "openai-responses",
+    stopReason: "stop",
+    timestamp,
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+  };
 }
 
 function getEvent(events: readonly DiagnosticEventPayload[], index: number) {
@@ -202,6 +245,1355 @@ describe("wrapStreamFnWithDiagnosticModelCallEvents", () => {
     expectNumberField(completedEvent, "responseStreamBytes");
     expectNumberField(completedEvent, "timeToFirstByteMs");
     expect(JSON.stringify(events)).not.toContain("sk-test-secret-value");
+  });
+
+  it("blocks usage-budget denials before provider stream dispatch", async () => {
+    const streamFn = vi.fn(() => {
+      throw new Error("provider should not be called");
+    }) as unknown as StreamFn;
+    markProviderDispatchObservableStreamFn(streamFn);
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+      runId: "run-budget",
+      sessionId: "session-id",
+      provider: "budget-missing",
+      model: "unpriced",
+      api: "openai-responses",
+      transport: "http",
+      trace: createDiagnosticTraceContext(),
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { usd: 1 },
+            },
+          },
+        },
+      },
+      agentId: "main",
+      nextCallId: () => "call-budget",
+    });
+
+    let caught: unknown;
+    const events = await collectModelCallEvents(async () => {
+      try {
+        await wrapped({} as never, {} as never, {} as never);
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(streamFn).not.toHaveBeenCalled();
+    expect(caught).toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: { reason: "missing_model_pricing" },
+    });
+    expect(events.map((event) => event.type)).toEqual(["model.call.started", "model.call.error"]);
+  });
+
+  it("blocks Google prompt-cache management before provider cache dispatch", async () => {
+    const cacheFetch = vi.fn<typeof fetch>();
+    const innerStreamFn = vi.fn(() => createAssistantMessageEventStream()) as unknown as StreamFn;
+    markProviderDispatchObservableStreamFn(innerStreamFn);
+    const model = {
+      id: "gemini-3.1-pro-preview",
+      name: "Gemini",
+      api: "google-generative-ai",
+      provider: "google",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 4096,
+    };
+    const cacheWrapped = await prepareGooglePromptCacheStreamFn(
+      {
+        apiKey: "gemini-api-key",
+        extraParams: { cacheRetention: "long" },
+        model: model as never,
+        modelId: "gemini-3.1-pro-preview",
+        provider: "google",
+        sessionManager: {
+          appendCustomEntry: vi.fn(),
+          getEntries: () => [],
+        },
+        streamFn: innerStreamFn,
+        systemPrompt: "Follow policy.",
+      },
+      {
+        buildGuardedFetch: () => cacheFetch,
+        now: () => Date.UTC(2026, 6, 15, 12),
+      },
+    );
+    expect(cacheWrapped).toBeTypeOf("function");
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(cacheWrapped as StreamFn, {
+      runId: "run-budget-google-cache",
+      sessionId: "session-id",
+      provider: "google",
+      model: "gemini-3.1-pro-preview",
+      api: "google-generative-ai",
+      transport: "http",
+      trace: createDiagnosticTraceContext(),
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 1 },
+            },
+          },
+        },
+      },
+      agentId: "budget-google-cache",
+      nextCallId: () => "call-budget-google-cache",
+    });
+
+    let caught: unknown;
+    const events = await collectModelCallEvents(async () => {
+      try {
+        await wrapped(
+          model as never,
+          {
+            systemPrompt: "Follow policy.",
+            messages: [{ role: "user", content: "hello" }],
+            tools: [
+              {
+                name: "lookup",
+                description: "Lookup",
+                parameters: { type: "object", properties: {} },
+              },
+            ],
+          } as never,
+          { maxTokens: 4096 } as never,
+        );
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(cacheFetch).not.toHaveBeenCalled();
+    expect(innerStreamFn).not.toHaveBeenCalled();
+    expect(caught).toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: { reason: "exceeded", limitKind: "tokens" },
+    });
+    expect(events.map((event) => event.type)).toEqual(["model.call.started", "model.call.error"]);
+  });
+
+  it("prices usage-budget admission against the resolved dispatch model", async () => {
+    const streamFn = vi.fn(() => createAssistantMessageEventStream()) as unknown as StreamFn;
+    markProviderDispatchObservableStreamFn(streamFn);
+    markProviderDispatchModelResolverStreamFn(streamFn, ({ model }) => ({
+      ...model,
+      id: "grok-3-fast",
+    }));
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+      runId: "run-budget-dispatch-model",
+      sessionId: "session-id",
+      provider: "xai",
+      model: "grok-3",
+      api: "openai-responses",
+      transport: "http",
+      trace: createDiagnosticTraceContext(),
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { usd: 1 },
+            },
+          },
+        },
+        models: {
+          providers: {
+            xai: {
+              baseUrl: "https://api.x.ai/v1",
+              models: [
+                {
+                  id: "grok-3",
+                  name: "grok-3",
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 128000,
+                  maxTokens: 4096,
+                },
+              ],
+            },
+          },
+        },
+      },
+      agentId: "budget-dispatch-model",
+      nextCallId: () => "call-budget-dispatch-model",
+    });
+
+    let caught: unknown;
+    await collectModelCallEvents(async () => {
+      try {
+        await wrapped(
+          {
+            id: "grok-3",
+            name: "grok-3",
+            api: "openai-responses",
+            provider: "xai",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128000,
+            maxTokens: 4096,
+          } as never,
+          { messages: [{ role: "user", content: "hello" }] } as never,
+          { maxTokens: 4096 } as never,
+        );
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(streamFn).not.toHaveBeenCalled();
+    expect(caught).toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: { reason: "missing_model_pricing" },
+    });
+  });
+
+  it("prices usage-budget admission with provider dispatch cost multipliers", async () => {
+    const streamFn = vi.fn(() => createAssistantMessageEventStream()) as unknown as StreamFn;
+    markProviderDispatchObservableStreamFn(streamFn);
+    markProviderDispatchCostMultiplierResolverStreamFn(streamFn, () => 2);
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+      runId: "run-budget-cost-multiplier",
+      sessionId: "session-id",
+      provider: "openai",
+      model: "gpt-5.4",
+      api: "openai-responses",
+      transport: "http",
+      trace: createDiagnosticTraceContext(),
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { usd: 0.000015 },
+            },
+          },
+        },
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "https://api.openai.com/v1",
+              models: [
+                {
+                  id: "gpt-5.4",
+                  name: "gpt-5.4",
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 128000,
+                  maxTokens: 4096,
+                },
+              ],
+            },
+          },
+        },
+      },
+      agentId: "budget-cost-multiplier",
+      nextCallId: () => "call-budget-cost-multiplier",
+    });
+
+    let caught: unknown;
+    await collectModelCallEvents(async () => {
+      try {
+        await wrapped(
+          {
+            id: "gpt-5.4",
+            name: "gpt-5.4",
+            api: "openai-responses",
+            provider: "openai",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 128000,
+            maxTokens: 4096,
+          } as never,
+          { messages: [{ role: "user", content: "hello" }] } as never,
+          { maxTokens: 10 } as never,
+        );
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(streamFn).not.toHaveBeenCalled();
+    expect(caught).toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: { reason: "exceeded", limitKind: "spend" },
+    });
+  });
+
+  it("persists provider dispatch cost multipliers for completed usage-budget calls", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-cost-multiplier-ledger",
+          "sessions",
+          "s.jsonl",
+        );
+        const streams: ReturnType<typeof createAssistantMessageEventStream>[] = [];
+        const streamFn = vi.fn<StreamFn>(() => {
+          const stream = createAssistantMessageEventStream();
+          streams.push(stream);
+          return stream;
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        markProviderDispatchCostMultiplierResolverStreamFn(streamFn, () => 2);
+        const config: OpenClawConfig = {
+          agents: {
+            defaults: {
+              usageBudget: {
+                daily: { usd: 0.000021 },
+              },
+            },
+          },
+          models: {
+            providers: {
+              openai: {
+                baseUrl: "https://api.openai.com/v1",
+                models: [
+                  {
+                    id: "gpt-5.4",
+                    name: "gpt-5.4",
+                    reasoning: false,
+                    input: ["text"],
+                    cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+                    contextWindow: 128000,
+                    maxTokens: 4096,
+                  },
+                ],
+              },
+            },
+          },
+        };
+        const model = {
+          id: "gpt-5.4",
+          name: "gpt-5.4",
+          api: "openai-responses",
+          provider: "openai",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128000,
+          maxTokens: 4096,
+        } as never;
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-cost-multiplier-ledger",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config,
+          agentId: "budget-cost-multiplier-ledger",
+          nextCallId: () => `call-budget-cost-multiplier-ledger-${streamFn.mock.calls.length + 1}`,
+        });
+
+        const first = (await Promise.resolve(
+          wrapped(
+            model,
+            { messages: [{ role: "user", content: "hello" }] } as never,
+            { maxTokens: 10 } as never,
+          ),
+        )) as ReturnType<typeof createAssistantMessageEventStream>;
+        streams[0]?.end({
+          ...createUsageBudgetAssistantMessage(10),
+          usage: {
+            input: 0,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 10,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        });
+        await first.result();
+
+        await vi.waitFor(async () => {
+          const transcript = await fs.readFile(transcriptPath, "utf8");
+          const row = transcript
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .find((entry) => entry.id === "call-budget-cost-multiplier-ledger-1:usage");
+          const data = requireRecord(row?.data, "model-call usage data");
+          const message = requireRecord(data.message, "model-call usage message");
+          const usage = requireRecord(message.usage, "model-call usage");
+          const cost = requireRecord(usage.cost, "model-call usage cost");
+          expect(cost.total).toBeCloseTo(0.00002);
+        });
+
+        let caught: unknown;
+        await collectModelCallEvents(async () => {
+          try {
+            await wrapped(
+              model,
+              { messages: [{ role: "user", content: "again" }] } as never,
+              { maxTokens: 1 } as never,
+            );
+          } catch (err) {
+            caught = err;
+          }
+        });
+
+        expect(streamFn).toHaveBeenCalledTimes(1);
+        expect(caught).toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: { reason: "exceeded", limitKind: "spend" },
+        });
+      });
+    });
+  });
+
+  it("preserves provider-recorded auto-tier costs for budgeted embedded calls", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-recorded-cost-ledger",
+          "sessions",
+          "s.jsonl",
+        );
+        const streams: ReturnType<typeof createAssistantMessageEventStream>[] = [];
+        const streamFn = vi.fn<StreamFn>(() => {
+          const stream = createAssistantMessageEventStream();
+          streams.push(stream);
+          return stream;
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        const config: OpenClawConfig = {
+          agents: {
+            defaults: {
+              usageBudget: {
+                daily: { usd: 0.00003 },
+              },
+            },
+          },
+          models: {
+            providers: {
+              openai: {
+                baseUrl: "https://api.openai.com/v1",
+                models: [
+                  {
+                    id: "gpt-5.5",
+                    name: "gpt-5.5",
+                    reasoning: false,
+                    input: ["text"],
+                    cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+                    contextWindow: 128000,
+                    maxTokens: 4096,
+                  },
+                ],
+              },
+            },
+          },
+        };
+        const model = {
+          id: "gpt-5.5",
+          name: "gpt-5.5",
+          api: "openai-responses",
+          provider: "openai",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128000,
+          maxTokens: 4096,
+        } as never;
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-recorded-cost-ledger",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.5",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config,
+          agentId: "budget-recorded-cost-ledger",
+          nextCallId: () => `call-budget-recorded-cost-ledger-${streamFn.mock.calls.length + 1}`,
+        });
+
+        const first = (await Promise.resolve(
+          wrapped(
+            model,
+            { messages: [{ role: "user", content: "hello" }] } as never,
+            { maxTokens: 10 } as never,
+          ),
+        )) as ReturnType<typeof createAssistantMessageEventStream>;
+        const usage: Record<string, unknown> = {
+          input: 0,
+          output: 10,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 10,
+          cost: {
+            input: 0,
+            output: 0.000025,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0.000025,
+          },
+        };
+        attachUsageBudgetRecordedCostMetadata(usage, 2.5);
+        streams[0]?.end({
+          ...createUsageBudgetAssistantMessage(10),
+          model: "gpt-5.5",
+          usage: usage as never,
+        });
+        await first.result();
+
+        await vi.waitFor(async () => {
+          const transcript = await fs.readFile(transcriptPath, "utf8");
+          const row = transcript
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .find((entry) => entry.id === "call-budget-recorded-cost-ledger-1:usage");
+          const data = requireRecord(row?.data, "model-call usage data");
+          const message = requireRecord(data.message, "model-call usage message");
+          const recordedUsage = requireRecord(message.usage, "model-call usage");
+          const cost = requireRecord(recordedUsage.cost, "model-call usage cost");
+          expect(cost.total).toBeCloseTo(0.000025);
+          const metadata = requireRecord(
+            recordedUsage[USAGE_BUDGET_RECORDED_COST_METADATA_KEY],
+            "recorded cost metadata",
+          );
+          expect(metadata.costMultiplier).toBe(2.5);
+        });
+
+        let caught: unknown;
+        await collectModelCallEvents(async () => {
+          try {
+            await wrapped(
+              model,
+              { messages: [{ role: "user", content: "again" }] } as never,
+              { maxTokens: 10 } as never,
+            );
+          } catch (err) {
+            caught = err;
+          }
+        });
+
+        expect(streamFn).toHaveBeenCalledTimes(1);
+        expect(caught).toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: { reason: "exceeded", limitKind: "spend" },
+        });
+      });
+    });
+  });
+
+  it("blocks budgeted custom streams without provider-dispatch accounting", async () => {
+    const streamFn = vi.fn<StreamFn>(() => {
+      throw new Error("provider should not be called");
+    });
+    const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+      runId: "run-budget-unsupported-stream",
+      sessionId: "session-id",
+      provider: "openai",
+      model: "gpt-5.4",
+      api: "openai-responses",
+      transport: "http",
+      trace: createDiagnosticTraceContext(),
+      config: {
+        agents: {
+          defaults: {
+            usageBudget: {
+              daily: { tokens: 100 },
+            },
+          },
+        },
+      },
+      agentId: "budget-unsupported-stream",
+      nextCallId: () => "call-budget-unsupported-stream",
+    });
+
+    let caught: unknown;
+    const events = await collectModelCallEvents(async () => {
+      try {
+        await wrapped({} as never, {} as never, {} as never);
+      } catch (err) {
+        caught = err;
+      }
+    });
+
+    expect(streamFn).not.toHaveBeenCalled();
+    expect(caught).toMatchObject({
+      code: "agent_usage_budget_blocked",
+      details: { reason: "unsupported_stream" },
+    });
+    expect(events.map((event) => event.type)).toEqual(["model.call.started", "model.call.error"]);
+  });
+
+  it("reserves the request output cap instead of the catalog model maximum", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        async function* stream() {
+          yield {
+            type: "done",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: "ok" }],
+              usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+            },
+          };
+        }
+        const streamFn = vi.fn(() => stream()) as unknown as StreamFn;
+        markProviderDispatchObservableStreamFn(streamFn);
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-request-cap",
+          sessionId: "session-id",
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 20 },
+                },
+              },
+            },
+          },
+          agentId: "budget-request-cap",
+          nextCallId: () => "call-budget-request-cap",
+        });
+
+        const returned = await Promise.resolve(
+          wrapped({ maxTokens: 0 } as never, {} as never, { maxTokens: 10 } as never),
+        );
+        await drain(returned as AsyncIterable<unknown>);
+
+        expect(streamFn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  it("serializes same-agent budgeted provider calls until the observed call completes", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const firstStream = createAssistantMessageEventStream();
+        const streamFn = vi.fn<StreamFn>(() => firstStream);
+        markProviderDispatchObservableStreamFn(streamFn);
+        let callIndex = 0;
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-serialized",
+          sessionId: "session-id",
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 2 },
+                },
+              },
+            },
+          },
+          agentId: "budget-serialized",
+          nextCallId: () => `call-budget-${++callIndex}`,
+        });
+
+        const firstReturned = (await Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        )) as typeof firstStream;
+        const secondReturnedPromise = Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        );
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+
+        expect(streamFn).toHaveBeenCalledTimes(1);
+        firstStream.end(createUsageBudgetAssistantMessage(1));
+        await firstReturned.result();
+
+        await expect(secondReturnedPromise).rejects.toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: { reason: "exceeded", limitKind: "tokens" },
+        });
+        expect(streamFn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  it("preserves usage-budget admission when an observed stream is canceled before consumption", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const firstStream = createAssistantMessageEventStream();
+        const secondStream = createAssistantMessageEventStream();
+        let providerCallCount = 0;
+        const streamFn = vi.fn<StreamFn>(() => {
+          providerCallCount += 1;
+          return providerCallCount === 1 ? firstStream : secondStream;
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        let callIndex = 0;
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-canceled",
+          sessionId: "session-id",
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-canceled",
+          nextCallId: () => `call-budget-canceled-${++callIndex}`,
+        });
+
+        const firstReturned = (await Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        )) as typeof firstStream;
+        const secondReturnedPromise = Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        );
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+
+        expect(streamFn).toHaveBeenCalledTimes(1);
+        await cancelObservedModelCallStream(firstReturned);
+
+        await expect(secondReturnedPromise).rejects.toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: { reason: "missing_window_usage", limitKind: "tokens" },
+        });
+        expect(streamFn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  it("aborts detached budgeted provider work before preserving a canceled admission", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const streams: ReturnType<typeof createAssistantMessageEventStream>[] = [];
+        let dispatchCount = 0;
+        let firstSignal: AbortSignal | undefined;
+        let resolveFirstProducer!: () => void;
+        const firstProducerDone = new Promise<void>((resolve) => {
+          resolveFirstProducer = resolve;
+        });
+        const streamFn = vi.fn<StreamFn>((_model, _context, options) => {
+          const providerOptions = options as
+            | { signal?: AbortSignal; onProviderDispatch?: () => void }
+            | undefined;
+          const stream = createAssistantMessageEventStream();
+          streams.push(stream);
+          const callIndex = streams.length;
+          if (callIndex === 1) {
+            firstSignal = providerOptions?.signal;
+          }
+          void (async () => {
+            await new Promise<void>((resolve) => {
+              setImmediate(resolve);
+            });
+            if (providerOptions?.signal?.aborted) {
+              if (callIndex === 1) {
+                resolveFirstProducer();
+              }
+              return;
+            }
+            providerOptions?.onProviderDispatch?.();
+            dispatchCount += 1;
+            stream.end(createUsageBudgetAssistantMessage(callIndex));
+            if (callIndex === 1) {
+              resolveFirstProducer();
+            }
+          })();
+          return stream;
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        let callIndex = 0;
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-canceled-detached",
+          sessionId: "session-id",
+          provider: "google",
+          model: "gemini-test",
+          api: "google-generative-ai",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-canceled-detached",
+          nextCallId: () => `call-budget-canceled-detached-${++callIndex}`,
+        });
+
+        const firstReturned = (await Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        )) as ReturnType<typeof createAssistantMessageEventStream>;
+        await cancelObservedModelCallStream(firstReturned);
+        expect(firstSignal?.aborted).toBe(true);
+        await firstProducerDone;
+        expect(dispatchCount).toBe(0);
+
+        await expect(
+          Promise.resolve(wrapped({} as never, {} as never, {} as never)),
+        ).rejects.toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: { reason: "missing_window_usage", limitKind: "tokens" },
+        });
+
+        expect(streamFn).toHaveBeenCalledTimes(1);
+        expect(dispatchCount).toBe(0);
+      });
+    });
+  });
+
+  it("preserves in-flight budget admission when iterator cleanup rejects", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        let returnCalled = false;
+        const stream = {
+          [Symbol.asyncIterator]() {
+            let emitted = false;
+            return {
+              async next() {
+                if (!emitted) {
+                  emitted = true;
+                  return {
+                    done: false,
+                    value: { type: "text_delta", delta: "hello" },
+                  };
+                }
+                return new Promise<IteratorResult<unknown>>(() => {
+                  // Keep the iterator pending until cancellation cleanup runs.
+                });
+              },
+              async return() {
+                returnCalled = true;
+                throw new Error("provider cleanup failed");
+              },
+            };
+          },
+        };
+        const streamFn = vi.fn<StreamFn>(() => stream as unknown as ReturnType<StreamFn>);
+        markProviderDispatchObservableStreamFn(streamFn);
+        let callIndex = 0;
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-cleanup-reject",
+          sessionId: "session-id",
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-cleanup-reject",
+          nextCallId: () => `call-budget-cleanup-reject-${++callIndex}`,
+        });
+
+        const firstReturned = (await Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        )) as AsyncIterable<unknown>;
+        const iterator = firstReturned[Symbol.asyncIterator]();
+        await iterator.next();
+        await cancelObservedModelCallStream(firstReturned);
+
+        expect(returnCalled).toBe(true);
+        await expect(
+          Promise.resolve(wrapped({} as never, {} as never, {} as never)),
+        ).rejects.toMatchObject({
+          code: "agent_usage_budget_blocked",
+          details: { reason: "missing_window_usage", limitKind: "tokens" },
+        });
+        expect(streamFn).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  it("persists model-call usage accounting before releasing budget admission", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const callStartedAt = Date.UTC(2026, 6, 15, 23, 59, 59, 900);
+        const callCompletedAt = Date.UTC(2026, 6, 16, 0, 0, 0, 100);
+        vi.useFakeTimers();
+        vi.setSystemTime(callStartedAt);
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-durable",
+          "sessions",
+          "s.jsonl",
+        );
+        const stream = createAssistantMessageEventStream();
+        const streamFn = vi.fn<StreamFn>(() => stream);
+        markProviderDispatchObservableStreamFn(streamFn);
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-durable",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-durable",
+          nextCallId: () => "call-budget-durable",
+        });
+
+        const returned = (await Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        )) as typeof stream;
+        vi.setSystemTime(callCompletedAt);
+        const assistantMessage = createUsageBudgetAssistantMessage(callCompletedAt);
+        stream.end(assistantMessage);
+        const result = await returned.result();
+        expect(result).toHaveProperty(
+          USAGE_BUDGET_OPERATION_ID_KEY,
+          "model-call:call-budget-durable",
+        );
+
+        await vi.waitFor(async () => {
+          const transcript = await fs.readFile(transcriptPath, "utf8");
+          expect(transcript).toContain(MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE);
+          expect(transcript).toContain('"id":"call-budget-durable:usage"');
+          const row = transcript
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .find((entry) => entry.id === "call-budget-durable:usage");
+          expect(row?.timestamp).toBe(new Date(callStartedAt).toISOString());
+          expect(
+            requireRecord(row?.data, "model-call usage data")[USAGE_BUDGET_OPERATION_ID_KEY],
+          ).toBe("model-call:call-budget-durable");
+        });
+      });
+    });
+  });
+
+  it("does not record unknown usage when async setup fails before provider dispatch", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-preflight-error",
+          "sessions",
+          "s.jsonl",
+        );
+        const streamFn = vi.fn<StreamFn>(async () => {
+          throw new Error("missing credentials");
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-preflight-error",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-preflight-error",
+          nextCallId: () => "call-budget-preflight-error",
+        });
+
+        const events = await collectModelCallEvents(async () => {
+          await expect(
+            Promise.resolve(wrapped({} as never, {} as never, {} as never)),
+          ).rejects.toThrow("missing credentials");
+        });
+
+        expect(events.map((event) => event.type)).toEqual([
+          "model.call.started",
+          "model.call.error",
+        ]);
+        await expect(fs.readFile(transcriptPath, "utf8")).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      });
+    });
+  });
+
+  it("does not record zero-usage terminal errors before provider dispatch", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-zero-error",
+          "sessions",
+          "s.jsonl",
+        );
+        const assistant = {
+          role: "assistant",
+          content: [{ type: "text", text: "missing credentials" }],
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+          },
+          stopReason: "error",
+          timestamp: 1,
+        };
+        async function* stream() {
+          yield { type: "error", reason: "error", error: assistant };
+        }
+        const streamFn = (() => stream()) as unknown as StreamFn;
+        markProviderDispatchObservableStreamFn(streamFn);
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-zero-error",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-zero-error",
+          nextCallId: () => "call-budget-zero-error",
+        });
+
+        const events = await collectModelCallEvents(async () => {
+          const streamResult = await Promise.resolve(
+            wrapped({} as never, {} as never, {} as never),
+          );
+          await drain(streamResult as AsyncIterable<unknown>);
+        });
+
+        expect(events.map((event) => event.type)).toEqual([
+          "model.call.started",
+          "model.call.completed",
+        ]);
+        await expect(fs.readFile(transcriptPath, "utf8")).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      });
+    });
+  });
+
+  it("records zero-usage terminal errors after provider dispatch", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-dispatched-terminal-error",
+          "sessions",
+          "s.jsonl",
+        );
+        const assistant = {
+          role: "assistant",
+          content: [{ type: "text", text: "request failed after dispatch" }],
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+          },
+          stopReason: "error",
+          timestamp: 1,
+        };
+        const streamFn = vi.fn<StreamFn>((_model, _context, options) => {
+          options?.onProviderDispatch?.();
+          async function* stream() {
+            yield { type: "error", reason: "error", error: assistant };
+          }
+          return stream() as never;
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-dispatched-terminal-error",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-dispatched-terminal-error",
+          nextCallId: () => "call-budget-dispatched-terminal-error",
+        });
+
+        const events = await collectModelCallEvents(async () => {
+          const streamResult = await Promise.resolve(
+            wrapped({} as never, {} as never, {} as never),
+          );
+          await drain(streamResult as AsyncIterable<unknown>);
+        });
+
+        expect(events.map((event) => event.type)).toEqual([
+          "model.call.started",
+          "model.call.completed",
+        ]);
+        await vi.waitFor(async () => {
+          const transcript = await fs.readFile(transcriptPath, "utf8");
+          expect(transcript).toContain(MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE);
+          const row = transcript
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .find((entry) => entry.id === "call-budget-dispatched-terminal-error:usage");
+          const data = requireRecord(row?.data, "model-call usage data");
+          expect(data[USAGE_BUDGET_OPERATION_ID_KEY]).toBe(
+            "model-call:call-budget-dispatched-terminal-error",
+          );
+          const message = requireRecord(data.message, "model-call usage message");
+          const usage = requireRecord(message.usage, "model-call usage");
+          expect(usage.total).toBe(0);
+        });
+      });
+    });
+  });
+
+  it("records unknown usage after a budgeted provider dispatch rejects", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-dispatch-error",
+          "sessions",
+          "s.jsonl",
+        );
+        const streamFn = vi.fn<StreamFn>(async (_model, _context, options) => {
+          options?.onProviderDispatch?.();
+          throw new Error("connection dropped");
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-dispatch-error",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-dispatch-error",
+          nextCallId: () => "call-budget-dispatch-error",
+        });
+
+        const events = await collectModelCallEvents(async () => {
+          await expect(
+            Promise.resolve(wrapped({} as never, {} as never, {} as never)),
+          ).rejects.toThrow("connection dropped");
+        });
+
+        expect(events.map((event) => event.type)).toEqual([
+          "model.call.started",
+          "model.call.error",
+        ]);
+        await vi.waitFor(async () => {
+          const transcript = await fs.readFile(transcriptPath, "utf8");
+          expect(transcript).toContain(MODEL_CALL_USAGE_ACCOUNTING_CUSTOM_TYPE);
+          const row = transcript
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .find((entry) => entry.id === "call-budget-dispatch-error:usage");
+          const data = requireRecord(row?.data, "model-call usage data");
+          expect(data[USAGE_BUDGET_OPERATION_ID_KEY]).toBe("model-call:call-budget-dispatch-error");
+          const message = requireRecord(data.message, "model-call usage message");
+          expect(message.usage).toBeUndefined();
+          expect(message.stopReason).toBe("error");
+        });
+      });
+    });
+  });
+
+  it("disables provider retries and blocks repeated budgeted provider dispatches", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const transcriptPath = path.join(
+          stateDir,
+          "agents",
+          "budget-retry-dispatch",
+          "sessions",
+          "s.jsonl",
+        );
+        const streamFn = vi.fn<StreamFn>((_model, _context, options) => {
+          expect(options?.maxRetries).toBe(0);
+          options?.onProviderDispatch?.();
+          options?.onProviderDispatch?.();
+          throw new Error("provider should not reach a second dispatch");
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-retry-dispatch",
+          sessionId: "session-id",
+          transcriptPath,
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-retry-dispatch",
+          nextCallId: () => "call-budget-retry-dispatch",
+        });
+
+        const events = await collectModelCallEvents(async () => {
+          await expect(
+            Promise.resolve(wrapped({} as never, {} as never, { maxRetries: 2 } as never)),
+          ).rejects.toMatchObject({
+            code: "agent_usage_budget_blocked",
+            details: {
+              harnessId: "provider-retry",
+              reason: "unsupported_harness",
+            },
+          });
+        });
+
+        expect(events.map((event) => event.type)).toEqual([
+          "model.call.started",
+          "model.call.error",
+        ]);
+        await vi.waitFor(async () => {
+          const transcript = await fs.readFile(transcriptPath, "utf8");
+          const row = transcript
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .find((entry) => entry.id === "call-budget-retry-dispatch:usage");
+          const data = requireRecord(row?.data, "model-call usage data");
+          const message = requireRecord(data.message, "model-call usage message");
+          expect(message.usage).toBeUndefined();
+          expect(message.stopReason).toBe("error");
+        });
+      });
+    });
+  });
+
+  it("releases the usage-budget admission queue after synchronous provider throws", async () => {
+    await withTempDir({ prefix: "openclaw-model-call-budget-" }, async (stateDir) => {
+      await withEnvOverride({ OPENCLAW_STATE_DIR: stateDir }, async () => {
+        const secondStream = createAssistantMessageEventStream();
+        const streamFn = vi.fn<StreamFn>(() => {
+          if (streamFn.mock.calls.length === 1) {
+            throw new Error("provider sync failure");
+          }
+          return secondStream;
+        });
+        markProviderDispatchObservableStreamFn(streamFn);
+        let callIndex = 0;
+        const wrapped = wrapStreamFnWithDiagnosticModelCallEvents(streamFn, {
+          runId: "run-budget-sync-throw",
+          sessionId: "session-id",
+          provider: "openai",
+          model: "gpt-5.4",
+          api: "openai-responses",
+          transport: "http",
+          trace: createDiagnosticTraceContext(),
+          config: {
+            agents: {
+              defaults: {
+                usageBudget: {
+                  daily: { tokens: 100 },
+                },
+              },
+            },
+          },
+          agentId: "budget-sync",
+          nextCallId: () => `call-budget-sync-${++callIndex}`,
+        });
+
+        await expect(
+          Promise.resolve(wrapped({} as never, {} as never, {} as never)),
+        ).rejects.toThrow("provider sync failure");
+
+        const returned = (await Promise.resolve(
+          wrapped({} as never, {} as never, {} as never),
+        )) as typeof secondStream;
+        secondStream.end(createUsageBudgetAssistantMessage(2));
+        await returned.result();
+        expect(streamFn).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 
   it("updates diagnostic run activity from throttled stream chunks", async () => {

@@ -17,6 +17,7 @@ import type { ModelCompatConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { DiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
 import { resolveEventSessionRoutingPolicy } from "../infra/event-session-routing.js";
+import { defaultExecAutoReviewer } from "../infra/exec-auto-review.js";
 import { applyExecPolicyLayer } from "../infra/exec-policy.js";
 import { resolveMergedSafeBinProfileFixtures } from "../infra/exec-safe-bin-runtime-policy.js";
 import { logWarn } from "../logger.js";
@@ -108,6 +109,7 @@ import {
   replaceWithEffectiveCronCreatorToolAllowlist,
   type CronCreatorToolAllowlistEntry,
 } from "./tools/cron-tool.js";
+import { resolveAgentUsageBudgetConfig } from "./usage-budget.js";
 
 const MEMORY_FLUSH_ALLOWED_TOOL_NAMES = new Set(["read", "write"]);
 
@@ -795,6 +797,12 @@ export function createOpenClawCodingTools(options?: {
   options?.recordToolPrepStage?.("base-coding-tools");
   const { cleanupMs: cleanupMsOverride, ...execDefaults } = options?.exec ?? {};
   const effectiveExecPolicy = applyExecPolicyLayer(execConfig, options?.exec);
+  const execAutoReviewer = resolveAgentUsageBudgetConfig({
+    config: options?.exec?.config ?? options?.config,
+    agentId,
+  })
+    ? defaultExecAutoReviewer
+    : options?.exec?.autoReviewer;
   const execTool = includeShellTools
     ? createLazyExecTool({
         ...execDefaults,
@@ -840,6 +848,7 @@ export function createOpenClawCodingTools(options?: {
         notifyOnExit: options?.exec?.notifyOnExit ?? execConfig.notifyOnExit,
         notifyOnExitEmptySuccess:
           options?.exec?.notifyOnExitEmptySuccess ?? execConfig.notifyOnExitEmptySuccess,
+        autoReviewer: execAutoReviewer,
         sandbox: sandbox
           ? {
               containerName: sandbox.containerName,

@@ -1,3 +1,7 @@
+import {
+  markProviderDispatchObservableStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+} from "../../../packages/llm-core/src/provider-dispatch-observable-stream.js";
 // Built-in provider registration installs the bundled provider factories.
 import { registerApiProvider, unregisterApiProviders } from "../api-registry.js";
 import type {
@@ -7,6 +11,7 @@ import type {
   Context,
   Model,
   SimpleStreamOptions,
+  StreamFn,
   StreamFunction,
   StreamOptions,
 } from "../types.js";
@@ -19,6 +24,10 @@ import type { MistralOptions } from "./mistral.js";
 import type { OpenAICodexResponsesOptions } from "./openai-chatgpt-responses.js";
 import type { OpenAICompletionsOptions } from "./openai-completions.js";
 import type { OpenAIResponsesOptions } from "./openai-responses.js";
+import {
+  getOpenAIServiceTierBudgetReservationMultiplier,
+  shouldReserveOpenAIAccountDefaultServiceTierBudget,
+} from "./openai-service-tier-pricing.js";
 
 // Lazy built-in provider registration keeps the main LLM stream facade cheap to import.
 interface LazyProviderModule<
@@ -313,29 +322,66 @@ function loadOpenAIResponsesProviderModule(): Promise<
   return openAIResponsesProviderModulePromise;
 }
 
-export const streamAnthropic = createLazyStream(loadAnthropicProviderModule);
-export const streamSimpleAnthropic = createLazySimpleStream(loadAnthropicProviderModule);
-export const streamAzureOpenAIResponses = createLazyStream(loadAzureOpenAIResponsesProviderModule);
-export const streamSimpleAzureOpenAIResponses = createLazySimpleStream(
-  loadAzureOpenAIResponsesProviderModule,
+function markBuiltInProviderStream<T>(streamFn: T): T {
+  markProviderDispatchObservableStreamFn(streamFn as unknown as StreamFn);
+  return streamFn;
+}
+
+function markBuiltInOpenAIServiceTierReservationStream<T>(streamFn: T): T {
+  const marked = markBuiltInProviderStream(streamFn);
+  markProviderDispatchReservationCostMultiplierResolverStreamFn(
+    marked as unknown as StreamFn,
+    ({ model }) =>
+      shouldReserveOpenAIAccountDefaultServiceTierBudget(model)
+        ? getOpenAIServiceTierBudgetReservationMultiplier(model, undefined)
+        : 1,
+  );
+  return marked;
+}
+
+export const streamAnthropic = markBuiltInProviderStream(
+  createLazyStream(loadAnthropicProviderModule),
 );
-export const streamGoogle = createLazyStream(loadGoogleProviderModule);
-export const streamSimpleGoogle = createLazySimpleStream(loadGoogleProviderModule);
-export const streamGoogleVertex = createLazyStream(loadGoogleVertexProviderModule);
-export const streamSimpleGoogleVertex = createLazySimpleStream(loadGoogleVertexProviderModule);
-export const streamMistral = createLazyStream(loadMistralProviderModule);
-export const streamSimpleMistral = createLazySimpleStream(loadMistralProviderModule);
-export const streamOpenAICodexResponses = createLazyStream(loadOpenAICodexResponsesProviderModule);
-export const streamSimpleOpenAICodexResponses = createLazySimpleStream(
-  loadOpenAICodexResponsesProviderModule,
+export const streamSimpleAnthropic = markBuiltInProviderStream(
+  createLazySimpleStream(loadAnthropicProviderModule),
 );
-export const streamOpenAICompletions = createLazyStream(loadOpenAICompletionsProviderModule);
-export const streamSimpleOpenAICompletions = createLazySimpleStream(
-  loadOpenAICompletionsProviderModule,
+export const streamAzureOpenAIResponses = markBuiltInProviderStream(
+  createLazyStream(loadAzureOpenAIResponsesProviderModule),
 );
-export const streamOpenAIResponses = createLazyStream(loadOpenAIResponsesProviderModule);
-export const streamSimpleOpenAIResponses = createLazySimpleStream(
-  loadOpenAIResponsesProviderModule,
+export const streamSimpleAzureOpenAIResponses = markBuiltInProviderStream(
+  createLazySimpleStream(loadAzureOpenAIResponsesProviderModule),
+);
+export const streamGoogle = markBuiltInProviderStream(createLazyStream(loadGoogleProviderModule));
+export const streamSimpleGoogle = markBuiltInProviderStream(
+  createLazySimpleStream(loadGoogleProviderModule),
+);
+export const streamGoogleVertex = markBuiltInProviderStream(
+  createLazyStream(loadGoogleVertexProviderModule),
+);
+export const streamSimpleGoogleVertex = markBuiltInProviderStream(
+  createLazySimpleStream(loadGoogleVertexProviderModule),
+);
+export const streamMistral = markBuiltInProviderStream(createLazyStream(loadMistralProviderModule));
+export const streamSimpleMistral = markBuiltInProviderStream(
+  createLazySimpleStream(loadMistralProviderModule),
+);
+export const streamOpenAICodexResponses = markBuiltInProviderStream(
+  createLazyStream(loadOpenAICodexResponsesProviderModule),
+);
+export const streamSimpleOpenAICodexResponses = markBuiltInProviderStream(
+  createLazySimpleStream(loadOpenAICodexResponsesProviderModule),
+);
+export const streamOpenAICompletions = markBuiltInOpenAIServiceTierReservationStream(
+  createLazyStream(loadOpenAICompletionsProviderModule),
+);
+export const streamSimpleOpenAICompletions = markBuiltInOpenAIServiceTierReservationStream(
+  createLazySimpleStream(loadOpenAICompletionsProviderModule),
+);
+export const streamOpenAIResponses = markBuiltInOpenAIServiceTierReservationStream(
+  createLazyStream(loadOpenAIResponsesProviderModule),
+);
+export const streamSimpleOpenAIResponses = markBuiltInOpenAIServiceTierReservationStream(
+  createLazySimpleStream(loadOpenAIResponsesProviderModule),
 );
 
 /** Registers all built-in API providers into the shared runtime registry. */

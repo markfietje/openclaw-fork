@@ -6,10 +6,17 @@ import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { streamSimple } from "openclaw/plugin-sdk/llm";
 import type { ProviderWrapStreamFnContext } from "openclaw/plugin-sdk/plugin-entry";
 import {
+  attachUsageBudgetCostMultiplierMetadata,
+  attachUsageBudgetUnpriceableCostMetadata,
   applyAnthropicPayloadPolicyToParams,
   composeProviderStreamWrappers,
   createAnthropicThinkingPrefillPayloadWrapper,
+  markProviderDispatchCostMultiplierResolverStreamFn,
+  markProviderDispatchReservationCostMultiplierResolverStreamFn,
+  preserveProviderDispatchObservableStreamFn,
   resolveAnthropicPayloadPolicy,
+  resolveProviderDispatchCostMultiplierForStreamFn,
+  resolveProviderDispatchReservationCostMultiplierForStreamFn,
   streamWithPayloadPatch,
 } from "openclaw/plugin-sdk/provider-stream-shared";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
@@ -44,6 +51,8 @@ const OPENCLAW_OAUTH_ANTHROPIC_BETAS = [
 
 type AnthropicServiceTier = "auto" | "standard_only";
 type DynamicFastMode = boolean | (() => boolean | undefined);
+type AnthropicServiceTierStream = Awaited<ReturnType<StreamFn>>;
+type AnthropicServiceTierMessage = Awaited<ReturnType<AnthropicServiceTierStream["result"]>>;
 
 function isAnthropic1MModel(modelId: string): boolean {
   const normalized = normalizeLowercaseStringOrEmpty(modelId);
@@ -94,6 +103,87 @@ function normalizeAnthropicServiceTier(value: unknown): AnthropicServiceTier | u
   return undefined;
 }
 
+function resolveAppliedAnthropicServiceTier(params: {
+  model: Parameters<StreamFn>[0];
+  options: Parameters<StreamFn>[2];
+  serviceTier: AnthropicServiceTier;
+}): AnthropicServiceTier | undefined {
+  if (isAnthropicOAuthApiKey(params.options?.apiKey)) {
+    return undefined;
+  }
+  const payloadPolicy = resolveAnthropicPayloadPolicy({
+    provider: readStringValue(params.model.provider),
+    api: readStringValue(params.model.api),
+    baseUrl: readStringValue(params.model.baseUrl),
+    serviceTier: params.serviceTier,
+  });
+  return payloadPolicy.allowsServiceTier ? params.serviceTier : undefined;
+}
+
+function resolveAnthropicServiceTierCostMultiplier(
+  serviceTier: AnthropicServiceTier,
+): number | undefined {
+  return serviceTier === "standard_only" ? 1 : undefined;
+}
+
+function attachAnthropicServiceTierUsageBudgetMetadata(params: {
+  usage: unknown;
+  serviceTier: AnthropicServiceTier;
+}): void {
+  if (!params.usage || typeof params.usage !== "object" || Array.isArray(params.usage)) {
+    return;
+  }
+  const usage = params.usage as Record<string, unknown>;
+  const multiplier = resolveAnthropicServiceTierCostMultiplier(params.serviceTier);
+  if (multiplier === undefined) {
+    attachUsageBudgetUnpriceableCostMetadata(usage, "capacity-billed-service-tier");
+    return;
+  }
+  attachUsageBudgetCostMultiplierMetadata(usage, multiplier);
+}
+
+function attachAnthropicServiceTierEventBudgetMetadata(
+  event: unknown,
+  serviceTier: AnthropicServiceTier,
+): void {
+  if (!event || typeof event !== "object" || Array.isArray(event)) {
+    return;
+  }
+  const record = event as Record<string, unknown>;
+  const message =
+    record.type === "done"
+      ? (record.message as Record<string, unknown> | undefined)
+      : record.type === "error"
+        ? (record.error as Record<string, unknown> | undefined)
+        : undefined;
+  attachAnthropicServiceTierUsageBudgetMetadata({ usage: message?.usage, serviceTier });
+}
+
+async function resolveStreamResultWithAnthropicServiceTierMetadata(
+  stream: AnthropicServiceTierStream,
+  serviceTier: AnthropicServiceTier,
+): Promise<AnthropicServiceTierMessage> {
+  const message = await stream.result();
+  attachAnthropicServiceTierUsageBudgetMetadata({ usage: message.usage, serviceTier });
+  return message;
+}
+
+function withAnthropicServiceTierUsageBudgetMetadata(
+  source: ReturnType<StreamFn>,
+  serviceTier: AnthropicServiceTier,
+): ReturnType<StreamFn> {
+  const wrap = (stream: AnthropicServiceTierStream): AnthropicServiceTierStream => ({
+    async *[Symbol.asyncIterator]() {
+      for await (const event of stream) {
+        attachAnthropicServiceTierEventBudgetMetadata(event, serviceTier);
+        yield event;
+      }
+    },
+    result: () => resolveStreamResultWithAnthropicServiceTierMetadata(stream, serviceTier),
+  });
+  return Promise.resolve(source).then(wrap);
+}
+
 function hasConfiguredAnthropicBeta(extraParams: Record<string, unknown> | undefined): boolean {
   const configured = extraParams?.anthropicBeta;
   if (typeof configured === "string") {
@@ -139,7 +229,7 @@ export function createAnthropicBetaHeadersWrapper(
   betas: string[],
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     const isOauth = isAnthropicOAuthApiKey(options?.apiKey);
     const effectiveBetas = betas.filter((beta) => beta !== ANTHROPIC_CONTEXT_1M_BETA_LEGACY);
 
@@ -152,6 +242,7 @@ export function createAnthropicBetaHeadersWrapper(
       headers: mergeAnthropicBetaHeader(options?.headers, allBetas),
     });
   };
+  return preserveProviderDispatchObservableStreamFn(wrapped, underlying);
 }
 
 /** Wrap a stream function with the Anthropic fast-mode service tier. */
@@ -160,17 +251,54 @@ export function createAnthropicFastModeWrapper(
   enabled: DynamicFastMode,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const resolveServiceTier = (): AnthropicServiceTier | undefined => {
     const resolved = typeof enabled === "function" ? enabled() : enabled;
-    if (resolved === undefined) {
+    return resolved === undefined ? undefined : resolveAnthropicFastServiceTier(resolved);
+  };
+  const resolveAppliedServiceTier = (
+    model: Parameters<StreamFn>[0],
+    options: Parameters<StreamFn>[2],
+  ): AnthropicServiceTier | undefined => {
+    const serviceTier = resolveServiceTier();
+    return serviceTier
+      ? resolveAppliedAnthropicServiceTier({ model, options, serviceTier })
+      : undefined;
+  };
+  const wrapped: StreamFn = (model, context, options) => {
+    const serviceTier = resolveServiceTier();
+    if (serviceTier === undefined) {
       return underlying(model, context, options);
     }
-    return createAnthropicServiceTierWrapper(underlying, resolveAnthropicFastServiceTier(resolved))(
-      model,
-      context,
-      options,
-    );
+    return createAnthropicServiceTierWrapper(underlying, serviceTier)(model, context, options);
   };
+  const costResolved = markProviderDispatchCostMultiplierResolverStreamFn(
+    preserveProviderDispatchObservableStreamFn(wrapped, underlying),
+    ({ model, context, options }) => {
+      const serviceTier = resolveAppliedServiceTier(model, options);
+      return serviceTier
+        ? resolveAnthropicServiceTierCostMultiplier(serviceTier)
+        : resolveProviderDispatchCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          });
+    },
+  );
+  return markProviderDispatchReservationCostMultiplierResolverStreamFn(
+    costResolved,
+    ({ model, context, options }) => {
+      const serviceTier = resolveAppliedServiceTier(model, options);
+      return serviceTier
+        ? resolveAnthropicServiceTierCostMultiplier(serviceTier)
+        : resolveProviderDispatchReservationCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          });
+    },
+  );
 }
 
 /** Wrap a stream function with an explicit Anthropic service tier when allowed. */
@@ -179,7 +307,7 @@ export function createAnthropicServiceTierWrapper(
   serviceTier: AnthropicServiceTier,
 ): StreamFn {
   const underlying = baseStreamFn ?? streamSimple;
-  return (model, context, options) => {
+  const wrapped: StreamFn = (model, context, options) => {
     if (isAnthropicOAuthApiKey(options?.apiKey)) {
       return underlying(model, context, options);
     }
@@ -194,10 +322,49 @@ export function createAnthropicServiceTierWrapper(
       return underlying(model, context, options);
     }
 
-    return streamWithPayloadPatch(underlying, model, context, options, (payloadObj) =>
-      applyAnthropicPayloadPolicyToParams(payloadObj, payloadPolicy),
+    return withAnthropicServiceTierUsageBudgetMetadata(
+      streamWithPayloadPatch(underlying, model, context, options, (payloadObj) =>
+        applyAnthropicPayloadPolicyToParams(payloadObj, payloadPolicy),
+      ),
+      serviceTier,
     );
   };
+  const costResolved = markProviderDispatchCostMultiplierResolverStreamFn(
+    preserveProviderDispatchObservableStreamFn(wrapped, underlying),
+    ({ model, context, options }) => {
+      const appliedServiceTier = resolveAppliedAnthropicServiceTier({
+        model,
+        options,
+        serviceTier,
+      });
+      return appliedServiceTier
+        ? resolveAnthropicServiceTierCostMultiplier(appliedServiceTier)
+        : resolveProviderDispatchCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          });
+    },
+  );
+  return markProviderDispatchReservationCostMultiplierResolverStreamFn(
+    costResolved,
+    ({ model, context, options }) => {
+      const appliedServiceTier = resolveAppliedAnthropicServiceTier({
+        model,
+        options,
+        serviceTier,
+      });
+      return appliedServiceTier
+        ? resolveAnthropicServiceTierCostMultiplier(appliedServiceTier)
+        : resolveProviderDispatchReservationCostMultiplierForStreamFn({
+            streamFn: underlying,
+            model,
+            context,
+            options,
+          });
+    },
+  );
 }
 
 /** Wrap a stream function to strip trailing assistant prefill before thinking requests. */

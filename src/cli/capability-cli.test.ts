@@ -599,6 +599,7 @@ describe("capability cli", () => {
       systemPrompt?: unknown;
     };
     options?: { reasoning?: unknown };
+    usageBudget?: Record<string, unknown>;
   };
   type ImageDescribeParams = {
     filePath?: string;
@@ -747,6 +748,12 @@ describe("capability cli", () => {
     expect(call?.context?.messages?.[0]?.role).toBe("user");
     expect(call?.context?.messages?.[0]?.content).toBe("hello");
     expect(call?.context).not.toHaveProperty("systemPrompt");
+    expect(call?.usageBudget).toMatchObject({
+      agentId: "main",
+      provider: "openai",
+      model: "gpt-5.4",
+      recordIdPrefix: "infer-model-run",
+    });
   });
 
   it("opts explicit local provider/model probes into bundled static catalog fallback", async () => {

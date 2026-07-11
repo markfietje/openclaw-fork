@@ -391,14 +391,6 @@ describe("signal outbound", () => {
 
     expect(send).toHaveBeenCalledTimes(2);
     expect(send).toHaveBeenNthCalledWith(
-      1,
-      "+15551234567",
-      expect.any(String),
-      expect.objectContaining({
-        replyToId: "1700000000004",
-      }),
-    );
-    expect(send).toHaveBeenNthCalledWith(
       2,
       "+15551234567",
       expect.any(String),

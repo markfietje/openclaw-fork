@@ -83,7 +83,7 @@ describe("createBlockReplyDeliveryHandler", () => {
       audioAsVoice: false,
     };
 
-    expect(onBlockReply).toHaveBeenCalledWith(expectedPayload);
+    expect((onBlockReply.mock.calls as unknown[][])[0]?.[0]).toEqual(expectedPayload);
     expect(directlySentBlockKeys).toEqual(new Set([createBlockReplyContentKey(expectedPayload)]));
     expect(typingSignals.signalTextDelta).toHaveBeenCalledWith("here's the vibe");
   });
@@ -121,7 +121,7 @@ describe("createBlockReplyDeliveryHandler", () => {
       audioAsVoice: true,
     };
 
-    expect(onBlockReply).toHaveBeenCalledWith(expectedPayload);
+    expect((onBlockReply.mock.calls as unknown[][])[0]?.[0]).toEqual(expectedPayload);
     expect(directlySentBlockKeys).toEqual(new Set([createBlockReplyContentKey(expectedPayload)]));
   });
 
@@ -147,7 +147,7 @@ describe("createBlockReplyDeliveryHandler", () => {
       replyToCurrent: true,
     });
 
-    expect(onBlockReply).toHaveBeenCalledWith({
+    expect((onBlockReply.mock.calls as unknown[][])[0]?.[0]).toEqual({
       mediaUrl: "/tmp/generated.png",
       mediaUrls: ["/tmp/generated.png"],
       replyToCurrent: true,
@@ -198,7 +198,7 @@ describe("createBlockReplyDeliveryHandler", () => {
       replyToTag: undefined,
       audioAsVoice: false,
     };
-    expect(onBlockReply).toHaveBeenCalledWith(expectedPayload);
+    expect((onBlockReply.mock.calls as unknown[][])[0]?.[0]).toEqual(expectedPayload);
     expect(directlySentBlockKeys).toEqual(new Set([createBlockReplyContentKey(expectedPayload)]));
   });
 

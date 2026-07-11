@@ -80,10 +80,16 @@ async function sendDirectBlockReply(params: {
   directlySentBlockPayloads: Array<ReplyPayload | undefined>;
   trackingPayload: ReplyPayload;
   payload: ReplyPayload;
+  abortSignal?: AbortSignal;
 }) {
   const deliveryIndex = params.directlySentBlockPayloads.length;
   params.directlySentBlockPayloads.push(undefined);
-  await params.onBlockReply(params.payload);
+  const context: BlockReplyContext = { abortSignal: params.abortSignal };
+  const queued = await params.onBlockReply(params.payload, context);
+  const delivered = context.deliverySettled ? await context.deliverySettled : queued !== false;
+  if (!delivered || context.abortSignal?.aborted) {
+    return;
+  }
   params.directlySentBlockKeys.add(createBlockReplyContentKey(params.trackingPayload));
   if (!isReplyPayloadStatusNotice(params.trackingPayload)) {
     params.directlySentBlockPayloads[deliveryIndex] = params.trackingPayload;
@@ -108,6 +114,7 @@ export function createBlockReplyDeliveryHandler(params: {
   blockReplyPipeline: BlockReplyPipeline | null;
   directlySentBlockKeys: Set<string>;
   directlySentBlockPayloads: Array<ReplyPayload | undefined>;
+  abortSignal?: AbortSignal;
 }): (payload: ReplyPayload) => Promise<void> {
   return async (payload) => {
     // Suppressed display lanes must not enter delivery bookkeeping: callers use
@@ -195,6 +202,7 @@ export function createBlockReplyDeliveryHandler(params: {
         directlySentBlockPayloads: params.directlySentBlockPayloads,
         trackingPayload: blockPayload,
         payload: blockPayload,
+        abortSignal: params.abortSignal,
       });
     } else if (
       blockHasNonTextContent ||
@@ -209,6 +217,7 @@ export function createBlockReplyDeliveryHandler(params: {
         directlySentBlockPayloads: params.directlySentBlockPayloads,
         trackingPayload: blockPayload,
         payload: blockPayload,
+        abortSignal: params.abortSignal,
       });
     }
     // When streaming is disabled entirely, text-only blocks are accumulated in final text.

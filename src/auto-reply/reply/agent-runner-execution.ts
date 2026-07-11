@@ -1849,6 +1849,7 @@ async function runAgentTurnWithFallbackInternal(
             blockReplyPipeline,
             directlySentBlockKeys,
             directlySentBlockPayloads,
+            abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
           })
         : undefined;
       let messageToolOnlyDeliveryCompleted = false;

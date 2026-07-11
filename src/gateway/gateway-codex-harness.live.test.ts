@@ -1081,6 +1081,7 @@ describeLive("gateway live (Codex harness)", () => {
       let server: Awaited<ReturnType<typeof startGatewayServer>> | undefined;
       let client: Awaited<ReturnType<typeof connectTestGatewayClient>> | undefined;
       const gatewayEvents: EventFrame[] = [];
+      const seenGuardianPluginApprovalIds = new Set<string>();
       const resolvedGuardianPluginApprovalIds = new Set<string>();
       let guardianPluginApprovalDecision: GuardianPluginApprovalDecision | undefined;
       let activeApprovalClient: GatewayClient | undefined;
@@ -1091,13 +1092,14 @@ describeLive("gateway live (Codex harness)", () => {
           return;
         }
         const approvalId = readCodexAppServerPluginApprovalId(event);
-        if (!approvalId || resolvedGuardianPluginApprovalIds.has(approvalId)) {
+        if (!approvalId || seenGuardianPluginApprovalIds.has(approvalId)) {
           return;
         }
-        resolvedGuardianPluginApprovalIds.add(approvalId);
+        seenGuardianPluginApprovalIds.add(approvalId);
         void approvalClient
           .request("plugin.approval.resolve", { id: approvalId, decision }, { timeoutMs: 30_000 })
           .then(() => {
+            resolvedGuardianPluginApprovalIds.add(approvalId);
             logCodexLiveStep("guardian-plugin-approval:resolved", { approvalId, decision });
           })
           .catch((error: unknown) => {

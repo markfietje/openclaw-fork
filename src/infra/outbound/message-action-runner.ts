@@ -199,11 +199,15 @@ function resolveGatewayActionOptions(gateway?: MessageActionRunnerGateway) {
   return resolveOutboundMessageGatewayOptions(gateway);
 }
 
+const MESSAGE_ACTION_RECONCILIATION_TIMEOUT_MS = 60_000;
+
 async function callGatewayMessageAction<T>(params: {
   gateway?: MessageActionRunnerGateway;
   actionParams: Record<string, unknown>;
+  abortSignal?: AbortSignal;
 }): Promise<T> {
-  const { callGateway, callGatewayLeastPrivilege } = await loadMessageActionGatewayRuntime();
+  const { callGateway, callGatewayLeastPrivilege, isGatewayTransportError } =
+    await loadMessageActionGatewayRuntime();
   const gateway = resolveGatewayActionOptions(params.gateway);
   const callParams = {
     url: gateway.url,
@@ -211,6 +215,7 @@ async function callGatewayMessageAction<T>(params: {
     method: "message.action",
     params: params.actionParams,
     timeoutMs: gateway.timeoutMs,
+    signal: params.abortSignal,
     clientName: gateway.clientName,
     clientDisplayName: gateway.clientDisplayName,
     mode: gateway.mode,
@@ -225,16 +230,43 @@ async function callGatewayMessageAction<T>(params: {
     (requesterAccountId !== undefined ||
       requesterSenderId !== undefined ||
       params.actionParams.senderIsOwner !== undefined);
-  if (!carriesTrustedRequester) {
-    return await callGatewayLeastPrivilege<T>(callParams);
+  const invokeGatewayAction = async (options: typeof callParams): Promise<T> => {
+    if (!carriesTrustedRequester) {
+      return await callGatewayLeastPrivilege<T>(options);
+    }
+    // Trusted requester fields come from inbound server context. The RPC needs
+    // admin scope to prove provenance; the Gateway downscopes the handler call.
+    return await callGateway<T>({ ...options, scopes: ["operator.admin"] });
+  };
+  try {
+    return await invokeGatewayAction(callParams);
+  } catch (error) {
+    if (!isGatewayTransportError(error) || error.kind !== "timeout") {
+      throw error;
+    }
+    throwIfAborted(params.abortSignal);
   }
-  // Trusted requester fields come from inbound server context. The RPC needs
-  // admin scope to prove provenance; the Gateway recognizes this backend bridge
-  // and keeps channel-handler authorization at message.action least privilege.
-  return await callGateway<T>({
+
+  const reconciliationCall = {
     ...callParams,
-    scopes: ["operator.admin"],
-  });
+    timeoutMs: Math.max(callParams.timeoutMs, MESSAGE_ACTION_RECONCILIATION_TIMEOUT_MS),
+  };
+  // A caller-side timeout does not cancel Gateway work. When the caller owns a
+  // cancellation lifecycle, keep reattaching with the same idempotency key so
+  // a late delivery is not shown to the model as a failure it may resend.
+  for (;;) {
+    try {
+      return await invokeGatewayAction(reconciliationCall);
+    } catch (error) {
+      if (!isGatewayTransportError(error) || error.kind !== "timeout") {
+        throw error;
+      }
+      if (!params.abortSignal) {
+        throw error;
+      }
+      throwIfAborted(params.abortSignal);
+    }
+  }
 }
 
 async function resolveGatewayActionIdempotencyKey(idempotencyKey?: string): Promise<string> {
@@ -664,6 +696,7 @@ async function runGatewayPluginMessageActionOrNull(params: {
   }
   const payload = await callGatewayMessageAction<unknown>({
     gateway: params.gateway,
+    abortSignal: params.input.abortSignal,
     actionParams: {
       channel: params.channel,
       action: params.action,

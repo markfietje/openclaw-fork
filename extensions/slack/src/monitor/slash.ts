@@ -392,6 +392,7 @@ export async function registerSlackMonitorSlashCommands(params: {
   const slashCommand = resolveSlackSlashCommandConfig(
     ctx.slashCommand ?? account.config.slashCommand,
   );
+  const startupRuntimeSourceConfig = getRuntimeConfigSourceSnapshot();
 
   const handleSlashCommand = async (p: {
     command: SlackCommandMiddlewareArgs["command"];
@@ -420,12 +421,15 @@ export async function registerSlackMonitorSlashCommands(params: {
           }
         : createSlackResponseUrlBudget(respondWithoutBudget);
     const respond = responseBudget.respond;
+    const applicableRuntimeConfig = selectApplicableRuntimeConfig({
+      inputConfig: startupRuntimeSourceConfig ?? ctx.cfg,
+      runtimeConfig: getRuntimeConfigSnapshot(),
+      runtimeSourceConfig: getRuntimeConfigSourceSnapshot(),
+    });
     const cfg =
-      selectApplicableRuntimeConfig({
-        inputConfig: ctx.cfg,
-        runtimeConfig: getRuntimeConfigSnapshot(),
-        runtimeSourceConfig: getRuntimeConfigSourceSnapshot(),
-      }) ?? ctx.cfg;
+      applicableRuntimeConfig === startupRuntimeSourceConfig
+        ? ctx.cfg
+        : (applicableRuntimeConfig ?? ctx.cfg);
     try {
       if (ctx.shouldDropMismatchedSlackEvent?.(body)) {
         await ack();

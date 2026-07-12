@@ -1668,6 +1668,54 @@ describe("slack slash command session metadata", () => {
     );
   });
 
+  it("adopts matching runtime refreshes after resolving monitor secrets", async () => {
+    const harness = createPolicyHarness({
+      channelId: "D123",
+      channelName: "directmessage",
+      resolveChannelName: async () => ({ name: "directmessage", type: "im" }),
+    });
+    const sourceCfg = (harness.ctx as { cfg: OpenClawConfig }).cfg;
+    const resolvedCfg = {
+      ...sourceCfg,
+      channels: {
+        slack: {
+          accounts: {
+            default: {
+              botToken: "xoxb-resolved",
+              appToken: "xapp-resolved",
+            },
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const refreshedSourceCfg = {
+      ...sourceCfg,
+      session: { dmScope: "per-channel-peer" },
+    } as OpenClawConfig;
+    const refreshedResolvedCfg = {
+      ...resolvedCfg,
+      session: { dmScope: "per-channel-peer" },
+    } as OpenClawConfig;
+    (harness.ctx as { cfg: OpenClawConfig }).cfg = resolvedCfg;
+    setRuntimeConfigSnapshot(resolvedCfg, sourceCfg);
+    await registerCommands(harness.ctx, harness.account);
+    setRuntimeConfigSnapshot(refreshedResolvedCfg, refreshedSourceCfg);
+
+    await runSlashHandler({
+      commands: harness.commands,
+      command: {
+        channel_id: harness.channelId,
+        channel_name: harness.channelName,
+      },
+    });
+
+    expect(dispatchMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg: refreshedResolvedCfg,
+      }),
+    );
+  });
+
   it("calls recordSessionMetaFromInbound after dispatching a slash command", async () => {
     const harness = createPolicyHarness({ groupPolicy: "open" });
     await registerAndRunPolicySlash({ harness });

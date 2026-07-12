@@ -3,17 +3,17 @@ name: Android ClawHub Skills real media proof
 on:
   push:
     branches:
-      - evidence/pr-101864-clawhub-media-proof-v3
+      - evidence/pr-101864-clawhub-media-proof-v4
   workflow_dispatch:
     inputs:
       target_ref:
         description: Branch, tag, or SHA to test
         required: true
-        default: evidence/pr-101864-clawhub-media-proof-v3
+        default: evidence/pr-101864-clawhub-media-proof-v4
       expected_pr_head:
         description: Expected PR head SHA for latest-head verification
         required: true
-        default: '8cc6ce03f8b14f45241de6eb4c42f1b68a651e90'
+        default: '4bc5aeea54cd5cb090b2d802cda15f3ac1d9a147'
 
 concurrency:
   group: android-clawhub-skills-real-media-proof-v4-${{ github.ref }}
@@ -54,6 +54,8 @@ jobs:
           test -n "${expected_pr_head}"
           github_api_pr_head="$(gh api repos/openclaw/openclaw/pulls/101864 --jq .head.sha)"
           test "${github_api_pr_head}" = "${expected_pr_head}"
+          git fetch --no-tags --force https://github.com/snowzlmbot/openclaw.git \
+            refs/heads/android-skills-management:refs/remotes/pr101864/head
           git cat-file -e "${expected_pr_head}^{commit}"
           git checkout --detach "${expected_pr_head}"
           build_head="$(git rev-parse HEAD)"

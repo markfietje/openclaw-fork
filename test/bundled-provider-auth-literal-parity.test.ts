@@ -3,8 +3,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { createNonExitingRuntime } from "../src/runtime.js";
-import { createCapturedPluginRegistration } from "../src/test-utils/plugin-registration.js";
 import { listBundledPluginMetadata } from "../src/plugins/bundled-plugin-metadata.js";
 import type { PluginManifestProviderAuthChoice } from "../src/plugins/manifest.js";
 import type {
@@ -12,9 +10,11 @@ import type {
   ProviderPlugin,
   ProviderResolveNonInteractiveApiKeyParams,
 } from "../src/plugins/types.js";
+import { createNonExitingRuntime } from "../src/runtime.js";
+import { createCapturedPluginRegistration } from "../src/test-utils/plugin-registration.js";
 
 const PARITY_TIMEOUT_MS = 120_000;
-const SENTINEL_API_KEY = "parity-sentinel-api-key";
+const SENTINEL_API_KEY = "parity-value";
 
 type ApiKeyStyleChoice = PluginManifestProviderAuthChoice & {
   optionKey: string;

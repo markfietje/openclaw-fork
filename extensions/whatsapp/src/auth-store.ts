@@ -6,6 +6,7 @@ import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/routing";
 import { info, success } from "openclaw/plugin-sdk/runtime-env";
 import { getChildLogger } from "openclaw/plugin-sdk/runtime-env";
 import { defaultRuntime, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
+import { safeParseJson } from "openclaw/plugin-sdk/text-utility-runtime";
 import { resolveOAuthDir } from "./auth-store.runtime.js";
 import {
   assertWebCredsPathRegularFileOrMissing,
@@ -94,12 +95,8 @@ export type WhatsAppWebCredsPayload = {
 };
 
 function parseWebCredsPayload(raw: string): WhatsAppWebCredsPayload | null {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return parsed && typeof parsed === "object" ? (parsed as WhatsAppWebCredsPayload) : null;
-  } catch {
-    return null;
-  }
+  const parsed = safeParseJson<unknown>(raw);
+  return parsed !== null && typeof parsed === "object" ? (parsed as WhatsAppWebCredsPayload) : null;
 }
 
 function hasUsableWebIdentity(payload: WhatsAppWebCredsPayload): boolean {

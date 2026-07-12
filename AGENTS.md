@@ -173,7 +173,7 @@ Skills own workflows; root owns hard policy and routing.
 - zsh: quote command globs; unmatched patterns abort before the tool runs.
 - zsh: don't use `path` as a variable; it rewrites `$PATH`.
 - `scripts/pr` artifacts: preserve template enum values; validate before prepare.
-- `scripts/pr`: one subcommand per shell invocation; chaining can orphan operation locks.
+- `scripts/pr` behavioral sweep: status `pass|needs_work|not_applicable`; branches need path/decision/outcome.
 - `scripts/pr` subcommands require a PR number; no subcommand `--help` placeholder.
 - `scripts/pr` review: checkout main baseline, then PR, before artifact validation.
 - PR head changed: rerun `scripts/pr review-init`; checkout alone leaves stale guard SHA.

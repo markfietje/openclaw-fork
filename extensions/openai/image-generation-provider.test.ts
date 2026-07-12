@@ -1,4 +1,5 @@
 // Openai tests cover image generation provider plugin behavior.
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildOpenAIImageGenerationProvider } from "./image-generation-provider.js";
 
@@ -744,7 +745,7 @@ describe("openai image generation provider", () => {
             },
           },
         },
-      },
+      } as unknown as OpenClawConfig,
     });
 
     expect(httpConfigCall().baseUrl).toBe("https://openai-compatible.example.com/v1");

@@ -965,6 +965,13 @@ run_openclaw_gateway_call skills.install \
   --params '{"source":"clawhub","slug":"proof-malicious-skill","version":"1.2.3","acknowledgeClawHubRisk":true,"timeoutMs":20000}' \
   --timeout 30000 \
   --json > proof-output/malicious-gateway-install.json 2> proof-output/malicious-gateway-install.err || true
+if grep -q "pairing required" proof-output/malicious-gateway-install.json proof-output/malicious-gateway-install.err; then
+  approve_pending_device_pairings 30 true
+  run_openclaw_gateway_call skills.install \
+    --params '{"source":"clawhub","slug":"proof-malicious-skill","version":"1.2.3","acknowledgeClawHubRisk":true,"timeoutMs":20000}' \
+    --timeout 30000 \
+    --json > proof-output/malicious-gateway-install.json 2> proof-output/malicious-gateway-install.err || true
+fi
 python3 - <<'PY'
 import json
 from pathlib import Path

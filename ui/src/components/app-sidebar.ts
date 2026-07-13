@@ -93,7 +93,7 @@ import {
   sidebarMoreMenuHoldsActiveRoute,
   sidebarPluginTabs,
 } from "./app-sidebar-nav-menus.ts";
-import { icons } from "./icons.ts";
+import { icons, type IconName } from "./icons.ts";
 import {
   LOBSTER_LOGO_VISIT_EVENT,
   LOBSTER_PET_BUILD_MULS,

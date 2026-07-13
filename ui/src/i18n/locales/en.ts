@@ -147,10 +147,7 @@ export const en: TranslationMap = {
       title: "iMessage",
       subtitle: "macOS bridge status and channel configuration.",
     },
-    signal: {
-      title: "Signal",
-      subtitle: "signal-cli status and channel configuration.",
-    },
+    signal: { title: "Signal", subtitle: "signal-cli status and channel configuration." },
     slack: { title: "Slack", subtitle: "Socket mode status and channel configuration." },
     telegram: { title: "Telegram", subtitle: "Bot status and channel configuration." },
     whatsapp: {

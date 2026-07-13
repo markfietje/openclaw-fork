@@ -2,6 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { WorkerAdmissionHandshake as WorkerEnvironmentBootstrapReceipt } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+import type {
+  WorkerProfile as WorkerEnvironmentProfileSnapshot,
+  WorkerSshEndpoint as WorkerEnvironmentSshEndpoint,
+} from "../../plugins/types.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -18,11 +23,6 @@ import {
   type WorkerSessionPlacementRecord,
 } from "./placement-store.js";
 import { workerEnvironmentIdForIdempotencyKey } from "./service.js";
-import type {
-  WorkerEnvironmentBootstrapReceipt,
-  WorkerEnvironmentProfileSnapshot,
-  WorkerEnvironmentSshEndpoint,
-} from "./store.js";
 import type { WorkerTunnelHandle } from "./tunnel.js";
 
 type WorkerDispatchRequest = Parameters<

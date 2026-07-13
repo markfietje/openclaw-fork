@@ -860,7 +860,8 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       expect(geometry.textarea?.paddingLeft).toBe(composerInset - 4);
       expect(geometry.footer?.paddingLeft).toBe(composerInset);
       expect(geometry.footer?.paddingRight).toBe(composerInset);
-      expect(geometry.footer?.paddingBottom).toBe(composerInset);
+      expect(geometry.footer?.paddingTop).toBe(composerInset / 2);
+      expect(geometry.footer?.paddingBottom).toBe(composerInset / 2);
     } finally {
       await closeBrowserPage(page);
     }

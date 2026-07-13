@@ -201,6 +201,11 @@ function serviceSummary(label: string, svc: CiaoService): string {
   return `${label} fqdn=${svc.getFQDN()} host=${svc.getHostname()} port=${svc.getPort()} state=${svc.serviceState}`;
 }
 
+// ciao exposes ServiceState as a type-only const enum; runtime mocks only carry its string values.
+function readServiceState(svc: CiaoService): string {
+  return svc.serviceState;
+}
+
 function shouldSuppressCiaoConsoleLog(args: unknown[]): boolean {
   return args.some(
     (arg) => typeof arg === "string" && arg.includes(CIAO_SELF_PROBE_RETRY_FRAGMENT),
@@ -466,10 +471,10 @@ export async function startGatewayBonjourAdvertiser(
               `bonjour: ${label} name conflict resolved; newName=${JSON.stringify(name)}`,
             );
           });
-          svc.on("hostname-change", (hostname) => {
+          svc.on("hostname-change", (nextHostname) => {
             markConflictObserved(label, svc);
             logger.warn(
-              `bonjour: ${label} hostname conflict resolved; newHostname=${JSON.stringify(hostname)}`,
+              `bonjour: ${label} hostname conflict resolved; newHostname=${JSON.stringify(nextHostname)}`,
             );
           });
         } catch (err) {
@@ -536,13 +541,13 @@ export async function startGatewayBonjourAdvertiser(
     const markConflictObserved = (label: string, svc: CiaoService) => {
       const now = Date.now();
       conflictTracker.set(label, now);
-      stateTracker.set(label, { state: svc.serviceState, sinceMs: now });
+      stateTracker.set(label, { state: readServiceState(svc), sinceMs: now });
     };
 
     const updateStateTrackers = (services: BonjourCycle) => {
       const now = Date.now();
       for (const { label, svc } of services) {
-        const nextState = svc.serviceState;
+        const nextState = readServiceState(svc);
         const current = stateTracker.get(label);
         const nextEnteredAt =
           current && current.state !== "announced" && nextState !== "announced"
@@ -629,7 +634,7 @@ export async function startGatewayBonjourAdvertiser(
       updateStateTrackers(cycle);
       for (const { label, svc } of cycle) {
         const now = Date.now();
-        const state = svc.serviceState;
+        const state = readServiceState(svc);
         if (state === "announced") {
           consecutiveRestarts = 0;
           consecutiveStuckStateRestarts = 0;

@@ -249,6 +249,7 @@ type TelegramUpdate = {
 
 type TelegramSendMessageResult = {
   message_id: number;
+  date: number;
   chat: {
     id: number;
   };
@@ -1423,12 +1424,14 @@ function matchesTelegramScenarioReply(params: {
   allowAnySutReply?: boolean;
   matchText?: string;
   message: TelegramObservedMessage;
+  sentAtMs: number;
   sentMessageId: number;
   sutBotId: number;
 }) {
   if (
     params.message.chatId !== Number(params.groupId) ||
-    params.message.senderId !== params.sutBotId
+    params.message.senderId !== params.sutBotId ||
+    params.message.timestamp < params.sentAtMs
   ) {
     return false;
   }
@@ -1507,6 +1510,7 @@ async function runTelegramQaScenarioStep(params: {
           groupId: params.groupId,
           matchText: params.step.matchText,
           message,
+          sentAtMs: sent.date * 1000,
           sentMessageId: sent.message_id,
           sutBotId: params.sutBotId,
         }),
@@ -1518,6 +1522,7 @@ async function runTelegramQaScenarioStep(params: {
       matched,
       requestStartedAt: new Date(requestStartedAtMs).toISOString(),
       requestStartedAtMs,
+      sentAtMs: sent.date * 1000,
       sentMessageId: sent.message_id,
     };
   } catch (error) {
@@ -1526,6 +1531,7 @@ async function runTelegramQaScenarioStep(params: {
         matched: undefined,
         requestStartedAt: new Date(requestStartedAtMs).toISOString(),
         requestStartedAtMs,
+        sentAtMs: sent.date * 1000,
         sentMessageId: sent.message_id,
       };
     }
@@ -2025,6 +2031,7 @@ export async function runTelegramQaLive(params: {
                       groupId: runtimeEnv.groupId,
                       matchText: step.matchText,
                       message,
+                      sentAtMs: stepResult.sentAtMs,
                       sentMessageId: stepResult.sentMessageId,
                       sutBotId: sutIdentity.id,
                     }),

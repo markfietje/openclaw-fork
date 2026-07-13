@@ -25,6 +25,13 @@ const log = createSubsystemLogger("session-suspension");
 
 const DEFAULT_CUSTOM_LANE_RESUME_CONCURRENCY = 1;
 const DEFAULT_QUOTA_SUSPENSION_RESUME_MS = 30 * 60 * 1000; // 30 min
+const GATEWAY_MANAGED_LANE_IDS: ReadonlySet<string> = new Set([
+  CommandLane.Main,
+  CommandLane.Subagent,
+  CommandLane.Cron,
+  CommandLane.CronNested,
+  CommandLane.Nested,
+]);
 
 type LaneResumeTimer = {
   timer: ReturnType<typeof setTimeout>;
@@ -94,7 +101,7 @@ function getSessionSuspensionState(): SessionSuspensionRuntimeState {
       }
     >();
   }
-  if (!state.suspensionWriteChain) {
+  if (state.suspensionWriteChain === undefined) {
     state.suspensionWriteChain = Promise.resolve();
   }
   return state;
@@ -136,13 +143,7 @@ function resolveLaneResumeConcurrency(cfg: OpenClawConfig | undefined, laneId: s
 }
 
 function isGatewayManagedLane(laneId: string): boolean {
-  return (
-    laneId === CommandLane.Main ||
-    laneId === CommandLane.Subagent ||
-    laneId === CommandLane.Cron ||
-    laneId === CommandLane.CronNested ||
-    laneId === CommandLane.Nested
-  );
+  return GATEWAY_MANAGED_LANE_IDS.has(laneId);
 }
 
 export function resolveSessionSuspensionReason(reason: FailoverReason): SessionSuspensionReason {
@@ -324,36 +325,36 @@ async function suspendSessionQueued(params: SessionSuspensionParams, queuedGener
       resolveLaneResumeConcurrency(params.cfg, params.laneId),
     );
   };
-  let persistedSuspension = false;
+  let persistedSuspension: boolean;
 
   try {
-    const patchedEntry = await patchSessionEntry(
-      { storePath, sessionKey },
-      (entry) => {
-        if (getSessionSuspensionState().cleanupGeneration !== suspensionGeneration) {
-          return null;
-        }
-        if (!pendingWrite.previousSnapshotCaptured) {
-          pendingWrite.previousQuotaSuspension = entry.quotaSuspension;
-          pendingWrite.previousSnapshotCaptured = true;
-        }
-        return {
-          quotaSuspension: {
-            schemaVersion: 1,
-            suspendedAt: now,
-            reason: params.reason,
-            failedProvider: params.failedProvider,
-            failedModel: params.failedModel,
-            summary: params.summary,
-            laneId: params.laneId,
-            expectedResumeBy,
-            state: "suspended",
-          },
-        };
-      },
-      { skipMaintenance: true, takeCacheOwnership: true },
-    );
-    persistedSuspension = patchedEntry !== null;
+    persistedSuspension =
+      (await patchSessionEntry(
+        { storePath, sessionKey },
+        (entry) => {
+          if (getSessionSuspensionState().cleanupGeneration !== suspensionGeneration) {
+            return null;
+          }
+          if (!pendingWrite.previousSnapshotCaptured) {
+            pendingWrite.previousQuotaSuspension = entry.quotaSuspension;
+            pendingWrite.previousSnapshotCaptured = true;
+          }
+          return {
+            quotaSuspension: {
+              schemaVersion: 1,
+              suspendedAt: now,
+              reason: params.reason,
+              failedProvider: params.failedProvider,
+              failedModel: params.failedModel,
+              summary: params.summary,
+              laneId: params.laneId,
+              expectedResumeBy,
+              state: "suspended",
+            },
+          };
+        },
+        { skipMaintenance: true, takeCacheOwnership: true },
+      )) !== null;
   } catch (err) {
     log.warn("failed to persist quota suspension; applying transient lane throttle", {
       sessionId: params.sessionId,

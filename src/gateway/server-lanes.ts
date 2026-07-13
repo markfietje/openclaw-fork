@@ -24,32 +24,29 @@ export function resolveGatewayLaneConcurrency(cfg: OpenClawConfig): GatewayLaneC
   };
 }
 
+function enableGatewayStartSuspensionTimers(
+  concurrency: GatewayLaneConcurrency,
+): ReadonlySet<string> {
+  const resumeConcurrencyByLane = new Map<string, number>([
+    [CommandLane.Cron, concurrency.cron],
+    [CommandLane.CronNested, concurrency.cron],
+    [CommandLane.Main, concurrency.main],
+    [CommandLane.Nested, 1],
+    [CommandLane.Subagent, concurrency.subagent],
+  ]);
+  return enableSessionSuspensionTimersForGatewayStart(
+    (laneId, savedResumeConcurrency) =>
+      resumeConcurrencyByLane.get(laneId) ?? savedResumeConcurrency,
+  );
+}
+
 export function applyGatewayLaneConcurrency(
   concurrency: GatewayLaneConcurrency,
   opts: { gatewayStart?: boolean } = {},
 ): void {
-  let suspendedLaneIds: ReadonlySet<string> = new Set<string>();
-  if (opts.gatewayStart) {
-    suspendedLaneIds = enableSessionSuspensionTimersForGatewayStart(
-      (laneId, savedResumeConcurrency) => {
-        switch (laneId) {
-          case CommandLane.Cron:
-          case CommandLane.CronNested:
-            return concurrency.cron;
-          case CommandLane.Main:
-            return concurrency.main;
-          case CommandLane.Nested:
-            return 1;
-          case CommandLane.Subagent:
-            return concurrency.subagent;
-          default:
-            return savedResumeConcurrency;
-        }
-      },
-    );
-  } else {
-    suspendedLaneIds = getCleanupSuspendedLaneIdsForGatewayPublication();
-  }
+  const suspendedLaneIds: ReadonlySet<string> = opts.gatewayStart
+    ? enableGatewayStartSuspensionTimers(concurrency)
+    : getCleanupSuspendedLaneIdsForGatewayPublication();
   // Resolution is deliberately separate: this commit-edge applier only updates
   // live queue state and cannot reject a config midway through publication.
   if (!suspendedLaneIds.has(CommandLane.Cron)) {

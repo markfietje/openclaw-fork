@@ -136,7 +136,8 @@ export const en: TranslationMap = {
       subtitle: "Channel status snapshots from the gateway.",
       noSnapshotYet: "No snapshot yet.",
     },
-    // Keep short channel descriptors compact; this source bundle is intentionally single-file.
+    // Keep short channel descriptors compact; this source bundle is intentionally
+    // single-file.
     generic: { subtitle: "Channel status and configuration." },
     discord: { title: "Discord", subtitle: "Bot status and channel configuration." },
     googleChat: {

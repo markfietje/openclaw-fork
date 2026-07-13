@@ -40,7 +40,6 @@ const rawSqliteAllowPathGroups = {
     "src/state/openclaw-agent-db.ts",
     "src/state/openclaw-state-db-readonly.ts",
     "src/state/openclaw-state-db.ts",
-    "src/state/openclaw-state-db-readonly.ts",
     "src/state/sqlite-schema-shape.test-support.ts",
   ],
   "backup snapshot maintenance": [
@@ -53,7 +52,6 @@ const rawSqliteAllowPathGroups = {
   "read-only SQLite status probes": [
     "src/commands/doctor-db-bloat.ts",
     "src/commands/status.scan.shared.ts",
-    "src/state/openclaw-state-db-readonly.ts",
   ],
   "doctor SQLite maintenance and legacy state migration": [
     "src/commands/doctor/cron/migration-ledger.ts",

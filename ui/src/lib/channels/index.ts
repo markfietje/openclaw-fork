@@ -9,6 +9,11 @@ type ChannelGatewayClient = {
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
 };
 
+type ChannelLogoutResult = {
+  cleared: boolean;
+  loggedOut?: boolean;
+};
+
 type ChannelGatewaySnapshot = {
   client: ChannelGatewayClient | null;
   connected: boolean;
@@ -261,13 +266,20 @@ export async function logoutWhatsApp(state: ChannelsState): Promise<boolean> {
     return false;
   }
   try {
-    await operation.client.request("channels.logout", { channel: "whatsapp" });
+    const result = await operation.client.request<ChannelLogoutResult>("channels.logout", {
+      channel: "whatsapp",
+    });
     if (!isCurrentWhatsAppOperation(state, operation)) {
       return false;
     }
-    state.whatsappLoginMessage = "Logged out.";
-    state.whatsappLoginQrDataUrl = null;
-    state.whatsappLoginConnected = null;
+    const loggedOut = result.loggedOut ?? result.cleared;
+    if (loggedOut) {
+      state.whatsappLoginMessage = t("channels.whatsapp.loggedOut");
+      state.whatsappLoginQrDataUrl = null;
+      state.whatsappLoginConnected = null;
+    } else {
+      state.whatsappLoginMessage = t("channels.whatsapp.logoutNotCleared");
+    }
   } catch (err) {
     if (!isCurrentWhatsAppOperation(state, operation)) {
       return false;

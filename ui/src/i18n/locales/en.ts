@@ -136,13 +136,9 @@ export const en: TranslationMap = {
       subtitle: "Channel status snapshots from the gateway.",
       noSnapshotYet: "No snapshot yet.",
     },
-    generic: {
-      subtitle: "Channel status and configuration.",
-    },
-    discord: {
-      title: "Discord",
-      subtitle: "Bot status and channel configuration.",
-    },
+    // Keep short channel descriptors compact; this source bundle is intentionally single-file.
+    generic: { subtitle: "Channel status and configuration." },
+    discord: { title: "Discord", subtitle: "Bot status and channel configuration." },
     googleChat: {
       title: "Google Chat",
       subtitle: "Chat API webhook status and channel configuration.",
@@ -155,17 +151,14 @@ export const en: TranslationMap = {
       title: "Signal",
       subtitle: "signal-cli status and channel configuration.",
     },
-    slack: {
-      title: "Slack",
-      subtitle: "Socket mode status and channel configuration.",
-    },
-    telegram: {
-      title: "Telegram",
-      subtitle: "Bot status and channel configuration.",
-    },
+    slack: { title: "Slack", subtitle: "Socket mode status and channel configuration." },
+    telegram: { title: "Telegram", subtitle: "Bot status and channel configuration." },
     whatsapp: {
       title: "WhatsApp",
       subtitle: "Link WhatsApp Web and monitor connection health.",
+      loggedOut: "Logged out.",
+      logoutNotCleared:
+        "WhatsApp logout did not clear a stored session. It may already be absent, or the configured auth directory could not be cleared.",
     },
     gatewayUrlConfirmation: {
       title: "Change Gateway URL",

@@ -4,6 +4,7 @@ import type { ChannelsStatusSnapshot } from "../../api/types.ts";
 import {
   createChannelCapability,
   loadChannels,
+  logoutWhatsApp,
   waitWhatsAppLogin,
   type ChannelsState,
 } from "./index.ts";
@@ -181,6 +182,43 @@ describe("channels controller WhatsApp wait", () => {
 
     await channels.waitWhatsApp();
     expect(request).toHaveBeenCalledOnce();
+  });
+});
+
+describe("channels controller WhatsApp logout", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("keeps login state and explains when the Gateway clears no session", async () => {
+    const state = createState();
+    const request = requireClientRequest(state);
+    state.whatsappLoginMessage = "Scan this QR.";
+    state.whatsappLoginConnected = true;
+    request.mockResolvedValueOnce({ cleared: false, loggedOut: false });
+
+    await logoutWhatsApp(state);
+
+    expect(request).toHaveBeenCalledWith("channels.logout", { channel: "whatsapp" });
+    expect(state.whatsappLoginMessage).toBe(
+      "WhatsApp logout did not clear a stored session. It may already be absent, or the configured auth directory could not be cleared.",
+    );
+    expect(state.whatsappLoginQrDataUrl).toBe("data:image/png;base64,current-qr");
+    expect(state.whatsappLoginConnected).toBe(true);
+    expect(state.whatsappBusy).toBe(false);
+  });
+
+  it("clears login state when the Gateway confirms logout", async () => {
+    const state = createState();
+    const request = requireClientRequest(state);
+    request.mockResolvedValueOnce({ cleared: true });
+
+    await logoutWhatsApp(state);
+
+    expect(state.whatsappLoginMessage).toBe("Logged out.");
+    expect(state.whatsappLoginQrDataUrl).toBeNull();
+    expect(state.whatsappLoginConnected).toBeNull();
+    expect(state.whatsappBusy).toBe(false);
   });
 });
 

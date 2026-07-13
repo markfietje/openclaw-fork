@@ -1,8 +1,9 @@
+import type { FastMode } from "@openclaw/normalization-core/string-coerce";
+import type { ReplyToMode } from "../config/types.js";
 /** Public option types for reply generation callbacks, streaming, and delivery policy. */
 import type { ImageContent } from "../llm/types.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
-import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 import type { ReplyPayload } from "./reply-payload.js";
 import type { TypingController } from "./reply/typing.js";
 
@@ -220,6 +221,14 @@ export type GetReplyOptions = {
   queuedDeliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
   /** Tracks ownership transfer when this turn later drains as a queued followup. */
   queuedFollowupLifecycle?: QueuedReplyLifecycle;
+  /** Applies source-channel delivery metadata when a queued follow-up later drains. */
+  queuedDeliveryPayloadTransform?: (payload: ReplyPayload) => ReplyPayload;
+  /** Preserves source-channel reply fan-out policy for queued delivery. */
+  queuedDeliveryReplyToMode?: ReplyToMode;
+  /** Commits source-channel delivery state after a queued payload is visibly routed. */
+  queuedDeliveryPayloadDidDeliver?: (payload: ReplyPayload) => void;
+  /** Re-establishes source-owned async context while a queued follow-up drains. */
+  queuedExecutionContext?: <T>(run: () => Promise<T>) => Promise<T>;
   /** Allow channel-owned progress UI while final/source reply delivery remains message-tool-only. */
   allowProgressCallbacksWhenSourceDeliverySuppressed?: boolean;
   /** Called when a suppressed source reply mode observes visible delivery through another path. */

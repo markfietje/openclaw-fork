@@ -182,6 +182,7 @@ async function expectSlackNoDelivery(
     ...overrides,
   });
   expect(res.ok).toBe(true);
+  expect(res.delivered).toBe(false);
   expect(mocks.deliverOutboundPayloads).not.toHaveBeenCalled();
   return res;
 }
@@ -573,6 +574,7 @@ describe("routeReply", () => {
 
     expect(res).toEqual({
       ok: true,
+      delivered: false,
       suppressed: true,
       reason: "cancelled_by_reply_payload_sending_hook",
     });
@@ -585,6 +587,40 @@ describe("routeReply", () => {
         conversationId: "chat-1",
       },
     });
+  });
+
+  it("reports visible delivery when a later batch part fails", async () => {
+    mocks.deliverOutboundPayloads.mockImplementationOnce(
+      async ({
+        onPayloadDeliveryOutcome,
+      }: {
+        onPayloadDeliveryOutcome?: (outcome: unknown) => void;
+      }) => {
+        onPayloadDeliveryOutcome?.({
+          index: 0,
+          status: "failed",
+          error: new Error("second chunk failed"),
+          sentBeforeError: true,
+          stage: "platform_send",
+        });
+        return [{ channel: "telegram", messageId: "visible-1" }];
+      },
+    );
+
+    const res = await routeReply({
+      payload: { text: "hello" },
+      channel: "telegram",
+      to: "chat-1",
+      cfg: {} as never,
+    });
+
+    expect(res).toMatchObject({
+      ok: false,
+      delivered: true,
+      partialFailure: true,
+      messageId: "visible-1",
+    });
+    expect(res.error).toContain("second chunk failed");
   });
 
   it("suppresses routed delivery when reply payload hooks cancel", async () => {
@@ -612,6 +648,7 @@ describe("routeReply", () => {
 
     expect(res).toEqual({
       ok: true,
+      delivered: false,
       suppressed: true,
       reason: "cancelled_by_reply_payload_sending_hook",
     });
@@ -643,6 +680,7 @@ describe("routeReply", () => {
 
     expect(res).toEqual({
       ok: true,
+      delivered: false,
       suppressed: true,
       reason: "empty_after_reply_payload_sending_hook",
     });
@@ -820,17 +858,19 @@ describe("routeReply", () => {
     expect(lastDeliveryPayload().text).toBe("BTW\nQuestion: what is 17 * 19?\n\n323");
   });
 
-  it("passes replyToId to Telegram sends", async () => {
+  it("passes reply targeting policy to Telegram sends", async () => {
     await routeReply({
       payload: { text: "hi", replyToId: "123" },
       channel: "telegram",
       to: "telegram:123",
+      replyToMode: "first",
       cfg: {} as never,
     });
     expectLastDeliveryFields({
       channel: "telegram",
       to: "telegram:123",
       replyToId: "123",
+      replyToMode: "first",
     });
   });
 

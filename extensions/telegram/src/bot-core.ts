@@ -51,6 +51,7 @@ import {
 import { resolveTelegramTransport } from "./fetch.js";
 import { resolveTelegramScopedGroupConfig } from "./group-config-helpers.js";
 import { TELEGRAM_TEXT_CHUNK_LIMIT } from "./outbound-adapter.js";
+import { createTelegramPeerBotAdmissionCoordinator } from "./peer-bot-admission.js";
 import { stringifyTelegramRawUpdateForLog } from "./raw-update-log.js";
 import { TELEGRAM_RICH_TEXT_LIMIT } from "./rich-message.js";
 import { createTelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
@@ -389,6 +390,7 @@ export function createTelegramBotCore(
     opts,
     telegramDeps,
   });
+  const peerBotAdmission = createTelegramPeerBotAdmissionCoordinator();
 
   registerTelegramNativeCommands({
     bot,
@@ -410,6 +412,7 @@ export function createTelegramBotCore(
     shouldSkipUpdate,
     opts,
     telegramDeps,
+    peerBotAdmission,
   });
 
   registerTelegramHandlers({
@@ -431,6 +434,7 @@ export function createTelegramBotCore(
     processMessage,
     logger,
     telegramDeps,
+    peerBotAdmission,
   });
 
   const originalStop = bot.stop.bind(bot);

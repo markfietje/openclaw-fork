@@ -3,7 +3,7 @@ import * as grammy from "grammy";
 import { type ApiClientOptions, Bot, HttpError } from "grammy";
 import type { ReactionType, ReactionTypeEmoji } from "grammy/types";
 import { recordChannelActivity } from "openclaw/plugin-sdk/channel-activity-runtime";
-import type { MarkdownTableMode } from "openclaw/plugin-sdk/config-contracts";
+import type { MarkdownTableMode, ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { formatUncaughtError } from "openclaw/plugin-sdk/error-runtime";
 import { redactSensitiveText } from "openclaw/plugin-sdk/logging-core";
@@ -21,6 +21,7 @@ import { buildTypingThreadParams } from "./bot/helpers.js";
 import type { TelegramInlineButtons } from "./button-types.js";
 import { splitTelegramCaption } from "./caption.js";
 import { asTelegramClientFetch, createTelegramClientFetch } from "./client-fetch.js";
+import { markTelegramDeliveryErrorVisible } from "./delivery-error.js";
 import { resolveTelegramTransport } from "./fetch.js";
 import {
   renderTelegramHtmlText,
@@ -65,6 +66,11 @@ import {
   resolveMarkdownTableMode,
 } from "./send.runtime.js";
 import { recordSentMessage } from "./sent-message-cache.js";
+import {
+  buildTelegramStandardFragmentAbort,
+  buildTelegramStandardTextChunks,
+  stripTelegramStandardFragmentMarker,
+} from "./standard-text.js";
 import { maybePersistResolvedTelegramTarget } from "./target-writeback.js";
 import {
   normalizeTelegramChatId,
@@ -103,6 +109,8 @@ type TelegramSendOpts = {
   retry?: RetryConfig;
   textMode?: "markdown" | "html";
   tableMode?: MarkdownTableMode;
+  /** Use the standard Bot API text method instead of rich messages. */
+  standardMessage?: boolean;
   /** Send audio as voice message instead of audio file. Defaults to false. */
   asVoice?: boolean;
   /** Send video as video note instead of regular video. Defaults to false. */
@@ -111,6 +119,10 @@ type TelegramSendOpts = {
   silent?: boolean;
   /** Message ID to reply to (for threading) */
   replyToMessageId?: number;
+  /** Controls whether the reply target applies once or to every chunk. */
+  replyToMode?: ReplyToMode;
+  /** Distinguishes explicit agent targets from ambient reply-mode targets. */
+  replyToIdSource?: "explicit" | "implicit";
   /** Quote text for Telegram reply_parameters. */
   quoteText?: string;
   /** Forum topic thread ID (for forum supergroups) */
@@ -687,7 +699,7 @@ export async function sendMessageTelegram(
   });
 
   const textMode = opts.textMode ?? "markdown";
-  const useRichMessages = account.config.richMessages === true;
+  const useRichMessages = account.config.richMessages === true && opts.standardMessage !== true;
   const tableMode =
     opts.tableMode ??
     resolveMarkdownTableMode({
@@ -702,6 +714,7 @@ export async function sendMessageTelegram(
   const linkPreviewOptions = linkPreviewEnabled ? undefined : { is_disabled: true };
 
   type TelegramTextChunk = {
+    text: string;
     plainText: string;
     htmlText?: string;
   };
@@ -765,37 +778,85 @@ export async function sendMessageTelegram(
   const sendTelegramTextChunks = async (
     chunks: TelegramTextChunk[],
     context: string,
+    priorVisibleDelivery = false,
   ): Promise<{ messageId: string; chatId: string }> => {
     let lastMessageId = "";
     let lastChatId = chatId;
     let lastAcceptedParams: TelegramThreadScopedParams | undefined;
+    let lastContextMessage: TelegramMessageLike | undefined;
+    let lastContextMessageId: number | undefined;
     let sentChunkCount = 0;
+    const isFramedStandardBatch = opts.standardMessage === true && chunks.length > 1;
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       if (!chunk) {
         continue;
       }
-      const { result: res, acceptedParams } = await sendTelegramTextChunk(
-        chunk,
-        buildTextParams(index === chunks.length - 1),
-      );
-      const messageId = resolveTelegramMessageIdOrThrow(res, context);
-      recordSentMessage(chatId, messageId, cfg);
+      try {
+        const { result: res, acceptedParams } = await sendTelegramTextChunk(
+          chunk,
+          buildTextParams(index === chunks.length - 1),
+        );
+        sentChunkCount += 1;
+        const messageId = resolveTelegramMessageIdOrThrow(res, context);
+        recordSentMessage(chatId, messageId, cfg);
+        if (isFramedStandardBatch) {
+          lastContextMessage = res;
+          lastContextMessageId = messageId;
+        } else {
+          await recordOutboundMessageForPromptContext({
+            cfg,
+            account,
+            chatId,
+            message: res,
+            messageId,
+            text: chunk.plainText,
+            ...(acceptedParams?.message_thread_id !== undefined
+              ? { messageThreadId: acceptedParams.message_thread_id }
+              : {}),
+          });
+        }
+        lastMessageId = String(messageId);
+        lastChatId = String(res?.chat?.id ?? chatId);
+        lastAcceptedParams = acceptedParams;
+      } catch (error) {
+        if (sentChunkCount === 0) {
+          throw error;
+        }
+        if (opts.standardMessage === true && chunks.length > 1) {
+          // Framed prefixes are transport-only: the peer drops them unless the
+          // end frame arrives. Retire the batch before an unframed fallback.
+          const abortText = buildTelegramStandardFragmentAbort(chunks[0]?.text ?? "");
+          if (abortText) {
+            await sendTelegramTextChunk(
+              { text: abortText, plainText: abortText },
+              buildTextParams(false),
+            ).catch(() => undefined);
+          }
+          if (!priorVisibleDelivery) {
+            throw error;
+          }
+        }
+        throw markTelegramDeliveryErrorVisible(error);
+      }
+    }
+    if (isFramedStandardBatch && lastContextMessage && lastContextMessageId != null) {
+      const logicalText = chunks
+        .map((chunk) => stripTelegramStandardFragmentMarker(chunk.plainText ?? chunk.text))
+        .join("");
+      // Transport is complete once the end frame lands. Context persistence must
+      // not turn that visible logical send into a retryable delivery failure.
       await recordOutboundMessageForPromptContext({
         cfg,
         account,
         chatId,
-        message: res,
-        messageId,
-        text: chunk.plainText,
-        ...(acceptedParams?.message_thread_id !== undefined
-          ? { messageThreadId: acceptedParams.message_thread_id }
+        message: { ...lastContextMessage, text: logicalText },
+        messageId: lastContextMessageId,
+        text: logicalText,
+        ...(lastAcceptedParams?.message_thread_id !== undefined
+          ? { messageThreadId: lastAcceptedParams.message_thread_id }
           : {}),
-      });
-      lastMessageId = String(messageId);
-      lastChatId = String(res?.chat?.id ?? chatId);
-      lastAcceptedParams = acceptedParams;
-      sentChunkCount += 1;
+      }).catch(() => undefined);
     }
     if (lastMessageId) {
       logTelegramOutboundSendOk({
@@ -814,6 +875,13 @@ export async function sendMessageTelegram(
   };
 
   const buildChunkedTextPlan = (rawText: string, context: string): TelegramTextChunk[] => {
+    if (opts.standardMessage === true) {
+      return buildTelegramStandardTextChunks(rawText, { tableMode }).map((chunk) => ({
+        text: chunk.plainText,
+        plainText: chunk.plainText,
+        ...(chunk.htmlText ? { htmlText: chunk.htmlText } : {}),
+      }));
+    }
     const htmlText = renderHtmlText(rawText);
     const fallbackText = textMode === "html" ? telegramHtmlToPlainTextFallback(htmlText) : rawText;
     let htmlChunks: string[];
@@ -825,17 +893,21 @@ export async function sendMessageTelegram(
           error,
         )}`,
       );
-      return splitTelegramPlainTextChunks(fallbackText, 4000).map((plainText) => ({ plainText }));
+      return splitTelegramPlainTextChunks(fallbackText, 4000).map((plainText) => ({
+        text: plainText,
+        plainText,
+      }));
     }
     const fixedPlainTextChunks = splitTelegramPlainTextChunks(fallbackText, 4000);
     if (fixedPlainTextChunks.length > htmlChunks.length) {
       logVerbose(
         `telegram ${context} plain-text fallback needs more chunks than HTML; sending plain text`,
       );
-      return fixedPlainTextChunks.map((plainText) => ({ plainText }));
+      return fixedPlainTextChunks.map((plainText) => ({ text: plainText, plainText }));
     }
     const plainTextChunks = splitTelegramPlainTextFallback(fallbackText, htmlChunks.length, 4000);
     return htmlChunks.map((htmlTextLocal, index) => ({
+      text: plainTextChunks[index] ?? htmlTextLocal,
       htmlText: htmlTextLocal,
       plainText: plainTextChunks[index] ?? htmlTextLocal,
     }));
@@ -1145,8 +1217,16 @@ export async function sendMessageTelegram(
     // If text was too long for a caption, send it as a separate follow-up message.
     // Use HTML conversion so markdown renders like captions.
     if (needsSeparateText && followUpText) {
-      const textResult = await sendChunkedText(followUpText, "text follow-up send");
-      return { messageId: textResult.messageId, chatId: resolvedChatId };
+      try {
+        const textResult = await sendTelegramTextChunks(
+          buildChunkedTextPlan(followUpText),
+          "text follow-up send",
+          true,
+        );
+        return { messageId: textResult.messageId, chatId: resolvedChatId };
+      } catch (error) {
+        throw markTelegramDeliveryErrorVisible(error);
+      }
     }
 
     return { messageId: String(mediaMessageId), chatId: resolvedChatId };

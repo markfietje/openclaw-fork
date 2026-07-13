@@ -19,6 +19,7 @@ import type {
   QueuedReplyLifecycle,
   SourceReplyDeliveryMode,
 } from "../../get-reply-options.types.js";
+import type { ReplyPayload } from "../../reply-payload.js";
 import type { OriginatingChannelType } from "../../templating.js";
 import type { ElevatedLevel, ReasoningLevel, ThinkLevel, VerboseLevel } from "../directives.js";
 
@@ -63,6 +64,10 @@ export type FollowupRun = {
   abortSignal?: AbortSignal;
   deliveryCorrelations?: QueuedReplyDeliveryCorrelation[];
   queuedLifecycle?: QueuedReplyLifecycle;
+  queuedDeliveryPayloadTransform?: (payload: ReplyPayload) => ReplyPayload;
+  queuedDeliveryReplyToMode?: ReplyToMode;
+  queuedDeliveryPayloadDidDeliver?: (payload: ReplyPayload) => void;
+  queuedExecutionContext?: <T>(run: () => Promise<T>) => Promise<T>;
   /** Provider message ID, when available (for deduplication). */
   messageId?: string;
   summaryLine?: string;

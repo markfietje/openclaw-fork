@@ -105,6 +105,7 @@ export async function sendTelegramText(
     textMode?: "markdown" | "html";
     plainText?: string;
     richMessages?: boolean;
+    standardMessage?: { plainText: string };
     linkPreview?: boolean;
     tableMode?: MarkdownTableMode;
     silent?: boolean;
@@ -121,7 +122,7 @@ export async function sendTelegramText(
     silent: opts?.silent,
   });
   const textMode = opts?.textMode ?? "markdown";
-  if (opts?.richMessages === true) {
+  if (opts?.richMessages === true && !opts.standardMessage) {
     const richMessage = buildTelegramRichMessage(text, textMode, {
       skipEntityDetection: opts.linkPreview === false,
       tableMode: opts.tableMode,
@@ -147,7 +148,7 @@ export async function sendTelegramText(
   const linkPreviewEnabled = opts?.linkPreview ?? true;
   const linkPreviewOptions = linkPreviewEnabled ? undefined : { is_disabled: true };
   const htmlText = textMode === "html" ? text : markdownToTelegramHtml(text);
-  const fallbackText = opts?.plainText ?? text;
+  const fallbackText = opts?.standardMessage?.plainText ?? opts?.plainText ?? text;
   const hasFallbackText = fallbackText.trim().length > 0;
   const sendPlainFallback = async () => {
     const res = await sendTelegramWithThreadFallback({

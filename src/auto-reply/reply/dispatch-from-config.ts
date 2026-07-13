@@ -1699,8 +1699,16 @@ export async function dispatchReplyFromConfig(
     });
   };
 
-  const isRoutedReplyDelivered = (result: { ok: boolean; suppressed?: boolean }) =>
-    result.ok && result.suppressed !== true;
+  const isRoutedReplyDelivered = (result: {
+    ok: boolean;
+    delivered?: boolean;
+    suppressed?: boolean;
+  }) => result.delivered === true;
+  const isRoutedReplyHandled = (result: {
+    ok: boolean;
+    delivered?: boolean;
+    suppressed?: boolean;
+  }) => isRoutedReplyDelivered(result) || result.suppressed === true;
 
   /**
    * Helper to send a payload via route-reply (async).
@@ -1746,7 +1754,7 @@ export async function dispatchReplyFromConfig(
           `dispatch-from-config: route-reply (plugin binding notice) failed: ${result.error ?? "unknown error"}`,
         );
       }
-      return result.ok;
+      return isRoutedReplyHandled(result);
     }
     markInboundDedupeReplayUnsafe();
     return mode === "additive"
@@ -2159,7 +2167,7 @@ export async function dispatchReplyFromConfig(
         } satisfies ReplyPayload;
         const result = await routeReplyToOriginating(payload);
         if (result) {
-          queuedFinal = result.ok;
+          queuedFinal = isRoutedReplyHandled(result);
           if (isRoutedReplyDelivered(result)) {
             routedFinalCount += 1;
           }
@@ -2377,7 +2385,7 @@ export async function dispatchReplyFromConfig(
           });
         }
         return {
-          queuedFinal: result.ok,
+          queuedFinal: isRoutedReplyHandled(result),
           routedFinalCount: isRoutedReplyDelivered(result) ? 1 : 0,
         };
       }
@@ -3437,7 +3445,7 @@ export async function dispatchReplyFromConfig(
               kind: "final",
             });
             if (result) {
-              queuedFinal = result.ok || queuedFinal;
+              queuedFinal = isRoutedReplyHandled(result) || queuedFinal;
               if (isRoutedReplyDelivered(result)) {
                 routedFinalCount += 1;
               }

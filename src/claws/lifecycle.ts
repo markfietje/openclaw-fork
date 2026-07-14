@@ -131,8 +131,12 @@ export async function buildClawAddPlan(params: {
   const context = params.context ?? {};
   const finalId = context.agentId ?? params.manifest.agent.id;
   const workspace = resolve(
-    context.workspace ?? resolve(homedir(), ".openclaw", `workspace-${finalId}`),
+    resolveUserPath(context.workspace ?? resolve(homedir(), ".openclaw", `workspace-${finalId}`)),
   );
+  const packageRoot = await realpath(params.source.packageRoot).catch(
+    () => params.source.packageRoot,
+  );
+  const source = { ...params.source, packageRoot };
   const blockers: ClawDiagnostic[] = [];
   const actions: ClawAddPlanAction[] = [];
 
@@ -199,7 +203,7 @@ export async function buildClawAddPlan(params: {
       continue;
     }
     const result = await fileAction({
-      source: params.source,
+      source,
       workspace,
       sourcePath: declaration.source,
       targetPath: name,
@@ -217,7 +221,7 @@ export async function buildClawAddPlan(params: {
   }
   for (const [index, file] of params.manifest.workspace.files.entries()) {
     const result = await fileAction({
-      source: params.source,
+      source,
       workspace,
       sourcePath: file.source,
       targetPath: file.path,
@@ -235,13 +239,20 @@ export async function buildClawAddPlan(params: {
   }
 
   for (const pkg of params.manifest.packages) {
+    const diagnostic = blocker(
+      "package_install_unavailable",
+      "$.packages",
+      `Package ${JSON.stringify(`${pkg.kind}:${pkg.ref}@${pkg.version}`)} cannot be preflighted until the package-owner lifecycle slice is available.`,
+    );
+    blockers.push(diagnostic);
     actions.push({
       kind: "package",
       id: `${pkg.kind}:${pkg.ref}`,
       action: "install",
       target: `${pkg.source}:${pkg.ref}@${pkg.version}`,
       details: { ...pkg },
-      blocked: false,
+      blocked: true,
+      reason: diagnostic.message,
     });
   }
 
@@ -295,7 +306,7 @@ export async function buildClawAddPlan(params: {
     stability: CLAW_OUTPUT_STABILITY,
     dryRun: true,
     mutationAllowed: false,
-    claw: params.source,
+    claw: source,
     agent: {
       requestedId: params.manifest.agent.id,
       finalId,

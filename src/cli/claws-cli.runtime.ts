@@ -1,3 +1,4 @@
+import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope-config.js";
 import { assertExperimentalClawsEnabled } from "../claws/experimental.js";
 import { buildClawAddPlan } from "../claws/lifecycle.js";
 import { readClawManifestFile } from "../claws/reader.js";
@@ -131,7 +132,7 @@ export async function runClawsAddCommand(
   }
 
   const config = loadConfig();
-  const existingAgents = config.agents?.list ?? [];
+  const existingAgentIds = listAgentIds(config);
   const cronStore = await loadCronJobsStoreWithConfigJobsReadOnly(
     resolveCronJobsStorePath(config.cron?.store),
   );
@@ -142,9 +143,9 @@ export async function runClawsAddCommand(
     context: {
       ...(opts.agentId ? { agentId: opts.agentId } : {}),
       ...(opts.workspace ? { workspace: opts.workspace } : {}),
-      existingAgentIds: existingAgents.map((agent) => agent.id),
-      existingWorkspacePaths: existingAgents.flatMap((agent) =>
-        agent.workspace ? [agent.workspace] : [],
+      existingAgentIds,
+      existingWorkspacePaths: existingAgentIds.map((agentId) =>
+        resolveAgentWorkspaceDir(config, agentId),
       ),
       existingMcpServerNames: Object.keys(config.mcp?.servers ?? {}),
       existingCronJobIds: cronStore.store.jobs.map((job) => job.id),

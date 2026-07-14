@@ -6,6 +6,14 @@ import { raftSetupPlugin } from "./setup.js";
 
 const originalProfile = process.env.RAFT_PROFILE;
 
+function parseRaftConfig(value: unknown) {
+  const runtime = raftChannelConfigSchema.runtime;
+  if (!runtime) {
+    throw new Error("expected Raft channel config runtime");
+  }
+  return runtime.safeParse(value);
+}
+
 afterEach(() => {
   if (originalProfile === undefined) {
     delete process.env.RAFT_PROFILE;
@@ -75,9 +83,9 @@ describe("Raft account resolution", () => {
   });
 
   it("accepts the supported single and multi-account fields only", () => {
-    expect(raftChannelConfigSchema.runtime.safeParse({ profile: "default" }).success).toBe(true);
+    expect(parseRaftConfig({ profile: "default" }).success).toBe(true);
     expect(
-      raftChannelConfigSchema.runtime.safeParse({
+      parseRaftConfig({
         accounts: {
           support: {
             profile: "support",
@@ -85,6 +93,6 @@ describe("Raft account resolution", () => {
         },
       }).success,
     ).toBe(true);
-    expect(raftChannelConfigSchema.runtime.safeParse({ bridgePort: 3000 }).success).toBe(false);
+    expect(parseRaftConfig({ bridgePort: 3000 }).success).toBe(false);
   });
 });

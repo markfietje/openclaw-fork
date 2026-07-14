@@ -119,14 +119,10 @@ type ListedItem = {
 const APPROVAL_TIMEOUT_MS = 600_000;
 const PENDING_AUTHORIZATION_TTL_MS = APPROVAL_TIMEOUT_MS;
 
-// Correlates the before_tool_call authorization with the later execute call.
-// The hook context and the execute context are sourced independently by core
-// and can disagree on session fields (live POLICY_NOT_EVALUATED failures), and
-// provider tool-call ids are not globally unique (sequential ids on local
-// runtimes), so neither is a safe pending-map key. The hook mints a fresh
-// UUID per call and returns it via adjusted params - the one value core
-// guarantees to hand unchanged to the tool handler. Model-supplied values for
-// this param are always overwritten, so a replayed nonce can never resolve.
+// Correlates hook authorization with execute: session fields differ across
+// that boundary in production and provider tool-call ids are not globally
+// unique, so the hook mints a UUID returned via adjusted params (handed
+// through unchanged by core); model-supplied values are always overwritten.
 export const AUTHORIZATION_NONCE_PARAM = "authorizationNonce";
 
 function textParam(params: Record<string, unknown>, key: string): string | undefined {
@@ -340,7 +336,6 @@ export class OnePasswordBroker {
 
     this.sweepPending();
     const nonce = randomUUID();
-    // Spread first so a model-supplied nonce param is always overwritten.
     const authorizedParams = { ...event.params, [AUTHORIZATION_NONCE_PARAM]: nonce };
     if (item.policy === "auto") {
       this.pending.set(nonce, {

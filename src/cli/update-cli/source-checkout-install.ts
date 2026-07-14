@@ -1,9 +1,4 @@
-import { createPackageRuntimeEnv } from "../../infra/package-runtime-env.js";
-import {
-  resolvePackageRuntime,
-  runPackageSourcePostinstall,
-  runPackageSourceRuntimeGuard,
-} from "../../infra/package-update-lifecycle.js";
+import { runGlobalPackageUpdateSteps } from "../../infra/package-update-steps.js";
 import type { PackageUpdateStepResult } from "../../infra/package-update-types.js";
 import {
   globalInstallArgs,
@@ -59,52 +54,24 @@ export async function runSourceCheckoutGlobalInstall(params: {
       failedStep: installStep.exitCode === 0 ? null : installStep,
     };
   }
-  const selectedRuntime = await resolvePackageRuntime({
-    nodePath: params.nodeRunner,
+  const result = await runGlobalPackageUpdateSteps({
+    installTarget,
+    installSpec: params.sourceRoot,
+    packageName: "openclaw",
+    packageRoot: params.currentPackageRoot,
     runCommand,
-    timeoutMs: params.timeoutMs,
-    env: params.env,
-    cwd: params.sourceRoot,
-  });
-  const runtimeGuardStep = await runPackageSourceRuntimeGuard(
-    params.sourceRoot,
-    selectedRuntime.version,
-  );
-  if (runtimeGuardStep.exitCode !== 0) {
-    return { steps: [runtimeGuardStep], failedStep: runtimeGuardStep };
-  }
-  const installEnv = createPackageRuntimeEnv(params.env, selectedRuntime.nodePath);
-
-  const installStep = await runUpdateStep({
-    name: "global install",
-    argv: globalInstallArgs(installTarget, params.sourceRoot),
-    cwd: params.sourceRoot,
-    ...(installEnv === undefined ? {} : { env: installEnv }),
-    timeoutMs: params.timeoutMs,
-    progress: params.progress,
-  });
-  const steps = [runtimeGuardStep, installStep];
-  if (installStep.exitCode !== 0) {
-    return {
-      steps,
-      failedStep: installStep,
-    };
-  }
-
-  const postinstallStep = await runPackageSourcePostinstall({
-    packageRoot: installTarget.packageRoot ?? params.currentPackageRoot,
     runStep: (step) =>
       runUpdateStep({
         ...step,
         ...(params.progress === undefined ? {} : { progress: params.progress }),
       }),
     timeoutMs: params.timeoutMs,
-    ...(installEnv === undefined ? {} : { env: installEnv }),
-    ...(selectedRuntime.nodePath === null ? {} : { nodePath: selectedRuntime.nodePath }),
+    env: params.env,
+    installCwd: params.sourceRoot,
+    ...(params.nodeRunner === undefined ? {} : { nodePath: params.nodeRunner }),
   });
-  steps.push(postinstallStep);
   return {
-    steps,
-    failedStep: postinstallStep.exitCode === 0 ? null : postinstallStep,
+    steps: result.steps,
+    failedStep: result.failedStep,
   };
 }

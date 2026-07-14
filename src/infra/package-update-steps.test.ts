@@ -430,6 +430,96 @@ describe("runGlobalPackageUpdateSteps", () => {
     });
   });
 
+  it("keeps the live npm package when staged postinstall fails", async () => {
+    await withTempDir({ prefix: "openclaw-package-update-postinstall-failure-" }, async (base) => {
+      const globalRoot = path.join(base, "prefix", "lib", "node_modules");
+      const packageRoot = path.join(globalRoot, "openclaw");
+      await writePackageRoot(packageRoot, "1.0.0");
+
+      const result = await runGlobalPackageUpdateSteps({
+        installTarget: createNpmTarget(globalRoot),
+        installSpec: "openclaw@2.0.0",
+        packageName: "openclaw",
+        packageRoot,
+        runCommand: createRootRunner(globalRoot),
+        runStep: async ({ name, argv, cwd }) => {
+          if (name === "global install postinstall") {
+            return {
+              name,
+              command: argv.join(" "),
+              cwd: cwd ?? process.cwd(),
+              durationMs: 1,
+              exitCode: 1,
+              stderrTail: "postinstall failed",
+            };
+          }
+          if (name !== "global update") {
+            throw new Error(`unexpected step ${name}`);
+          }
+          const stagePrefix = argv[argv.indexOf("--prefix") + 1];
+          if (!stagePrefix) {
+            throw new Error("missing staged prefix");
+          }
+          await writePackageRoot(
+            path.join(stagePrefix, "lib", "node_modules", "openclaw"),
+            "2.0.0",
+          );
+          return {
+            name,
+            command: argv.join(" "),
+            cwd: cwd ?? process.cwd(),
+            durationMs: 1,
+            exitCode: 0,
+          };
+        },
+        timeoutMs: 1000,
+      });
+
+      expect(result.failedStep).toMatchObject({
+        name: "global install postinstall",
+        stderrTail: "postinstall failed",
+      });
+      expect(result.afterVersion).toBe("1.0.0");
+      expect(await readPackageVersion(packageRoot)).toBe("1.0.0");
+      expect(result.steps.some((step) => step.name === "global install swap")).toBe(false);
+    });
+  });
+
+  it("fails before npm activation when selected Node has no usable npm CLI", async () => {
+    await withTempDir({ prefix: "openclaw-package-update-npm-preflight-" }, async (base) => {
+      const globalRoot = path.join(base, "prefix", "lib", "node_modules");
+      const packageRoot = path.join(globalRoot, "openclaw");
+      await writePackageRoot(packageRoot, "1.0.0");
+      const runStep = vi.fn(async (): Promise<PackageUpdateStepResult> => {
+        throw new Error("npm activation must not run");
+      });
+
+      const result = await runGlobalPackageUpdateSteps({
+        installTarget: { ...createNpmTarget(globalRoot), command: "missing-npm" },
+        installSpec: "openclaw@2.0.0",
+        packageName: "openclaw",
+        packageRoot,
+        nodePath: path.join(base, "missing", "node"),
+        runCommand: async (argv) => ({
+          stdout: argv.includes("--version") ? "v24.15.0\n" : "",
+          stderr: "",
+          code: 0,
+        }),
+        runStep,
+        timeoutMs: 1000,
+        env: { PATH: path.join(base, "empty-bin") },
+      });
+
+      expect(result.failedStep).toMatchObject({
+        name: "global install npm preflight",
+        command: "resolve npm for selected Node",
+        stderrTail: "could not resolve an npm CLI for the selected managed-service Node",
+      });
+      expect(result.afterVersion).toBe("1.0.0");
+      expect(runStep).not.toHaveBeenCalled();
+    });
+  });
+
   it.runIf(process.platform !== "win32")(
     "swaps npm package roots that contain package-manager hardlinks",
     async () => {
@@ -681,7 +771,7 @@ describe("runGlobalPackageUpdateSteps", () => {
           throw new Error("missing staged prefix or packed candidate");
         }
         expect(argv).toEqual([
-          "npm",
+          resolvePackageRuntimeNpmCommand(process.execPath),
           "i",
           "-g",
           "--prefix",
@@ -900,15 +990,26 @@ describe("runGlobalPackageUpdateSteps", () => {
             throw new Error("missing pack destination");
           }
           tarball = await writePackageTarball(destination, "2.0.0");
-        } else if (name === "global update") {
+        } else if (name === "global update" || name === "global update (omit optional)") {
           if (!tarball) {
             throw new Error("missing packed local candidate");
           }
+          expect(argv.slice(0, 4)).toEqual(["/service/node", npmCli, "i", "-g"]);
           expect(argv).toContain(`openclaw@file:${tarball}`);
           const stagePrefix = argv[argv.indexOf("--prefix") + 1];
           if (!stagePrefix) {
             throw new Error("missing staged prefix");
           }
+          if (name === "global update") {
+            return {
+              name,
+              command: argv.join(" "),
+              cwd: cwd ?? process.cwd(),
+              durationMs: 1,
+              exitCode: 1,
+            };
+          }
+          expect(argv).toContain("--omit=optional");
           await writePackageRoot(
             path.join(stagePrefix, "lib", "node_modules", "openclaw"),
             "2.0.0",
@@ -950,6 +1051,7 @@ describe("runGlobalPackageUpdateSteps", () => {
         "global update source runtime guard",
         "global update pack",
         "global update",
+        "global update (omit optional)",
         "global install runtime guard",
         "global install postinstall",
         "global install swap",
@@ -1104,45 +1206,29 @@ describe("runGlobalPackageUpdateSteps", () => {
     },
   );
 
-  it("keeps the canonical package name when activating a packed npm alias", async () => {
+  it("keeps the canonical package root when activating an npm alias", async () => {
     await withTempDir({ prefix: "openclaw-package-update-npm-alias-" }, async (base) => {
-      const globalRoot = path.join(base, "opaque-global-root");
-      const packageRoot = path.join(base, "live", "openclaw");
+      const globalRoot = path.join(base, "prefix", "lib", "node_modules");
+      const packageRoot = path.join(globalRoot, "openclaw");
       const sourceSpec = "openclaw@npm:@vendor/openclaw@1.2.3";
-      const specialTempRoot = path.join(base, "temp root % candidate");
       await writePackageRoot(packageRoot, "1.0.0");
-      await fs.mkdir(specialTempRoot, { recursive: true });
 
-      let tarball: string | undefined;
       const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
         const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
         if (postinstallStep) {
           return postinstallStep;
         }
-        if (name === "global update pack") {
-          expect(argv.slice(0, 3)).toEqual([
-            resolvePackageRuntimeNpmCommand(process.execPath),
-            "pack",
-            sourceSpec,
-          ]);
-          const destination = argv[argv.indexOf("--pack-destination") + 1];
-          if (!destination) {
-            throw new Error("missing pack destination");
-          }
-          tarball = await writePackageTarball(destination, "2.0.0", {
-            packageName: "@vendor/openclaw",
-          });
-        } else if (name === "global update") {
-          if (!tarball) {
-            throw new Error("missing packed alias candidate");
-          }
-          expect(argv).toContain(`openclaw@file:${tarball}`);
-          expect(argv).not.toContain(tarball);
-          expect(argv).not.toContain("--prefix");
-          await writePackageRoot(packageRoot, "2.0.0", { installGuard: true });
-        } else {
+        if (name !== "global update") {
           throw new Error(`unexpected step ${name}`);
         }
+        expect(argv).toContain(sourceSpec);
+        const stagePrefix = argv[argv.indexOf("--prefix") + 1];
+        if (!stagePrefix) {
+          throw new Error("missing staged prefix");
+        }
+        await writePackageRoot(path.join(stagePrefix, "lib", "node_modules", "openclaw"), "2.0.0", {
+          packageName: "@vendor/openclaw",
+        });
         return {
           name,
           command: argv.join(" "),
@@ -1152,32 +1238,128 @@ describe("runGlobalPackageUpdateSteps", () => {
         };
       });
 
-      const result = await withEnvAsync(
-        { TMPDIR: specialTempRoot, TMP: specialTempRoot, TEMP: specialTempRoot },
-        async () =>
-          await runGlobalPackageUpdateSteps({
-            installTarget: { ...createNpmTarget(globalRoot), packageRoot },
-            installSpec: sourceSpec,
-            packageName: "openclaw",
-            packageRoot,
-            runCommand: createRootRunner(globalRoot),
-            runStep,
-            timeoutMs: 1000,
-          }),
-      );
+      const result = await runGlobalPackageUpdateSteps({
+        installTarget: createNpmTarget(globalRoot),
+        installSpec: sourceSpec,
+        packageName: "openclaw",
+        packageRoot,
+        runCommand: createRootRunner(globalRoot),
+        runStep,
+        timeoutMs: 1000,
+      });
 
       expect(result.failedStep).toBeNull();
       expect(result.afterVersion).toBe("2.0.0");
-      expect(tarball).toContain(specialTempRoot);
       expect(result.steps.map((step) => step.name)).toEqual([
-        "global update pack",
-        "global install runtime guard",
         "global update",
         "global install runtime guard",
         "global install postinstall",
+        "global install swap",
       ]);
     });
   });
+
+  it("keeps a known live package root when the selected Node owns another npm prefix", async () => {
+    await withTempDir({ prefix: "openclaw-package-update-known-root-" }, async (base) => {
+      const globalRoot = path.join(base, "custom", "node_modules");
+      const packageRoot = path.join(globalRoot, "openclaw");
+      const nodePath = path.join(base, "service", "bin", "node");
+      const npmCommand = path.join(base, "service", "bin", "npm");
+      const npmOwnedPackageRoot = path.join(base, "service", "lib", "node_modules", "openclaw");
+      await writePackageRoot(packageRoot, "1.0.0");
+      await fs.mkdir(path.dirname(npmCommand), { recursive: true });
+      await fs.writeFile(npmCommand, "#!/bin/sh\n", { encoding: "utf8", mode: 0o755 });
+
+      const result = await runGlobalPackageUpdateSteps({
+        installTarget: {
+          ...createNpmTarget(path.join(base, "opaque-global-root")),
+          packageRoot: null,
+        },
+        installSpec: "openclaw@2.0.0",
+        packageName: "openclaw",
+        packageRoot,
+        nodePath,
+        runCommand: async (argv) => {
+          if (argv.join(" ") === `${nodePath} --version`) {
+            return { stdout: "v24.15.0\n", stderr: "", code: 0 };
+          }
+          throw new Error(`unexpected command: ${argv.join(" ")}`);
+        },
+        runStep: async ({ name, argv, cwd }) => {
+          const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
+          if (postinstallStep) {
+            return postinstallStep;
+          }
+          if (name !== "global update") {
+            throw new Error(`unexpected step ${name}`);
+          }
+          expect(argv[0]).toBe(npmCommand);
+          const stagePrefix = argv[argv.indexOf("--prefix") + 1];
+          expect(stagePrefix).toMatch(
+            new RegExp(`^${globalRoot.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`),
+          );
+          if (!stagePrefix) {
+            throw new Error("missing staged prefix");
+          }
+          await writePackageRoot(
+            path.join(stagePrefix, "lib", "node_modules", "openclaw"),
+            "2.0.0",
+          );
+          return {
+            name,
+            command: argv.join(" "),
+            cwd: cwd ?? process.cwd(),
+            durationMs: 1,
+            exitCode: 0,
+          };
+        },
+        timeoutMs: 1000,
+      });
+
+      expect(result.failedStep).toBeNull();
+      expect(result.afterVersion).toBe("2.0.0");
+      expect(await readPackageVersion(packageRoot)).toBe("2.0.0");
+      await expectPathMissing(npmOwnedPackageRoot);
+    });
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "fails before activation when the npm prefix layout is unresolved",
+    async () => {
+      await withTempDir({ prefix: "openclaw-package-update-opaque-root-" }, async (base) => {
+        const globalRoot = path.join(base, "opaque-global-root");
+        const packageRoot = path.join(base, "live", "openclaw");
+        const npmCli = path.join(base, "canonical", "npm-cli.js");
+        await writePackageRoot(packageRoot, "1.0.0");
+        await fs.mkdir(path.dirname(npmCli), { recursive: true });
+        await fs.writeFile(npmCli, "#!/usr/bin/env node\n", { encoding: "utf8", mode: 0o755 });
+        const runStep = vi.fn();
+
+        const result = await runGlobalPackageUpdateSteps({
+          installTarget: { ...createNpmTarget(globalRoot), command: npmCli, packageRoot },
+          installSpec: "openclaw@2.0.0",
+          packageName: "openclaw",
+          packageRoot,
+          nodePath: process.execPath,
+          runCommand: async (argv) => {
+            if (argv.join(" ") === `${process.execPath} --version`) {
+              return { stdout: `${process.version}\n`, stderr: "", code: 0 };
+            }
+            throw new Error(`unexpected command: ${argv.join(" ")}`);
+          },
+          runStep,
+          timeoutMs: 1000,
+        });
+
+        expect(result.failedStep).toMatchObject({
+          name: "global install stage",
+          stderrTail: "cannot resolve npm global prefix layout for safe staged activation",
+        });
+        expect(await readPackageVersion(packageRoot)).toBe("1.0.0");
+        expect(runStep).not.toHaveBeenCalled();
+      });
+    },
+  );
 
   it("swaps staged npm package roots through the copy fallback when rename crosses devices", async () => {
     await withTempDir({ prefix: "openclaw-package-update-exdev-" }, async (base) => {
@@ -1263,7 +1445,7 @@ describe("runGlobalPackageUpdateSteps", () => {
         if (name !== "global update") {
           throw new Error(`unexpected step ${name}`);
         }
-        expect(argv[0]).toBe("npm");
+        expect(argv[0]).toBe(resolvePackageRuntimeNpmCommand(process.execPath));
         expect(argv).toContain("i");
         expect(argv).toContain("-g");
         expect(argv).toContain("--prefix");

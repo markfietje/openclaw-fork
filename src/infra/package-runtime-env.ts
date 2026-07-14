@@ -6,9 +6,13 @@ import { applyPathPrepend } from "./path-prepend.js";
 
 function resolveRuntimePathApi(value: string): typeof path.posix | typeof path.win32 | null {
   const pathApi =
-    process.platform === "win32" || /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("\\\\")
+    /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("\\\\") || value.startsWith("//")
       ? path.win32
-      : path.posix;
+      : value.startsWith("/")
+        ? path.posix
+        : process.platform === "win32"
+          ? path.win32
+          : path.posix;
   return pathApi.isAbsolute(value) ? pathApi : null;
 }
 
@@ -47,6 +51,41 @@ export function resolvePackageRuntimeNpmCommand(nodePath: string | null): string
   return pathApi.join(pathApi.dirname(trimmed), pathApi === path.win32 ? "npm.cmd" : "npm");
 }
 
+/** Resolves the prefix owned by an npm invocation without executing it under another Node. */
+export function resolvePackageRuntimeNpmPrefix(invocation: readonly string[]): string | null {
+  if (invocation.length === 1) {
+    const command = invocation[0]?.trim();
+    const pathApi = command ? resolveRuntimePathApi(command) : null;
+    if (!command || !pathApi) {
+      return null;
+    }
+    const basename = pathApi.basename(command).toLowerCase();
+    if (basename !== "npm" && basename !== "npm.cmd") {
+      return null;
+    }
+    const commandDir = pathApi.dirname(command);
+    return pathApi === path.win32 ? commandDir : pathApi.dirname(commandDir);
+  }
+
+  const cliPath = invocation[1]?.trim();
+  const pathApi = cliPath ? resolveRuntimePathApi(cliPath) : null;
+  if (!cliPath || !pathApi || pathApi.basename(cliPath).toLowerCase() !== "npm-cli.js") {
+    return null;
+  }
+  const npmDir = pathApi.dirname(pathApi.dirname(cliPath));
+  if (pathApi.basename(npmDir).toLowerCase() !== "npm") {
+    return null;
+  }
+  const nodeModulesDir = pathApi.dirname(npmDir);
+  if (pathApi.basename(nodeModulesDir).toLowerCase() !== "node_modules") {
+    return null;
+  }
+  const parentDir = pathApi.dirname(nodeModulesDir);
+  return pathApi !== path.win32 && pathApi.basename(parentDir).toLowerCase() === "lib"
+    ? pathApi.dirname(parentDir)
+    : parentDir;
+}
+
 function resolveNpmCliCandidates(
   commandPath: string,
   pathApi: typeof path.posix | typeof path.win32,
@@ -67,6 +106,7 @@ export async function resolvePackageRuntimeNpmInvocation(params: {
   fallbackCommand: string;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  allowAdjacentFallback?: boolean;
 }): Promise<string[] | null> {
   const nodePath = params.nodePath?.trim();
   if (!nodePath) {
@@ -78,18 +118,29 @@ export async function resolvePackageRuntimeNpmInvocation(params: {
   }
 
   const adjacentNpmCommand = resolvePackageRuntimeNpmCommand(nodePath);
-  if (adjacentNpmCommand && (await pathExists(adjacentNpmCommand))) {
-    return [adjacentNpmCommand];
-  }
+  const hasAdjacentNpm = adjacentNpmCommand ? await pathExists(adjacentNpmCommand) : false;
 
   const fallbackPath = resolveExecutablePath(params.fallbackCommand, {
     ...(params.cwd === undefined ? {} : { cwd: params.cwd }),
     ...(params.env === undefined ? {} : { env: params.env }),
   });
   if (!fallbackPath) {
-    return null;
+    return params.allowAdjacentFallback !== false && hasAdjacentNpm && adjacentNpmCommand
+      ? [adjacentNpmCommand]
+      : null;
   }
   const realFallbackPath = await fs.realpath(fallbackPath).catch(() => fallbackPath);
+  const realAdjacentNpmPath =
+    hasAdjacentNpm && adjacentNpmCommand
+      ? await fs.realpath(adjacentNpmCommand).catch(() => adjacentNpmCommand)
+      : null;
+  if (
+    adjacentNpmCommand &&
+    realAdjacentNpmPath &&
+    path.resolve(realAdjacentNpmPath) === path.resolve(realFallbackPath)
+  ) {
+    return [adjacentNpmCommand];
+  }
   const candidates = [...new Set([realFallbackPath, fallbackPath])].flatMap((commandPath) => {
     const pathApi = resolveRuntimePathApi(commandPath);
     return pathApi ? resolveNpmCliCandidates(commandPath, pathApi) : [];
@@ -99,5 +150,7 @@ export async function resolvePackageRuntimeNpmInvocation(params: {
       return [nodePath, candidate];
     }
   }
-  return null;
+  return params.allowAdjacentFallback !== false && hasAdjacentNpm && adjacentNpmCommand
+    ? [adjacentNpmCommand]
+    : null;
 }

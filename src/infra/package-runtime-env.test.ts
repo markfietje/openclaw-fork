@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import {
   createPackageRuntimeEnv,
   resolvePackageRuntimeNpmCommand,
   resolvePackageRuntimeNpmInvocation,
+  resolvePackageRuntimeNpmPrefix,
 } from "./package-runtime-env.js";
 
 describe("createPackageRuntimeEnv", () => {
@@ -35,6 +36,40 @@ describe("createPackageRuntimeEnv", () => {
     expect(resolvePackageRuntimeNpmCommand("C:/Program Files/nodejs/node.exe")).toBe(
       "C:\\Program Files\\nodejs\\npm.cmd",
     );
+    expect(resolvePackageRuntimeNpmCommand("//server/share/bin/node.exe")).toBe(
+      "\\\\server\\share\\bin\\npm.cmd",
+    );
+  });
+
+  it("keeps an explicit POSIX Node path when platform detection is overridden", () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    try {
+      expect(resolvePackageRuntimeNpmCommand("/service/bin/node")).toBe("/service/bin/npm");
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("derives npm prefixes from adjacent commands and explicit CLI runners", () => {
+    expect(resolvePackageRuntimeNpmPrefix(["/opt/node/bin/npm"])).toBe("/opt/node");
+    expect(
+      resolvePackageRuntimeNpmPrefix([
+        "/service/bin/node",
+        "/owner/lib/node_modules/npm/bin/npm-cli.js",
+      ]),
+    ).toBe("/owner");
+    expect(
+      resolvePackageRuntimeNpmPrefix([
+        "C:\\Service\\node.exe",
+        "C:\\Owner\\node_modules\\npm\\bin\\npm-cli.js",
+      ]),
+    ).toBe("C:\\Owner");
+    expect(
+      resolvePackageRuntimeNpmPrefix([
+        "C:\\Service\\node.exe",
+        "C:\\tools\\lib\\node_modules\\npm\\bin\\npm-cli.js",
+      ]),
+    ).toBe("C:\\tools\\lib");
   });
 
   it("runs a resolved fallback npm CLI under the selected Node", async () => {
@@ -63,6 +98,71 @@ describe("createPackageRuntimeEnv", () => {
           fallbackCommand: npmCommand,
         }),
       ).resolves.toEqual([nodePath, npmCli]);
+    });
+  });
+
+  it("keeps the owning npm CLI when selected Node has a different adjacent npm", async () => {
+    await withTempDir({ prefix: "openclaw-package-runtime-owning-npm-" }, async (base) => {
+      const nodePath = path.join(base, "service", "bin", "node");
+      const adjacentNpm = path.join(base, "service", "bin", "npm");
+      const owningNpm = path.join(base, "owner", "bin", "npm");
+      const owningNpmCli = path.join(
+        base,
+        "owner",
+        "lib",
+        "node_modules",
+        "npm",
+        "bin",
+        "npm-cli.js",
+      );
+      await Promise.all([
+        fs.mkdir(path.dirname(adjacentNpm), { recursive: true }),
+        fs.mkdir(path.dirname(owningNpm), { recursive: true }),
+        fs.mkdir(path.dirname(owningNpmCli), { recursive: true }),
+      ]);
+      await Promise.all([
+        fs.writeFile(adjacentNpm, "#!/bin/sh\n", { encoding: "utf8", mode: 0o755 }),
+        fs.writeFile(owningNpm, "#!/bin/sh\n", { encoding: "utf8", mode: 0o755 }),
+        fs.writeFile(owningNpmCli, "", "utf8"),
+      ]);
+
+      await expect(
+        resolvePackageRuntimeNpmInvocation({
+          nodePath,
+          fallbackCommand: owningNpm,
+        }),
+      ).resolves.toEqual([nodePath, owningNpmCli]);
+    });
+  });
+
+  it("uses adjacent npm for a known staged target when the fallback shim is opaque", async () => {
+    await withTempDir({ prefix: "openclaw-package-runtime-opaque-npm-" }, async (base) => {
+      const nodePath = path.join(base, "service", "bin", "node");
+      const adjacentNpm = path.join(base, "service", "bin", "npm");
+      const opaqueNpm = path.join(base, "shims", "npm");
+      await Promise.all([
+        fs.mkdir(path.dirname(adjacentNpm), { recursive: true }),
+        fs.mkdir(path.dirname(opaqueNpm), { recursive: true }),
+      ]);
+      await Promise.all([
+        fs.writeFile(adjacentNpm, "#!/bin/sh\n", { encoding: "utf8", mode: 0o755 }),
+        fs.writeFile(opaqueNpm, "#!/bin/sh\n", { encoding: "utf8", mode: 0o755 }),
+      ]);
+
+      await expect(
+        resolvePackageRuntimeNpmInvocation({
+          nodePath,
+          fallbackCommand: opaqueNpm,
+          allowAdjacentFallback: true,
+        }),
+      ).resolves.toEqual([adjacentNpm]);
+      await expect(
+        resolvePackageRuntimeNpmInvocation({
+          nodePath,
+          fallbackCommand: opaqueNpm,
+          allowAdjacentFallback: false,
+        }),
+      ).resolves.toBeNull();
     });
   });
 

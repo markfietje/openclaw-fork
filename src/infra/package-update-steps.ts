@@ -7,6 +7,7 @@ import { readPackageVersion } from "./package-json.js";
 import {
   createPackageRuntimeEnv,
   resolvePackageRuntimeNpmInvocation,
+  resolvePackageRuntimeNpmPrefix,
 } from "./package-runtime-env.js";
 import {
   resolvePackageRuntime,
@@ -169,6 +170,71 @@ function resolveStagedNpmTargetLayout(
   return null;
 }
 
+function resolveSafePackageParts(packageName: string): string[] | null {
+  const packageParts = packageName.split("/");
+  const hasSafePackageName =
+    packageParts.length > 0 &&
+    packageParts.length <= 2 &&
+    packageParts.every(
+      (part) => part.length > 0 && part !== "." && part !== ".." && !part.includes("\\"),
+    ) &&
+    (packageParts.length === 1 || packageParts[0]?.startsWith("@"));
+  return hasSafePackageName ? packageParts : null;
+}
+
+function resolveNpmTargetFromKnownPackageRoot(
+  installTarget: ResolvedGlobalInstallTarget,
+  packageName: string,
+  knownPackageRoot: string | null,
+): ResolvedGlobalInstallTarget | null {
+  const packageParts = resolveSafePackageParts(packageName);
+  const packageRoot = knownPackageRoot?.trim();
+  if (!packageParts || !packageRoot) {
+    return null;
+  }
+  const normalizedPackageRoot = path.resolve(packageRoot);
+  let globalRoot = path.dirname(normalizedPackageRoot);
+  if (packageParts.length === 2) {
+    globalRoot = path.dirname(globalRoot);
+  }
+  if (path.resolve(globalRoot, ...packageParts) !== normalizedPackageRoot) {
+    return null;
+  }
+  const standardLayout = resolveNpmGlobalPrefixLayoutFromGlobalRoot(globalRoot);
+  const directLayout =
+    standardLayout ??
+    resolveNpmGlobalPrefixLayoutFromGlobalRoot(globalRoot, { allowDirectNodeModulesRoot: true });
+  if (!directLayout) {
+    return null;
+  }
+  return {
+    manager: "npm",
+    command: installTarget.command,
+    globalRoot,
+    packageRoot: normalizedPackageRoot,
+    ...(standardLayout ? {} : { directNodeModulesRoot: true }),
+  };
+}
+
+function resolveNpmTargetFromInvocation(
+  installTarget: ResolvedGlobalInstallTarget,
+  packageName: string,
+  npmCommandArgv: readonly string[],
+): ResolvedGlobalInstallTarget | null {
+  const prefix = resolvePackageRuntimeNpmPrefix(npmCommandArgv);
+  const packageParts = resolveSafePackageParts(packageName);
+  if (!prefix || !packageParts) {
+    return null;
+  }
+  const layout = resolveNpmGlobalPrefixLayoutFromPrefix(prefix);
+  return {
+    manager: "npm",
+    command: installTarget.command,
+    globalRoot: layout.globalRoot,
+    packageRoot: path.join(layout.globalRoot, ...packageParts),
+  };
+}
+
 async function createStagedNpmInstall(
   installTarget: ResolvedGlobalInstallTarget,
   packageName: string,
@@ -203,8 +269,23 @@ async function prepareStagedNpmInstall(
 }> {
   const startedAt = Date.now();
   try {
+    const stagedInstall = await createStagedNpmInstall(installTarget, packageName);
+    if (installTarget.manager === "npm" && !stagedInstall) {
+      return {
+        stagedInstall: null,
+        failedStep: {
+          name: "global install stage",
+          command: "prepare staged npm install",
+          cwd: installTarget.globalRoot ?? process.cwd(),
+          durationMs: Date.now() - startedAt,
+          exitCode: 1,
+          stdoutTail: null,
+          stderrTail: "cannot resolve npm global prefix layout for safe staged activation",
+        },
+      };
+    }
     return {
-      stagedInstall: await createStagedNpmInstall(installTarget, packageName),
+      stagedInstall,
       failedStep: null,
     };
   } catch (err) {
@@ -231,6 +312,16 @@ async function cleanupStagedNpmInstall(stage: StagedNpmInstall | null): Promise<
   await removePathBestEffort(stage.prefix);
 }
 
+function withNpmInvocation(
+  argv: string[],
+  installTarget: ResolvedGlobalInstallTarget,
+  npmCommandArgv: readonly string[] | null,
+): string[] {
+  return installTarget.manager === "npm" && npmCommandArgv
+    ? [...npmCommandArgv, ...argv.slice(1)]
+    : argv;
+}
+
 async function copyPathEntry(source: string, destination: string): Promise<void> {
   const stat = await fs.lstat(source);
   await removePathBestEffort(destination);
@@ -242,7 +333,9 @@ async function copyPathEntry(source: string, destination: string): Promise<void>
     await fs.cp(source, destination, {
       recursive: true,
       force: true,
+      dereference: false,
       preserveTimestamps: false,
+      verbatimSymlinks: true,
     });
     return;
   }
@@ -432,44 +525,92 @@ export async function runGlobalPackageUpdateSteps(params: {
   let packedInstallDir: string | null = null;
 
   try {
-    const preparedInstall = await prepareStagedNpmInstall(params.installTarget, params.packageName);
+    const initialStagedLayout = resolveStagedNpmTargetLayout(params.installTarget);
+    const knownPackageRoot =
+      params.installTarget.packageRoot?.trim() || params.packageRoot?.trim() || null;
+    const knownNpmTarget =
+      params.installTarget.manager === "npm" && initialStagedLayout === null
+        ? resolveNpmTargetFromKnownPackageRoot(
+            params.installTarget,
+            params.packageName,
+            knownPackageRoot,
+          )
+        : null;
+    const preflightInstallTarget = knownNpmTarget ?? params.installTarget;
+    const stagedNpmLayout = resolveStagedNpmTargetLayout(preflightInstallTarget);
+    const updateUsesNpm = preflightInstallTarget.manager === "npm" || stagedNpmLayout !== null;
+    const selectedRuntime = updateUsesNpm
+      ? await resolvePackageRuntime({
+          runCommand: params.runCommand,
+          timeoutMs: params.timeoutMs,
+          ...(params.nodePath === undefined ? {} : { nodePath: params.nodePath }),
+          ...installEnv,
+          ...installCwd,
+        })
+      : { nodePath: null, version: null };
+    updateEnv = updateUsesNpm
+      ? createPackageRuntimeEnv(params.env, selectedRuntime.nodePath)
+      : params.env;
+    let npmCommandArgv: string[] | null = null;
+    if (updateUsesNpm) {
+      npmCommandArgv = await resolvePackageRuntimeNpmInvocation({
+        nodePath: selectedRuntime.nodePath,
+        fallbackCommand:
+          preflightInstallTarget.manager === "npm" ? preflightInstallTarget.command : "npm",
+        ...(params.installCwd === undefined ? {} : { cwd: params.installCwd }),
+        ...(updateEnv === undefined ? {} : { env: updateEnv }),
+        allowAdjacentFallback: stagedNpmLayout !== null,
+      });
+      if (!npmCommandArgv) {
+        const failedStep: PackageUpdateStepResult = {
+          name: "global install npm preflight",
+          command: "resolve npm for selected Node",
+          cwd: params.installCwd ?? process.cwd(),
+          durationMs: 0,
+          exitCode: 1,
+          stdoutTail: null,
+          stderrTail: "could not resolve an npm CLI for the selected managed-service Node",
+        };
+        return {
+          steps: [failedStep],
+          verifiedPackageRoot: params.packageRoot ?? params.installTarget.packageRoot,
+          afterVersion: await readPackageVersionIfPresent(
+            params.packageRoot ?? params.installTarget.packageRoot,
+          ),
+          failedStep,
+        };
+      }
+    }
+    const hasKnownPackageRoot = knownPackageRoot !== null;
+    const recoveredNpmTarget =
+      params.installTarget.manager === "npm" &&
+      stagedNpmLayout === null &&
+      !hasKnownPackageRoot &&
+      npmCommandArgv
+        ? resolveNpmTargetFromInvocation(params.installTarget, params.packageName, npmCommandArgv)
+        : null;
+    const effectiveInstallTarget = recoveredNpmTarget ?? preflightInstallTarget;
+    const preparedInstall = await prepareStagedNpmInstall(
+      effectiveInstallTarget,
+      params.packageName,
+    );
     stagedInstall = preparedInstall.stagedInstall;
     if (preparedInstall.failedStep) {
       return {
         steps: [preparedInstall.failedStep],
-        verifiedPackageRoot: params.packageRoot ?? null,
-        afterVersion: null,
+        verifiedPackageRoot:
+          effectiveInstallTarget.packageRoot ??
+          params.packageRoot ??
+          params.installTarget.packageRoot,
+        afterVersion: await readPackageVersionIfPresent(
+          params.packageRoot ?? params.installTarget.packageRoot,
+        ),
         failedStep: preparedInstall.failedStep,
       };
     }
 
     const steps: PackageUpdateStepResult[] = [];
-    const installCommandTarget = stagedInstall?.installTarget ?? params.installTarget;
-    // npm disables install scripts, so a direct npm update needs an immutable candidate guard.
-    const requiresPackedGuard = stagedInstall == null && installCommandTarget.manager === "npm";
-    const selectedRuntime =
-      installCommandTarget.manager === "npm"
-        ? await resolvePackageRuntime({
-            runCommand: params.runCommand,
-            timeoutMs: params.timeoutMs,
-            ...(params.nodePath === undefined ? {} : { nodePath: params.nodePath }),
-            ...installEnv,
-            ...installCwd,
-          })
-        : { nodePath: null, version: null };
-    updateEnv =
-      installCommandTarget.manager === "npm"
-        ? createPackageRuntimeEnv(params.env, selectedRuntime.nodePath)
-        : params.env;
-    let packCommandArgv: string[] | null = null;
-    if (installCommandTarget.manager === "npm") {
-      packCommandArgv = await resolvePackageRuntimeNpmInvocation({
-        nodePath: selectedRuntime.nodePath,
-        fallbackCommand: installCommandTarget.command,
-        ...(params.installCwd === undefined ? {} : { cwd: params.installCwd }),
-        ...(updateEnv === undefined ? {} : { env: updateEnv }),
-      });
-    }
+    const installCommandTarget = stagedInstall?.installTarget ?? effectiveInstallTarget;
     const preparedSpec = await preparePackedPackageInstallSpec({
       installTarget: installCommandTarget,
       installSpec: params.installSpec,
@@ -479,8 +620,8 @@ export async function runGlobalPackageUpdateSteps(params: {
       runtimeVersion: selectedRuntime.version,
       env: updateEnv,
       installCwd: params.installCwd,
-      forcePack: requiresPackedGuard,
-      packCommandArgv,
+      forcePack: recoveredNpmTarget !== null,
+      packCommandArgv: npmCommandArgv,
     });
     const expectedInstalledVersion = resolveExpectedInstalledVersionFromSpec(
       params.packageName,
@@ -497,7 +638,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       };
     }
 
-    if (requiresPackedGuard) {
+    if (recoveredNpmTarget !== null) {
       const runtimeGuardStep = await runPackedPackageRuntimeGuard(
         preparedSpec.installSpec,
         selectedRuntime.version,
@@ -508,7 +649,10 @@ export async function runGlobalPackageUpdateSteps(params: {
       if (runtimeGuardStep.exitCode !== 0) {
         return {
           steps,
-          verifiedPackageRoot: params.packageRoot ?? params.installTarget.packageRoot,
+          verifiedPackageRoot:
+            effectiveInstallTarget.packageRoot ??
+            params.packageRoot ??
+            params.installTarget.packageRoot,
           afterVersion: await readPackageVersionIfPresent(
             params.packageRoot ?? params.installTarget.packageRoot,
           ),
@@ -531,11 +675,10 @@ export async function runGlobalPackageUpdateSteps(params: {
         : null);
     const updateStep = await params.runStep({
       name: "global update",
-      argv: globalInstallArgs(
+      argv: withNpmInvocation(
+        globalInstallArgs(installCommandTarget, activationInstallSpec, undefined, installLocation),
         installCommandTarget,
-        activationInstallSpec,
-        undefined,
-        installLocation,
+        npmCommandArgv,
       ),
       ...installCwd,
       ...(updateEnv === undefined ? {} : { env: updateEnv }),
@@ -548,7 +691,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       await cleanupStagedNpmInstall(stagedInstall);
       stagedInstall = null;
       const preparedFallbackInstall = await prepareStagedNpmInstall(
-        params.installTarget,
+        effectiveInstallTarget,
         params.packageName,
       );
       stagedInstall = preparedFallbackInstall.stagedInstall;
@@ -563,7 +706,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       }
 
       const fallbackArgv = globalInstallFallbackArgs(
-        stagedInstall?.installTarget ?? params.installTarget,
+        stagedInstall?.installTarget ?? effectiveInstallTarget,
         activationInstallSpec,
         undefined,
         stagedInstall?.prefix,
@@ -571,7 +714,11 @@ export async function runGlobalPackageUpdateSteps(params: {
       if (fallbackArgv) {
         const fallbackStep = await params.runStep({
           name: "global update (omit optional)",
-          argv: fallbackArgv,
+          argv: withNpmInvocation(
+            fallbackArgv,
+            stagedInstall?.installTarget ?? effectiveInstallTarget,
+            npmCommandArgv,
+          ),
           ...installCwd,
           ...(updateEnv === undefined ? {} : { env: updateEnv }),
           timeoutMs: params.timeoutMs,
@@ -585,7 +732,7 @@ export async function runGlobalPackageUpdateSteps(params: {
     }
 
     const livePackageRoot =
-      params.installTarget.packageRoot ??
+      effectiveInstallTarget.packageRoot ??
       params.packageRoot ??
       (
         await resolveGlobalInstallTarget({
@@ -597,9 +744,9 @@ export async function runGlobalPackageUpdateSteps(params: {
       null;
     const manualLifecyclePackageRoot =
       stagedInstall?.packageRoot ??
-      (params.installTarget.manager === "npm" ? livePackageRoot : null);
+      (effectiveInstallTarget.manager === "npm" ? livePackageRoot : null);
     // npm installs with dependency scripts disabled. Validate and run only OpenClaw's trusted
-    // root lifecycle before verification, whether the destination is staged or direct.
+    // root lifecycle before the staged package can replace the live tree.
     if (finalInstallStep.exitCode === 0 && manualLifecyclePackageRoot) {
       const lifecycle = await runPackageInstallLifecycle({
         packageRoot: manualLifecyclePackageRoot,
@@ -645,12 +792,12 @@ export async function runGlobalPackageUpdateSteps(params: {
       if (stagedInstall && verificationErrors.length === 0) {
         const swapStep = await swapStagedNpmInstall({
           stage: stagedInstall,
-          installTarget: params.installTarget,
+          installTarget: effectiveInstallTarget,
           packageName: params.packageName,
         });
         steps.push(swapStep);
         if (swapStep.exitCode === 0) {
-          verifiedPackageRoot = params.installTarget.packageRoot ?? verifiedPackageRoot;
+          verifiedPackageRoot = effectiveInstallTarget.packageRoot ?? verifiedPackageRoot;
           afterVersion = candidateVersion;
         }
       }

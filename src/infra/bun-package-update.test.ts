@@ -26,7 +26,10 @@ async function writePackageRoot(params: {
         name: "openclaw",
         version: params.version,
         engines: { node: params.engine ?? ">=0.0.0" },
-        scripts: { postinstall: "node scripts/postinstall-bundled-plugins.mjs" },
+        scripts: {
+          preinstall: "node scripts/preinstall-package-manager-warning.mjs",
+          postinstall: "node scripts/postinstall-bundled-plugins.mjs",
+        },
       }),
       "utf8",
     ),

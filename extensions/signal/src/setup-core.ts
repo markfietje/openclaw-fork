@@ -118,6 +118,16 @@ function buildSignalSetupPatch(input: {
   };
 }
 
+function managedTransportOptions(
+  transport: SignalTransportConfig | undefined,
+): Omit<Extract<SignalTransportConfig, { kind: "managed-native" }>, "kind"> | undefined {
+  if (transport?.kind !== "managed-native") {
+    return undefined;
+  }
+  const { kind: _kind, ...options } = transport;
+  return options;
+}
+
 type DetectSignalSetupTransport = (params: {
   url: string;
   account?: string;
@@ -325,6 +335,10 @@ export const signalSetupAdapter: ChannelSetupAdapter = {
   prepareAccountConfigInput: async ({ cfg, accountId, input }) =>
     await prepareSignalSetupInput({ cfg, accountId, input }),
   applyAccountConfig: (params) => {
+    const previousTransport = resolveSignalAccount({
+      cfg: params.cfg,
+      accountId: params.accountId,
+    }).config.transport;
     const next = signalSetupAdapterBase.applyAccountConfig?.(params) ?? params.cfg;
     const account = resolveSignalAccount({ cfg: next, accountId: params.accountId });
     const configuredTransport = account.config.transport;
@@ -343,9 +357,10 @@ export const signalSetupAdapter: ChannelSetupAdapter = {
       transport: prepareSignalManagedNativeTransport({
         cfg: next,
         accountId: params.accountId,
-        ...(configuredTransport?.kind === "managed-native"
-          ? { overrides: configuredTransport }
-          : {}),
+        overrides: {
+          ...managedTransportOptions(previousTransport),
+          ...managedTransportOptions(configuredTransport),
+        },
       }),
     });
   },

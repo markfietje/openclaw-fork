@@ -33,6 +33,45 @@ describe("signalSetupAdapter", () => {
     });
   });
 
+  it("preserves managed transport options during a partial setup update", () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        signal: {
+          accounts: {
+            work: {
+              account: "+15555550124",
+              transport: {
+                kind: "managed-native",
+                cliPath: "/opt/old-signal-cli",
+                configPath: "/var/lib/signal-work",
+                httpHost: "127.0.0.2",
+                httpPort: 8181,
+                receiveMode: "manual",
+                ignoreStories: true,
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const next = signalSetupAdapter.applyAccountConfig?.({
+      cfg,
+      accountId: "work",
+      input: { cliPath: "/opt/new-signal-cli" },
+    });
+
+    expect(next?.channels?.signal?.accounts?.work?.transport).toEqual({
+      kind: "managed-native",
+      cliPath: "/opt/new-signal-cli",
+      configPath: "/var/lib/signal-work",
+      httpHost: "127.0.0.2",
+      httpPort: 8181,
+      receiveMode: "manual",
+      ignoreStories: true,
+    });
+  });
+
   it("stores an explicitly selected container endpoint", () => {
     const next = signalSetupAdapter.applyAccountConfig?.({
       cfg: {},

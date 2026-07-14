@@ -250,8 +250,11 @@ export async function stripPrevious(conversationKey: string, runId?: string): Pr
 
 export async function finalize(conversationKey: string, runId?: string): Promise<void> {
   await enqueue(conversationKey, async () => {
-    await flushPendingStrips(conversationKey);
+    // Strip first, flush last: a strip that fails right here still gets its
+    // one retry before terminal cleanup returns (cancel/error paths have no
+    // later delivery to flush it).
     await stripRecord(conversationKey, runId);
+    await flushPendingStrips(conversationKey);
     const activity = activities.get(conversationKey);
     if (!runId || !activity?.runId || activity.runId === runId) {
       activities.delete(conversationKey);

@@ -150,6 +150,18 @@ describe("status footer", () => {
     expect(transport.edit).toHaveBeenCalledTimes(3);
   });
 
+  it("retries a strip that fails during terminal cleanup within the same finalize", async () => {
+    const transport = createTransport();
+    const runId = "run-terminal";
+    const sent = await sendIntermediate({ transport, text: "working", runId });
+    transport.edit.mockRejectedValueOnce(new Error("edit failed"));
+
+    await finalizeStatusFooterRun(runId);
+    expect(transport.messages.get(sent.id)).toBe("working");
+    // failed strip + in-finalize retry
+    expect(transport.edit).toHaveBeenCalledTimes(2);
+  });
+
   it("drops a strip permanently after its single retry also fails", async () => {
     const transport = createTransport();
     await sendIntermediate({ transport, text: "first" });

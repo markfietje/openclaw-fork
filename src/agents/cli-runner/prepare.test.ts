@@ -14,10 +14,6 @@ import {
   registerContextEngineForOwner,
 } from "../../context-engine/registry.js";
 import type { ContextEngine } from "../../context-engine/types.js";
-import type {
-  McpLoopbackClientGrant,
-  McpLoopbackRequestContext,
-} from "../../gateway/mcp-grant-store.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { clearMemoryPluginState, registerMemoryPromptSection } from "../../plugins/memory-state.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -119,19 +115,23 @@ function createTestMcpLoopbackServerConfig(port: number) {
         alwaysLoad: true,
         headers: {
           Authorization: "Bearer ${OPENCLAW_MCP_TOKEN}",
+          "x-session-key": "${OPENCLAW_MCP_SESSION_KEY}",
+          "x-openclaw-session-id": "${OPENCLAW_MCP_SESSION_ID}",
+          "x-openclaw-agent-id": "${OPENCLAW_MCP_AGENT_ID}",
+          "x-openclaw-account-id": "${OPENCLAW_MCP_ACCOUNT_ID}",
+          "x-openclaw-message-channel": "${OPENCLAW_MCP_MESSAGE_CHANNEL}",
+          "x-openclaw-current-channel-id": "${OPENCLAW_MCP_CURRENT_CHANNEL_ID}",
+          "x-openclaw-current-thread-ts": "${OPENCLAW_MCP_CURRENT_THREAD_TS}",
+          "x-openclaw-current-message-id": "${OPENCLAW_MCP_CURRENT_MESSAGE_ID}",
+          "x-openclaw-current-inbound-audio": "${OPENCLAW_MCP_CURRENT_INBOUND_AUDIO}",
+          "x-openclaw-inbound-event-kind": "${OPENCLAW_MCP_INBOUND_EVENT_KIND}",
+          "x-openclaw-source-reply-delivery-mode": "${OPENCLAW_MCP_SOURCE_REPLY_DELIVERY_MODE}",
+          "x-openclaw-require-explicit-message-target":
+            "${OPENCLAW_MCP_REQUIRE_EXPLICIT_MESSAGE_TARGET}",
           "x-openclaw-cli-capture-key": "${OPENCLAW_MCP_CLI_CAPTURE_KEY}",
         },
       },
     },
-  };
-}
-
-function createTestMcpLoopbackClientGrant(params: {
-  context: McpLoopbackRequestContext;
-}): McpLoopbackClientGrant {
-  return {
-    token: "loopback-token",
-    context: structuredClone(params.context),
   };
 }
 
@@ -257,8 +257,9 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       getActiveMcpLoopbackRuntime: vi.fn(() => undefined),
       ensureMcpLoopbackServer: vi.fn(createTestMcpLoopbackServer),
       createMcpLoopbackServerConfig: vi.fn(createTestMcpLoopbackServerConfig),
-      mintMcpLoopbackClientGrant: vi.fn(createTestMcpLoopbackClientGrant),
-      revokeMcpLoopbackClientGrant: vi.fn(() => true),
+      resolveMcpLoopbackBearerToken: vi.fn((runtime, senderIsOwner) =>
+        senderIsOwner ? runtime.ownerToken : runtime.nonOwnerToken,
+      ),
       resolveMcpLoopbackScopedTools: vi.fn(() => ({ agentId: "main", tools: [] })),
       resolveOpenClawReferencePaths: vi.fn(async () => ({ docsPath: null, sourcePath: null })),
       prepareClaudeCliSkillsPlugin: vi.fn(async () => ({
@@ -808,7 +809,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       getActiveMcpLoopbackRuntime,
       ensureMcpLoopbackServer: vi.fn(createTestMcpLoopbackServer),
       createMcpLoopbackServerConfig: vi.fn(createTestMcpLoopbackServerConfig),
-      mintMcpLoopbackClientGrant: vi.fn(createTestMcpLoopbackClientGrant),
+      resolveMcpLoopbackBearerToken: vi.fn(() => "loopback-token"),
       resolveMcpLoopbackScopedTools: vi.fn(() => ({ agentId: "main", tools: [] })),
     });
 
@@ -864,7 +865,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         ?.GEMINI_CLI_SYSTEM_SETTINGS_PATH;
       throw new Error("Gemini auth profile was selected but no credential material was found");
     });
-    const revokeMcpLoopbackClientGrant = vi.fn(() => true);
     cliBackendsTesting.setDepsForTest({
       resolvePluginSetupCliBackend: () => undefined,
       resolveRuntimeCliBackends: () => [
@@ -888,8 +888,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       getActiveMcpLoopbackRuntime,
       ensureMcpLoopbackServer: vi.fn(createTestMcpLoopbackServer),
       createMcpLoopbackServerConfig: vi.fn(createTestMcpLoopbackServerConfig),
-      mintMcpLoopbackClientGrant: vi.fn(createTestMcpLoopbackClientGrant),
-      revokeMcpLoopbackClientGrant,
+      resolveMcpLoopbackBearerToken: vi.fn(() => "loopback-token"),
       resolveMcpLoopbackScopedTools: vi.fn(() => ({ agentId: "main", tools: [] })),
     });
 
@@ -911,123 +910,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
 
       expect(generatedSystemSettingsPath).toBeTruthy();
       expect(fs.existsSync(generatedSystemSettingsPath ?? "")).toBe(false);
-      expect(revokeMcpLoopbackClientGrant).toHaveBeenCalledExactlyOnceWith("loopback-token");
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("cleans prepared execution resources when auth epoch resolution fails", async () => {
-    const { dir, sessionFile } = createSessionFile();
-    const preparedExecutionCleanup = vi.fn(async () => undefined);
-    const prepareExecution = vi.fn(async () => ({ cleanup: preparedExecutionCleanup }));
-    setCliAuthEpochTestDeps({
-      loadAuthProfileStoreForRuntime: () => {
-        throw new Error("auth epoch read failed");
-      },
-    });
-    cliBackendsTesting.setDepsForTest({
-      resolvePluginSetupCliBackend: () => undefined,
-      resolveRuntimeCliBackends: () => [
-        {
-          id: "test-cli",
-          pluginId: "test",
-          bundleMcp: false,
-          authEpochMode: "profile-only",
-          prepareExecution,
-          config: {
-            command: "test-cli",
-            args: ["--print"],
-            systemPromptArg: "--system-prompt",
-            systemPromptWhen: "first",
-            output: "text",
-            input: "arg",
-            sessionMode: "existing",
-          },
-        },
-      ],
-    });
-
-    try {
-      await expect(
-        prepareCliRunContext({
-          sessionId: "session-test",
-          sessionKey: "agent:main:main",
-          sessionFile,
-          workspaceDir: dir,
-          prompt: "latest ask",
-          provider: "test-cli",
-          model: "test-model",
-          timeoutMs: 1_000,
-          runId: "run-test-prepare-execution-cleanup-on-auth-epoch-failure",
-          authProfileId: "test-cli:profile",
-          config: {},
-        }),
-      ).rejects.toThrow("auth epoch read failed");
-
-      expect(prepareExecution).toHaveBeenCalledOnce();
-      expect(preparedExecutionCleanup).toHaveBeenCalledOnce();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("cleans prepared MCP and skills plugin dirs when mid-prepare reference lookup fails", async () => {
-    const { dir, sessionFile } = createSessionFile();
-    const tempEnvSnapshot = captureEnv(["TMPDIR", "TMP", "TEMP"]);
-    const tempRoot = path.join(dir, "tmp");
-    const skillsPluginDir = path.join(dir, "claude-skills-plugin");
-    const skillsCleanup = vi.fn(async () => {
-      fs.rmSync(skillsPluginDir, { recursive: true, force: true });
-    });
-    fs.mkdirSync(tempRoot, { recursive: true });
-    fs.mkdirSync(skillsPluginDir, { recursive: true });
-    setTestEnvValue("TMPDIR", tempRoot);
-    setTestEnvValue("TMP", tempRoot);
-    setTestEnvValue("TEMP", tempRoot);
-    const getActiveMcpLoopbackRuntime = vi.fn(() => ({
-      port: 31783,
-      ownerToken: "loopback-owner-token",
-      nonOwnerToken: "loopback-non-owner-token",
-    }));
-    setCliRunnerPrepareTestDeps({
-      getActiveMcpLoopbackRuntime,
-      ensureMcpLoopbackServer: vi.fn(createTestMcpLoopbackServer),
-      createMcpLoopbackServerConfig: vi.fn(createTestMcpLoopbackServerConfig),
-      mintMcpLoopbackClientGrant: vi.fn(createTestMcpLoopbackClientGrant),
-      resolveMcpLoopbackScopedTools: vi.fn(() => ({ agentId: "main", tools: [] })),
-      prepareClaudeCliSkillsPlugin: vi.fn(async () => ({
-        args: ["--plugin-dir", skillsPluginDir],
-        cleanup: skillsCleanup,
-      })),
-      resolveOpenClawReferencePaths: vi.fn(async () => {
-        throw new Error("reference path lookup failed");
-      }),
-    });
-
-    try {
-      await expect(
-        prepareCliRunContext({
-          sessionId: "session-test",
-          sessionKey: "agent:main:main",
-          sessionFile,
-          workspaceDir: dir,
-          prompt: "latest ask",
-          provider: "test-cli",
-          model: "test-model",
-          timeoutMs: 1_000,
-          runId: "run-test-mid-prepare-cleanup",
-          config: createCliBackendConfig({ bundleMcp: true }),
-        }),
-      ).rejects.toThrow("reference path lookup failed");
-
-      expect(skillsCleanup).toHaveBeenCalledOnce();
-      expect(fs.existsSync(skillsPluginDir)).toBe(false);
-      expect(
-        fs.readdirSync(tempRoot).filter((entry) => entry.startsWith("openclaw-cli-mcp-")),
-      ).toEqual([]);
-    } finally {
-      tempEnvSnapshot.restore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -1081,7 +964,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       makeBootstrapWarn: vi.fn(() => () => undefined),
       getActiveMcpLoopbackRuntime: vi.fn(() => undefined),
       createMcpLoopbackServerConfig: vi.fn(createTestMcpLoopbackServerConfig),
-      mintMcpLoopbackClientGrant: vi.fn(createTestMcpLoopbackClientGrant),
+      resolveMcpLoopbackBearerToken: vi.fn(() => "token"),
       resolveMcpLoopbackScopedTools: vi.fn(() => ({
         agentId: "main",
         tools: [
@@ -2151,10 +2034,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       }));
       const ensureMcpLoopbackServer = vi.fn(createTestMcpLoopbackServer);
       const createMcpLoopbackServerConfig = vi.fn(createTestMcpLoopbackServerConfig);
-      const activateMcpLoopbackClientGrantCapture = vi.fn(() => true);
-      const deactivateMcpLoopbackClientGrantCapture = vi.fn(() => true);
-      const mintMcpLoopbackClientGrant = vi.fn(createTestMcpLoopbackClientGrant);
-      const revokeMcpLoopbackClientGrant = vi.fn(() => true);
       const resolveMcpLoopbackScopedTools = vi.fn(() => ({
         agentId: "main",
         tools: [
@@ -2171,10 +2050,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         getActiveMcpLoopbackRuntime,
         ensureMcpLoopbackServer,
         createMcpLoopbackServerConfig,
-        activateMcpLoopbackClientGrantCapture,
-        deactivateMcpLoopbackClientGrantCapture,
-        mintMcpLoopbackClientGrant,
-        revokeMcpLoopbackClientGrant,
         resolveMcpLoopbackScopedTools,
       });
       cliBackendsTesting.setDepsForTest({
@@ -2321,7 +2196,7 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
     }
   });
 
-  it("binds current turn context into the bundle MCP client grant", async () => {
+  it("passes current turn kind into bundle MCP loopback env", async () => {
     const { dir, sessionFile } = createSessionFile();
     try {
       const getActiveMcpLoopbackRuntime = vi.fn(() => ({
@@ -2331,10 +2206,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       }));
       const ensureMcpLoopbackServer = vi.fn(createTestMcpLoopbackServer);
       const createMcpLoopbackServerConfig = vi.fn(createTestMcpLoopbackServerConfig);
-      const activateMcpLoopbackClientGrantCapture = vi.fn(() => true);
-      const deactivateMcpLoopbackClientGrantCapture = vi.fn(() => true);
-      const mintMcpLoopbackClientGrant = vi.fn(createTestMcpLoopbackClientGrant);
-      const revokeMcpLoopbackClientGrant = vi.fn(() => true);
       const resolveMcpLoopbackScopedTools = vi.fn(() => ({
         agentId: "main",
         tools: [
@@ -2351,10 +2222,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
         getActiveMcpLoopbackRuntime,
         ensureMcpLoopbackServer,
         createMcpLoopbackServerConfig,
-        activateMcpLoopbackClientGrantCapture,
-        deactivateMcpLoopbackClientGrantCapture,
-        mintMcpLoopbackClientGrant,
-        revokeMcpLoopbackClientGrant,
         resolveMcpLoopbackScopedTools,
       });
       cliBackendsTesting.setDepsForTest({
@@ -2396,39 +2263,16 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       });
 
       expect(context.preparedBackend.env).toMatchObject({
-        OPENCLAW_MCP_TOKEN: "loopback-token",
+        OPENCLAW_MCP_SESSION_ID: "session-test",
+        OPENCLAW_MCP_MESSAGE_CHANNEL: "telegram",
+        OPENCLAW_MCP_CURRENT_CHANNEL_ID: "telegram:-100123:topic:42",
+        OPENCLAW_MCP_CURRENT_THREAD_TS: "42",
+        OPENCLAW_MCP_CURRENT_MESSAGE_ID: "reply-message-1",
+        OPENCLAW_MCP_CURRENT_INBOUND_AUDIO: "true",
+        OPENCLAW_MCP_INBOUND_EVENT_KIND: "room_event",
+        OPENCLAW_MCP_SOURCE_REPLY_DELIVERY_MODE: "message_tool_only",
+        OPENCLAW_MCP_REQUIRE_EXPLICIT_MESSAGE_TARGET: "true",
         OPENCLAW_MCP_CLI_CAPTURE_KEY: "",
-      });
-      expect(mintMcpLoopbackClientGrant).toHaveBeenCalledWith({
-        context: {
-          sessionKey: "agent:main:telegram:group:chat123",
-          sessionId: "session-test",
-          messageProvider: "telegram",
-          clientCaps: ["tool-events", "inline-widgets"],
-          currentChannelId: "telegram:-100123:topic:42",
-          currentThreadTs: "42",
-          currentMessageId: "reply-message-1",
-          currentInboundAudio: true,
-          accountId: undefined,
-          inboundEventKind: "room_event",
-          sourceReplyDeliveryMode: "message_tool_only",
-          taskSuggestionDeliveryMode: "gateway",
-          requireExplicitMessageTarget: true,
-          senderIsOwner: false,
-        },
-        runtimeOwnerToken: "loopback-owner-token",
-      });
-      context.preparedBackend.mcpClientGrantCapture?.activate("capture-test");
-      context.preparedBackend.mcpClientGrantCapture?.deactivate("capture-test");
-      expect(activateMcpLoopbackClientGrantCapture).toHaveBeenCalledExactlyOnceWith({
-        token: "loopback-token",
-        runtimeOwnerToken: "loopback-owner-token",
-        captureKey: "capture-test",
-      });
-      expect(deactivateMcpLoopbackClientGrantCapture).toHaveBeenCalledExactlyOnceWith({
-        token: "loopback-token",
-        runtimeOwnerToken: "loopback-owner-token",
-        captureKey: "capture-test",
       });
       expect(context.mcpDeliveryCapture).toBe(true);
       expect(resolveMcpLoopbackScopedTools).toHaveBeenCalledWith(
@@ -2442,8 +2286,6 @@ describe("shouldSkipLocalCliCredentialEpoch", () => {
       expect(context.systemPrompt).not.toContain(
         "The target defaults to the current source channel",
       );
-      await context.preparedBackend.cleanup?.();
-      expect(revokeMcpLoopbackClientGrant).toHaveBeenCalledExactlyOnceWith("loopback-token");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

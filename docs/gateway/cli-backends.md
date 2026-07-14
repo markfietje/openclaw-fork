@@ -422,10 +422,12 @@ Current bundled behavior:
 
 When bundle MCP is enabled, OpenClaw:
 
-- spawns a loopback HTTP MCP server that exposes gateway tools to the CLI process, authenticated with a per-run context grant (`OPENCLAW_MCP_TOKEN`) active only for the current execution attempt;
-- binds tool access to the Gateway-selected session, account, and channel context instead of trusting child-process headers;
-- loads enabled bundle-MCP servers for the current workspace and merges them with any existing backend MCP config/settings shape;
-- rewrites the launch config using the backend-owned integration mode from the owning plugin.
+- spawns a loopback HTTP MCP server that exposes gateway tools to the CLI process
+- authenticates the bridge with a per-session token (`OPENCLAW_MCP_TOKEN`)
+- scopes tool access to the current session, account, and channel context
+- loads enabled bundle-MCP servers for the current workspace
+- merges them with any existing backend MCP config/settings shape
+- rewrites the launch config using the backend-owned integration mode from the owning extension
 
 If no MCP servers are enabled, OpenClaw still injects a strict config when a
 backend opts into bundle MCP so background runs stay isolated.

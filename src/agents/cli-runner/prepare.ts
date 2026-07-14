@@ -4,26 +4,17 @@
  */
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { getRuntimeConfig } from "../../config/config.js";
-import { resolveMainSessionKey } from "../../config/sessions.js";
-import type { CliBackendConfig } from "../../config/types.agent-defaults.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   assertContextEngineHostSupport,
   buildGenericCliContextEngineHostSupport,
 } from "../../context-engine/host-compat.js";
 import { ensureContextEnginesInitialized } from "../../context-engine/init.js";
 import { resolveContextEngine } from "../../context-engine/registry.js";
-import {
-  activateMcpLoopbackClientGrantCapture,
-  deactivateMcpLoopbackClientGrantCapture,
-  mintMcpLoopbackClientGrant,
-  revokeMcpLoopbackClientGrant,
-  type McpLoopbackRequestContext,
-} from "../../gateway/mcp-grant-store.js";
 import { ensureMcpLoopbackServer } from "../../gateway/mcp-http.js";
 import {
   createMcpLoopbackServerConfig,
   getActiveMcpLoopbackRuntime,
+  resolveMcpLoopbackBearerToken,
 } from "../../gateway/mcp-http.loopback-runtime.js";
 import { resolveMcpLoopbackScopedTools } from "../../gateway/mcp-http.runtime.js";
 import { isClaudeCliProvider } from "../../plugin-sdk/anthropic-cli.js";
@@ -108,10 +99,7 @@ const prepareDeps = {
   getActiveMcpLoopbackRuntime,
   ensureMcpLoopbackServer,
   createMcpLoopbackServerConfig,
-  activateMcpLoopbackClientGrantCapture,
-  deactivateMcpLoopbackClientGrantCapture,
-  mintMcpLoopbackClientGrant,
-  revokeMcpLoopbackClientGrant,
+  resolveMcpLoopbackBearerToken,
   resolveMcpLoopbackScopedTools,
   resolveOpenClawReferencePaths: async (
     params: Parameters<typeof import("../docs-path.js").resolveOpenClawReferencePaths>[0],
@@ -121,95 +109,6 @@ const prepareDeps = {
   claudeCliSessionTranscriptHasOrphanedToolUse,
   resolveApiKeyForProfile,
 };
-
-function resolveReusableCliSessionId(reusableCliSession: CliReusableSession): string | undefined {
-  return reusableCliSession.mode === "reuse" || reusableCliSession.mode === "reuse-with-drift"
-    ? reusableCliSession.sessionId
-    : undefined;
-}
-
-function resolveCliSessionInvalidatedReason(
-  reusableCliSession: CliReusableSession,
-): Extract<CliReusableSession, { mode: "invalidate" }>["invalidatedReason"] | undefined {
-  return reusableCliSession.mode === "invalidate"
-    ? reusableCliSession.invalidatedReason
-    : undefined;
-}
-
-function canTransportSystemPrompt(backend: CliBackendConfig): boolean {
-  return (
-    backend.systemPromptWhen !== "never" &&
-    Boolean(
-      backend.systemPromptArg || backend.systemPromptFileArg || backend.systemPromptFileConfigKey,
-    )
-  );
-}
-
-function normalizeOptionalMcpContextValue(value: string | undefined): string | undefined {
-  return value?.trim() || undefined;
-}
-
-function buildCliMcpGrantContext(params: {
-  run: RunCliAgentParams;
-  config: OpenClawConfig;
-  requireExplicitMessageTarget: boolean;
-}): McpLoopbackRequestContext {
-  const rawSessionKey = params.run.sessionKey?.trim() ?? "";
-  const sessionKey =
-    !rawSessionKey || rawSessionKey === "main"
-      ? resolveMainSessionKey(params.config)
-      : rawSessionKey;
-  const clientCaps = uniqueStrings(
-    (params.run.clientCaps ?? []).map((cap) => cap.trim()).filter(Boolean),
-  );
-  return {
-    sessionKey,
-    sessionId: normalizeOptionalMcpContextValue(params.run.sessionId),
-    messageProvider:
-      normalizeMessageChannel(params.run.messageChannel ?? params.run.messageProvider) ?? undefined,
-    clientCaps: clientCaps.length > 0 ? clientCaps : undefined,
-    currentChannelId: normalizeOptionalMcpContextValue(params.run.currentChannelId),
-    currentThreadTs: normalizeOptionalMcpContextValue(params.run.currentThreadTs),
-    currentMessageId:
-      params.run.currentMessageId == null
-        ? undefined
-        : normalizeOptionalMcpContextValue(String(params.run.currentMessageId)),
-    currentInboundAudio: params.run.currentInboundAudio === true ? true : undefined,
-    accountId: normalizeOptionalMcpContextValue(params.run.agentAccountId),
-    inboundEventKind: params.run.currentInboundEventKind,
-    sourceReplyDeliveryMode: params.run.sourceReplyDeliveryMode,
-    taskSuggestionDeliveryMode: params.run.taskSuggestionDeliveryMode,
-    requireExplicitMessageTarget: params.requireExplicitMessageTarget ? true : undefined,
-    senderIsOwner: params.run.senderIsOwner === true,
-  };
-}
-
-function buildCliSessionDriftUserContext(
-  reusableCliSession: CliReusableSession,
-): string | undefined {
-  if (reusableCliSession.mode !== "reuse-with-drift") {
-    return undefined;
-  }
-  return `OpenClaw resumed this CLI session after prompt content changed. Follow the current turn's instructions; changed=${reusableCliSession.drift.reasons.join(",")}.`;
-}
-
-function prependCliSessionDriftUserContext(
-  context: RunCliAgentParams["currentInboundContext"],
-  reusableCliSession: CliReusableSession,
-): RunCliAgentParams["currentInboundContext"] {
-  const note = buildCliSessionDriftUserContext(reusableCliSession);
-  if (!note) {
-    return context;
-  }
-  if (!context) {
-    return { text: note };
-  }
-  return {
-    ...context,
-    text: [note, context.text].join("\n\n"),
-    ...(context.resumableText ? { resumableText: [note, context.resumableText].join("\n\n") } : {}),
-  };
-}
 
 async function resolveCliSkillsPrompt(params: {
   agentId: string;
@@ -584,89 +483,6 @@ export async function prepareCliRunContext(
   let preparedExecution: Awaited<ReturnType<NonNullable<typeof backendResolved.prepareExecution>>> =
     undefined;
   try {
-    const mcpClientGrant = mcpLoopbackRuntime
-      ? prepareDeps.mintMcpLoopbackClientGrant({
-          context: buildCliMcpGrantContext({
-            run: params,
-            config: params.config ?? getRuntimeConfig(),
-            requireExplicitMessageTarget,
-          }),
-          runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
-        })
-      : undefined;
-    const mcpClientGrantCapture =
-      mcpClientGrant && mcpLoopbackRuntime
-        ? {
-            activate: (captureKey: string) => {
-              const activated = prepareDeps.activateMcpLoopbackClientGrantCapture({
-                token: mcpClientGrant.token,
-                runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
-                captureKey,
-              });
-              if (!activated) {
-                throw new Error("CLI MCP client grant is no longer valid for this Gateway runtime");
-              }
-            },
-            deactivate: (captureKey: string) => {
-              prepareDeps.deactivateMcpLoopbackClientGrantCapture({
-                token: mcpClientGrant.token,
-                runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
-                captureKey,
-              });
-            },
-          }
-        : undefined;
-    let mcpClientGrantRevoked = false;
-    const cleanupMcpClientGrant = mcpClientGrant
-      ? async () => {
-          if (mcpClientGrantRevoked) {
-            return;
-          }
-          mcpClientGrantRevoked = true;
-          prepareDeps.revokeMcpLoopbackClientGrant(mcpClientGrant.token);
-        }
-      : undefined;
-    cleanupPreparedResources = cleanupMcpClientGrant;
-    const preparedBackend = await prepareCliBundleMcpConfig({
-      enabled: bundleMcpEnabled || crestodianMcpConfig !== undefined,
-      mode: backendResolved.bundleMcpMode,
-      backend: backendResolved.config,
-      workspaceDir,
-      config: params.config,
-      ...(crestodianMcpConfig ? { exclusiveConfig: crestodianMcpConfig } : {}),
-      additionalConfig: mcpLoopbackRuntime
-        ? prepareDeps.createMcpLoopbackServerConfig(mcpLoopbackRuntime.port)
-        : undefined,
-      env:
-        mcpLoopbackRuntime && mcpClientGrant
-          ? {
-              OPENCLAW_MCP_TOKEN: mcpClientGrant.token,
-              OPENCLAW_MCP_CLI_CAPTURE_KEY: "",
-            }
-          : undefined,
-      warn: (message) => cliBackendLog.warn(message),
-    });
-    const cleanupPreparedBackend =
-      preparedBackend.cleanup || cleanupMcpClientGrant
-        ? async () => {
-            try {
-              await preparedBackend.cleanup?.();
-            } finally {
-              await cleanupMcpClientGrant?.();
-            }
-          }
-        : undefined;
-    cleanupPreparedResources = cleanupPreparedBackend;
-    const prepareExecutionContext = {
-      config: params.config,
-      workspaceDir,
-      agentDir,
-      provider: params.provider,
-      modelId,
-      authProfileId: effectiveAuthProfileId,
-      executionMode,
-      env: preparedBackend.env,
-    } as Parameters<NonNullable<typeof backendResolved.prepareExecution>>[0];
     preparedExecution = await backendResolved.prepareExecution?.(
       (backendResolved.id === "google-gemini-cli"
         ? {
@@ -680,183 +496,11 @@ export async function prepareCliRunContext(
         authCredential?: AuthProfileCredential;
       },
     );
-    const preparedBackendCleanup =
-      cleanupPreparedBackend || preparedExecution?.cleanup
-        ? async () => {
-            try {
-              await preparedExecution?.cleanup?.();
-            } finally {
-              await cleanupPreparedBackend?.();
-            }
-          }
-        : undefined;
-    cleanupPreparedResources = preparedBackendCleanup;
-    const skipLocalCredentialEpoch = shouldSkipLocalCliCredentialEpoch({
-      authEpochMode: backendResolved.authEpochMode,
-      authProfileId: effectiveAuthProfileId,
-      authCredential,
-      preparedExecution,
-    });
-    const authEpoch = await resolveCliAuthEpoch({
-      provider: params.provider,
-      agentDir,
-      authProfileId: effectiveAuthProfileId,
-      skipLocalCredential: skipLocalCredentialEpoch,
-    });
-    const preparedBackendEnv =
-      preparedExecution?.env && Object.keys(preparedExecution.env).length > 0
-        ? { ...preparedBackend.env, ...preparedExecution.env }
-        : preparedBackend.env;
-    const preparedBackendBeforeExecution =
-      preparedBackend.beforeExecution || preparedExecution?.beforeExecution
-        ? async () => {
-            await preparedBackend.beforeExecution?.();
-            await preparedExecution?.beforeExecution?.();
-          }
-        : undefined;
-    const claudeSkillsPlugin = isSideQuestion
-      ? { args: [], cleanup: async () => {} }
-      : await prepareDeps.prepareClaudeCliSkillsPlugin({
-          backendId: backendResolved.id,
-          skillsSnapshot: params.skillsSnapshot,
-        });
-    const preparedCleanup =
-      preparedBackendCleanup || claudeSkillsPlugin.args.length > 0
-        ? async () => {
-            try {
-              await claudeSkillsPlugin.cleanup();
-            } finally {
-              await preparedBackendCleanup?.();
-            }
-          }
-        : undefined;
-    cleanupPreparedResources = preparedCleanup ?? preparedBackendCleanup;
-    const preparedBackendClearEnv = [
-      ...(preparedBackend.backend.clearEnv ?? []),
-      ...(preparedExecution?.clearEnv ?? []),
-    ];
-    const sideQuestionBackend = (() => {
-      const { liveSession: _liveSession, ...backend } = preparedBackend.backend;
-      return {
-        ...backend,
-        sessionMode: "none" as const,
-      };
-    })();
-    const preparedBackendFinal = {
-      ...preparedBackend,
-      backend: {
-        ...(isSideQuestion ? sideQuestionBackend : preparedBackend.backend),
-        ...(preparedBackendClearEnv.length > 0
-          ? { clearEnv: uniqueStrings(preparedBackendClearEnv) }
-          : {}),
-      },
-      ...(preparedBackendEnv ? { env: preparedBackendEnv } : {}),
-      ...(preparedBackendBeforeExecution
-        ? { beforeExecution: preparedBackendBeforeExecution }
-        : {}),
-      ...(mcpClientGrantCapture ? { mcpClientGrantCapture } : {}),
-      ...(preparedCleanup ? { cleanup: preparedCleanup } : {}),
-    };
-    const promptTools =
-      bundleMcpEnabled && mcpLoopbackRuntime
-        ? prepareDeps.resolveMcpLoopbackScopedTools({
-            cfg: params.config ?? getRuntimeConfig(),
-            sessionKey: params.sessionKey ?? "",
-            messageProvider: params.messageChannel ?? params.messageProvider,
-            clientCaps: params.clientCaps,
-            currentChannelId: params.currentChannelId,
-            // CLI binding hashes must use session-stable prompt facts. Per-sender
-            // and per-message scope stays in the runtime MCP env/list-call path.
-            currentThreadTs: undefined,
-            currentMessageId: undefined,
-            currentInboundAudio: undefined,
-            accountId: params.agentAccountId,
-            inboundEventKind: undefined,
-            sourceReplyDeliveryMode: bindingSourceReplyDeliveryMode,
-            taskSuggestionDeliveryMode: params.taskSuggestionDeliveryMode,
-            requireExplicitMessageTarget: bindingRequireExplicitMessageTarget,
-            senderIsOwner: undefined,
-          }).tools
-        : [];
-    const promptToolNamesHash =
-      bundleMcpEnabled && mcpLoopbackRuntime
-        ? hashCliSessionText(JSON.stringify(promptTools.map((tool) => tool.name).toSorted()))
-        : undefined;
-    // `sessionMode: none` may still use a live transport in-process, but neither a
-    // returned nor previously stored id is authority for cross-process continuity.
-    const ignoreCliSessionCandidate =
-      isSideQuestion || preparedBackendFinal.backend.sessionMode === "none";
-    const reusableCliSessionCandidate: CliReusableSession = ignoreCliSessionCandidate
-      ? { mode: "none" }
-      : params.cliSessionBinding
-        ? resolveCliSessionReuse({
-            binding: params.cliSessionBinding,
-            authProfileId: effectiveAuthProfileId,
-            authEpoch,
-            authEpochVersion: CLI_AUTH_EPOCH_VERSION,
-            extraSystemPromptHash,
-            messageToolPolicyHash,
-            promptToolNamesHash,
-            cwdHash,
-            mcpConfigHash: preparedBackendFinal.mcpConfigHash,
-            mcpResumeHash: preparedBackendFinal.mcpResumeHash,
-          })
-        : params.cliSessionId
-          ? { mode: "reuse", sessionId: params.cliSessionId }
-          : { mode: "none" };
-    const backendReusableCliSession: CliReusableSession =
-      reusableCliSessionCandidate.mode === "reuse-with-drift" &&
-      !canTransportSystemPrompt(preparedBackendFinal.backend)
-        ? { mode: "invalidate", invalidatedReason: "system-prompt" }
-        : reusableCliSessionCandidate;
-    const candidateClaudeCliSessionId =
-      resolveReusableCliSessionId(backendReusableCliSession)?.trim() || undefined;
-    const hasClaudeCliCandidate =
-      candidateClaudeCliSessionId !== undefined && isClaudeCliProvider(params.provider);
-    const claudeCliTranscriptMissing =
-      hasClaudeCliCandidate &&
-      !(await prepareDeps.claudeCliSessionTranscriptHasContent({
-        sessionId: candidateClaudeCliSessionId,
-        workspaceDir: cwd,
-      }));
-    const managedClaudeLiveSessionGeneration =
-      claudeCliTranscriptMissing &&
-      backendResolved.id === "claude-cli" &&
-      "liveSession" in preparedBackendFinal.backend &&
-      preparedBackendFinal.backend.liveSession === "claude-stdio" &&
-      preparedBackendFinal.backend.output === "jsonl" &&
-      preparedBackendFinal.backend.input === "stdin" &&
-      prepareDeps.getClaudeLiveSessionGenerationForOwner({
-        backendId: backendResolved.id,
-        agentAccountId: params.agentAccountId,
-        agentId: params.agentId,
-        authProfileId: effectiveAuthProfileId,
-        sessionId: params.sessionId,
-        sessionKey: params.sessionKey,
-      });
-    const hasManagedClaudeLiveSession = Boolean(managedClaudeLiveSessionGeneration);
-    const claudeCliTranscriptOrphanedToolUse =
-      hasClaudeCliCandidate &&
-      !claudeCliTranscriptMissing &&
-      (await prepareDeps.claudeCliSessionTranscriptHasOrphanedToolUse({
-        sessionId: candidateClaudeCliSessionId,
-        workspaceDir: cwd,
-      }));
-    const claudeCliInvalidatedReason: "missing-transcript" | "orphaned-tool-use" | undefined =
-      claudeCliTranscriptMissing && !hasManagedClaudeLiveSession
-        ? "missing-transcript"
-        : claudeCliTranscriptOrphanedToolUse
-          ? "orphaned-tool-use"
-          : undefined;
-    const reusableCliSession: CliReusableSession = claudeCliInvalidatedReason
-      ? { mode: "invalidate", invalidatedReason: claudeCliInvalidatedReason }
-      : backendReusableCliSession;
-    const reusableCliSessionId = resolveReusableCliSessionId(reusableCliSession);
-    const invalidatedReason = resolveCliSessionInvalidatedReason(reusableCliSession);
-    if (invalidatedReason) {
-      cliBackendLog.info(
-        `cli session reset: provider=${params.provider} reason=${invalidatedReason}`,
-      );
+  } catch (err) {
+    try {
+      await preparedBackend.cleanup?.();
+    } catch (cleanupErr) {
+      cliBackendLog.warn(`cli backend cleanup after prepare failure failed: ${String(cleanupErr)}`);
     }
     throw err;
   }

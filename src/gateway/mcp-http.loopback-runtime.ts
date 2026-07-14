@@ -351,6 +351,14 @@ export function setActiveMcpLoopbackRuntime(runtime: McpLoopbackRuntime): void {
   activeRuntime = { ...runtime };
 }
 
+/** Choose the bearer token matching owner/non-owner caller identity. */
+export function resolveMcpLoopbackBearerToken(
+  runtime: McpLoopbackRuntime,
+  senderIsOwner: boolean,
+): string {
+  return senderIsOwner ? runtime.ownerToken : runtime.nonOwnerToken;
+}
+
 /** Clear loopback runtime only when the owning token matches the active runtime. */
 export function clearActiveMcpLoopbackRuntimeByOwnerToken(ownerToken: string): void {
   if (activeRuntime?.ownerToken === ownerToken) {
@@ -358,15 +366,8 @@ export function clearActiveMcpLoopbackRuntimeByOwnerToken(ownerToken: string): v
   }
 }
 
-const MCP_AUTH_HEADERS = {
-  Authorization: "Bearer ${OPENCLAW_MCP_TOKEN}",
-} as const;
-
-const MCP_CAPTURE_HEADERS = {
-  "x-openclaw-cli-capture-key": "${OPENCLAW_MCP_CLI_CAPTURE_KEY}",
-} as const;
-
-function createMcpServerConfig(port: number, headers: Record<string, string>) {
+/** Build the MCP server config injected into agents for loopback tool access. */
+export function createMcpLoopbackServerConfig(port: number) {
   return {
     mcpServers: {
       openclaw: {
@@ -393,13 +394,4 @@ function createMcpServerConfig(port: number, headers: Record<string, string>) {
       },
     },
   };
-}
-
-/** Build the MCP server config injected into agents for loopback tool access. */
-export function createMcpLoopbackServerConfig(port: number) {
-  return createMcpServerConfig(port, { ...MCP_AUTH_HEADERS, ...MCP_CAPTURE_HEADERS });
-}
-
-export function createMcpAttachGrantServerConfig(port: number) {
-  return createMcpServerConfig(port, MCP_AUTH_HEADERS);
 }

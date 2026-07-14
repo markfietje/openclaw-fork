@@ -22,7 +22,7 @@ export interface SearchableSelectListTheme extends SelectListTheme {
   matchHighlight: (text: string) => string;
 }
 
-export interface SearchableSelectItem extends SelectItem {
+interface SearchableSelectItem extends SelectItem {
   /** Additional searchable fields beyond label and description. */
   searchText?: string;
 }

@@ -36,6 +36,7 @@ import {
   normalizeSignalAccountInput,
   signalDmPolicy,
 } from "./setup-core.js";
+import * as transportDetectionModule from "./transport-detection.js";
 
 const getSignalSetupStatus = createPluginSetupWizardStatus(signalPlugin);
 
@@ -206,6 +207,22 @@ describe("probeSignal", () => {
     expect(res.ok).toBe(false);
     expect(res.status).toBe(503);
     expect(res.version).toBe(null);
+  });
+
+  it("returns auto transport detection failures as probe data", async () => {
+    vi.spyOn(transportDetectionModule, "detectSignalTransport").mockRejectedValueOnce(
+      new Error("Signal transport not reachable at http://127.0.0.1:8080"),
+    );
+
+    const res = await probeSignal("http://127.0.0.1:8080", 1000, { apiMode: "auto" });
+
+    expect(res).toMatchObject({
+      ok: false,
+      status: null,
+      error: "Signal transport not reachable at http://127.0.0.1:8080",
+      version: null,
+    });
+    expect(res.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
   it("setup status lines use the selected account cliPath", async () => {

@@ -68,7 +68,7 @@ function collectConfiguredChannelIds(
   cfg: OpenClawConfig,
   options: { includeDisabled?: boolean } = {},
 ): string[] {
-  if (cfg.plugins?.enabled === false) {
+  if (cfg.plugins?.enabled === false && !options.includeDisabled) {
     return [];
   }
   const channels =

@@ -199,6 +199,25 @@ describe("channel doctor compatibility mutations", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("runs stale config cleanup while plugins are globally disabled", async () => {
+    const cleanup = vi.fn(({ cfg }: { cfg: unknown }) => ({
+      config: cfg,
+      changes: ["migrated"],
+    }));
+    mocks.getBundledChannelSetupPlugin.mockImplementation((id: string) => ({
+      id,
+      doctor: { cleanStaleConfig: cleanup },
+    }));
+
+    const result = await collectChannelDoctorStaleConfigMutations({
+      plugins: { enabled: false },
+      channels: { signal: { apiMode: "auto", httpUrl: "http://signal:8080" } },
+    } as never);
+
+    expect(result).toHaveLength(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it("skips plugin discovery for explicitly disabled channels", () => {
     const result = collectChannelDoctorCompatibilityMutations({
       channels: {

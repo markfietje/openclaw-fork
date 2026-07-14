@@ -40,7 +40,16 @@ export async function probeSignal(
     elapsedMs: 0,
     version: null,
   };
-  const transportKind = await resolveProbeTransportKind(baseUrl, timeoutMs, options);
+  let transportKind: SignalTransportKind;
+  try {
+    transportKind = await resolveProbeTransportKind(baseUrl, timeoutMs, options);
+  } catch (error) {
+    return {
+      ...result,
+      error: formatErrorMessage(error),
+      elapsedMs: Date.now() - started,
+    };
+  }
   const check = await signalCheck(baseUrl, timeoutMs, { transportKind });
   if (!check.ok) {
     return {

@@ -57,7 +57,7 @@ describe("legacy config detection", () => {
     });
   });
 
-  it("accepts retired iMessage coalesceSameSenderDms keys without preserving them in parsed config", () => {
+  it("does not strip retired iMessage coalesceSameSenderDms keys during validation", () => {
     const config = {
       channels: {
         imessage: {
@@ -79,9 +79,9 @@ describe("legacy config detection", () => {
     expect(res.ok).toBe(true);
     if (res.ok) {
       const imessage = res.config.channels?.imessage as Record<string, unknown>;
-      expect("coalesceSameSenderDms" in imessage).toBe(false);
+      expect(imessage.coalesceSameSenderDms).toBe(true);
       const accounts = imessage.accounts as Record<string, Record<string, unknown>>;
-      expect("coalesceSameSenderDms" in accounts.work).toBe(false);
+      expect(accounts.work.coalesceSameSenderDms).toBe(false);
       expect(accounts.work.cliPath).toBe("imsg-work");
     }
     expect(config.channels.imessage.coalesceSameSenderDms).toBe(true);

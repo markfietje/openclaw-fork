@@ -103,43 +103,7 @@ function stripDeprecatedValidationKeys(raw: unknown): unknown {
     };
   }
 
-  if (!isRecord(next) || !isRecord(next.channels) || !isRecord(next.channels.imessage)) {
-    return next;
-  }
-
-  const imessage = next.channels.imessage;
-  let nextImessage: Record<string, unknown> = imessage;
-  if (Object.hasOwn(nextImessage, "coalesceSameSenderDms")) {
-    nextImessage = { ...nextImessage };
-    delete nextImessage.coalesceSameSenderDms;
-  }
-  if (isRecord(nextImessage.accounts)) {
-    let accountsChanged = false;
-    const accounts = { ...nextImessage.accounts };
-    for (const [id, account] of Object.entries(nextImessage.accounts)) {
-      if (!isRecord(account) || !Object.hasOwn(account, "coalesceSameSenderDms")) {
-        continue;
-      }
-      const nextAccount = { ...account };
-      delete nextAccount.coalesceSameSenderDms;
-      accounts[id] = nextAccount;
-      accountsChanged = true;
-    }
-    if (accountsChanged) {
-      nextImessage = nextImessage === imessage ? { ...nextImessage } : nextImessage;
-      nextImessage.accounts = accounts;
-    }
-  }
-  if (nextImessage === imessage) {
-    return next;
-  }
-  return {
-    ...next,
-    channels: {
-      ...next.channels,
-      imessage: nextImessage,
-    },
-  };
+  return next;
 }
 
 function materializeBundledModelProviderOverlays(config: OpenClawConfig): OpenClawConfig {

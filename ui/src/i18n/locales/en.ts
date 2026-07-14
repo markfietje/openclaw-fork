@@ -1836,6 +1836,7 @@ export const en: TranslationMap = {
     verifiedSource: "Verified source",
     enableAction: "Enable",
     disableAction: "Disable",
+    enableNamed: "Enable {name}",
     working: "Working…",
     detailClose: "Close",
     detailOrigin: "Source",

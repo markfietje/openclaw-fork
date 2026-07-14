@@ -19,6 +19,7 @@ const callGatewayMock = vi.hoisted(() => vi.fn());
 const runDoctorRepairSequenceMock = vi.hoisted(() => vi.fn());
 const runDoctorConfigPreflightOptionsMock = vi.hoisted(() => vi.fn());
 const collectDoctorPreviewNotesParamsMock = vi.hoisted(() => vi.fn());
+const collectChannelDoctorStaleConfigMutationsMock = vi.hoisted(() => vi.fn(async () => []));
 const collectImplicitFallbackClobberWarningsMock = vi.hoisted(() =>
   vi.fn<(cfg: unknown) => string[]>(() => []),
 );
@@ -1136,7 +1137,7 @@ vi.mock("./doctor/shared/channel-doctor.js", () => {
         return mutations;
       },
     ),
-    collectChannelDoctorStaleConfigMutations: vi.fn(async () => []),
+    collectChannelDoctorStaleConfigMutations: collectChannelDoctorStaleConfigMutationsMock,
     createChannelDoctorEmptyAllowlistPolicyHooks: vi.fn(() => ({
       extraWarningsForAccount: collectTelegramFirstTimeExtraWarnings,
       shouldSkipDefaultEmptyGroupAllowlistWarning: ({ channelName }: { channelName: string }) =>
@@ -1536,6 +1537,28 @@ describe("doctor config flow", () => {
     collectImplicitFallbackClobberWarningsMock.mockReturnValue([]);
     noteImplicitFallbackClobberWarningsMock.mockClear();
     runDoctorConfigPreflightOptionsMock.mockClear();
+    collectChannelDoctorStaleConfigMutationsMock.mockReset();
+    collectChannelDoctorStaleConfigMutationsMock.mockResolvedValue([]);
+  });
+
+  it("emits warnings from deferred stale channel cleanup", async () => {
+    collectChannelDoctorStaleConfigMutationsMock.mockResolvedValueOnce([
+      {
+        config: { channels: { signal: { enabled: false } } },
+        changes: [],
+        warnings: ["- Signal transport migration is still pending."],
+      },
+    ]);
+
+    await runDoctorConfigWithInput({
+      config: { channels: { signal: { enabled: false } } },
+      run: loadAndMaybeMigrateDoctorConfig,
+    });
+
+    expect(terminalNoteMock).toHaveBeenCalledWith(
+      "- Signal transport migration is still pending.",
+      "Doctor warnings",
+    );
   });
 
   it("grants config preflight cross-state imports only with repair and direct capability", async () => {

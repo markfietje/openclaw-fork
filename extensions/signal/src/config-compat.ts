@@ -22,6 +22,9 @@ const LEGACY_TRANSPORT_FIELDS = [
   "ignoreStories",
 ] as const;
 
+const PENDING_LEGACY_TRANSPORT_WARNING =
+  "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.";
+
 type DetectTransport = (params: {
   url: string;
   account?: string;
@@ -171,17 +174,6 @@ async function resolveLegacyTransport(params: {
   }
 }
 
-export function hasPendingLegacySignalTransportDetection(cfg: OpenClawConfig): boolean {
-  const signal = cfg.channels?.signal as unknown;
-  if (!isRecord(signal)) {
-    return false;
-  }
-  const accounts = isRecord(signal.accounts) ? signal.accounts : {};
-  return [signal, ...Object.values(accounts).filter(isRecord)].some((entry) =>
-    requiresDetection(entry, signal, signal.apiMode),
-  );
-}
-
 function clearLegacyTransportFields(entry: Record<string, unknown>): void {
   for (const field of LEGACY_TRANSPORT_FIELDS) {
     delete entry[field];
@@ -324,7 +316,11 @@ export async function migrateLegacySignalTransportConfig(params: {
   const apiMode = signal.apiMode;
   const entries = [signal, ...Object.values(accounts).filter(isRecord)];
   if (!params.detect && entries.some((entry) => requiresDetection(entry, signal, apiMode))) {
-    return { config: params.cfg, changes: [] };
+    return {
+      config: params.cfg,
+      changes: [],
+      warnings: [PENDING_LEGACY_TRANSPORT_WARNING],
+    };
   }
 
   const transports = allocateMigratedManagedPorts({
@@ -336,7 +332,11 @@ export async function migrateLegacySignalTransportConfig(params: {
     ),
   });
   if (transports.some((transport) => !transport)) {
-    return { config: params.cfg, changes: [] };
+    return {
+      config: params.cfg,
+      changes: [],
+      warnings: [PENDING_LEGACY_TRANSPORT_WARNING],
+    };
   }
 
   const next = applyMigratedSignalTransports({ cfg: params.cfg, entries, transports });

@@ -73,6 +73,33 @@ describe("signalSetupAdapter", () => {
     });
   });
 
+  it("uses the configured account while detecting an omitted HTTP transport kind", async () => {
+    const detect = vi.fn().mockResolvedValue({
+      kind: "container",
+      url: "http://signal-container:8080",
+    });
+
+    await prepareSignalSetupInput({
+      cfg: {
+        channels: {
+          signal: {
+            accounts: {
+              work: { account: "+15555550124" },
+            },
+          },
+        },
+      },
+      accountId: "work",
+      input: { httpUrl: "signal-container:8080" },
+      detect,
+    });
+
+    expect(detect).toHaveBeenCalledWith({
+      url: "signal-container:8080",
+      account: "+15555550124",
+    });
+  });
+
   it("rejects a transport kind without an HTTP URL", () => {
     expect(
       signalSetupAdapter.validateInput?.({
@@ -81,6 +108,38 @@ describe("signalSetupAdapter", () => {
         input: { signalTransport: "container" },
       }),
     ).toBe("Signal --signal-transport requires --http-url.");
+  });
+
+  it("rejects a fresh container transport without a Signal account", () => {
+    expect(
+      signalSetupAdapter.validateInput?.({
+        cfg: {},
+        accountId: "work",
+        input: {
+          httpUrl: "http://signal-container:8080",
+          signalTransport: "container",
+        },
+      }),
+    ).toBe("Signal container transport requires --signal-number or an existing account.");
+  });
+
+  it("allows a container transport to reuse the configured Signal account", () => {
+    expect(
+      signalSetupAdapter.validateInput?.({
+        cfg: {
+          channels: {
+            signal: {
+              accounts: { work: { account: "+15555550124" } },
+            },
+          },
+        },
+        accountId: "work",
+        input: {
+          httpUrl: "http://signal-container:8080",
+          signalTransport: "container",
+        },
+      }),
+    ).toBeNull();
   });
 
   it("does not materialize a CLI path for an external transport", async () => {

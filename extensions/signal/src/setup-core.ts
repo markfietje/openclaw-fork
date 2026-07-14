@@ -124,6 +124,8 @@ type DetectSignalSetupTransport = (params: {
 }) => Promise<SignalTransportConfig>;
 
 export async function prepareSignalSetupInput(params: {
+  cfg?: OpenClawConfig;
+  accountId?: string;
   input: ChannelSetupInput;
   detect?: DetectSignalSetupTransport;
 }): Promise<ChannelSetupInput> {
@@ -133,7 +135,12 @@ export async function prepareSignalSetupInput(params: {
   }
   const detect =
     params.detect ?? (await import("./transport-detection.runtime.js")).detectSignalTransport;
-  const account = normalizeSignalAccountInput(params.input.signalNumber);
+  const configuredAccount = params.cfg
+    ? resolveSignalAccount({ cfg: params.cfg, accountId: params.accountId }).config.account
+    : undefined;
+  const account =
+    normalizeSignalAccountInput(params.input.signalNumber) ??
+    normalizeSignalAccountInput(configuredAccount);
   const transport = await detect({
     url: httpUrl,
     ...(account ? { account } : {}),
@@ -280,7 +287,7 @@ export const signalCompletionNote = {
 const signalSetupAdapterBase = createPatchedAccountSetupAdapter({
   channelKey: channel,
   validateInput: createSetupInputPresenceValidator({
-    validate: ({ input }) => {
+    validate: ({ cfg, accountId, input }) => {
       if (
         input.signalTransport &&
         input.signalTransport !== "external-native" &&
@@ -290,6 +297,13 @@ const signalSetupAdapterBase = createPatchedAccountSetupAdapter({
       }
       if (input.signalTransport && !input.httpUrl) {
         return "Signal --signal-transport requires --http-url.";
+      }
+      if (
+        input.signalTransport === "container" &&
+        !normalizeSignalAccountInput(input.signalNumber) &&
+        !normalizeSignalAccountInput(resolveSignalAccount({ cfg, accountId }).config.account)
+      ) {
+        return "Signal container transport requires --signal-number or an existing account.";
       }
       if (
         !input.signalNumber &&
@@ -308,7 +322,8 @@ const signalSetupAdapterBase = createPatchedAccountSetupAdapter({
 
 export const signalSetupAdapter: ChannelSetupAdapter = {
   ...signalSetupAdapterBase,
-  prepareAccountConfigInput: async ({ input }) => await prepareSignalSetupInput({ input }),
+  prepareAccountConfigInput: async ({ cfg, accountId, input }) =>
+    await prepareSignalSetupInput({ cfg, accountId, input }),
   applyAccountConfig: (params) => {
     const next = signalSetupAdapterBase.applyAccountConfig?.(params) ?? params.cfg;
     const account = resolveSignalAccount({ cfg: next, accountId: params.accountId });

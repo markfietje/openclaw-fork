@@ -323,16 +323,7 @@ describe("signal transport compatibility", () => {
 
     expect(result.config).toBe(cfg);
     expect(result.changes).toEqual([]);
-  });
-
-  it("warns when auto detection still needs a reachable legacy endpoint", async () => {
-    expect(
-      signalDoctor.collectPreviewWarnings?.({
-        cfg: signalConfig({ apiMode: "auto", httpUrl: "http://offline:8080" }),
-        doctorFixCommand: "openclaw doctor --fix",
-        env: {},
-      }),
-    ).toEqual([
+    expect(result.warnings).toEqual([
       "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.",
     ]);
   });

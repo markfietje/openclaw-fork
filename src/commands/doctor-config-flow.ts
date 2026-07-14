@@ -273,6 +273,9 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
       candidate,
       { env: process.env },
     )) {
+      if (staleCleanup.warnings?.length) {
+        note(sanitizeDoctorNote(staleCleanup.warnings.join("\n")), "Doctor warnings");
+      }
       if (staleCleanup.changes.length === 0) {
         continue;
       }

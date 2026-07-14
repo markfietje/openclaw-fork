@@ -361,7 +361,7 @@ export async function collectChannelDoctorStaleConfigMutations(
     { includeDisabled: true },
   )) {
     const mutation = await entry.doctor.cleanStaleConfig?.({ cfg: nextCfg });
-    if (!mutation || mutation.changes.length === 0) {
+    if (!mutation || (mutation.changes.length === 0 && !mutation.warnings?.length)) {
       continue;
     }
     mutations.push(mutation);

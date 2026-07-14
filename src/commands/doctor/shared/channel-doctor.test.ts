@@ -199,6 +199,25 @@ describe("channel doctor compatibility mutations", () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps stale config warnings when cleanup cannot mutate config", async () => {
+    const cleanup = vi.fn(({ cfg }: { cfg: unknown }) => ({
+      config: cfg,
+      changes: [],
+      warnings: ["migration deferred"],
+    }));
+    mocks.getBundledChannelSetupPlugin.mockImplementation((id: string) => ({
+      id,
+      doctor: { cleanStaleConfig: cleanup },
+    }));
+
+    const result = await collectChannelDoctorStaleConfigMutations({
+      channels: { signal: { enabled: false } },
+    } as never);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.warnings).toEqual(["migration deferred"]);
+  });
+
   it("runs stale config cleanup while plugins are globally disabled", async () => {
     const cleanup = vi.fn(({ cfg }: { cfg: unknown }) => ({
       config: cfg,

@@ -565,9 +565,25 @@ const runPostCorePluginConvergenceSpy = vi.spyOn(
   "runPostCorePluginConvergence",
 );
 const resolveGlobalInstallTargetOriginal = updateGlobal.resolveGlobalInstallTarget;
+const sourceSwitchTestGlobalRoot = path.join(
+  os.tmpdir(),
+  `openclaw-update-cli-source-switch-${process.pid}`,
+  "node_modules",
+);
 vi.spyOn(updateGlobal, "resolveGlobalInstallTarget").mockImplementation(async (params) => {
   const manager = typeof params.manager === "string" ? params.manager : params.manager.manager;
   const pkgRoot = params.pkgRoot?.trim();
+  if (manager === "npm" && pkgRoot && path.resolve(pkgRoot) === path.resolve(process.cwd())) {
+    // Git-to-package tests start in this checkout, but npm owns a separate global root.
+    // Never let a successful staged swap replace the test runner's working tree.
+    return {
+      manager: "npm",
+      command: typeof params.manager === "string" ? params.manager : params.manager.command,
+      globalRoot: sourceSwitchTestGlobalRoot,
+      packageRoot: path.join(sourceSwitchTestGlobalRoot, params.packageName ?? "openclaw"),
+      directNodeModulesRoot: true,
+    };
+  }
   const detectedGlobalRoot = pkgRoot ? path.dirname(pkgRoot) : null;
   const hasStandardPosixNpmLayout =
     detectedGlobalRoot !== null &&
@@ -1231,6 +1247,10 @@ describe("update-cli", () => {
 
   afterAll(() => {
     serviceEnvSnapshot.restore();
+  });
+
+  afterAll(async () => {
+    await fs.rm(path.dirname(sourceSwitchTestGlobalRoot), { recursive: true, force: true });
   });
 
   afterEach(async () => {
@@ -2800,6 +2820,9 @@ describe("update-cli", () => {
       if (mode) {
         vi.mocked(runGatewayUpdate).mockResolvedValue(makeOkUpdateResult({ mode }));
       }
+      const sourceManifestBefore = expectedPersistedChannel
+        ? await fs.readFile(path.join(process.cwd(), "package.json"), "utf8")
+        : null;
 
       await updateCommand(options);
 
@@ -2818,6 +2841,9 @@ describe("update-cli", () => {
           | { nextConfig?: { update?: { channel?: string } } }
           | undefined;
         expect(writeCall?.nextConfig?.update?.channel).toBe(expectedPersistedChannel);
+        await expect(fs.readFile(path.join(process.cwd(), "package.json"), "utf8")).resolves.toBe(
+          sourceManifestBefore,
+        );
       }
     },
   );

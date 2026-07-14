@@ -263,7 +263,7 @@ async function channelsAddCommandImpl(
     runtime.exit(1);
     return;
   }
-  const input = buildChannelSetupInput(opts);
+  let input = buildChannelSetupInput(opts);
   const accountId =
     plugin.setup.resolveAccountId?.({
       cfg: nextConfig,
@@ -271,13 +271,29 @@ async function channelsAddCommandImpl(
       input,
     }) ?? normalizeAccountId(opts.account);
 
-  const validationError = plugin.setup.validateInput?.({
+  const initialValidationError = plugin.setup.validateInput?.({
     cfg: nextConfig,
     accountId,
     input,
   });
-  if (validationError) {
-    runtime.error(validationError);
+  if (initialValidationError) {
+    runtime.error(initialValidationError);
+    runtime.exit(1);
+    return;
+  }
+  input =
+    (await plugin.setup.prepareAccountConfigInput?.({
+      cfg: nextConfig,
+      accountId,
+      input,
+    })) ?? input;
+  const preparedValidationError = plugin.setup.validateInput?.({
+    cfg: nextConfig,
+    accountId,
+    input,
+  });
+  if (preparedValidationError) {
+    runtime.error(preparedValidationError);
     runtime.exit(1);
     return;
   }

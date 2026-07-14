@@ -306,7 +306,7 @@ Allowed group messages that do not mention the bot stay silent and are kept only
 - Attachments are supported (base64 fetched from `signal-cli`).
 - Voice-note attachments use the `signal-cli` filename as a MIME fallback when `contentType` is missing, so audio transcription can still classify AAC voice memos.
 - Default media cap: `channels.signal.mediaMaxMb` (default 8).
-- Use `channels.signal.transport.ignoreAttachments` for a managed native transport to skip downloading media.
+- Use `channels.signal.ignoreAttachments` to skip downloading media for any transport.
 - Group history context uses `channels.signal.historyLimit` (or `channels.signal.accounts.*.historyLimit`), falling back to `messages.groupChat.historyLimit`. Set `0` to disable (default 50).
 
 ## Typing + read receipts
@@ -470,7 +470,7 @@ Provider options:
 - `channels.signal.transport.httpHost`, `channels.signal.transport.httpPort`: managed-native daemon bind (default `127.0.0.1:8080`).
 - `channels.signal.transport.startupTimeoutMs`: managed-native startup wait in ms (min 1000, cap 120000; default 30000).
 - `channels.signal.transport.receiveMode`: managed-native `on-start | manual`.
-- `channels.signal.transport.ignoreAttachments`: managed-native attachment download toggle.
+- `channels.signal.ignoreAttachments`: skip inbound attachment downloads for this account.
 - `channels.signal.transport.ignoreStories`: managed-native story toggle.
 - `channels.signal.sendReadReceipts`: forward read receipts.
 - `channels.signal.dmPolicy`: `pairing | allowlist | open | disabled` (default: pairing).

@@ -1166,6 +1166,7 @@ const SignalAccountSchemaBase = z
     account: z.string().optional(),
     accountUuid: z.string().optional(),
     transport: SignalTransportSchema.optional(),
+    ignoreAttachments: z.boolean().optional(),
     sendReadReceipts: z.boolean().optional(),
     aliases: z.record(z.string(), z.string()).optional(),
     dmPolicy: DmPolicySchema.optional().default("pairing"),

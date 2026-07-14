@@ -21,7 +21,6 @@ export type ResolvedSignalTransport =
       httpPort: number;
       startupTimeoutMs: number;
       receiveMode?: "on-start" | "manual";
-      ignoreAttachments?: boolean;
       ignoreStories?: boolean;
     }
   | {
@@ -89,9 +88,6 @@ export function resolveSignalTransport(
     httpPort,
     startupTimeoutMs: transport?.startupTimeoutMs ?? 30_000,
     ...(transport?.receiveMode ? { receiveMode: transport.receiveMode } : {}),
-    ...(typeof transport?.ignoreAttachments === "boolean"
-      ? { ignoreAttachments: transport.ignoreAttachments }
-      : {}),
     ...(typeof transport?.ignoreStories === "boolean"
       ? { ignoreStories: transport.ignoreStories }
       : {}),

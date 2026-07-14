@@ -18,7 +18,6 @@ export type SignalManagedNativeTransportConfig = {
   /** Max time to wait for signal-cli daemon startup (ms, cap 120000). */
   startupTimeoutMs?: number;
   receiveMode?: "on-start" | "manual";
-  ignoreAttachments?: boolean;
   ignoreStories?: boolean;
 };
 
@@ -54,6 +53,8 @@ export type SignalAccountConfig = CommonChannelMessagingConfig & {
   accountUuid?: string;
   /** Concrete transport owned by this account. Defaults to managed native signal-cli. */
   transport?: SignalTransportConfig;
+  /** Skip downloading inbound Signal attachments. */
+  ignoreAttachments?: boolean;
   sendReadReceipts?: boolean;
   /** OpenClaw-side target aliases keyed by friendly name. */
   aliases?: Record<string, string>;

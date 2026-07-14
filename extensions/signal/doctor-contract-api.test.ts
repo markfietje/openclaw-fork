@@ -114,9 +114,47 @@ describe("signal transport compatibility", () => {
       cliPath: "/opt/signal-cli",
       configPath: "/var/lib/signal",
       httpPort: 8181,
-      ignoreAttachments: true,
     });
+    expect(result.config.channels?.signal?.ignoreAttachments).toBe(true);
     expect(result.config.channels?.signal).not.toHaveProperty("cliPath");
+  });
+
+  it("keeps attachment suppression account-owned for external transports", () => {
+    const result = normalizeCompatibilityConfig({
+      cfg: signalConfig({
+        apiMode: "container",
+        httpUrl: "signal:8080",
+        ignoreAttachments: true,
+      }),
+    });
+
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "container",
+      url: "http://signal:8080",
+    });
+    expect(result.config.channels?.signal?.ignoreAttachments).toBe(true);
+  });
+
+  it("preserves an inherited custom port for the first named managed account", () => {
+    const result = normalizeCompatibilityConfig({
+      cfg: signalConfig({
+        httpPort: 8181,
+        accounts: {
+          work: { account: "+15555550123" },
+          alerts: { account: "+15555550124" },
+        },
+      }),
+    });
+
+    expect(result.config.channels?.signal?.transport).toBeUndefined();
+    expect(result.config.channels?.signal?.accounts?.work?.transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8181,
+    });
+    expect(result.config.channels?.signal?.accounts?.alerts?.transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8080,
+    });
   });
 
   it("allocates distinct managed ports while materializing named account ownership", () => {
@@ -161,7 +199,7 @@ describe("signal transport compatibility", () => {
     });
 
     expect(detect).toHaveBeenCalledWith({
-      url: "http://signal:8080/",
+      url: "http://signal:8080",
       account: "+15555550123",
     });
     expect(detect).toHaveBeenCalledTimes(1);

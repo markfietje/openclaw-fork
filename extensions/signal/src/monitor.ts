@@ -578,7 +578,7 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
     transportKind === "managed-native" && accountInfo.transport.kind === "managed-native"
       ? accountInfo.transport
       : undefined;
-  const ignoreAttachments = opts.ignoreAttachments ?? managedTransport?.ignoreAttachments ?? false;
+  const ignoreAttachments = opts.ignoreAttachments ?? accountInfo.config.ignoreAttachments ?? false;
   const sendReadReceipts = Boolean(opts.sendReadReceipts ?? accountInfo.config.sendReadReceipts);
   const waitForTransportReadyFn = opts.waitForTransportReady ?? waitForTransportReady;
 
@@ -606,7 +606,7 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
       httpHost,
       httpPort,
       receiveMode: opts.receiveMode ?? managedTransport?.receiveMode,
-      ignoreAttachments: opts.ignoreAttachments ?? managedTransport?.ignoreAttachments,
+      ignoreAttachments: opts.ignoreAttachments ?? accountInfo.config.ignoreAttachments,
       ignoreStories: opts.ignoreStories ?? managedTransport?.ignoreStories,
       sendReadReceipts,
       runtime,

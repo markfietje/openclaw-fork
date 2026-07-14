@@ -69,7 +69,7 @@ async function buildStatus(
 
 // Legacy setup adapters still own the canonical config write path. Wizard
 // inputs funnel through them unless a field supplies a narrower writer.
-function applySetupInput(params: {
+async function applySetupInput(params: {
   plugin: ChannelSetupWizardPlugin;
   cfg: OpenClawConfig;
   accountId: string;
@@ -85,18 +85,32 @@ function applySetupInput(params: {
       accountId: params.accountId,
       input: params.input,
     }) ?? params.accountId;
-  const validationError = setup.validateInput?.({
+  const initialValidationError = setup.validateInput?.({
     cfg: params.cfg,
     accountId: resolvedAccountId,
     input: params.input,
   });
-  if (validationError) {
-    throw new Error(validationError);
+  if (initialValidationError) {
+    throw new Error(initialValidationError);
+  }
+  const input =
+    (await setup.prepareAccountConfigInput?.({
+      cfg: params.cfg,
+      accountId: resolvedAccountId,
+      input: params.input,
+    })) ?? params.input;
+  const preparedValidationError = setup.validateInput?.({
+    cfg: params.cfg,
+    accountId: resolvedAccountId,
+    input,
+  });
+  if (preparedValidationError) {
+    throw new Error(preparedValidationError);
   }
   let next = setup.applyAccountConfig({
     cfg: params.cfg,
     accountId: resolvedAccountId,
-    input: params.input,
+    input,
   });
   if (params.input.name?.trim() && setup.applyAccountName) {
     next = setup.applyAccountName({
@@ -146,14 +160,16 @@ async function applyWizardTextInputValue(params: {
         accountId: params.accountId,
         value: params.value,
       })
-    : applySetupInput({
-        plugin: params.plugin,
-        cfg: params.cfg,
-        accountId: params.accountId,
-        input: {
-          [params.input.inputKey]: params.value,
-        },
-      }).cfg;
+    : (
+        await applySetupInput({
+          plugin: params.plugin,
+          cfg: params.cfg,
+          accountId: params.accountId,
+          input: {
+            [params.input.inputKey]: params.value,
+          },
+        })
+      ).cfg;
 }
 
 export function buildChannelSetupWizardAdapterFromSetupWizard(params: {
@@ -321,15 +337,17 @@ export function buildChannelSetupWizardAdapterFromSetupWizard(params: {
                     cfg: currentCfg,
                     accountId,
                   })
-                : applySetupInput({
-                    plugin,
-                    cfg: currentCfg,
-                    accountId,
-                    input: {
-                      [credential.inputKey]: undefined,
-                      useEnv: true,
-                    },
-                  }).cfg,
+                : (
+                    await applySetupInput({
+                      plugin,
+                      cfg: currentCfg,
+                      accountId,
+                      input: {
+                        [credential.inputKey]: undefined,
+                        useEnv: true,
+                      },
+                    })
+                  ).cfg,
             applySet: async (currentCfg, value, resolvedValue) => {
               resolvedCredentialValue = resolvedValue;
               return credential.applySet
@@ -340,15 +358,17 @@ export function buildChannelSetupWizardAdapterFromSetupWizard(params: {
                     value,
                     resolvedValue,
                   })
-                : applySetupInput({
-                    plugin,
-                    cfg: currentCfg,
-                    accountId,
-                    input: {
-                      [credential.inputKey]: value,
-                      useEnv: false,
-                    },
-                  }).cfg;
+                : (
+                    await applySetupInput({
+                      plugin,
+                      cfg: currentCfg,
+                      accountId,
+                      input: {
+                        [credential.inputKey]: value,
+                        useEnv: false,
+                      },
+                    })
+                  ).cfg;
             },
           });
 

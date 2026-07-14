@@ -5,7 +5,6 @@ import {
   hasPendingLegacySignalTransportDetection,
   migrateLegacySignalTransportConfig,
 } from "./config-compat.js";
-import { detectSignalTransport } from "./setup-transport.js";
 
 export const signalDoctor: ChannelDoctorAdapter = {
   normalizeCompatibilityConfig,
@@ -15,6 +14,8 @@ export const signalDoctor: ChannelDoctorAdapter = {
           `- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run ${doctorFixCommand}.`,
         ]
       : [],
-  cleanStaleConfig: async ({ cfg }) =>
-    await migrateLegacySignalTransportConfig({ cfg, detect: detectSignalTransport }),
+  cleanStaleConfig: async ({ cfg }) => {
+    const { detectSignalTransport } = await import("./transport-detection.runtime.js");
+    return await migrateLegacySignalTransportConfig({ cfg, detect: detectSignalTransport });
+  },
 };

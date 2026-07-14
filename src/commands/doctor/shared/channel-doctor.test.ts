@@ -181,6 +181,24 @@ describe("channel doctor compatibility mutations", () => {
     expect(discordCleanup).not.toHaveBeenCalled();
   });
 
+  it("runs stale config cleanup for disabled channels", async () => {
+    const cleanup = vi.fn(({ cfg }: { cfg: unknown }) => ({
+      config: cfg,
+      changes: ["migrated"],
+    }));
+    mocks.getBundledChannelSetupPlugin.mockImplementation((id: string) => ({
+      id,
+      doctor: { cleanStaleConfig: cleanup },
+    }));
+
+    const result = await collectChannelDoctorStaleConfigMutations({
+      channels: { signal: { enabled: false } },
+    } as never);
+
+    expect(result).toHaveLength(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it("skips plugin discovery for explicitly disabled channels", () => {
     const result = collectChannelDoctorCompatibilityMutations({
       channels: {

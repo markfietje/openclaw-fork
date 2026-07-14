@@ -6,11 +6,8 @@ import {
 } from "openclaw/plugin-sdk/setup-runtime";
 import type { SignalTransportConfig } from "./account-types.js";
 import { listSignalAccountIds, resolveSignalAccount, resolveSignalTransport } from "./accounts.js";
-import { containerCheck } from "./client-container.js";
-import { signalCheck as nativeCheck } from "./client.js";
 import { clearLegacySignalTransportFieldsForAccount } from "./config-compat.js";
 import {
-  normalizeSignalTransportUrl,
   type SignalContainerTransportProbe,
   type SignalNativeTransportProbe,
   type SignalTransportProbeResult,
@@ -20,6 +17,7 @@ import {
   DEFAULT_SIGNAL_MANAGED_NATIVE_HOST,
   resolveLocalSignalTransportPort,
 } from "./transport-policy.js";
+import { normalizeSignalTransportUrl } from "./transport-url.js";
 
 export { detectSignalTransport, type SignalTransportProbeResult } from "./transport-detection.js";
 
@@ -93,9 +91,13 @@ export async function probeSignalTransport(params: {
   const timeoutMs = params.timeoutMs ?? 10_000;
   const resolved = resolveSignalTransport(params.transport);
   if (resolved.kind === "container") {
-    return (params.probeContainer ?? containerCheck)(resolved.baseUrl, timeoutMs, params.account);
+    const probeContainer =
+      params.probeContainer ?? (await import("./transport-probes.runtime.js")).containerCheck;
+    return probeContainer(resolved.baseUrl, timeoutMs, params.account);
   }
-  return (params.probeNative ?? nativeCheck)(resolved.baseUrl, timeoutMs);
+  const probeNative =
+    params.probeNative ?? (await import("./transport-probes.runtime.js")).nativeCheck;
+  return probeNative(resolved.baseUrl, timeoutMs);
 }
 
 export function writeSignalAccountTransport(params: {

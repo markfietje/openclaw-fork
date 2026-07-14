@@ -99,6 +99,11 @@ export type ChannelSetupAdapter = {
     accountId: string;
     input: ChannelSetupInput;
   }) => OpenClawConfig;
+  prepareAccountConfigInput?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    input: ChannelSetupInput;
+  }) => Promise<ChannelSetupInput> | ChannelSetupInput;
   afterAccountConfigWritten?: (params: {
     previousCfg: OpenClawConfig;
     cfg: OpenClawConfig;

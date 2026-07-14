@@ -1,3 +1,4 @@
+import type { ChannelSetupInput } from "openclaw/plugin-sdk/setup";
 // Signal plugin module implements setup core behavior.
 import {
   createCliPathTextInput,
@@ -25,6 +26,7 @@ import {
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { normalizeE164 } from "openclaw/plugin-sdk/text-utility-runtime";
+import type { SignalTransportConfig } from "./account-types.js";
 import { resolveDefaultSignalAccountId, resolveSignalAccount } from "./accounts.js";
 import {
   prepareSignalManagedNativeTransport,
@@ -94,12 +96,12 @@ function buildSignalSetupPatch(input: {
   httpHost?: string;
   httpPort?: string;
 }) {
+  if (input.httpUrl && !input.signalTransport) {
+    throw new Error("Signal HTTP transport kind must be prepared before writing config.");
+  }
   const transport = input.httpUrl
     ? {
-        kind:
-          input.signalTransport === "container"
-            ? ("container" as const)
-            : ("external-native" as const),
+        kind: input.signalTransport,
         url: input.httpUrl,
       }
     : input.cliPath || input.httpHost || input.httpPort
@@ -113,6 +115,36 @@ function buildSignalSetupPatch(input: {
   return {
     ...(input.signalNumber ? { account: input.signalNumber } : {}),
     ...(transport ? { transport } : {}),
+  };
+}
+
+type DetectSignalSetupTransport = (params: {
+  url: string;
+  account?: string;
+}) => Promise<SignalTransportConfig>;
+
+export async function prepareSignalSetupInput(params: {
+  input: ChannelSetupInput;
+  detect?: DetectSignalSetupTransport;
+}): Promise<ChannelSetupInput> {
+  const httpUrl = normalizeOptionalString(params.input.httpUrl);
+  if (!httpUrl || params.input.signalTransport) {
+    return params.input;
+  }
+  const detect =
+    params.detect ?? (await import("./transport-detection.runtime.js")).detectSignalTransport;
+  const account = normalizeSignalAccountInput(params.input.signalNumber);
+  const transport = await detect({
+    url: httpUrl,
+    ...(account ? { account } : {}),
+  });
+  if (transport.kind === "managed-native") {
+    throw new Error("Signal endpoint detection returned an invalid managed transport.");
+  }
+  return {
+    ...params.input,
+    httpUrl: transport.url,
+    signalTransport: transport.kind,
   };
 }
 
@@ -277,6 +309,7 @@ const signalSetupAdapterBase = createPatchedAccountSetupAdapter({
 
 export const signalSetupAdapter: ChannelSetupAdapter = {
   ...signalSetupAdapterBase,
+  prepareAccountConfigInput: async ({ input }) => await prepareSignalSetupInput({ input }),
   applyAccountConfig: (params) => {
     const next = signalSetupAdapterBase.applyAccountConfig?.(params) ?? params.cfg;
     const account = resolveSignalAccount({ cfg: next, accountId: params.accountId });

@@ -353,7 +353,8 @@ type ApplyAccountConfigParams = Parameters<
 >[0];
 
 function createSignalPlugin(
-  afterAccountConfigWritten: SignalAfterAccountConfigWritten,
+  afterAccountConfigWritten?: SignalAfterAccountConfigWritten,
+  setupOverrides: Partial<NonNullable<ChannelPlugin["setup"]>> = {},
 ): ChannelPlugin {
   return {
     ...createChannelTestPluginBase({
@@ -376,6 +377,7 @@ function createSignalPlugin(
         },
       }),
       afterAccountConfigWritten,
+      ...setupOverrides,
     },
   } as ChannelPlugin;
 }
@@ -1199,6 +1201,35 @@ describe("channelsAddCommand", () => {
     expect(runtime.error).toHaveBeenCalledWith(
       'Channel signal post-setup warning for "ops": hook failed',
     );
+  });
+
+  it("prepares account setup input before applying and writing it", async () => {
+    const prepareAccountConfigInput = vi.fn(async ({ input }) => ({
+      ...input,
+      signalTransport: "container" as const,
+    }));
+    const applyAccountConfig = vi.fn(({ cfg, input }: ApplyAccountConfigParams) => ({
+      ...cfg,
+      channels: { signal: { transportKind: input.signalTransport } },
+    }));
+    const plugin = createSignalPlugin(undefined, {
+      prepareAccountConfigInput,
+      applyAccountConfig,
+    });
+    setActivePluginRegistry(createTestRegistry([{ pluginId: "signal", plugin, source: "test" }]));
+
+    await channelsAddCommand(
+      { channel: "signal", account: "ops", httpUrl: "http://signal:8080" },
+      runtime,
+      { hasFlags: true },
+    );
+
+    expect(prepareAccountConfigInput).toHaveBeenCalledTimes(1);
+    expect(applyAccountConfigCall(applyAccountConfig).input).toMatchObject({
+      httpUrl: "http://signal:8080",
+      signalTransport: "container",
+    });
+    expect(writtenChannel("signal")).toEqual({ transportKind: "container" });
   });
 
   it("rechecks persistent authority before direct account post-setup hooks", async () => {

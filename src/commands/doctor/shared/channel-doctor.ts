@@ -64,7 +64,10 @@ export type ChannelDoctorEmptyAllowlistPolicyHooks = {
   ) => boolean;
 };
 
-function collectConfiguredChannelIds(cfg: OpenClawConfig): string[] {
+function collectConfiguredChannelIds(
+  cfg: OpenClawConfig,
+  options: { includeDisabled?: boolean } = {},
+): string[] {
   if (cfg.plugins?.enabled === false) {
     return [];
   }
@@ -81,11 +84,12 @@ function collectConfiguredChannelIds(cfg: OpenClawConfig): string[] {
       if (channelId === "defaults") {
         return false;
       }
-      if (isChannelDoctorBlockedByConfig(channelId, cfg)) {
+      if (!options.includeDisabled && isChannelDoctorBlockedByConfig(channelId, cfg)) {
         return false;
       }
       const entry = channelEntries[channelId];
       return (
+        options.includeDisabled ||
         !entry ||
         typeof entry !== "object" ||
         Array.isArray(entry) ||
@@ -204,13 +208,16 @@ function listChannelDoctorEntries(
   context: ChannelDoctorLookupContext,
   options: {
     readOnlyPluginsById?: ReadonlyMap<string, ChannelDoctorPluginCandidate>;
+    includeDisabled?: boolean;
   } = {},
 ): ChannelDoctorEntry[] {
   if (channelIds.length === 0) {
     return [];
   }
   const selectedIds = new Set(
-    channelIds.filter((id) => !isChannelDoctorBlockedByConfig(id, context.cfg)),
+    channelIds.filter(
+      (id) => options.includeDisabled || !isChannelDoctorBlockedByConfig(id, context.cfg),
+    ),
   );
   if (selectedIds.size === 0) {
     return [];
@@ -343,11 +350,16 @@ export async function collectChannelDoctorStaleConfigMutations(
 ): Promise<ChannelDoctorConfigMutation[]> {
   const mutations: ChannelDoctorConfigMutation[] = [];
   let nextCfg = cfg;
-  const channelIds = options.channelIds ?? collectConfiguredChannelIds(cfg);
-  for (const entry of listChannelDoctorEntries(channelIds, {
-    cfg,
-    env: options.env,
-  })) {
+  const channelIds =
+    options.channelIds ?? collectConfiguredChannelIds(cfg, { includeDisabled: true });
+  for (const entry of listChannelDoctorEntries(
+    channelIds,
+    {
+      cfg,
+      env: options.env,
+    },
+    { includeDisabled: true },
+  )) {
     const mutation = await entry.doctor.cleanStaleConfig?.({ cfg: nextCfg });
     if (!mutation || mutation.changes.length === 0) {
       continue;

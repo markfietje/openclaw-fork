@@ -8,6 +8,7 @@ import {
   DEFAULT_SIGNAL_MANAGED_NATIVE_PORT,
   resolveLocalSignalTransportPort,
 } from "./transport-policy.js";
+import { normalizeSignalTransportUrl } from "./transport-url.js";
 
 const LEGACY_TRANSPORT_FIELDS = [
   "configPath",
@@ -18,7 +19,6 @@ const LEGACY_TRANSPORT_FIELDS = [
   "autoStart",
   "startupTimeoutMs",
   "receiveMode",
-  "ignoreAttachments",
   "ignoreStories",
 ] as const;
 
@@ -55,7 +55,7 @@ function inherited(entry: Record<string, unknown>, parent: Record<string, unknow
 function legacyBaseUrl(entry: Record<string, unknown>, parent: Record<string, unknown>): string {
   const url = optionalString(inherited(entry, parent, "httpUrl"));
   if (url) {
-    return url;
+    return normalizeSignalTransportUrl(url);
   }
   const host = optionalString(inherited(entry, parent, "httpHost")) ?? "127.0.0.1";
   const rawPort = inherited(entry, parent, "httpPort");
@@ -87,7 +87,6 @@ function buildManagedNativeTransport(
   const httpPort = value("httpPort");
   const startupTimeoutMs = value("startupTimeoutMs");
   const receiveMode = value("receiveMode");
-  const ignoreAttachments = value("ignoreAttachments");
   const ignoreStories = value("ignoreStories");
   return {
     kind: "managed-native",
@@ -97,7 +96,6 @@ function buildManagedNativeTransport(
     ...(typeof httpPort === "number" ? { httpPort } : {}),
     ...(typeof startupTimeoutMs === "number" ? { startupTimeoutMs } : {}),
     ...(receiveMode === "on-start" || receiveMode === "manual" ? { receiveMode } : {}),
-    ...(typeof ignoreAttachments === "boolean" ? { ignoreAttachments } : {}),
     ...(typeof ignoreStories === "boolean" ? { ignoreStories } : {}),
   };
 }
@@ -232,9 +230,11 @@ function allocateMigratedManagedPorts(params: {
       return transport;
     }
     const rawPreferredPort = params.entries[index]?.httpPort;
+    const preferredPort =
+      typeof rawPreferredPort === "number" ? rawPreferredPort : transport.httpPort;
     const httpPort = allocateSignalManagedNativePort({
       reservedPorts,
-      ...(typeof rawPreferredPort === "number" ? { preferredPort: rawPreferredPort } : {}),
+      ...(typeof preferredPort === "number" ? { preferredPort } : {}),
     });
     reservedPorts.add(httpPort);
     return { ...transport, httpPort };

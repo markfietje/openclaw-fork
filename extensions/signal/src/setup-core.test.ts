@@ -1,7 +1,7 @@
 // Signal tests cover setup adapter integration with account-owned transport policy.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import { describe, expect, it } from "vitest";
-import { signalSetupAdapter } from "./setup-core.js";
+import { describe, expect, it, vi } from "vitest";
+import { prepareSignalSetupInput, signalSetupAdapter } from "./setup-core.js";
 
 describe("signalSetupAdapter", () => {
   it("uses the setup transport allocator for a second managed account", () => {
@@ -45,19 +45,26 @@ describe("signalSetupAdapter", () => {
     });
   });
 
-  it("keeps an http URL external-native by default", () => {
+  it("detects and persists an omitted HTTP transport kind", async () => {
+    const input = await prepareSignalSetupInput({
+      input: {
+        signalNumber: "+15555550124",
+        httpUrl: "signal-container:8080",
+      },
+      detect: vi.fn().mockResolvedValue({
+        kind: "container",
+        url: "http://signal-container:8080",
+      }),
+    });
     const next = signalSetupAdapter.applyAccountConfig?.({
       cfg: {},
       accountId: "work",
-      input: {
-        signalNumber: "+15555550124",
-        httpUrl: "http://native-signal:8080",
-      },
+      input,
     });
 
     expect(next?.channels?.signal?.accounts?.work?.transport).toEqual({
-      kind: "external-native",
-      url: "http://native-signal:8080",
+      kind: "container",
+      url: "http://signal-container:8080",
     });
   });
 

@@ -1,3 +1,8 @@
+import { createPackageRuntimeEnv } from "../../infra/package-runtime-env.js";
+import {
+  resolvePackageRuntime,
+  runPackageSourceRuntimeGuard,
+} from "../../infra/package-update-lifecycle.js";
 import { runGlobalPackageUpdateSteps } from "../../infra/package-update-steps.js";
 import type { PackageUpdateStepResult } from "../../infra/package-update-types.js";
 import {
@@ -34,6 +39,20 @@ export async function runSourceCheckoutGlobalInstall(params: {
     pkgRoot: params.currentPackageRoot,
   });
   if (installTarget.manager !== "npm") {
+    const runtime = await resolvePackageRuntime({
+      runCommand,
+      timeoutMs: params.timeoutMs,
+      ...(params.nodeRunner === undefined ? {} : { nodePath: params.nodeRunner }),
+      env: params.env,
+      cwd: params.sourceRoot,
+    });
+    const runtimeGuard = await runPackageSourceRuntimeGuard(params.sourceRoot, runtime.version);
+    if (runtimeGuard.exitCode !== 0) {
+      return { steps: [runtimeGuard], failedStep: runtimeGuard };
+    }
+    // pnpm and Bun activate the source checkout in place. Guard first, then keep
+    // lifecycle scripts on the same Node that will relaunch the managed service.
+    const installEnv = createPackageRuntimeEnv(params.env, runtime.nodePath) ?? params.env;
     const installStep = await runUpdateStep({
       name: "global install",
       argv: globalInstallArgs(
@@ -45,12 +64,12 @@ export async function runSourceCheckoutGlobalInstall(params: {
           : null,
       ),
       cwd: params.sourceRoot,
-      env: params.env,
+      env: installEnv,
       timeoutMs: params.timeoutMs,
       progress: params.progress,
     });
     return {
-      steps: [installStep],
+      steps: [runtimeGuard, installStep],
       failedStep: installStep.exitCode === 0 ? null : installStep,
     };
   }

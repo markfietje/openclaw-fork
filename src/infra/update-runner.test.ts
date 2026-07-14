@@ -502,8 +502,20 @@ describe("runGatewayUpdate", () => {
   type InstallCommandExpectation = string | ((argv: string[]) => boolean);
 
   const npmFreshnessArg = "--min-release-age=0";
-  const normalizeNpmFreshnessArgs = (argv: string[]) =>
-    argv.map((arg) => (/^--before=\d{4}-\d{2}-\d{2}T/u.test(arg) ? npmFreshnessArg : arg));
+  const normalizeNpmFreshnessArgs = (argv: string[]) => {
+    // Production pins lifecycle scripts to the selected Node with an absolute npm path
+    // or node plus npm-cli.js. Keep fixtures independent of those executable paths.
+    const npmCommandPath = (argv[0] ?? "").replaceAll("\\", "/");
+    const npmCliPath = (argv[1] ?? "").replaceAll("\\", "/");
+    const normalizedInvocation = /^npm(?:\.cmd)?$/iu.test(npmCommandPath.split("/").at(-1) ?? "")
+      ? ["npm", ...argv.slice(1)]
+      : npmCliPath.endsWith("/npm-cli.js")
+        ? ["npm", ...argv.slice(2)]
+        : argv;
+    return normalizedInvocation.map((arg) =>
+      /^--before=\d{4}-\d{2}-\d{2}T/u.test(arg) ? npmFreshnessArg : arg,
+    );
+  };
 
   const installCommandMatches = (expected: InstallCommandExpectation, argv: string[]) => {
     const normalizedArgv = normalizeNpmFreshnessArgs(argv);
@@ -522,26 +534,28 @@ describe("runGatewayUpdate", () => {
     return prefixIndex < 0 ? argv : [...argv.slice(0, prefixIndex), ...argv.slice(prefixIndex + 2)];
   };
 
-  const recordedPackCallMatches = (call: string, sourceSpec: string) => {
-    const argv = call.split(" ");
-    return isNpmCommand(argv[0]) && argv[1] === "pack" && argv[2] === sourceSpec;
-  };
-
-  const isRecordedPackedNpmInstall = (call: string) => {
+  const recordedStagedNpmInstallMatches = (call: string, sourceSpec: string) => {
     const argv = call.split(" ");
     return (
       isNpmCommand(argv[0]) &&
       argv[1] === "i" &&
       argv[2] === "-g" &&
-      argv.some((arg) => arg.endsWith(".tgz"))
+      argv.includes("--prefix") &&
+      argv.includes("--ignore-scripts") &&
+      argv.includes(sourceSpec)
     );
   };
 
-  const npmGlobalInstallCommand = (spec: string, extraArgs: string[] = []) =>
+  const npmGlobalInstallCommand = (
+    spec: string,
+    extraArgs: string[] = [],
+    sourceArgs: string[] = [],
+  ) =>
     [
       "npm",
       "i",
       "-g",
+      ...sourceArgs,
       "--ignore-scripts",
       spec,
       ...extraArgs,
@@ -563,7 +577,8 @@ describe("runGatewayUpdate", () => {
     let packedSourceSpec: string | null = null;
 
     return async (argv: string[]): Promise<CommandResult> => {
-      const key = normalizeNpmFreshnessArgs(argv).join(" ");
+      const normalizedArgv = normalizeNpmFreshnessArgs(argv);
+      const key = normalizedArgv.join(" ");
       if (key === `git -C ${params.pkgRoot} rev-parse --show-toplevel`) {
         return { stdout: "", stderr: "not a git repository", code: 128 };
       }
@@ -573,12 +588,12 @@ describe("runGatewayUpdate", () => {
       if (key === "pnpm root -g") {
         return { stdout: "", stderr: "", code: 1 };
       }
-      if (isNpmCommand(argv[0]) && argv[1] === "pack") {
-        const destination = argv[argv.indexOf("--pack-destination") + 1];
+      if (isNpmCommand(normalizedArgv[0]) && normalizedArgv[1] === "pack") {
+        const destination = normalizedArgv[normalizedArgv.indexOf("--pack-destination") + 1];
         if (!destination) {
           return { stdout: "", stderr: "missing pack destination", code: 1 };
         }
-        packedSourceSpec = argv[2] ?? "openclaw@latest";
+        packedSourceSpec = normalizedArgv[2] ?? "openclaw@latest";
         packedInstallSpec = await writePackedPackageCandidate(destination, packedSourceSpec);
         return {
           stdout: JSON.stringify([{ filename: path.basename(packedInstallSpec) }]),
@@ -587,7 +602,7 @@ describe("runGatewayUpdate", () => {
         };
       }
       const packedActivationSpec = packedInstallSpec ? `openclaw@file:${packedInstallSpec}` : null;
-      const installArgv = withoutInstallPrefix(argv).map((arg) =>
+      const installArgv = withoutInstallPrefix(normalizedArgv).map((arg) =>
         packedActivationSpec && packedSourceSpec && arg === packedActivationSpec
           ? packedSourceSpec
           : arg,
@@ -2758,7 +2773,8 @@ describe("runGatewayUpdate", () => {
       );
     };
     const runCommand = async (argv: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-      const key = normalizeNpmFreshnessArgs(argv).join(" ");
+      const normalizedArgv = normalizeNpmFreshnessArgs(argv);
+      const key = normalizedArgv.join(" ");
       calls.push(key);
       if (key === `git -C ${params.pkgRoot} rev-parse --show-toplevel`) {
         if (params.gitRootMode === "missing") {
@@ -2778,7 +2794,7 @@ describe("runGatewayUpdate", () => {
         }
         return { stdout: "", stderr: "", code: 1 };
       }
-      if (isNpmCommand(argv[0]) && argv[1] === "view") {
+      if (isNpmCommand(normalizedArgv[0]) && normalizedArgv[1] === "view") {
         return {
           stdout: JSON.stringify({
             "engines.node": ">=0.0.0",
@@ -2788,12 +2804,12 @@ describe("runGatewayUpdate", () => {
           code: 0,
         };
       }
-      if (isNpmCommand(argv[0]) && argv[1] === "pack") {
-        const destination = argv[argv.indexOf("--pack-destination") + 1];
+      if (isNpmCommand(normalizedArgv[0]) && normalizedArgv[1] === "pack") {
+        const destination = normalizedArgv[normalizedArgv.indexOf("--pack-destination") + 1];
         if (!destination) {
           return { stdout: "", stderr: "missing pack destination", code: 1 };
         }
-        packedSourceSpec = argv[2] ?? "openclaw@latest";
+        packedSourceSpec = normalizedArgv[2] ?? "openclaw@latest";
         packedInstallSpec = await writePackedPackageCandidate(destination, packedSourceSpec);
         return {
           stdout: JSON.stringify([{ filename: path.basename(packedInstallSpec) }]),
@@ -2804,7 +2820,7 @@ describe("runGatewayUpdate", () => {
       if (matchesInstallCommand(argv)) {
         await params.onInstall?.(options);
         if (
-          isNpmCommand(argv[0]) &&
+          isNpmCommand(normalizedArgv[0]) &&
           !params.allowMissingInstallGuard &&
           !(await pathExists(path.join(params.pkgRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH)))
         ) {
@@ -2826,7 +2842,10 @@ describe("runGatewayUpdate", () => {
             installPrefix,
             packageRoot,
           });
-          if (!params.allowMissingInstallGuard) {
+          if (
+            !params.allowMissingInstallGuard &&
+            !(await pathExists(path.join(packageRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH)))
+          ) {
             await addPackageInstallGuard(packageRoot);
           }
           return { stdout: "ok", stderr: "", code: 0 };
@@ -2866,8 +2885,7 @@ describe("runGatewayUpdate", () => {
     expect(result.mode).toBe("npm");
     expect(result.before?.version).toBe("1.0.0");
     expect(result.after?.version).toBe("2.0.0");
-    expect(calls.some((call) => recordedPackCallMatches(call, sourceSpec))).toBe(true);
-    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
+    expect(calls.some((call) => recordedStagedNpmInstallMatches(call, sourceSpec))).toBe(true);
   });
 
   it("keeps exact legacy npm targets that predate the install guard", async () => {
@@ -3019,8 +3037,9 @@ describe("runGatewayUpdate", () => {
 
     expect(result.status).toBe("ok");
     expect(result.mode).toBe("npm");
-    expect(calls.some((call) => recordedPackCallMatches(call, "openclaw@latest"))).toBe(true);
-    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
+    expect(calls.some((call) => recordedStagedNpmInstallMatches(call, "openclaw@latest"))).toBe(
+      true,
+    );
   });
 
   it("rejects a tag override for the extended-stable global package channel", async () => {
@@ -3096,12 +3115,11 @@ describe("runGatewayUpdate", () => {
     expect(result.status).toBe("ok");
     expect(result.mode).toBe("npm");
     expect(result.steps.map((s) => s.name)).toEqual([
-      "global update pack",
-      "global install runtime guard",
       "global update",
       "global update (omit optional)",
       "global install runtime guard",
       "global install postinstall",
+      "global install swap",
     ]);
   });
 
@@ -3113,12 +3131,13 @@ describe("runGatewayUpdate", () => {
 
     expect(result.status).toBe("error");
     expect(result.reason).toBe("global-install-failed");
-    expect(result.after?.version).toBe("2.0.0");
+    expect(result.after?.version).toBe("1.0.0");
     expect(result.steps.at(-1)?.stderrTail).toContain(
       "expected installed version 2026.3.23-2, found 2.0.0",
     );
-    expect(calls.some((call) => recordedPackCallMatches(call, "openclaw@2026.3.23-2"))).toBe(true);
-    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
+    expect(
+      calls.some((call) => recordedStagedNpmInstallMatches(call, "openclaw@2026.3.23-2")),
+    ).toBe(true);
   });
 
   it("fails global npm update when bundled runtime sidecars are missing after install", async () => {
@@ -3130,12 +3149,7 @@ describe("runGatewayUpdate", () => {
       installCommand: expectedInstallCommand,
       onInstall: async (options) => {
         const packageRoot = options?.packageRoot ?? pkgRoot;
-        await fs.writeFile(
-          path.join(packageRoot, "package.json"),
-          JSON.stringify({ name: "openclaw", version: "2.0.0" }),
-          "utf-8",
-        );
-        await writeBundledRuntimeSidecars(packageRoot);
+        await writeGlobalPackageVersion(packageRoot);
         const inventory = await writePackageDistInventory(packageRoot);
         expect(inventory).toContain(TELEGRAM_RUNTIME_API);
         await addPackageInstallGuard(packageRoot);
@@ -3281,7 +3295,11 @@ describe("runGatewayUpdate", () => {
   it("uses OPENCLAW_UPDATE_PACKAGE_SPEC for global package updates", async () => {
     const { nodeModules, pkgRoot } = await createGlobalPackageFixture(tempDir);
     const packageSpec = "http://10.211.55.2:8138/openclaw-next.tgz";
-    const expectedInstallCommand = npmGlobalInstallCommand(packageSpec);
+    const expectedInstallCommand = npmGlobalInstallCommand(
+      packageSpec,
+      [],
+      ["--allow-remote=root"],
+    );
     const { calls, runCommand } = createGlobalInstallHarness({
       pkgRoot,
       npmRootOutput: nodeModules,
@@ -3294,13 +3312,8 @@ describe("runGatewayUpdate", () => {
       expect(result.status).toBe("ok");
     });
 
-    expect(
-      calls.some(
-        (call) =>
-          recordedPackCallMatches(call, packageSpec) && call.includes("--allow-remote=root"),
-      ),
-    ).toBe(true);
-    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
+    expect(calls.some((call) => recordedStagedNpmInstallMatches(call, packageSpec))).toBe(true);
+    expect(calls.some((call) => call.includes("--allow-remote=root"))).toBe(true);
   });
 
   it("updates global bun installs when detected", async () => {

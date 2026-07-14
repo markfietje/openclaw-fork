@@ -208,6 +208,25 @@ describe("install runtime enforcement", () => {
     expect(runtime?.version).toBe("24.15.0");
   });
 
+  it("bounds PATH Node probes and fails closed when a wrapper stalls", () => {
+    const probeOptions: Array<{ timeout: number }> = [];
+    const runtime = probePackageCliNodeRuntime({
+      pathEnv: "/opt/node/bin",
+      platform: "linux",
+      run: (_command, _args, options) => {
+        probeOptions.push(options);
+        return {
+          status: null,
+          stdout: "",
+          error: Object.assign(new Error("probe timed out"), { code: "ETIMEDOUT" }),
+        };
+      },
+    });
+
+    expect(runtime).toBeNull();
+    expect(probeOptions).toEqual([expect.objectContaining({ timeout: 10_000 })]);
+  });
+
   it("removes the install guard after runtime validation", () => {
     const markerUrl = new URL("file:///tmp/openclaw-install-guard");
     const remove = vi.fn();

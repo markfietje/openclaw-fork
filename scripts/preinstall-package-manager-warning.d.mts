@@ -36,6 +36,7 @@ export const packagePreinstallRuntime: {
         cwd: string;
         encoding: "utf8";
         env: NodeJS.ProcessEnv;
+        timeout: number;
         windowsHide: boolean;
       },
     ) => {

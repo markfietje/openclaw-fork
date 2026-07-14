@@ -13,6 +13,7 @@ const NODE_ENGINE_CLAUSE_RE = /^\s*>=\s*v?(\d+\.\d+\.\d+)(?:\s+<\s*v?(\d+(?:\.\d
 const NODE_VERSION_RE = /(\d+)\.(\d+)\.(\d+)/u;
 const NODE_RUNTIME_PROBE_SOURCE =
   "process.stdout.write(JSON.stringify({version:process.versions.node??null,bunVersion:process.versions.bun??null,execPath:process.execPath??null}))";
+const PACKAGE_CLI_NODE_PROBE_TIMEOUT_MS = 10_000;
 const PACKAGE_INSTALL_GUARD_RELATIVE_PATH = "dist/openclaw-install-guard";
 
 function normalizeEnvValue(value) {
@@ -144,6 +145,8 @@ function probePackageCliNodeRuntime({
       cwd,
       encoding: "utf8",
       env,
+      // A stalled PATH wrapper must not hang package installation or updater recovery.
+      timeout: PACKAGE_CLI_NODE_PROBE_TIMEOUT_MS,
       windowsHide: true,
     });
     if (

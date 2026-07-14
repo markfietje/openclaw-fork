@@ -488,6 +488,7 @@ async function dispatchReplyFromConfigInner(
     getDispatchAbortOperation,
     getDispatchAbortSignal,
     getDispatchReplyOperation,
+    getCurrentRunId,
     getObservedReplyDelivery,
     getPreDispatchAbortSignal,
     getReplyOptions,
@@ -721,7 +722,7 @@ async function dispatchReplyFromConfigInner(
       isGroup,
       groupId,
       replyKind: options?.kind ?? "final",
-      runId: params.replyOptions?.runId,
+      runId: getCurrentRunId(),
     });
   };
 

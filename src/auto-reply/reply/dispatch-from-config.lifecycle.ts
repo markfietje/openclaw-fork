@@ -349,6 +349,7 @@ export function createDispatchReplyOperationCoordinator(params: {
   const getQueuedFollowupAbortSignal = () =>
     dispatchReplyOperation?.abortSignal ?? params.replyOptions?.abortSignal;
   let observedReplyDelivery = false;
+  let currentRunId = params.replyOptions?.runId;
   const markObservedReplyDelivery = async () => {
     if (observedReplyDelivery) {
       return;
@@ -356,17 +357,13 @@ export function createDispatchReplyOperationCoordinator(params: {
     observedReplyDelivery = true;
     await params.replyOptions?.onObservedReplyDelivery?.();
   };
-  const getReplyOptions = () => {
+  const getReplyOptions = (): DispatchFromConfigParams["replyOptions"] => {
     const abortSignal = getDispatchAbortSignal();
-    const onAgentRunStart = params.messageAuditTerminal
-      ? (runId: string) => {
-          params.messageAuditTerminal?.observeRunId(runId);
-          params.replyOptions?.onAgentRunStart?.(runId);
-        }
-      : undefined;
-    if (!abortSignal && !onAgentRunStart) {
-      return params.replyOptions;
-    }
+    const onAgentRunStart = (runId: string) => {
+      currentRunId = runId;
+      params.messageAuditTerminal?.observeRunId(runId);
+      params.replyOptions?.onAgentRunStart?.(runId);
+    };
     return {
       ...params.replyOptions,
       ...(abortSignal
@@ -375,7 +372,7 @@ export function createDispatchReplyOperationCoordinator(params: {
             queuedFollowupAbortSignal: getQueuedFollowupAbortSignal(),
           }
         : {}),
-      ...(onAgentRunStart ? { onAgentRunStart } : {}),
+      onAgentRunStart,
       ...(dispatchReplyOperation ? { replyOperation: dispatchReplyOperation } : {}),
     };
   };
@@ -426,6 +423,7 @@ export function createDispatchReplyOperationCoordinator(params: {
     getDispatchAbortOperation: () => dispatchAbortOperation,
     getDispatchAbortSignal,
     getDispatchReplyOperation: () => dispatchReplyOperation,
+    getCurrentRunId: () => currentRunId,
     getReplyOptions,
     getObservedReplyDelivery: () => observedReplyDelivery,
     getPreDispatchAbortSignal,

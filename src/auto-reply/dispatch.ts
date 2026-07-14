@@ -408,7 +408,10 @@ function buildReplyPayloadSendingBeforeDeliver(
           runId,
         },
       });
-      return hookedPayload && hasOutboundReplyContent(hookedPayload) ? hookedPayload : null;
+      if (!hookedPayload || !hasOutboundReplyContent(hookedPayload)) {
+        return null;
+      }
+      return runId ? setReplyPayloadMetadata(hookedPayload, { agentRunId: runId }) : hookedPayload;
     },
   );
 }

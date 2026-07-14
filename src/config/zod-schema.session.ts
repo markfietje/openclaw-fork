@@ -153,6 +153,7 @@ export const SessionSchema = z
   .optional();
 
 const ResponseUsageModeSchema = z.enum(["on", "off", "tokens", "full"]);
+const StatusFooterModeSchema = z.enum(["off", "minimal", "activity"]);
 
 export const MessagesSchema = z
   .object({
@@ -162,6 +163,9 @@ export const MessagesSchema = z
     usageTemplate: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     responseUsage: z
       .union([ResponseUsageModeSchema, z.record(z.string(), ResponseUsageModeSchema)])
+      .optional(),
+    statusFooter: z
+      .union([StatusFooterModeSchema, z.record(z.string(), StatusFooterModeSchema)])
       .optional(),
     groupChat: GroupChatSchema,
     queue: QueueSchema,

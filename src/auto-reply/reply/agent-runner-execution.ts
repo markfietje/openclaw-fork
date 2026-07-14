@@ -73,6 +73,10 @@ import { buildAgentRuntimeOutcomePlan } from "../../agents/runtime-plan/build.js
 import { withLocalSessionPlacementTurnAdmission } from "../../agents/session-placement-admission.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveCandidateThinkingLevel } from "../../agents/thinking-runtime.js";
+import {
+  finalizeStatusFooterRun,
+  noteStatusFooterRunStarted,
+} from "../../channels/status-footer.js";
 import { resolveGroupSessionKey, type SessionEntry } from "../../config/sessions.js";
 import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { resolveSilentReplyPolicy } from "../../config/silent-reply.js";
@@ -1430,6 +1434,7 @@ export function resolveRunAfterAutoFallbackPrimaryProbeRecheck(params: {
 async function runAgentTurnWithFallbackInternal(
   params: {
     commandBody: string;
+    runStartedAt?: number;
     transcriptCommandBody?: string;
     followupRun: FollowupRun;
     sessionCtx: TemplateContext;
@@ -3381,6 +3386,15 @@ async function runAgentTurnWithFallbackInternal(
 export async function runAgentTurnWithFallback(
   params: Parameters<typeof runAgentTurnWithFallbackInternal>[0],
 ): Promise<AgentRunLoopResult> {
+  const runId = params.opts?.runId ?? crypto.randomUUID();
+  const runStartedAt = params.runStartedAt ?? Date.now();
+  const runParams = params.opts?.runId
+    ? params
+    : {
+        ...params,
+        opts: { ...params.opts, runId },
+      };
+  noteStatusFooterRunStarted(runId, runStartedAt);
   let terminalOutcomeCommitted = false;
   const commitTerminalOutcome = () => {
     if (terminalOutcomeCommitted) {
@@ -3390,8 +3404,9 @@ export async function runAgentTurnWithFallback(
     params.replyOperation?.freezeAbort();
   };
   try {
-    return await runAgentTurnWithFallbackInternal(params, commitTerminalOutcome);
+    return await runAgentTurnWithFallbackInternal(runParams, commitTerminalOutcome);
   } finally {
     commitTerminalOutcome();
+    await finalizeStatusFooterRun(runId);
   }
 }

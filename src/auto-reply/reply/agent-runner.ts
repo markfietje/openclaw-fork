@@ -1708,6 +1708,7 @@ export async function runReplyAgent(params: {
     const runOutcome = await traceAgentPhase("reply.run_agent_turn", () =>
       runAgentTurnWithFallback({
         commandBody,
+        runStartedAt,
         transcriptCommandBody,
         followupRun,
         sessionCtx,

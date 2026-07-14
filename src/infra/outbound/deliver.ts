@@ -14,6 +14,8 @@ import type {
   ChannelMessageSendResult,
 } from "../../channels/message/types.js";
 import { unknownSendReconciliationKinds } from "../../channels/message/types.js";
+import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
+import { channelSupportsMessageCapabilityForChannel } from "../../channels/plugins/message-action-discovery.js";
 import { adaptMessagePresentationForChannel } from "../../channels/plugins/outbound/interactive.js";
 import { loadChannelOutboundAdapter } from "../../channels/plugins/outbound/load.js";
 import type {
@@ -23,6 +25,14 @@ import type {
   ChannelOutboundPayloadContext,
   ChannelOutboundTargetRef,
 } from "../../channels/plugins/types.adapters.js";
+import {
+  createStatusFooterConversationKey,
+  decorateIntermediate,
+  finalize as finalizeStatusFooter,
+  noteActivity,
+  resolveStatusFooterMode,
+  STATUS_FOOTER_MAX_RENDERED_CHARS,
+} from "../../channels/status-footer.js";
 import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-mirror.js";
 import type { ReplyToMode } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -756,7 +766,25 @@ type DeliverOutboundPayloadsCoreParams = {
   mirror?: DeliveryMirror;
   silent?: boolean;
   gatewayClientScopes?: readonly string[];
+  /** @internal Agent-turn delivery phase used only for transport-layer status decoration. */
+  statusFooter?: { kind: "tool" | "block" | "final"; runId?: string };
 };
+
+type StatusFooterDeliveryContext = NonNullable<DeliverOutboundPayloadsCoreParams["statusFooter"]>;
+
+function resolveStatusFooterDeliveryContext(
+  params: Pick<DeliverOutboundPayloadsCoreParams, "replyPayloadSendingHook" | "statusFooter">,
+): StatusFooterDeliveryContext | undefined {
+  if (params.statusFooter) {
+    const runId = params.statusFooter.runId ?? params.replyPayloadSendingHook?.runId;
+    return { ...params.statusFooter, ...(runId ? { runId } : {}) };
+  }
+  const hook = params.replyPayloadSendingHook;
+  if (!hook) {
+    return undefined;
+  }
+  return { kind: hook.kind, ...(hook.runId ? { runId: hook.runId } : {}) };
+}
 
 /**
  * @deprecated Direct outbound delivery is compatibility/runtime substrate.
@@ -813,6 +841,29 @@ function deliveryKindForPayload(
     return "other";
   }
   return "text";
+}
+
+function isStatusFooterEligiblePayload(payload: ReplyPayload): boolean {
+  return Boolean(
+    payload.text?.trim() &&
+    payload.isError !== true &&
+    payload.isReasoning !== true &&
+    payload.isCommentary !== true &&
+    payload.isCompactionNotice !== true &&
+    payload.isFallbackNotice !== true &&
+    payload.isStatusNotice !== true &&
+    !payload.presentation &&
+    !payload.interactive &&
+    !payload.channelData,
+  );
+}
+
+function resolveDeliveryMessageId(delivery: OutboundDeliveryResult): string | undefined {
+  return (
+    delivery.messageId ??
+    delivery.receipt?.primaryPlatformMessageId ??
+    delivery.receipt?.platformMessageIds.at(-1)
+  );
 }
 
 function emitMessageDeliveryStarted(params: {
@@ -1344,6 +1395,14 @@ export async function deliverOutboundPayloadsInternal(
 ): Promise<OutboundDeliveryResult[]> {
   const auditStartedAt = Date.now();
   const { channel, to, payloads } = params;
+  const statusFooter = resolveStatusFooterDeliveryContext(params);
+  const statusFooterConversationKey = createStatusFooterConversationKey(channel, to, {
+    ...(params.accountId ? { accountId: params.accountId } : {}),
+    ...(params.threadId !== undefined ? { threadId: params.threadId } : {}),
+  });
+  if (statusFooter?.kind === "final") {
+    await finalizeStatusFooter(statusFooterConversationKey, statusFooter.runId);
+  }
   const emitPreQueueFailure = (): void => {
     // Recovery owns the stable queue terminal for replayed intents.
     if (params.deliveryQueueId !== undefined) {
@@ -2017,6 +2076,63 @@ async function deliverOutboundPayloadsCore(
   const chunkMode = handler.chunker
     ? (params.formatting?.chunkMode ?? resolveChunkMode(cfg, channel, accountId))
     : "length";
+  const statusFooterContext = resolveStatusFooterDeliveryContext(params);
+  const statusFooterConversationKey = createStatusFooterConversationKey(channel, to, {
+    ...(accountId ? { accountId } : {}),
+    ...(params.threadId !== undefined ? { threadId: params.threadId } : {}),
+  });
+  const statusFooterMode = resolveStatusFooterMode(cfg, channel);
+  const statusFooterChannel = normalizeChannelId(channel);
+  const statusFooterEnabled = Boolean(
+    statusFooterContext &&
+    statusFooterContext.kind !== "final" &&
+    statusFooterMode !== "off" &&
+    (textLimit === undefined || textLimit > STATUS_FOOTER_MAX_RENDERED_CHARS) &&
+    statusFooterChannel &&
+    channelSupportsMessageCapabilityForChannel(
+      {
+        cfg,
+        channel,
+        currentChannelProvider: channel,
+        currentChannelId: to,
+        accountId,
+        sessionKey: params.session?.key,
+        agentId: params.session?.agentId,
+      },
+      "message-edit",
+    ),
+  );
+  const editStatusFooterMessage = async (messageId: string, text: string): Promise<void> => {
+    if (!statusFooterChannel) {
+      throw new Error(`Status footer edit unavailable for channel: ${channel}`);
+    }
+    const actions = getChannelPlugin(statusFooterChannel)?.actions;
+    if (!actions?.handleAction || actions.supportsAction?.({ action: "edit" }) === false) {
+      throw new Error(`Status footer edit unavailable for channel: ${channel}`);
+    }
+    await actions.handleAction({
+      channel: statusFooterChannel,
+      action: "edit",
+      cfg,
+      params: {
+        to,
+        messageId,
+        content: text,
+        ...(params.formatting?.parseMode === "HTML" ? { textMode: "html" } : {}),
+      },
+      ...(accountId ? { accountId } : {}),
+      ...(params.session?.key ? { sessionKey: params.session.key } : {}),
+      ...(params.session?.agentId ? { agentId: params.session.agentId } : {}),
+      ...(params.gatewayClientScopes ? { gatewayClientScopes: params.gatewayClientScopes } : {}),
+      toolContext: {
+        currentChannelProvider: statusFooterChannel,
+        currentChannelId: to,
+        currentMessagingTarget: to,
+        currentMessageId: messageId,
+        skipCrossContextDecoration: true,
+      },
+    });
+  };
   const { resolveCurrentReplyTo, applyReplyToConsumption } = createReplyToDeliveryPolicy({
     replyToId: params.replyToId,
     replyToMode: params.replyToMode,
@@ -2026,14 +2142,19 @@ async function deliverOutboundPayloadsCore(
     sendHandler: ChannelHandler,
     text: string,
     overrides: OutboundMessageSendOverrides = {},
+    options?: { statusFooter?: boolean },
   ) => {
+    const plannedTextLimit =
+      options?.statusFooter === true && textLimit !== undefined
+        ? textLimit - STATUS_FOOTER_MAX_RENDERED_CHARS
+        : textLimit;
     const units = planOutboundTextMessageUnits({
       text,
       overrides,
       chunker: sendHandler.chunker,
       chunkerMode: sendHandler.chunkerMode,
       chunkedTextFormatting: sendHandler.chunkedTextFormatting,
-      textLimit,
+      textLimit: plannedTextLimit,
       chunkMode,
       formatting: params.formatting,
       consumeReplyTo: (value) =>
@@ -2041,12 +2162,26 @@ async function deliverOutboundPayloadsCore(
           consumeImplicitReply: value.replyToIdSource === "implicit",
         }),
     });
-    for (const unit of units) {
+    for (const [index, unit] of units.entries()) {
       if (unit.kind !== "text") {
         continue;
       }
       throwIfAborted(abortSignal);
-      await recordIdentifiedDeliveryResult(await sendHandler.sendText(unit.text, unit.overrides));
+      const shouldDecorate = options?.statusFooter === true && index === units.length - 1;
+      const delivery = shouldDecorate
+        ? await decorateIntermediate({
+            conversationKey: statusFooterConversationKey,
+            mode: statusFooterMode,
+            runId: statusFooterContext?.runId,
+            textWithoutFooter: unit.text,
+            send: async (decoratedText) =>
+              await sendHandler.sendText(decoratedText, unit.overrides),
+            getMessageId: resolveDeliveryMessageId,
+            edit: editStatusFooterMessage,
+            escapeHtml: params.formatting?.parseMode === "HTML",
+          })
+        : await sendHandler.sendText(unit.text, unit.overrides);
+      await recordIdentifiedDeliveryResult(delivery);
     }
   };
   const normalizedPayloads = normalizePayloadsForChannelDelivery(outboundPayloadPlan, handler);
@@ -2241,6 +2376,15 @@ async function deliverOutboundPayloadsCore(
         continue;
       }
       const effectivePayloadSummary = buildPayloadSummary(effectivePayload);
+      if (
+        statusFooterEnabled &&
+        statusFooterMode === "activity" &&
+        statusFooterContext?.kind === "tool" &&
+        effectivePayload.text &&
+        isStatusFooterEligiblePayload(effectivePayload)
+      ) {
+        noteActivity(statusFooterConversationKey, effectivePayload.text, statusFooterContext.runId);
+      }
       assertStableMediaFanout(params, payloadIndex, originalMediaCount, effectivePayloadSummary);
       payloadSummary = effectivePayloadSummary;
       const deliveryHandler = await getDeliveryHandler(payloadSummary.mediaUrls);
@@ -2336,7 +2480,9 @@ async function deliverOutboundPayloadsCore(
             ),
           );
         } else {
-          await sendTextChunks(deliveryHandler, payloadSummary.text, sendOverrides);
+          await sendTextChunks(deliveryHandler, payloadSummary.text, sendOverrides, {
+            statusFooter: statusFooterEnabled && isStatusFooterEligiblePayload(effectivePayload),
+          });
         }
         const deliveredResults = results.slice(beforeCount);
         if (deliveredResults.length > 0) {

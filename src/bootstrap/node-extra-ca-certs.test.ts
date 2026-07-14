@@ -1,10 +1,6 @@
 // Covers automatic NODE_EXTRA_CA_CERTS discovery and validation.
 import { describe, expect, it } from "vitest";
-import {
-  isNodeVersionManagerRuntime,
-  resolveAutoNodeExtraCaCerts,
-  resolveLinuxSystemCaBundle,
-} from "./node-extra-ca-certs.js";
+import { resolveAutoNodeExtraCaCerts } from "./node-extra-ca-certs.js";
 
 const DEBIAN_CA_BUNDLE_PATH = "/etc/ssl/certs/ca-certificates.crt";
 const FEDORA_CA_BUNDLE_PATH = "/etc/pki/tls/certs/ca-bundle.crt";
@@ -16,6 +12,33 @@ function allowOnly(path: string) {
       throw new Error("ENOENT");
     }
   };
+}
+
+type ResolveAutoParams = NonNullable<Parameters<typeof resolveAutoNodeExtraCaCerts>[0]>;
+
+// Exercise private detection through the public resolver without widening production exports.
+function resolveLinuxSystemCaBundle(
+  params: Pick<ResolveAutoParams, "platform" | "accessSync">,
+): string | undefined {
+  return resolveAutoNodeExtraCaCerts({
+    env: { NVM_DIR: "/home/test/.nvm" },
+    execPath: "/usr/bin/node",
+    ...params,
+  });
+}
+
+function isNodeVersionManagerRuntime(
+  env: Record<string, string | undefined>,
+  execPath: string,
+): boolean {
+  return (
+    resolveAutoNodeExtraCaCerts({
+      env,
+      platform: "linux",
+      execPath,
+      accessSync: allowOnly(DEBIAN_CA_BUNDLE_PATH),
+    }) === DEBIAN_CA_BUNDLE_PATH
+  );
 }
 
 describe("resolveLinuxSystemCaBundle", () => {

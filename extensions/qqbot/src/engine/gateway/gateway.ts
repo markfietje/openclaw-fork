@@ -138,7 +138,7 @@ export async function startGateway(ctx: CoreGatewayContext): Promise<void> {
       sessionStoreReader,
       allowTextCommands: groupOpts.allowTextCommands,
       isControlCommand: groupOpts.isControlCommand,
-      resolveGroupIntroHint: groupOpts.resolveIntroHint,
+      resolveIntroHint: groupOpts.resolveIntroHint,
       adapters,
     });
 

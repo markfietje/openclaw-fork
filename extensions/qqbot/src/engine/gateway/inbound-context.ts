@@ -80,7 +80,7 @@ export interface InboundPipelineDeps {
   sessionStoreReader?: SessionStoreReader;
   allowTextCommands?: boolean;
   isControlCommand?: (content: string) => boolean;
-  resolveGroupIntroHint?: (params: {
+  resolveIntroHint?: (params: {
     cfg: unknown;
     accountId: string;
     groupId: string;

@@ -85,7 +85,7 @@ export function runGroupGateStage(input: GroupGateStageInput): GroupGateStageRes
     requireMention: activation === "mention",
   });
 
-  const introHint = deps.resolveGroupIntroHint?.({
+  const introHint = deps.resolveIntroHint?.({
     cfg,
     accountId,
     groupId: groupOpenid,

@@ -1953,12 +1953,14 @@ function main() {
     : renderedRecord;
   const effectiveRenderedRecordReferences =
     contributionRecordMetadataReferences(effectiveRenderedRecord);
-  let priorRecord = effectiveRenderedRecord;
+  let seedRecord = { legacyIssues: new Map(), pullRequests: new Map() };
   if (options.seedRef) {
     const seedChangelog = git(["show", `${options.seedRef}:CHANGELOG.md`]);
     const seedSection = sectionFor(seedChangelog, options.version);
-    priorRecord = mergeContributionRecords(priorRecord, contributionRecordFor(seedSection));
+    seedRecord = contributionRecordFor(seedSection);
   }
+  seedRecord = withoutExcludedContributionRecords(seedRecord, excludedRecordedReferences);
+  let priorRecord = mergeContributionRecords(effectiveRenderedRecord, seedRecord);
   priorRecord = withoutExcludedContributionRecords(priorRecord, excludedRecordedReferences);
   const recordedReferences = contributionRecordMetadataReferences(priorRecord);
   const revertedRecordedReferences = recordedReferences.filter((number) =>
@@ -1981,7 +1983,7 @@ function main() {
     recordedReferences: effectiveRenderedRecordReferences,
     sourcePullRequests: source.pullRequests,
     sourceReferences: source.references,
-    seededPullRequests: new Set(priorRecord.pullRequests.keys()),
+    seededPullRequests: new Set(seedRecord.pullRequests.keys()),
     nodes,
   });
   if (contamination.length > 0) {

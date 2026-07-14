@@ -241,6 +241,15 @@ export function validateFullReleaseValidationManifest({
       `Full release validation workflow ref mismatch: expected ${expectedWorkflowRef}, got ${manifest.workflowRef ?? "<missing>"}.`,
     );
   }
+  if (
+    npmDistTag === "extended-stable" &&
+    manifest.releaseProfile !== "stable" &&
+    manifest.releaseProfile !== "full"
+  ) {
+    throw new Error(
+      `Extended-stable npm publication requires stable or full release validation; got ${manifest.releaseProfile ?? "<missing>"}.`,
+    );
+  }
   return manifest;
 }
 

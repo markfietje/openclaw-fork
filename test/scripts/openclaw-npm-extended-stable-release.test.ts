@@ -387,20 +387,24 @@ describe("Full Validation manifest identity", () => {
     targetSha: sha,
     runId: "123",
     runAttempt: "2",
+    releaseProfile: "stable",
   };
 
-  it("accepts the exact branch and target SHA", () => {
-    expect(
-      validateFullReleaseValidationManifest({
-        manifest: valid,
-        npmDistTag: "extended-stable",
-        expectedWorkflowRef: branch,
-        expectedSha: sha,
-        expectedRunId: "123",
-        expectedRunAttempt: "2",
-      }),
-    ).toBe(valid);
-  });
+  it.each(["stable", "full"])(
+    "accepts %s validation for the exact branch and target SHA",
+    (releaseProfile) => {
+      expect(
+        validateFullReleaseValidationManifest({
+          manifest: { ...valid, releaseProfile },
+          npmDistTag: "extended-stable",
+          expectedWorkflowRef: branch,
+          expectedSha: sha,
+          expectedRunId: "123",
+          expectedRunAttempt: "2",
+        }),
+      ).toMatchObject({ ...valid, releaseProfile });
+    },
+  );
 
   it.each([
     ["wrong workflow ref", { workflowRef: "main" }],
@@ -409,6 +413,8 @@ describe("Full Validation manifest identity", () => {
     ["missing target SHA", { targetSha: undefined }],
     ["wrong run ID", { runId: "124" }],
     ["wrong run attempt", { runAttempt: "1" }],
+    ["beta validation profile", { releaseProfile: "beta" }],
+    ["missing validation profile", { releaseProfile: undefined }],
   ])("rejects %s", (_label, changes) => {
     expect(() =>
       validateFullReleaseValidationManifest({

@@ -469,7 +469,7 @@ async function runGitUpdate(params: {
     steps.push(...sourceInstall.steps);
     return {
       ...updateResult,
-      status: sourceInstall.failedStep ? "error" : "ok",
+      status: sourceInstall.failedStep ? "error" : updateResult.status,
       steps,
       durationMs: Date.now() - params.startedAt,
     };

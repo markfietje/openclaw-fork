@@ -3,7 +3,6 @@ import { Type } from "typebox";
 import { closedObject } from "./closed-object.js";
 import { NonEmptyString } from "./primitives.js";
 
-/** Stable presentation category for a session row. */
 export const SessionPresentationFamilySchema = Type.Union([
   Type.Literal("main"),
   Type.Literal("direct"),
@@ -34,7 +33,6 @@ export const SessionPresentationTitleSourceSchema = Type.Union([
   Type.Literal("worktree"),
 ]);
 
-/** Non-sensitive, client-ready identity and display metadata for a session row. */
 export const SessionPresentationSchema = closedObject({
   title: NonEmptyString,
   titleSource: SessionPresentationTitleSourceSchema,

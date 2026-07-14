@@ -481,6 +481,7 @@ import {
   FsListDirParamsSchema,
   FsListDirResultSchema,
 } from "./schema.js";
+
 // Validator names mirror schemas so callers can pair them with wire contracts.
 export const validateCommandsListParams = lazyCompile(CommandsListParamsSchema);
 export const validateConnectParams = lazyCompile(ConnectParamsSchema);

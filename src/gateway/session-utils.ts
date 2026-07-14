@@ -105,7 +105,7 @@ import { estimateUsageCost, resolveModelCostConfig } from "../utils/usage-format
 import { listGatewayAgentIds } from "./agent-list.js";
 import { sessionHasAutomation } from "./session-automation-index.js";
 import { sortAndLimitSessionEntries, type SessionEntryPair } from "./session-list-order.js";
-import { sessionPresentationForRow } from "./session-presentation.js";
+import { buildSessionPresentationForRow } from "./session-presentation.js";
 import {
   resolveSessionStoreAgentId,
   resolveSessionStoreKey,
@@ -1915,18 +1915,13 @@ export function buildGatewaySessionRow(params: {
   const id = parsed?.id;
   const origin = entry?.origin;
   const isGroupSession = isGroupOrChannelDisplaySession(entry, parsed);
-  // A user-assigned label is an explicit rename; it must win over stored
-  // channel-derived display names or renames silently vanish on refresh.
-  // Group sessions prefer the human chat title (subject/#channel) over the
-  // stored compact token displayName (e.g. "slack:g-general").
-  const preferredDisplayName = isGroupSession
+  // Labels and human group titles outrank transport-derived display names.
+  const presentationDisplayName = isGroupSession
     ? buildGroupDisplayTitle({ subject, groupChannel, space })
     : entry?.displayName;
-  // Non-group display names are persisted session titles. Group displayName
-  // values can be transport tokens, so only pass their known-safe human title.
   const displayName =
     entry?.label ??
-    preferredDisplayName ??
+    presentationDisplayName ??
     entry?.displayName ??
     (isGroupSession && channel
       ? buildGroupDisplayName({
@@ -2137,7 +2132,8 @@ export function buildGatewaySessionRow(params: {
         }),
       ));
 
-  let derivedTitle: string | undefined, lastMessagePreview: string | undefined;
+  let derivedTitle: string | undefined;
+  let lastMessagePreview: string | undefined;
   if (entry?.sessionId && (params.includeDerivedTitles || params.includeLastMessage)) {
     const fields = readScopedSessionTitleFieldsFromTranscript({
       agentId: sessionAgentId,
@@ -2179,7 +2175,7 @@ export function buildGatewaySessionRow(params: {
     !lightweight && entry ? projectPluginSessionExtensionsSync({ sessionKey: key, entry }) : [];
   return {
     key,
-    presentation: sessionPresentationForRow(cfg, key, sessionAgentId, preferredDisplayName, entry),
+    presentation: buildSessionPresentationForRow(params, sessionAgentId, presentationDisplayName),
     spawnedBy: subagentOwner || entry?.spawnedBy,
     spawnedWorkspaceDir: entry?.spawnedWorkspaceDir,
     spawnedCwd: entry?.spawnedCwd,

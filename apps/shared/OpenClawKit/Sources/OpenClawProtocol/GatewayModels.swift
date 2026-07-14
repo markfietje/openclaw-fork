@@ -79,6 +79,36 @@ public enum NodePresenceAliveReason: String, Codable, Sendable {
     case connect = "connect"
 }
 
+public enum SessionPresentationFamily: String, Codable, Sendable {
+    case main = "main"
+    case direct = "direct"
+    case group = "group"
+    case channel = "channel"
+    case thread = "thread"
+    case cron = "cron"
+    case heartbeat = "heartbeat"
+    case subagent = "subagent"
+    case acp = "acp"
+    case dashboard = "dashboard"
+    case tui = "tui"
+    case explicit = "explicit"
+    case hook = "hook"
+    case harness = "harness"
+    case voice = "voice"
+    case dreaming = "dreaming"
+    case system = "system"
+    case custom = "custom"
+    case global = "global"
+    case unknown = "unknown"
+}
+
+public enum SessionPresentationTitleSource: String, Codable, Sendable {
+    case label = "label"
+    case displayname = "displayName"
+    case generated = "generated"
+    case worktree = "worktree"
+}
+
 public enum SessionPlacementState: String, Codable, Sendable {
     case local = "local"
     case requested = "requested"
@@ -2710,6 +2740,56 @@ public struct SessionsListParams: Codable, Sendable {
         case agentid = "agentId"
         case search
         case archived
+    }
+}
+
+public struct SessionPresentation: Codable, Sendable {
+    public let title: String
+    public let titlesource: SessionPresentationTitleSource
+    public let subtitle: String?
+    public let family: SessionPresentationFamily
+    public let agentid: String?
+    public let channel: String?
+    public let accountid: String?
+    public let peerkind: AnyCodable?
+    public let ismain: Bool
+    public let isbackground: Bool
+
+    public init(
+        title: String,
+        titlesource: SessionPresentationTitleSource,
+        subtitle: String? = nil,
+        family: SessionPresentationFamily,
+        agentid: String? = nil,
+        channel: String? = nil,
+        accountid: String? = nil,
+        peerkind: AnyCodable? = nil,
+        ismain: Bool,
+        isbackground: Bool)
+    {
+        self.title = title
+        self.titlesource = titlesource
+        self.subtitle = subtitle
+        self.family = family
+        self.agentid = agentid
+        self.channel = channel
+        self.accountid = accountid
+        self.peerkind = peerkind
+        self.ismain = ismain
+        self.isbackground = isbackground
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case title
+        case titlesource = "titleSource"
+        case subtitle
+        case family
+        case agentid = "agentId"
+        case channel
+        case accountid = "accountId"
+        case peerkind = "peerKind"
+        case ismain = "isMain"
+        case isbackground = "isBackground"
     }
 }
 

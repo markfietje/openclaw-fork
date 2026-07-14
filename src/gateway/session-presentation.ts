@@ -1,4 +1,3 @@
-/** Builds client-ready, non-sensitive presentation metadata for Gateway session rows. */
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -34,6 +33,20 @@ const BACKGROUND_FAMILIES = new Set<SessionPresentationFamily>([
   "system",
 ]);
 
+type GatewaySessionPresentationParams = {
+  key: string;
+  agentId?: string;
+  displayName?: string;
+  entry?: SessionEntry;
+  isMain: boolean;
+};
+
+type SessionPresentationRowContext = {
+  cfg: OpenClawConfig;
+  key: string;
+  entry?: SessionEntry;
+};
+
 function capitalize(value: string): string {
   return value.length > 0 ? `${value.charAt(0).toUpperCase()}${value.slice(1)}` : value;
 }
@@ -58,7 +71,7 @@ function formatWorktree(worktree: SessionEntry["worktree"]): string | undefined 
   }
   const repoRoot = normalizeOptionalString(worktree.repoRoot);
   const branch = normalizeOptionalString(worktree.branch);
-  const repo = repoRoot?.split(/[\\/]/).findLast(Boolean);
+  const repo = repoRoot?.split(/[\\/]/).findLast((part) => part.length > 0);
   const shortBranch = branch?.startsWith("openclaw/") ? branch.slice("openclaw/".length) : branch;
   if (repo && shortBranch) {
     return `${repo} ⎇ ${shortBranch}`;
@@ -75,7 +88,7 @@ function fallbackTitle(params: {
   family: SessionPresentationFamily;
   rest: string;
   channel?: string;
-  worktree?: SessionEntry["worktree"];
+  worktreeTitle?: string;
 }): string {
   const channel = params.channel ? capitalize(params.channel) : undefined;
   switch (params.family) {
@@ -102,7 +115,7 @@ function fallbackTitle(params: {
     case "acp":
       return "ACP session";
     case "dashboard":
-      return formatWorktree(params.worktree) ?? "New session";
+      return params.worktreeTitle ?? "New session";
     case "tui":
       return "Terminal session";
     case "explicit":
@@ -120,47 +133,60 @@ function fallbackTitle(params: {
     case "custom":
       return "Session";
   }
+  return "Session";
 }
 
 function classifyRest(rest: string): SessionPresentationFamily {
   const normalized = normalizeLowercaseStringOrEmpty(rest);
-  if (normalized.startsWith("dashboard:")) return "dashboard";
-  if (normalized.startsWith("tui-")) return "tui";
-  if (normalized.startsWith("explicit:")) return "explicit";
-  if (normalized.startsWith("hook:")) return "hook";
-  if (normalized.startsWith("harness:")) return "harness";
-  if (normalized.startsWith("voice:")) return "voice";
-  if (normalized.startsWith("dreaming-narrative-")) return "dreaming";
-  if (
+  if (normalized.startsWith("dashboard:")) {
+    return "dashboard";
+  }
+  if (normalized.startsWith("tui-")) {
+    return "tui";
+  }
+  if (normalized.startsWith("explicit:")) {
+    return "explicit";
+  }
+  if (normalized.startsWith("hook:")) {
+    return "hook";
+  }
+  if (normalized.startsWith("harness:")) {
+    return "harness";
+  }
+  if (normalized.startsWith("voice:")) {
+    return "voice";
+  }
+  if (normalized.startsWith("dreaming-narrative-")) {
+    return "dreaming";
+  }
+  const isSystem =
     normalized === "boot" ||
     normalized.startsWith("commitments:") ||
-    normalized.startsWith("internal-session-effects:")
-  ) {
+    normalized.startsWith("internal-session-effects:");
+  if (isSystem) {
     return "system";
   }
   return "custom";
 }
 
-/**
- * Build the presentation contract without exposing peer ids, transcript text,
- * absolute paths, or other data that is not already a session-list field.
- */
-export function buildGatewaySessionPresentation(params: {
-  key: string;
-  agentId?: string;
-  displayName?: string;
-  entry?: SessionEntry;
-  isMain: boolean;
-}): SessionPresentation {
+/** Builds client metadata without exposing peer ids, transcript text, or paths. */
+export function buildGatewaySessionPresentation(
+  params: GatewaySessionPresentationParams,
+): SessionPresentation {
   const { key, entry } = params;
   const parsedAgent = parseAgentSessionKey(key);
   const agentId = parsedAgent?.agentId ?? normalizeOptionalString(params.agentId);
   const rest = parsedAgent?.rest ?? key;
   const parsedThread = parseThreadSessionSuffix(key);
   const route = parseSessionDeliveryRoute(key);
-  const perPeerKind = /^((?:direct|dm)):(.+)$/i.exec(
+  const hasLegacyDirectPeer = /^(?:direct|dm):.+$/i.test(
     parseAgentSessionKey(parsedThread.baseSessionKey)?.rest ?? "",
-  )?.[1];
+  );
+  const hasDirectPeer =
+    route?.peerKind === "direct" ||
+    route?.peerKind === "dm" ||
+    hasLegacyDirectPeer ||
+    entry?.chatType === "direct";
 
   let family: SessionPresentationFamily;
   if (key === "global") {
@@ -183,7 +209,7 @@ export function buildGatewaySessionPresentation(params: {
     family = "group";
   } else if (route?.peerKind === "channel") {
     family = "channel";
-  } else if (route?.peerKind === "direct" || route?.peerKind === "dm" || perPeerKind) {
+  } else if (hasDirectPeer) {
     family = "direct";
   } else if (
     entry?.chatType === "direct" ||
@@ -197,29 +223,40 @@ export function buildGatewaySessionPresentation(params: {
 
   const channel = entry?.channel ?? route?.channel;
   const accountId = route?.accountId;
-  const peerKind = route?.peerKind
-    ? route.peerKind === "dm"
-      ? "direct"
-      : route.peerKind
-    : perPeerKind
-      ? "direct"
-      : undefined;
+  let peerKind: SessionPresentation["peerKind"];
+  if (route?.peerKind === "dm" || hasLegacyDirectPeer) {
+    peerKind = "direct";
+  } else {
+    peerKind = route?.peerKind;
+  }
   const label = normalizeTitle(entry?.label, key);
-  const displayName = normalizeDisplayName(params.displayName, key);
-  const title =
-    label ?? displayName ?? fallbackTitle({ family, rest, channel, worktree: entry?.worktree });
-  const titleSource = label
-    ? "label"
-    : displayName
-      ? "displayName"
-      : family === "dashboard" && formatWorktree(entry?.worktree)
-        ? "worktree"
-        : "generated";
+  const hasDirectPeerDisplay = family === "direct" || (family === "thread" && hasDirectPeer);
+  // Direct-session display names may be transport-derived peer ids; explicit labels remain safe.
+  let displayName: string | undefined;
+  if (!hasDirectPeerDisplay) {
+    displayName = normalizeDisplayName(params.displayName, key);
+  }
+  const worktreeTitle = formatWorktree(entry?.worktree);
+  const title = label ?? displayName ?? fallbackTitle({ family, rest, channel, worktreeTitle });
+  let titleSource: SessionPresentation["titleSource"] = "generated";
+  if (label) {
+    titleSource = "label";
+  } else if (displayName) {
+    titleSource = "displayName";
+  } else if (family === "dashboard" && worktreeTitle) {
+    titleSource = "worktree";
+  }
 
   const subtitleParts: string[] = [];
-  if (channel) subtitleParts.push(capitalize(channel));
-  if (accountId) subtitleParts.push(`account ${shortenOpaqueIdRuns(accountId)}`);
-  if (agentId) subtitleParts.push(`agent ${shortenOpaqueIdRuns(agentId)}`);
+  if (channel) {
+    subtitleParts.push(capitalize(channel));
+  }
+  if (accountId) {
+    subtitleParts.push(`account ${shortenOpaqueIdRuns(accountId)}`);
+  }
+  if (agentId) {
+    subtitleParts.push(`agent ${shortenOpaqueIdRuns(agentId)}`);
+  }
 
   return {
     title,
@@ -235,12 +272,10 @@ export function buildGatewaySessionPresentation(params: {
   };
 }
 
-export function sessionPresentationForRow(
-  cfg: OpenClawConfig,
-  key: string,
+export function buildSessionPresentationForRow(
+  { cfg, key, entry }: SessionPresentationRowContext,
   agentId: string,
   displayName?: string,
-  entry?: SessionEntry,
 ): SessionPresentation {
   const isMain =
     key === "global"

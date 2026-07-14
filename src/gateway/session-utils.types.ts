@@ -46,7 +46,6 @@ type SessionCompactionCheckpointPreview = Pick<
 
 export type GatewaySessionRow = {
   key: string;
-  /** Client-ready title and non-sensitive classification for navigation surfaces. */
   presentation?: SessionPresentation;
   spawnedBy?: string;
   spawnedWorkspaceDir?: string;

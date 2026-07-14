@@ -439,6 +439,7 @@ export type ArtifactDownloadResult = {
 
 export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout";
 type SubagentRunState = "active" | "interrupted" | "historical";
+
 type SessionCompactionCheckpointReason =
   | "manual"
   | "auto-threshold"

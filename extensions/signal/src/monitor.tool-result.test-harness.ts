@@ -287,7 +287,11 @@ export function installSignalToolResultTestHooks() {
       messages: { responsePrefix: "PFX" },
       session: { store: signalToolResultSessionStorePath },
       channels: {
-        signal: { autoStart: false, dmPolicy: "open", allowFrom: ["*"] },
+        signal: {
+          transport: { kind: "external-native", url: "http://127.0.0.1:8080" },
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
       },
     };
 

@@ -18,14 +18,56 @@ describe("signalSetupAdapter", () => {
     const next = signalSetupAdapter.applyAccountConfig?.({
       cfg,
       accountId: "work",
-      input: { cliPath: "/opt/signal-cli" },
+      input: { signalNumber: "+15555550124" },
     });
 
     expect(next?.channels?.signal?.accounts?.work?.transport).toEqual({
       kind: "managed-native",
-      cliPath: "/opt/signal-cli",
       httpHost: "127.0.0.1",
       httpPort: 8081,
     });
+  });
+
+  it("stores an explicitly selected container endpoint", () => {
+    const next = signalSetupAdapter.applyAccountConfig?.({
+      cfg: {},
+      accountId: "work",
+      input: {
+        signalNumber: "+15555550124",
+        httpUrl: "http://signal-container:8080/",
+        signalTransport: "container",
+      },
+    });
+
+    expect(next?.channels?.signal?.accounts?.work?.transport).toEqual({
+      kind: "container",
+      url: "http://signal-container:8080",
+    });
+  });
+
+  it("keeps an http URL external-native by default", () => {
+    const next = signalSetupAdapter.applyAccountConfig?.({
+      cfg: {},
+      accountId: "work",
+      input: {
+        signalNumber: "+15555550124",
+        httpUrl: "http://native-signal:8080",
+      },
+    });
+
+    expect(next?.channels?.signal?.accounts?.work?.transport).toEqual({
+      kind: "external-native",
+      url: "http://native-signal:8080",
+    });
+  });
+
+  it("rejects a transport kind without an HTTP URL", () => {
+    expect(
+      signalSetupAdapter.validateInput?.({
+        cfg: {},
+        accountId: "work",
+        input: { signalTransport: "container" },
+      }),
+    ).toBe("Signal --signal-transport requires --http-url.");
   });
 });

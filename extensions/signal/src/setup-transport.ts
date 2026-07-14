@@ -10,52 +10,29 @@ import { containerCheck } from "./client-container.js";
 import { signalCheck as nativeCheck } from "./client.js";
 import { clearLegacySignalTransportFieldsForAccount } from "./config-compat.js";
 import {
+  normalizeSignalTransportUrl,
+  type SignalContainerTransportProbe,
+  type SignalNativeTransportProbe,
+  type SignalTransportProbeResult,
+} from "./transport-detection.js";
+import {
   allocateSignalManagedNativePort,
   DEFAULT_SIGNAL_MANAGED_NATIVE_HOST,
   resolveLocalSignalTransportPort,
 } from "./transport-policy.js";
 
-const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
+export { detectSignalTransport, type SignalTransportProbeResult } from "./transport-detection.js";
 
 export type SignalManagedNativeTransport = Extract<
   SignalTransportConfig,
   { kind: "managed-native" }
 >;
 
-export type SignalTransportProbeResult = {
-  ok: boolean;
-  status?: number | null;
-  error?: string | null;
-};
-
-type NativeProbe = (url: string, timeoutMs?: number) => Promise<SignalTransportProbeResult>;
-type ContainerProbe = (
-  url: string,
-  timeoutMs?: number,
-  account?: string,
-) => Promise<SignalTransportProbeResult>;
-
-function normalizeTransportUrl(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new Error("Signal transport URL is required");
-  }
-  const parsed = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`);
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error(`Signal transport URL unsupported protocol: ${parsed.protocol}`);
-  }
-  if (parsed.username || parsed.password) {
-    throw new Error("Signal transport URL must not include credentials");
-  }
-  const pathname = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/+$/, "");
-  return `${parsed.protocol}//${parsed.host}${pathname}`;
-}
-
 function normalizeTransport(transport: SignalTransportConfig): SignalTransportConfig {
   if (transport.kind === "managed-native") {
     return transport;
   }
-  return { ...transport, url: normalizeTransportUrl(transport.url) };
+  return { ...transport, url: normalizeSignalTransportUrl(transport.url) };
 }
 
 function configuredTransportForAccount(
@@ -106,38 +83,14 @@ export function prepareSignalManagedNativeTransport(params: {
   };
 }
 
-export async function detectSignalTransport(params: {
-  url: string;
-  account?: string;
-  timeoutMs?: number;
-  probeNative?: NativeProbe;
-  probeContainer?: ContainerProbe;
-}): Promise<SignalTransportConfig> {
-  const url = normalizeTransportUrl(params.url);
-  const timeoutMs = params.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
-  const probeNative = params.probeNative ?? nativeCheck;
-  const probeContainer = params.probeContainer ?? containerCheck;
-  const [native, container] = await Promise.all([
-    probeNative(url, timeoutMs).catch(() => ({ ok: false })),
-    probeContainer(url, timeoutMs, params.account).catch(() => ({ ok: false })),
-  ]);
-  if (native.ok) {
-    return { kind: "external-native", url };
-  }
-  if (container.ok) {
-    return { kind: "container", url };
-  }
-  throw new Error(`Signal transport not reachable at ${url}`);
-}
-
 export async function probeSignalTransport(params: {
   transport: SignalTransportConfig;
   account?: string;
   timeoutMs?: number;
-  probeNative?: NativeProbe;
-  probeContainer?: ContainerProbe;
+  probeNative?: SignalNativeTransportProbe;
+  probeContainer?: SignalContainerTransportProbe;
 }): Promise<SignalTransportProbeResult> {
-  const timeoutMs = params.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const timeoutMs = params.timeoutMs ?? 10_000;
   const resolved = resolveSignalTransport(params.transport);
   if (resolved.kind === "container") {
     return (params.probeContainer ?? containerCheck)(resolved.baseUrl, timeoutMs, params.account);

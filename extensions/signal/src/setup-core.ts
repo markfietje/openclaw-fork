@@ -94,7 +94,13 @@ function buildSignalSetupPatch(input: {
   httpPort?: string;
 }) {
   const transport = input.httpUrl
-    ? { kind: "external-native" as const, url: input.httpUrl }
+    ? {
+        kind:
+          input.signalTransport === "container"
+            ? ("container" as const)
+            : ("external-native" as const),
+        url: input.httpUrl,
+      }
     : input.cliPath || input.httpHost || input.httpPort
       ? {
           kind: "managed-native" as const,
@@ -244,6 +250,16 @@ const signalSetupAdapterBase = createPatchedAccountSetupAdapter({
   validateInput: createSetupInputPresenceValidator({
     validate: ({ input }) => {
       if (
+        input.signalTransport &&
+        input.signalTransport !== "external-native" &&
+        input.signalTransport !== "container"
+      ) {
+        return "Signal --signal-transport must be external-native or container.";
+      }
+      if (input.signalTransport && !input.httpUrl) {
+        return "Signal --signal-transport requires --http-url.";
+      }
+      if (
         !input.signalNumber &&
         !input.httpUrl &&
         !input.httpHost &&
@@ -262,10 +278,16 @@ export const signalSetupAdapter: ChannelSetupAdapter = {
   ...signalSetupAdapterBase,
   applyAccountConfig: (params) => {
     const next = signalSetupAdapterBase.applyAccountConfig?.(params) ?? params.cfg;
-    const transport = resolveSignalAccount({ cfg: next, accountId: params.accountId }).config
-      .transport;
-    if (transport?.kind !== "managed-native") {
-      return next;
+    const account = resolveSignalAccount({ cfg: next, accountId: params.accountId });
+    const configuredTransport = account.config.transport;
+    if (account.transport.kind !== "managed-native") {
+      return configuredTransport
+        ? writeSignalAccountTransport({
+            cfg: next,
+            accountId: params.accountId,
+            transport: configuredTransport,
+          })
+        : next;
     }
     return writeSignalAccountTransport({
       cfg: next,
@@ -273,7 +295,9 @@ export const signalSetupAdapter: ChannelSetupAdapter = {
       transport: prepareSignalManagedNativeTransport({
         cfg: next,
         accountId: params.accountId,
-        overrides: transport,
+        ...(configuredTransport?.kind === "managed-native"
+          ? { overrides: configuredTransport }
+          : {}),
       }),
     });
   },

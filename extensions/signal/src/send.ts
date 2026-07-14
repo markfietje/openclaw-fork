@@ -19,7 +19,7 @@ import {
   appendSignalApprovalReactionHintForOutboundMessage,
   registerSignalApprovalReactionTargetForOutboundMessage,
 } from "./approval-reactions.js";
-import { signalRpcRequest } from "./client-adapter.js";
+import { signalRpcRequest, type SignalTransportKind } from "./client-adapter.js";
 import { markdownToSignalText, type SignalTextStyleRange } from "./format.js";
 import { normalizeSignalMessagingTarget } from "./normalize.js";
 import { registerSignalReplyContext } from "./reply-authors.js";
@@ -28,6 +28,7 @@ import { resolveSignalRpcContext } from "./rpc-context.js";
 export type SignalSendOpts = {
   cfg: OpenClawConfig;
   baseUrl?: string;
+  transportKind?: SignalTransportKind;
   account?: string;
   accountId?: string;
   mediaUrl?: string;
@@ -54,7 +55,7 @@ export type SignalSendResult = {
 
 export type SignalRpcOpts = Pick<
   SignalSendOpts,
-  "cfg" | "baseUrl" | "account" | "accountId" | "timeoutMs"
+  "cfg" | "baseUrl" | "transportKind" | "account" | "accountId" | "timeoutMs"
 >;
 
 export type SignalReceiptType = "read" | "viewed";
@@ -329,7 +330,7 @@ export async function sendMessageSignal(
   const sendOpts = {
     baseUrl,
     timeoutMs: opts.timeoutMs,
-    transportKind: accountInfo.transport.kind,
+    transportKind: opts.transportKind ?? accountInfo.transport.kind,
     maxAttachmentBytes: maxBytes,
   };
   let nativeReplyStatus: "sent" | "fallback" | undefined;
@@ -410,7 +411,7 @@ export async function sendTypingSignal(
   await signalRpcRequest("sendTyping", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
-    transportKind: accountInfo.transport.kind,
+    transportKind: opts.transportKind ?? accountInfo.transport.kind,
   });
   return true;
 }
@@ -442,7 +443,7 @@ export async function sendReadReceiptSignal(
   await signalRpcRequest("sendReceipt", params, {
     baseUrl,
     timeoutMs: opts.timeoutMs,
-    transportKind: accountInfo.transport.kind,
+    transportKind: opts.transportKind ?? accountInfo.transport.kind,
   });
   return true;
 }

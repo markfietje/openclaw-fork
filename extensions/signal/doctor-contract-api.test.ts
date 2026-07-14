@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it, vi } from "vitest";
 import { legacyConfigRules, normalizeCompatibilityConfig } from "./doctor-contract-api.js";
 import { migrateLegacySignalTransportConfig } from "./src/config-compat.js";
+import { signalDoctor } from "./src/doctor.js";
 
 function signalConfig(entry: Record<string, unknown>): OpenClawConfig {
   return { channels: { signal: entry } } as never;
@@ -163,10 +164,60 @@ describe("signal transport compatibility", () => {
       url: "http://signal:8080/",
       account: "+15555550123",
     });
+    expect(detect).toHaveBeenCalledTimes(1);
     expect(result.config.channels?.signal?.transport).toEqual({
       kind: "external-native",
       url: "http://signal:8080",
     });
     expect(result.config.channels?.signal).not.toHaveProperty("apiMode");
+
+    const second = await migrateLegacySignalTransportConfig({ cfg: result.config, detect });
+    expect(second.config).toBe(result.config);
+    expect(second.changes).toEqual([]);
+    expect(detect).toHaveBeenCalledTimes(1);
+  });
+
+  it("detects auto endpoints even when legacy autoStart is false", async () => {
+    const detect = vi.fn().mockResolvedValue({
+      kind: "container",
+      url: "http://signal:8080",
+    });
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        apiMode: "auto",
+        autoStart: false,
+        httpUrl: "http://signal:8080",
+      }),
+      detect,
+    });
+
+    expect(detect).toHaveBeenCalledTimes(1);
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "container",
+      url: "http://signal:8080",
+    });
+  });
+
+  it("leaves an unreachable auto endpoint unchanged for a later doctor run", async () => {
+    const cfg = signalConfig({ apiMode: "auto", httpUrl: "http://offline:8080" });
+    const result = await migrateLegacySignalTransportConfig({
+      cfg,
+      detect: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+
+    expect(result.config).toBe(cfg);
+    expect(result.changes).toEqual([]);
+  });
+
+  it("warns when auto detection still needs a reachable legacy endpoint", async () => {
+    expect(
+      signalDoctor.collectPreviewWarnings?.({
+        cfg: signalConfig({ apiMode: "auto", httpUrl: "http://offline:8080" }),
+        doctorFixCommand: "openclaw doctor --fix",
+        env: {},
+      }),
+    ).toEqual([
+      "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.",
+    ]);
   });
 });

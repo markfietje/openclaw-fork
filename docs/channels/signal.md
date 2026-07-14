@@ -160,6 +160,13 @@ Upstream references:
 
 To manage `signal-cli` yourself (slow JVM cold starts, container init, shared CPUs), run the daemon separately and point OpenClaw at it:
 
+For non-interactive setup, select the endpoint kind explicitly when needed:
+
+```bash
+openclaw channels add --channel signal --signal-number +15551234567 \
+  --http-url http://127.0.0.1:8080 --signal-transport external-native
+```
+
 ```json5
 {
   channels: {
@@ -178,6 +185,11 @@ This skips auto-spawn and OpenClaw's startup wait. For a managed daemon with a s
 ## Container mode (bbernhard/signal-cli-rest-api)
 
 Instead of running `signal-cli` natively, use the [bbernhard/signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) Docker container, which wraps `signal-cli` behind a REST + WebSocket interface.
+
+```bash
+openclaw channels add --channel signal --signal-number +15551234567 \
+  --http-url http://signal-cli:8080 --signal-transport container
+```
 
 Requirements:
 

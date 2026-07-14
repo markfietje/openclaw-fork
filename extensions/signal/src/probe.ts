@@ -2,6 +2,7 @@
 import type { BaseProbeResult } from "openclaw/plugin-sdk/channel-contract";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { type SignalTransportKind, signalCheck, signalRpcRequest } from "./client-adapter.js";
+import { detectSignalTransport } from "./transport-detection.js";
 
 export type SignalProbe = BaseProbeResult & {
   status?: number | null;
@@ -25,7 +26,11 @@ function parseSignalVersion(value: unknown): string | null {
 export async function probeSignal(
   baseUrl: string,
   timeoutMs: number,
-  options: { transportKind?: SignalTransportKind } = {},
+  options: {
+    transportKind?: SignalTransportKind;
+    /** @deprecated Pass transportKind after resolving the account transport. */
+    apiMode?: "auto" | "native" | "container";
+  } = {},
 ): Promise<SignalProbe> {
   const started = Date.now();
   const result: SignalProbe = {
@@ -35,7 +40,7 @@ export async function probeSignal(
     elapsedMs: 0,
     version: null,
   };
-  const transportKind = options.transportKind ?? "external-native";
+  const transportKind = await resolveProbeTransportKind(baseUrl, timeoutMs, options);
   const check = await signalCheck(baseUrl, timeoutMs, { transportKind });
   if (!check.ok) {
     return {
@@ -61,4 +66,24 @@ export async function probeSignal(
     status: check.status ?? null,
     elapsedMs: Date.now() - started,
   };
+}
+
+async function resolveProbeTransportKind(
+  baseUrl: string,
+  timeoutMs: number,
+  options: {
+    transportKind?: SignalTransportKind;
+    apiMode?: "auto" | "native" | "container";
+  },
+): Promise<SignalTransportKind> {
+  if (options.transportKind) {
+    return options.transportKind;
+  }
+  if (options.apiMode === "container") {
+    return "container";
+  }
+  if (options.apiMode === "auto") {
+    return (await detectSignalTransport({ url: baseUrl, timeoutMs })).kind;
+  }
+  return "external-native";
 }

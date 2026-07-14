@@ -242,6 +242,15 @@ describe("monitorSignalProvider tool results", () => {
     const abortController = new AbortController();
     const maxBytes = 2 * 1024 * 1024;
     const expectedMaxResponseBytes = Math.ceil((maxBytes * 4) / 3) + 64 * 1024;
+    setSignalToolResultTestConfig({
+      channels: {
+        signal: {
+          transport: { kind: "container", url: "http://container:8080" },
+          dmPolicy: "open",
+          allowFrom: ["*"],
+        },
+      },
+    });
 
     replyMock.mockResolvedValue({ text: "ok" });
     signalRpcRequestMock.mockResolvedValue({ data: Buffer.from("hello").toString("base64") });
@@ -264,8 +273,6 @@ describe("monitorSignalProvider tool results", () => {
     });
 
     await monitorSignalProvider({
-      autoStart: false,
-      baseUrl: "http://127.0.0.1:8080",
       mediaMaxMb: 2,
       abortSignal: abortController.signal,
     });
@@ -277,9 +284,9 @@ describe("monitorSignalProvider tool results", () => {
         recipient: "+15550001111",
       },
       {
-        baseUrl: "http://127.0.0.1:8080",
+        baseUrl: "http://container:8080",
         timeoutMs: undefined,
-        transportKind: "managed-native",
+        transportKind: "container",
         maxResponseBytes: expectedMaxResponseBytes,
       },
     );

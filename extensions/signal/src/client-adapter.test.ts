@@ -57,7 +57,11 @@ describe("signalRpcRequest", () => {
         { baseUrl: "http://container:8080", transportKind: "container" },
       ),
     ).resolves.toEqual({ timestamp: 17 });
-    expect(containerRpc).toHaveBeenCalledOnce();
+    expect(containerRpc).toHaveBeenCalledWith(
+      "send",
+      { message: "Hello", recipient: ["+15550001111"] },
+      { baseUrl: "http://container:8080", transportKind: "container" },
+    );
     expect(nativeRpc).not.toHaveBeenCalled();
   });
 });

@@ -72,9 +72,8 @@ function requiresDetection(
   parent: Record<string, unknown>,
   apiMode: unknown,
 ): boolean {
-  const autoStart = inherited(entry, parent, "autoStart");
   const httpUrl = optionalString(inherited(entry, parent, "httpUrl"));
-  return (apiMode === undefined || apiMode === "auto") && Boolean(httpUrl) && autoStart !== false;
+  return (apiMode === undefined || apiMode === "auto") && Boolean(httpUrl);
 }
 
 function buildManagedNativeTransport(
@@ -121,11 +120,11 @@ function resolveLegacyTransportWithoutDetection(params: {
       ? { kind: "external-native", url: baseUrl }
       : buildManagedNativeTransport(params.entry, params.parent);
   }
-  if (autoStart === false) {
-    return { kind: "external-native", url: baseUrl };
-  }
   if (requiresDetection(params.entry, params.parent, params.apiMode)) {
     return undefined;
+  }
+  if (autoStart === false) {
+    return { kind: "external-native", url: baseUrl };
   }
   return buildManagedNativeTransport(params.entry, params.parent);
 }
@@ -141,10 +140,25 @@ async function resolveLegacyTransport(params: {
     return resolved;
   }
   const account = optionalString(inherited(params.entry, params.parent, "account"));
-  return params.detect?.({
-    url: legacyBaseUrl(params.entry, params.parent),
-    ...(account ? { account } : {}),
-  });
+  try {
+    return await params.detect?.({
+      url: legacyBaseUrl(params.entry, params.parent),
+      ...(account ? { account } : {}),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+export function hasPendingLegacySignalTransportDetection(cfg: OpenClawConfig): boolean {
+  const signal = cfg.channels?.signal as unknown;
+  if (!isRecord(signal)) {
+    return false;
+  }
+  const accounts = isRecord(signal.accounts) ? signal.accounts : {};
+  return [signal, ...Object.values(accounts).filter(isRecord)].some((entry) =>
+    requiresDetection(entry, signal, signal.apiMode),
+  );
 }
 
 function clearLegacyTransportFields(entry: Record<string, unknown>): void {

@@ -19,14 +19,16 @@ describe("detectSignalTransport", () => {
   });
 
   it("selects container only when its endpoint is healthy", async () => {
+    const probeContainer = vi.fn().mockResolvedValue({ ok: true });
     const transport = await detectSignalTransport({
       url: "http://signal:8080/",
       account: "+15555550123",
       probeNative: vi.fn().mockResolvedValue({ ok: false }),
-      probeContainer: vi.fn().mockResolvedValue({ ok: true }),
+      probeContainer,
     });
 
     expect(transport).toEqual({ kind: "container", url: "http://signal:8080" });
+    expect(probeContainer).toHaveBeenCalledWith("http://signal:8080", 10_000, "+15555550123");
   });
 
   it("rejects an endpoint that matches neither transport", async () => {

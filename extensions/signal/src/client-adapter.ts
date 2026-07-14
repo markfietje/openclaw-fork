@@ -6,6 +6,7 @@
  * only need to change their import path.
  */
 
+import type { SignalTransportConfig } from "./account-types.js";
 import {
   containerCheck,
   containerRpcRequest,
@@ -25,7 +26,7 @@ export type SignalSseEvent = {
   data?: string;
 };
 
-export type SignalTransportKind = "managed-native" | "external-native" | "container";
+export type SignalTransportKind = SignalTransportConfig["kind"];
 
 function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

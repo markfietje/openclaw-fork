@@ -165,14 +165,7 @@ export async function applyClawAddPlan(
             ],
             workspaceFiles,
           );
-    const persistRecord = options.persistRecord ?? persistClawInstallRecord;
-    let installRecord: PersistedClawInstall | undefined;
-    let provenanceError: string | undefined;
-    try {
-      installRecord = persistRecord(plan, { ...options, status: "partial" });
-    } catch (recordError) {
-      provenanceError = recordError instanceof Error ? recordError.message : String(recordError);
-    }
+    (options.updateRecord ?? updateClawInstallRecordStatus)(plan.agent.finalId, "partial", options);
     return {
       schemaVersion: CLAW_ADD_RESULT_SCHEMA_VERSION,
       stability: CLAW_OUTPUT_STABILITY,
@@ -184,12 +177,14 @@ export async function applyClawAddPlan(
       workspaceCreated: true,
       configCommitted: true,
       workspaceFiles: workspaceError.createdFiles,
-      ...(installRecord ? { installRecord } : {}),
+      installRecord: {
+        ...installRecord,
+        status: "partial",
+        updatedAtMs: options.nowMs ?? Date.now(),
+      },
       error: {
         code: "workspace_files_failed",
-        message: provenanceError
-          ? `${workspaceError.message}; root provenance also failed: ${provenanceError}`
-          : workspaceError.message,
+        message: workspaceError.message,
         diagnostics: workspaceError.diagnostics,
       },
     };
@@ -212,11 +207,6 @@ export async function applyClawAddPlan(
       agent: plan.agent,
       workspaceCreated: true,
       configCommitted: true,
-      installRecord: {
-        ...installRecord,
-        status: "complete",
-        updatedAtMs: options.nowMs ?? Date.now(),
-      },
       workspaceFiles,
       installRecord: {
         ...installRecord,

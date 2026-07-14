@@ -284,7 +284,7 @@ gh search issues --repo openclaw/openclaw --match title,body --limit 50 \
 
 ## Follow PR review and landing hygiene
 
-- For code-changing or landing work that will need tests or heavy proof,
+- For code-changing or landing work that will need heavy proof,
   classify source trust before choosing a backend. Acquire the eligible backend
   lazily when the first heavy command is ready. Eligible trusted maintainer work
   honors an explicit user provider, then `CRABBOX_PROVIDER`, then the

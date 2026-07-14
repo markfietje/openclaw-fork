@@ -19,9 +19,7 @@ import {
 } from "../shared/progress-labels.js";
 import { asBoolean } from "../utils/boolean.js";
 
-export type StreamingCompatEntry = {
-  streaming?: unknown;
-};
+export type StreamingCompatEntry = { streaming?: unknown };
 
 export type {
   ChannelDeliveryStreamingConfig,
@@ -36,8 +34,7 @@ export type {
 } from "../config/types.base.js";
 export type { SlackChannelStreamingConfig } from "../config/types.slack.js";
 
-// Runtime reads are nested-only. Doctor migrates legacy streaming spellings
-// into the canonical nested shape.
+// Runtime reads are nested-only; doctor migrates legacy streaming spellings.
 
 function asObjectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -47,18 +44,6 @@ function asObjectRecord(value: unknown): Record<string, unknown> | null {
 
 function asInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) ? value : undefined;
-}
-
-function asTextChunkMode(value: unknown): TextChunkMode | undefined {
-  return value === "length" || value === "newline" ? value : undefined;
-}
-
-function asBlockStreamingCoalesceConfig(value: unknown): BlockStreamingCoalesceConfig | undefined {
-  return (asObjectRecord(value) as BlockStreamingCoalesceConfig | null) ?? undefined;
-}
-
-function asBlockStreamingChunkConfig(value: unknown): BlockStreamingChunkConfig | undefined {
-  return (asObjectRecord(value) as BlockStreamingChunkConfig | null) ?? undefined;
 }
 
 function normalizeStreamingMode(value: unknown): string | null {
@@ -744,7 +729,8 @@ export function getChannelStreamingConfigObject(
 export function resolveChannelStreamingChunkMode(
   entry: StreamingCompatEntry | null | undefined,
 ): TextChunkMode | undefined {
-  return asTextChunkMode(getChannelStreamingConfigObject(entry)?.chunkMode);
+  const mode = getChannelStreamingConfigObject(entry)?.chunkMode;
+  return mode === "length" || mode === "newline" ? mode : undefined;
 }
 
 export function resolveChannelStreamingBlockEnabled(
@@ -756,13 +742,13 @@ export function resolveChannelStreamingBlockEnabled(
 export function resolveChannelStreamingBlockCoalesce(
   entry: StreamingCompatEntry | null | undefined,
 ): BlockStreamingCoalesceConfig | undefined {
-  return asBlockStreamingCoalesceConfig(getChannelStreamingConfigObject(entry)?.block?.coalesce);
+  return getChannelStreamingConfigObject(entry)?.block?.coalesce;
 }
 
 export function resolveChannelStreamingPreviewChunk(
   entry: StreamingCompatEntry | null | undefined,
 ): BlockStreamingChunkConfig | undefined {
-  return asBlockStreamingChunkConfig(getChannelStreamingConfigObject(entry)?.preview?.chunk);
+  return getChannelStreamingConfigObject(entry)?.preview?.chunk;
 }
 
 export function resolveChannelStreamingPreviewToolProgress(

@@ -88,9 +88,8 @@ export type ChannelMessageToolDiscovery = {
   schema?: ChannelMessageToolSchemaContribution | ChannelMessageToolSchemaContribution[] | null;
   /**
    * Plugin-owned message-tool params that carry media sources.
-   * Core uses this to derive sandbox path normalization and host media-access
-   * hints without hardcoding plugin-specific param names. Prefer scoping keys
-   * by action so unrelated actions do not inherit another action's media args.
+   * Core uses this to derive sandbox path normalization and host media-access hints.
+   * Prefer action-scoped keys so unrelated actions do not inherit another action's media args.
    */
   mediaSourceParams?: ChannelMessageToolMediaSourceParams | null;
 };

@@ -88,6 +88,7 @@ function parseSignalAllowFromEntries(raw: string): { entries: string[]; error?: 
 
 function buildSignalSetupPatch(input: {
   signalNumber?: string;
+  signalTransport?: "external-native" | "container";
   cliPath?: string;
   httpUrl?: string;
   httpHost?: string;

@@ -35,7 +35,7 @@ const signalConfigAdapterBase = createScopedChannelConfigAdapter<ResolvedSignalA
   listAccountIds: (cfg) => listSignalAccountIds(cfg),
   resolveAccount: adaptScopedAccountAccessor((params) => resolveSignalAccount(params)),
   defaultAccountId: (cfg) => resolveDefaultSignalAccountId(cfg),
-  clearBaseFields: ["account", "transport", "name"],
+  clearBaseFields: ["account", "accountUuid", "transport", "name"],
   resolveAllowFrom: (account: ResolvedSignalAccount) => account.config.allowFrom,
   formatAllowFrom: (allowFrom) =>
     normalizeStringifiedEntries(allowFrom)

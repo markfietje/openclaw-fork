@@ -16,6 +16,7 @@ import {
   clearSignalApprovalReactionTargetsForTest,
   resolveSignalApprovalReactionTargetWithPersistence,
 } from "./approval-reactions.js";
+import { listSignalAccountIds } from "./accounts.js";
 import { signalPlugin } from "./channel.js";
 import * as clientModule from "./client-adapter.js";
 import {
@@ -1186,6 +1187,24 @@ describe("signal outbound", () => {
 });
 
 describe("signal setup parsing", () => {
+  it("removes an accountUuid-only default account when named accounts remain", () => {
+    const next = signalPlugin.config?.deleteAccount?.({
+      cfg: {
+        channels: {
+          signal: {
+            accountUuid: "123e4567-e89b-12d3-a456-426614174000",
+            transport: { kind: "managed-native" },
+            accounts: { work: { account: "+15555550123" } },
+          },
+        },
+      },
+      accountId: "default",
+    });
+
+    expect(next?.channels?.signal?.accountUuid).toBeUndefined();
+    expect(listSignalAccountIds(next ?? {})).toEqual(["work"]);
+  });
+
   it("accepts already normalized numbers", () => {
     expect(normalizeSignalAccountInput("+15555550123")).toBe("+15555550123");
   });

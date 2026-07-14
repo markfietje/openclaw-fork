@@ -30,7 +30,6 @@ import {
   extractShellWrapperCommand,
   isShellWrapperInvocation,
 } from "../infra/exec-wrapper-resolution.js";
-import { listHostDirectories } from "../infra/host-directory-listing.js";
 import {
   inspectHostExecEnvOverrides,
   sanitizeHostExecEnv,
@@ -38,10 +37,8 @@ import {
 } from "../infra/host-env-security.js";
 import {
   NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
-  NODE_FS_LIST_DIR_COMMAND,
   NODE_MCP_TOOLS_CALL_COMMAND,
 } from "../infra/node-commands.js";
-import { decodeWindowsOutputBuffer } from "../infra/windows-encoding.js";
 import { logWarn } from "../logger.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { truncateUtf8Prefix } from "../utils/utf8-truncate.js";
@@ -50,6 +47,7 @@ import {
   handleClaudeCliNodeInvoke,
   type NodeHostInvokeRuntime,
 } from "./invoke-agent-cli-claude-handler.js";
+import { invokeNodeFileCommand } from "./invoke-file-commands.js";
 import {
   buildSystemRunApprovalPlan,
   handleSystemRunInvoke,
@@ -254,7 +252,7 @@ function resolveExecAsk(value?: string): ExecAsk {
 }
 
 /** Builds a sanitized execution environment with controlled PATH and approved overrides. */
-export function sanitizeEnv(overrides?: Record<string, string> | null): Record<string, string> {
+function sanitizeEnv(overrides?: Record<string, string> | null): Record<string, string> {
   return sanitizeHostExecEnv({ overrides, blockPathOverrides: true });
 }
 
@@ -263,14 +261,6 @@ function truncateOutput(raw: string, maxChars: number): { text: string; truncate
     return { text: raw, truncated: false };
   }
   return { text: `... (truncated) ${sliceUtf16Safe(raw, raw.length - maxChars)}`, truncated: true };
-}
-
-export function decodeCapturedOutputBuffer(params: {
-  buffer: Buffer;
-  platform?: NodeJS.Platform;
-  windowsEncoding?: string | null;
-}): string {
-  return decodeWindowsOutputBuffer(params);
 }
 
 function redactExecApprovals(file: ExecApprovalsFile): ExecApprovalsFile {
@@ -668,15 +658,12 @@ async function dispatchInvoke(
     return;
   }
 
-  if (command === NODE_FS_LIST_DIR_COMMAND) {
-    try {
-      const params = decodeParams<{ path?: unknown }>(frame.paramsJSON);
-      if (params.path !== undefined && typeof params.path !== "string") {
-        throw new Error("INVALID_REQUEST: path must be a string");
-      }
-      await sendJsonPayloadResult(client, frame, await listHostDirectories(params.path));
-    } catch (err) {
-      await sendInvalidRequestResult(client, frame, err);
+  const fileCommand = await invokeNodeFileCommand(command, frame.paramsJSON);
+  if (fileCommand) {
+    if ("error" in fileCommand) {
+      await sendInvalidRequestResult(client, frame, fileCommand.error);
+    } else {
+      await sendJsonPayloadResult(client, frame, fileCommand.payload);
     }
     return;
   }
@@ -1037,7 +1024,7 @@ async function sendInvokeResult(
   }
 }
 
-export function buildNodeInvokeResultParams(
+function buildNodeInvokeResultParams(
   frame: NodeInvokeRequestPayload,
   result: {
     ok: boolean;
@@ -1077,7 +1064,7 @@ export function buildNodeInvokeResultParams(
   return params;
 }
 
-export function buildNodeEventParams(
+function buildNodeEventParams(
   event: string,
   payload: unknown,
 ): { event: string; payloadJSON: string | null } {
@@ -1102,3 +1089,4 @@ export const testing = {
   clarifyNodeExecCwdSpawnError,
   runCommand,
 } as const;
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

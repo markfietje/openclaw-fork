@@ -235,13 +235,12 @@ function resolveSignalCliPath(params: {
     cfg: params.cfg,
     accountId: params.accountId,
   }).transport;
-  return (
-    (typeof params.credentialValues.cliPath === "string"
-      ? params.credentialValues.cliPath
-      : undefined) ??
-    (transport.kind === "managed-native" ? transport.cliPath : undefined) ??
-    "signal-cli"
-  );
+  if (transport.kind !== "managed-native") {
+    return undefined;
+  }
+  return typeof params.credentialValues.cliPath === "string"
+    ? params.credentialValues.cliPath
+    : transport.cliPath;
 }
 
 export function createSignalCliPathTextInput(

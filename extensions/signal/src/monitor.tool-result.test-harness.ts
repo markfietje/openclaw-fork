@@ -85,7 +85,6 @@ export function createSignalToolResultConfig(
           ...(typeof httpPort === "number" ? { httpPort } : {}),
           ...(typeof startupTimeoutMs === "number" ? { startupTimeoutMs } : {}),
           ...(receiveMode === "on-start" || receiveMode === "manual" ? { receiveMode } : {}),
-          ...(typeof ignoreAttachments === "boolean" ? { ignoreAttachments } : {}),
           ...(typeof ignoreStories === "boolean" ? { ignoreStories } : {}),
         };
   return {
@@ -95,6 +94,7 @@ export function createSignalToolResultConfig(
       signal: {
         ...signal,
         transport,
+        ...(typeof ignoreAttachments === "boolean" ? { ignoreAttachments } : {}),
         dmPolicy: "open",
         allowFrom: ["*"],
         ...accountOverrides,

@@ -1,7 +1,12 @@
 // Signal tests cover setup adapter integration with account-owned transport policy.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { describe, expect, it, vi } from "vitest";
-import { prepareSignalSetupInput, signalSetupAdapter } from "./setup-core.js";
+import {
+  createSignalCliPathTextInput,
+  prepareSignalSetupInput,
+  signalSetupAdapter,
+} from "./setup-core.js";
+import { signalSetupWizard } from "./setup-surface.js";
 
 describe("signalSetupAdapter", () => {
   it("uses the setup transport allocator for a second managed account", () => {
@@ -76,5 +81,29 @@ describe("signalSetupAdapter", () => {
         input: { signalTransport: "container" },
       }),
     ).toBe("Signal --signal-transport requires --http-url.");
+  });
+
+  it("does not materialize a CLI path for an external transport", async () => {
+    const input = createSignalCliPathTextInput(async () => false);
+    const cfg: OpenClawConfig = {
+      channels: {
+        signal: {
+          account: "+15555550124",
+          transport: { kind: "container", url: "http://signal:8080" },
+        },
+      },
+    };
+
+    expect(
+      await input.currentValue?.({ cfg, accountId: "default", credentialValues: {} }),
+    ).toBeUndefined();
+    const wizardInput = signalSetupWizard.textInputs?.find((entry) => entry.inputKey === "cliPath");
+    expect(
+      await wizardInput?.shouldPrompt?.({
+        cfg,
+        accountId: "default",
+        credentialValues: {},
+      }),
+    ).toBe(false);
   });
 });

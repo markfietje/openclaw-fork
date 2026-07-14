@@ -47,6 +47,9 @@ export const signalSetupWizard: ChannelSetupWizard = {
       return undefined;
     }
     const transport = resolveSignalAccount({ cfg, accountId }).transport;
+    if (transport.kind !== "managed-native") {
+      return undefined;
+    }
     const currentCliPath =
       (typeof credentialValues.cliPath === "string" ? credentialValues.cliPath : undefined) ??
       (transport.kind === "managed-native" ? transport.cliPath : undefined) ??
@@ -80,7 +83,10 @@ export const signalSetupWizard: ChannelSetupWizard = {
   },
   credentials: [],
   textInputs: [
-    createSignalCliPathTextInput(async ({ currentValue }) => {
+    createSignalCliPathTextInput(async ({ cfg, accountId, currentValue }) => {
+      if (resolveSignalAccount({ cfg, accountId }).transport.kind !== "managed-native") {
+        return false;
+      }
       return !(await detectBinary(currentValue ?? "signal-cli"));
     }),
     signalNumberTextInput,

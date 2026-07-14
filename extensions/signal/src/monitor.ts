@@ -70,7 +70,6 @@ export type MonitorSignalOpts = {
   accountId?: string;
   config?: OpenClawConfig;
   baseUrl?: string;
-  transportKind?: SignalTransportKind;
   channelRuntime?: ChannelRuntimeSurface;
   autoStart?: boolean;
   startupTimeoutMs?: number;
@@ -573,11 +572,9 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
   const reactionMode = accountInfo.config.reactionNotifications ?? "own";
   const reactionAllowlist = normalizeAllowList(accountInfo.config.reactionAllowlist);
   const mediaMaxBytes = (opts.mediaMaxMb ?? accountInfo.config.mediaMaxMb ?? 8) * 1024 * 1024;
-  const transportKind = opts.transportKind ?? accountInfo.transport.kind;
+  const transportKind = accountInfo.transport.kind;
   const managedTransport =
-    transportKind === "managed-native" && accountInfo.transport.kind === "managed-native"
-      ? accountInfo.transport
-      : undefined;
+    accountInfo.transport.kind === "managed-native" ? accountInfo.transport : undefined;
   const ignoreAttachments = opts.ignoreAttachments ?? accountInfo.config.ignoreAttachments ?? false;
   const sendReadReceipts = Boolean(opts.sendReadReceipts ?? accountInfo.config.sendReadReceipts);
   const waitForTransportReadyFn = opts.waitForTransportReady ?? waitForTransportReady;

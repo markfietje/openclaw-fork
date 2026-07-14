@@ -20,7 +20,7 @@ import { createFeishuClient } from "./client.js";
 import { resolveFeishuIdentityEmoji } from "./identity-header.js";
 import { sendMediaFeishu, shouldSuppressFeishuTextForVoiceMedia } from "./media.js";
 import type { MentionTarget } from "./mention-target.types.js";
-import * as messageAudit from "./message-audit.js";
+import { createFeishuReplyFallbackController } from "./reply-dispatcher-fallback.js";
 import {
   createReplyPrefixContext,
   type ClawdbotConfig,
@@ -62,8 +62,6 @@ function mergeStreamingFinalText(
 const TYPING_INDICATOR_MAX_AGE_MS = 2 * 60_000;
 const MS_EPOCH_MIN = 1_000_000_000_000;
 const STREAMING_START_FAILURE_BACKOFF_MS = 60_000;
-const NO_VISIBLE_REPLY_FALLBACK_TEXT =
-  "⚠️ This reply completed without visible content. The turn may have been interrupted; please retry or ask me to recover from recent context.";
 
 function isStreamingStartBackedOff(accountId: string, now = Date.now()): boolean {
   const backoffUntil = streamingStartBackoffUntilByAccount.get(accountId);
@@ -283,8 +281,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   let streamingCloseErroredForReply = false;
   let visibleReplySent = false;
   let skippedFinalReason: string | null = null;
-  let messageAuditNoticeQueued = false;
-  let idleSideEffectsPromise: Promise<void> = Promise.resolve();
   let replyLifecycleStateInitialized = false;
   type StreamTextUpdateMode = "snapshot" | "delta";
 
@@ -593,65 +589,26 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     });
   };
 
-  const ensureNoVisibleReplyFallback = async (reason: string): Promise<boolean> => {
-    await idleSideEffectsPromise;
-    if (visibleReplySent) {
-      return false;
-    }
-    if (skippedFinalReason === "silent") {
-      params.runtime.log?.(
-        `feishu[${account.accountId}]: no-visible-reply fallback skipped for intentional silence (${reason})`,
-      );
-      return false;
-    }
-    await sendMessageFeishu({
-      cfg,
-      to: sendTarget,
-      text: NO_VISIBLE_REPLY_FALLBACK_TEXT,
-      replyToMessageId: sendReplyToMessageId,
-      replyInThread: effectiveReplyInThread,
-      allowTopLevelReplyFallback,
-      accountId,
-    });
-    markVisibleReplySent();
-    params.runtime.error?.(
-      `feishu[${account.accountId}]: sent no-visible-reply fallback (${reason})`,
-    );
-    return true;
-  };
-
-  const queueIdleSideEffects = (options?: { markClosedForReply?: boolean }): Promise<void> => {
-    const nextIdleSideEffects = idleSideEffectsPromise.then(async () => {
-      await closeStreaming(options);
-      typingCallbacks?.onIdle?.();
-    });
-    idleSideEffectsPromise = nextIdleSideEffects.catch(() => {});
-    return nextIdleSideEffects;
-  };
-
-  const queueMessageAuditNotice = (): Promise<void> => {
-    // Keep the notice in the idle chain so fallback evaluation cannot race it.
-    const nextIdleSideEffects = idleSideEffectsPromise.then(async () => {
-      try {
-        await sendMessageFeishu({
-          cfg,
-          to: sendTarget,
-          text: messageAudit.MESSAGE_AUDIT_REJECTION_NOTICE,
-          replyToMessageId: sendReplyToMessageId,
-          replyInThread: effectiveReplyInThread,
-          allowTopLevelReplyFallback,
-          accountId,
-        });
-        markVisibleReplySent();
-      } catch (noticeError) {
-        params.runtime.error?.(
-          `feishu[${account.accountId}]: failed to send message audit rejection notice: ${String(noticeError)}`,
-        );
-      }
-    });
-    idleSideEffectsPromise = nextIdleSideEffects;
-    return nextIdleSideEffects;
-  };
+  const replyFallback = createFeishuReplyFallbackController({
+    accountId: account.accountId,
+    closeStreaming,
+    getVisibleReplyState: () => ({ visibleReplySent, skippedFinalReason }),
+    log: params.runtime.log,
+    error: params.runtime.error,
+    markVisibleReplySent,
+    onIdle: () => typingCallbacks?.onIdle?.(),
+    sendText: async (text) => {
+      await sendMessageFeishu({
+        cfg,
+        to: sendTarget,
+        text,
+        replyToMessageId: sendReplyToMessageId,
+        replyInThread: effectiveReplyInThread,
+        allowTopLevelReplyFallback,
+        accountId,
+      });
+    },
+  });
 
   const { dispatcher, replyOptions, markDispatchIdle } =
     core.channel.reply.createReplyDispatcherWithTyping({
@@ -873,24 +830,14 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         }
       },
       onError: async (error, info) => {
-        const shouldQueueAuditNotice =
-          !messageAuditNoticeQueued && messageAudit.isFeishuMessageAuditRejection(error);
-        if (shouldQueueAuditNotice) {
-          messageAuditNoticeQueued = true;
-        }
         streamingCloseErroredForReply = true;
         streamingClosedForReply = false;
         params.runtime.error?.(
           `feishu[${account.accountId}] ${info.kind} reply failed: ${String(error)}`,
         );
-        const idleTask = queueIdleSideEffects({ markClosedForReply: false });
-        if (shouldQueueAuditNotice) {
-          await queueMessageAuditNotice();
-          return;
-        }
-        await idleTask;
+        await replyFallback.handleReplyError(error);
       },
-      onIdle: () => queueIdleSideEffects(),
+      onIdle: replyFallback.onIdle,
       onCleanup: () => {
         typingCallbacks?.onCleanup?.();
       },
@@ -976,7 +923,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         : undefined,
     },
     markDispatchIdle,
-    ensureNoVisibleReplyFallback,
+    ensureNoVisibleReplyFallback: replyFallback.ensureNoVisibleReplyFallback,
     getVisibleReplyState: () => ({
       visibleReplySent,
       skippedFinalReason,

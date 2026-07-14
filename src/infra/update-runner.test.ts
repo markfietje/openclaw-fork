@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { bundledDistPluginFile } from "openclaw/plugin-sdk/test-fixtures";
+import * as tar from "tar";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PACKAGE_INSTALL_GUARD_RELATIVE_PATH,
@@ -435,6 +436,11 @@ describe("runGatewayUpdate", () => {
       fs.mkdir(path.join(pkgRoot, "scripts"), { recursive: true }),
     ]);
     await fs.writeFile(
+      path.join(pkgRoot, "scripts", "preinstall-package-manager-warning.mjs"),
+      "// test preinstall\n",
+      "utf8",
+    );
+    await fs.writeFile(
       path.join(pkgRoot, "scripts", "postinstall-bundled-plugins.mjs"),
       "// test postinstall\n",
       "utf8",
@@ -445,6 +451,25 @@ describe("runGatewayUpdate", () => {
       "utf8",
     );
     await writePackageDistInventory(pkgRoot);
+  }
+
+  function resolvePackedFixtureVersion(sourceSpec: string): string {
+    return /^openclaw@(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/u.exec(sourceSpec)?.[1] ?? "2.0.0";
+  }
+
+  async function writePackedPackageCandidate(packDir: string, sourceSpec: string): Promise<string> {
+    const version = resolvePackedFixtureVersion(sourceSpec);
+    const packageRoot = path.join(packDir, "package");
+    await fs.mkdir(packageRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", version }),
+      "utf8",
+    );
+    await addPackageInstallGuard(packageRoot);
+    const tarballPath = path.join(packDir, `openclaw-${version}.tgz`);
+    await tar.c({ cwd: packDir, file: tarballPath, gzip: true }, ["package"]);
+    return tarballPath;
   }
 
   async function writeBundledRuntimeSidecars(pkgRoot: string) {
@@ -483,6 +508,31 @@ describe("runGatewayUpdate", () => {
       : expected(normalizedArgv);
   };
 
+  const isNpmCommand = (command: string | undefined) => {
+    const normalized = (command ?? "").replaceAll("\\", "/");
+    return /^npm(?:\.cmd)?$/iu.test(normalized.split("/").at(-1) ?? "");
+  };
+
+  const withoutInstallPrefix = (argv: string[]): string[] => {
+    const prefixIndex = argv.indexOf("--prefix");
+    return prefixIndex < 0 ? argv : [...argv.slice(0, prefixIndex), ...argv.slice(prefixIndex + 2)];
+  };
+
+  const recordedPackCallMatches = (call: string, sourceSpec: string) => {
+    const argv = call.split(" ");
+    return isNpmCommand(argv[0]) && argv[1] === "pack" && argv[2] === sourceSpec;
+  };
+
+  const isRecordedPackedNpmInstall = (call: string) => {
+    const argv = call.split(" ");
+    return (
+      isNpmCommand(argv[0]) &&
+      argv[1] === "i" &&
+      argv[2] === "-g" &&
+      argv.some((arg) => arg.endsWith(".tgz"))
+    );
+  };
+
   const npmGlobalInstallCommand = (spec: string, extraArgs: string[] = []) =>
     [
       "npm",
@@ -505,6 +555,8 @@ describe("runGatewayUpdate", () => {
   }) {
     const baseInstallKey = npmGlobalInstallCommand("openclaw@latest");
     const omitOptionalInstallKey = npmGlobalInstallCommand("openclaw@latest", ["--omit=optional"]);
+    let packedInstallSpec: string | null = null;
+    let packedSourceSpec: string | null = null;
 
     return async (argv: string[]): Promise<CommandResult> => {
       const key = normalizeNpmFreshnessArgs(argv).join(" ");
@@ -517,13 +569,46 @@ describe("runGatewayUpdate", () => {
       if (key === "pnpm root -g") {
         return { stdout: "", stderr: "", code: 1 };
       }
-      if (key === baseInstallKey) {
-        return (await params.onBaseInstall?.()) ?? { stdout: "ok", stderr: "", code: 0 };
+      if (isNpmCommand(argv[0]) && argv[1] === "pack") {
+        const destination = argv[argv.indexOf("--pack-destination") + 1];
+        if (!destination) {
+          return { stdout: "", stderr: "missing pack destination", code: 1 };
+        }
+        packedSourceSpec = argv[2] ?? "openclaw@latest";
+        packedInstallSpec = await writePackedPackageCandidate(destination, packedSourceSpec);
+        return {
+          stdout: JSON.stringify([{ filename: path.basename(packedInstallSpec) }]),
+          stderr: "",
+          code: 0,
+        };
       }
-      if (key === omitOptionalInstallKey) {
-        return (
-          (await params.onOmitOptionalInstall?.()) ?? { stdout: "", stderr: "not found", code: 1 }
-        );
+      const installArgv = withoutInstallPrefix(argv).map((arg) =>
+        packedInstallSpec && packedSourceSpec && arg === packedInstallSpec ? packedSourceSpec : arg,
+      );
+      const installKey = normalizeNpmFreshnessArgs(installArgv).join(" ");
+      let result: CommandResult | null = null;
+      if (installKey === baseInstallKey) {
+        result = (await params.onBaseInstall?.()) ?? { stdout: "ok", stderr: "", code: 0 };
+      } else if (installKey === omitOptionalInstallKey) {
+        result = (await params.onOmitOptionalInstall?.()) ?? {
+          stdout: "",
+          stderr: "not found",
+          code: 1,
+        };
+      }
+      if (result) {
+        if (result.code === 0) {
+          const prefixIndex = argv.indexOf("--prefix");
+          const prefix = prefixIndex >= 0 ? argv[prefixIndex + 1] : undefined;
+          const packageRoot = prefix
+            ? process.platform === "win32"
+              ? path.join(prefix, "node_modules", "openclaw")
+              : path.join(prefix, "lib", "node_modules", "openclaw")
+            : params.pkgRoot;
+          await writeGlobalPackageVersion(packageRoot);
+          await addPackageInstallGuard(packageRoot);
+        }
+        return result;
       }
       return { stdout: "", stderr: "", code: 0 };
     };
@@ -2612,12 +2697,8 @@ describe("runGatewayUpdate", () => {
       pkgRoot,
       npmRootOutput: nodeModules,
       installCommand: params.expectedInstallCommand,
-      onInstall: async () => {
-        await fs.writeFile(
-          path.join(pkgRoot, "package.json"),
-          JSON.stringify({ name: "openclaw", version: "2.0.0" }),
-          "utf-8",
-        );
+      onInstall: async (options) => {
+        await writeGlobalPackageVersion(options?.packageRoot ?? pkgRoot);
       },
     });
 
@@ -2634,7 +2715,6 @@ describe("runGatewayUpdate", () => {
     pkgRoot: string;
     npmRootOutput?: string;
     pnpmRootOutput?: string;
-    pnpmVersion?: string | null;
     installCommand: InstallCommandExpectation;
     gitRootMode?: "not-git" | "missing";
     onInstall?: (options?: {
@@ -2644,6 +2724,20 @@ describe("runGatewayUpdate", () => {
     }) => Promise<void>;
   }) => {
     const calls: string[] = [];
+    let packedInstallSpec: string | null = null;
+    let packedSourceSpec: string | null = null;
+    const matchesInstallCommand = (argv: string[]) => {
+      if (installCommandMatches(params.installCommand, argv)) {
+        return true;
+      }
+      if (!packedInstallSpec || !packedSourceSpec) {
+        return false;
+      }
+      return installCommandMatches(
+        params.installCommand,
+        argv.map((arg) => (arg === packedInstallSpec ? packedSourceSpec : arg)),
+      );
+    };
     const runCommand = async (argv: string[], options?: { env?: NodeJS.ProcessEnv }) => {
       const key = normalizeNpmFreshnessArgs(argv).join(" ");
       calls.push(key);
@@ -2665,35 +2759,34 @@ describe("runGatewayUpdate", () => {
         }
         return { stdout: "", stderr: "", code: 1 };
       }
-      if (key === "pnpm --version" && params.pnpmRootOutput) {
-        return params.pnpmVersion === null
-          ? { stdout: "", stderr: "version failed", code: 1 }
-          : { stdout: params.pnpmVersion ?? "11.0.0", stderr: "", code: 0 };
-      }
-      if (argv[0] === "npm" && argv[1] === "pack") {
+      if (isNpmCommand(argv[0]) && argv[1] === "pack") {
         const destination = argv[argv.indexOf("--pack-destination") + 1];
         if (!destination) {
           return { stdout: "", stderr: "missing pack destination", code: 1 };
         }
-        await fs.writeFile(path.join(destination, "openclaw-2.0.0.tgz"), "packed\n", "utf-8");
+        packedSourceSpec = argv[2] ?? "openclaw@latest";
+        packedInstallSpec = await writePackedPackageCandidate(destination, packedSourceSpec);
         return {
-          stdout: JSON.stringify([{ filename: "openclaw-2.0.0.tgz" }]),
+          stdout: JSON.stringify([{ filename: path.basename(packedInstallSpec) }]),
           stderr: "",
           code: 0,
         };
       }
-      if (installCommandMatches(params.installCommand, argv)) {
+      if (matchesInstallCommand(argv)) {
         await params.onInstall?.(options);
+        if (
+          isNpmCommand(argv[0]) &&
+          !(await pathExists(path.join(params.pkgRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH)))
+        ) {
+          await addPackageInstallGuard(params.pkgRoot);
+        }
         return { stdout: "ok", stderr: "", code: 0 };
       }
       const prefixIndex = argv.indexOf("--prefix");
       const installPrefix = prefixIndex >= 0 ? argv[prefixIndex + 1] : undefined;
       if (installPrefix) {
-        const normalizedInstallCommand = normalizeNpmFreshnessArgs([
-          ...argv.slice(0, prefixIndex),
-          ...argv.slice(prefixIndex + 2),
-        ]);
-        if (installCommandMatches(params.installCommand, normalizedInstallCommand)) {
+        const normalizedInstallCommand = normalizeNpmFreshnessArgs(withoutInstallPrefix(argv));
+        if (matchesInstallCommand(normalizedInstallCommand)) {
           const packageRoot =
             process.platform === "win32"
               ? path.join(installPrefix, "node_modules", "openclaw")
@@ -2716,18 +2809,21 @@ describe("runGatewayUpdate", () => {
     {
       title: "updates global npm installs when detected",
       expectedInstallCommand: npmGlobalInstallCommand("openclaw@latest"),
+      sourceSpec: "openclaw@latest",
     },
     {
       title: "uses update channel for global npm installs when tag is omitted",
       expectedInstallCommand: npmGlobalInstallCommand("openclaw@beta"),
+      sourceSpec: "openclaw@beta",
       channel: "beta" as const,
     },
     {
       title: "updates global npm installs with tag override",
       expectedInstallCommand: npmGlobalInstallCommand("openclaw@beta"),
+      sourceSpec: "openclaw@beta",
       tag: "beta",
     },
-  ])("$title", async ({ expectedInstallCommand, channel, tag }) => {
+  ])("$title", async ({ expectedInstallCommand, sourceSpec, channel, tag }) => {
     const { calls, result } = await runNpmGlobalUpdateCase({
       expectedInstallCommand,
       channel,
@@ -2738,7 +2834,8 @@ describe("runGatewayUpdate", () => {
     expect(result.mode).toBe("npm");
     expect(result.before?.version).toBe("1.0.0");
     expect(result.after?.version).toBe("2.0.0");
-    expect(calls).toContain(expectedInstallCommand);
+    expect(calls.some((call) => recordedPackCallMatches(call, sourceSpec))).toBe(true);
+    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
   });
 
   it("updates global npm installs from the GitHub main package spec", async () => {
@@ -2758,9 +2855,14 @@ describe("runGatewayUpdate", () => {
     expect(result.mode).toBe("npm");
     expect(result.steps.map((step) => step.name)).toContain("global update pack");
     expect(
-      calls.some((call) =>
-        call.startsWith(`npm pack ${sourceSpec} --allow-git=all --pack-destination `),
-      ),
+      calls.some((call) => {
+        const argv = call.split(" ");
+        return (
+          isNpmCommand(argv[0]) &&
+          argv.slice(1, 4).join(" ") === `pack ${sourceSpec} --allow-git=all` &&
+          argv.includes("--pack-destination")
+        );
+      }),
     ).toBe(true);
     const installCall = calls.find((call) => call.includes("openclaw-2.0.0.tgz"));
     expect(installCall).toContain("--no-fund --no-audit --loglevel=error --min-release-age=0");
@@ -2777,9 +2879,10 @@ describe("runGatewayUpdate", () => {
       pkgRoot,
       npmRootOutput: nodeModules,
       installCommand: npmGlobalInstallCommand("openclaw@latest"),
-      onInstall: async () => {
-        await writeGlobalPackageVersion(pkgRoot);
-        await writeGatewayEntrypoint(pkgRoot);
+      onInstall: async (options) => {
+        const packageRoot = options?.packageRoot ?? pkgRoot;
+        await writeGlobalPackageVersion(packageRoot);
+        await writeGatewayEntrypoint(packageRoot);
       },
     });
     const doctorNodePath = await resolveStableNodePath(process.execPath);
@@ -2821,9 +2924,10 @@ describe("runGatewayUpdate", () => {
       pkgRoot,
       npmRootOutput: nodeModules,
       installCommand: npmGlobalInstallCommand("openclaw@latest"),
-      onInstall: async () => {
-        await writeGlobalPackageVersion(pkgRoot);
-        await writeGatewayEntrypoint(pkgRoot);
+      onInstall: async (options) => {
+        const packageRoot = options?.packageRoot ?? pkgRoot;
+        await writeGlobalPackageVersion(packageRoot);
+        await writeGatewayEntrypoint(packageRoot);
       },
     });
     const doctorNodePath = await resolveStableNodePath(process.execPath);
@@ -2859,14 +2963,15 @@ describe("runGatewayUpdate", () => {
       npmRootOutput: nodeModules,
       installCommand: npmGlobalInstallCommand("openclaw@latest"),
       gitRootMode: "missing",
-      onInstall: async () => writeGlobalPackageVersion(pkgRoot),
+      onInstall: async (options) => writeGlobalPackageVersion(options?.packageRoot ?? pkgRoot),
     });
 
     const result = await runWithCommand(runCommand, { cwd: pkgRoot });
 
     expect(result.status).toBe("ok");
     expect(result.mode).toBe("npm");
-    expect(calls).toContain(npmGlobalInstallCommand("openclaw@latest"));
+    expect(calls.some((call) => recordedPackCallMatches(call, "openclaw@latest"))).toBe(true);
+    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
   });
 
   it("rejects a tag override for the extended-stable global package channel", async () => {
@@ -2942,8 +3047,12 @@ describe("runGatewayUpdate", () => {
     expect(result.status).toBe("ok");
     expect(result.mode).toBe("npm");
     expect(result.steps.map((s) => s.name)).toEqual([
+      "global update pack",
+      "global install runtime guard",
       "global update",
       "global update (omit optional)",
+      "global install runtime guard",
+      "global install postinstall",
     ]);
   });
 
@@ -2959,7 +3068,8 @@ describe("runGatewayUpdate", () => {
     expect(result.steps.at(-1)?.stderrTail).toContain(
       "expected installed version 2026.3.23-2, found 2.0.0",
     );
-    expect(calls).toContain(npmGlobalInstallCommand("openclaw@2026.3.23-2"));
+    expect(calls.some((call) => recordedPackCallMatches(call, "openclaw@2026.3.23-2"))).toBe(true);
+    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
   });
 
   it("fails global npm update when bundled runtime sidecars are missing after install", async () => {
@@ -2969,16 +3079,18 @@ describe("runGatewayUpdate", () => {
       pkgRoot,
       npmRootOutput: nodeModules,
       installCommand: expectedInstallCommand,
-      onInstall: async () => {
+      onInstall: async (options) => {
+        const packageRoot = options?.packageRoot ?? pkgRoot;
         await fs.writeFile(
-          path.join(pkgRoot, "package.json"),
+          path.join(packageRoot, "package.json"),
           JSON.stringify({ name: "openclaw", version: "2.0.0" }),
           "utf-8",
         );
-        await writeBundledRuntimeSidecars(pkgRoot);
-        const inventory = await writePackageDistInventory(pkgRoot);
+        await writeBundledRuntimeSidecars(packageRoot);
+        const inventory = await writePackageDistInventory(packageRoot);
         expect(inventory).toContain(TELEGRAM_RUNTIME_API);
-        const telegramRuntimeApiPath = path.join(pkgRoot, TELEGRAM_RUNTIME_API);
+        await addPackageInstallGuard(packageRoot);
+        const telegramRuntimeApiPath = path.join(packageRoot, TELEGRAM_RUNTIME_API);
         await expect(pathExists(telegramRuntimeApiPath)).resolves.toBe(true);
         await fs.rm(telegramRuntimeApiPath);
       },
@@ -3034,7 +3146,8 @@ describe("runGatewayUpdate", () => {
     });
 
     const mergedPath = installEnv?.Path ?? installEnv?.PATH ?? "";
-    expect(mergedPath.split(path.delimiter).slice(0, 2)).toEqual([
+    expect(mergedPath.split(path.delimiter).slice(0, 3)).toEqual([
+      path.dirname(process.execPath),
       portableGitMingw,
       portableGitUsr,
     ]);
@@ -3116,47 +3229,15 @@ describe("runGatewayUpdate", () => {
     await expect(fs.access(staleInstallChunk)).rejects.toHaveProperty("code", "ENOENT");
   });
 
-  it("reports pnpm install-policy preflight failures as global install failures", async () => {
-    const nodeModules = path.join(tempDir, "pnpm", "global", "5", "node_modules");
-    const pkgRoot = path.join(nodeModules, "openclaw");
-    await seedGlobalPackageRoot(pkgRoot);
-
-    const { calls, runCommand } = createGlobalInstallHarness({
-      pkgRoot,
-      pnpmRootOutput: nodeModules,
-      pnpmVersion: "10.3.0",
-      installCommand: npmGlobalInstallCommand("openclaw@latest"),
-    });
-
-    const result = await runWithCommand(runCommand, { cwd: pkgRoot });
-
-    expect(result.status).toBe("error");
-    expect(result.reason).toBe("global-install-failed");
-    expect(result.steps.at(-1)?.name).toBe("global update preflight");
-    expect(calls).toContain("pnpm --version");
-    expect(calls.some((call) => call.startsWith("pnpm add "))).toBe(false);
-  });
-
   it("uses OPENCLAW_UPDATE_PACKAGE_SPEC for global package updates", async () => {
     const { nodeModules, pkgRoot } = await createGlobalPackageFixture(tempDir);
     const packageSpec = "http://10.211.55.2:8138/openclaw-next.tgz";
-    const expectedInstallCommand = [
-      "npm",
-      "i",
-      "-g",
-      "--allow-remote=root",
-      "--ignore-scripts",
-      packageSpec,
-      "--no-fund",
-      "--no-audit",
-      "--loglevel=error",
-      npmFreshnessArg,
-    ].join(" ");
+    const expectedInstallCommand = npmGlobalInstallCommand(packageSpec);
     const { calls, runCommand } = createGlobalInstallHarness({
       pkgRoot,
       npmRootOutput: nodeModules,
       installCommand: expectedInstallCommand,
-      onInstall: async () => writeGlobalPackageVersion(pkgRoot),
+      onInstall: async (options) => writeGlobalPackageVersion(options?.packageRoot ?? pkgRoot),
     });
 
     await withEnvAsync({ OPENCLAW_UPDATE_PACKAGE_SPEC: packageSpec }, async () => {
@@ -3164,7 +3245,13 @@ describe("runGatewayUpdate", () => {
       expect(result.status).toBe("ok");
     });
 
-    expect(calls).toContain(expectedInstallCommand);
+    expect(
+      calls.some(
+        (call) =>
+          recordedPackCallMatches(call, packageSpec) && call.includes("--allow-remote=root"),
+      ),
+    ).toBe(true);
+    expect(calls.some(isRecordedPackedNpmInstall)).toBe(true);
   });
 
   it("updates global bun installs when detected", async () => {
@@ -3176,7 +3263,7 @@ describe("runGatewayUpdate", () => {
 
       const { calls, runCommand } = createGlobalInstallHarness({
         pkgRoot,
-        installCommand: "bun add -g --trust openclaw@latest",
+        installCommand: "bun add -g openclaw@latest",
         onInstall: async () => await writeGlobalPackageVersion(pkgRoot),
       });
 
@@ -3186,7 +3273,7 @@ describe("runGatewayUpdate", () => {
       expect(result.mode).toBe("bun");
       expect(result.before?.version).toBe("1.0.0");
       expect(result.after?.version).toBe("2.0.0");
-      expect(calls).toContain("bun add -g --trust openclaw@latest");
+      expect(calls).toContain("bun add -g openclaw@latest");
       expect(calls.some((call) => call.startsWith("npm i "))).toBe(false);
     });
   });

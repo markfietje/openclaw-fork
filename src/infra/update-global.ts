@@ -18,12 +18,8 @@ import {
 } from "./package-dist-inventory.js";
 import { readPackageVersion } from "./package-json.js";
 import {
-  detectPnpmVersion,
   isExplicitPackageInstallSpec,
   npmSourceAccessArgs,
-  pnpmInstallScriptPreflightError,
-  type PnpmVersion,
-  shouldPassPnpmAllowBuild,
 } from "./package-manager-install-policy.js";
 import { applyPathPrepend } from "./path-prepend.js";
 import { parseSemver } from "./runtime-guard.js";
@@ -47,7 +43,6 @@ export type CommandRunner = (
 type ResolvedGlobalInstallCommand = {
   manager: GlobalInstallManager;
   command: string;
-  pnpmVersion?: PnpmVersion | null;
 };
 
 /**
@@ -60,13 +55,6 @@ export type ResolvedGlobalInstallTarget = ResolvedGlobalInstallCommand & {
   directNodeModulesRoot?: boolean;
 };
 
-/** Returns an actionable error when a package manager cannot safely run install scripts. */
-export function resolveGlobalInstallPreflightError(
-  target: ResolvedGlobalInstallTarget,
-): string | null {
-  return target.manager === "pnpm" ? pnpmInstallScriptPreflightError(target.pnpmVersion) : null;
-}
-
 const PRIMARY_PACKAGE_NAME = "openclaw";
 const ALL_PACKAGE_NAMES = [PRIMARY_PACKAGE_NAME] as const;
 const GLOBAL_RENAME_PREFIX = ".";
@@ -75,7 +63,6 @@ const OPENCLAW_MAIN_PACKAGE_SPEC = "github:openclaw/openclaw#main";
 const COREPACK_ENABLE_DOWNLOAD_PROMPT_DEFAULT = "0";
 const NPM_GLOBAL_INSTALL_QUIET_FLAGS = ["--no-fund", "--no-audit", "--loglevel=error"] as const;
 const PNPM_OPENCLAW_BUILD_ALLOWLIST_FLAG = `--allow-build=${PRIMARY_PACKAGE_NAME}`;
-const PNPM_DISABLE_ALLOW_ALL_BUILDS_FLAG = "--config.dangerously-allow-all-builds=false";
 const FIRST_PACKAGED_DIST_INVENTORY_VERSION = { major: 2026, minor: 4, patch: 15 };
 const OMITTED_PRIVATE_QA_BUNDLED_PLUGIN_ROOTS = new Set([
   "dist/extensions/qa-channel",
@@ -105,6 +92,23 @@ function normalizePackageVersionForComparison(value: string | null | undefined):
 /** Returns true when a user target requests the moving main-branch package spec. */
 function isMainPackageTarget(value: string): boolean {
   return normalizeLowercaseStringOrEmpty(normalizePackageTarget(value)) === "main";
+}
+
+function stripPrimaryPackageAlias(spec: string): string {
+  const normalized = normalizePackageTarget(spec);
+  const prefix = `${PRIMARY_PACKAGE_NAME}@`;
+  return normalized.toLowerCase().startsWith(prefix)
+    ? normalized.slice(prefix.length).trim()
+    : normalized;
+}
+
+function isPnpmOpenClawSourceInstallSpec(spec: string): boolean {
+  const target = stripPrimaryPackageAlias(spec);
+  return (
+    /^github:/i.test(target) ||
+    /^git\+(?:ssh|https|http|file):/i.test(target) ||
+    /^git:/i.test(target)
+  );
 }
 
 /**
@@ -420,12 +424,8 @@ async function tryRealpath(targetPath: string): Promise<string> {
 }
 
 function resolveBunGlobalRoot(): string {
-  const explicitGlobalDir = process.env.BUN_INSTALL_GLOBAL_DIR?.trim();
-  if (explicitGlobalDir) {
-    return path.join(path.resolve(explicitGlobalDir), "node_modules");
-  }
   const bunInstall = process.env.BUN_INSTALL?.trim() || path.join(os.homedir(), ".bun");
-  return path.join(path.resolve(bunInstall), "install", "global", "node_modules");
+  return path.join(bunInstall, "install", "global", "node_modules");
 }
 
 function inferNpmPrefixFromPackageRoot(pkgRoot?: string | null): string | null {
@@ -649,7 +649,7 @@ function inferPnpmGlobalRootFromPackageRoot(pkgRoot?: string | null): string | n
  * Resolves pnpm's global-dir from its active `node_modules` root.
  * Versioned pnpm layouts put packages under `<globalDir>/<version>/node_modules`.
  */
-function resolvePnpmGlobalDirFromGlobalRoot(globalRoot?: string | null): string | null {
+export function resolvePnpmGlobalDirFromGlobalRoot(globalRoot?: string | null): string | null {
   const trimmed = globalRoot?.trim();
   if (!trimmed) {
     return null;
@@ -660,10 +660,6 @@ function resolvePnpmGlobalDirFromGlobalRoot(globalRoot?: string | null): string 
   }
   const layoutDir = path.dirname(normalized);
   return /^\d+$/u.test(path.basename(layoutDir)) ? path.dirname(layoutDir) : null;
-}
-
-export function resolveGlobalInstallLocation(target: ResolvedGlobalInstallTarget): string | null {
-  return target.manager === "pnpm" ? resolvePnpmGlobalDirFromGlobalRoot(target.globalRoot) : null;
 }
 
 async function isPnpmGlobalPackageRoot(pkgRoot?: string | null): Promise<boolean> {
@@ -784,10 +780,6 @@ export async function resolveGlobalInstallTarget(params: {
     params.timeoutMs,
     params.pkgRoot,
   );
-  const pnpmVersion =
-    command.manager === "pnpm"
-      ? await detectPnpmVersion(command.command, params.runCommand, params.timeoutMs)
-      : undefined;
   const pkgRootGlobalRoot = command.manager === "pnpm" ? pnpmPackageRootGlobalRoot : null;
   // The detected npm owner applies to the running package, so its prefix is
   // authoritative. PATH's npm may belong to another Node installation and
@@ -804,7 +796,6 @@ export async function resolveGlobalInstallTarget(params: {
     globalRoot;
   return {
     ...command,
-    ...(pnpmVersion === undefined ? {} : { pnpmVersion }),
     globalRoot: targetGlobalRoot,
     packageRoot: targetGlobalRoot
       ? resolvePackageRootFromGlobalRoot({
@@ -908,7 +899,6 @@ export async function detectGlobalInstallManagerByPresence(
   return null;
 }
 
-/** Builds global install argv with narrow lifecycle-script approval. */
 export function globalInstallArgs(
   managerOrCommand: GlobalInstallManager | ResolvedGlobalInstallCommand,
   spec: string,
@@ -917,22 +907,17 @@ export function globalInstallArgs(
 ): string[] {
   const resolved = normalizeGlobalInstallCommand(managerOrCommand, pkgRoot);
   if (resolved.manager === "pnpm") {
-    const allowBuild = shouldPassPnpmAllowBuild(PRIMARY_PACKAGE_NAME, spec, resolved.pnpmVersion);
     return [
       resolved.command,
       "add",
       "-g",
       ...(installPrefix ? ["--global-dir", installPrefix] : []),
-      // --allow-build does not override ignore-scripts; the guard must run before active-tree mutation.
-      ...(allowBuild ? ["--ignore-scripts=false", "--config.side-effects-cache=false"] : []),
-      ...(allowBuild
-        ? [PNPM_DISABLE_ALLOW_ALL_BUILDS_FLAG, PNPM_OPENCLAW_BUILD_ALLOWLIST_FLAG]
-        : []),
+      ...(isPnpmOpenClawSourceInstallSpec(spec) ? [PNPM_OPENCLAW_BUILD_ALLOWLIST_FLAG] : []),
       spec,
     ];
   }
   if (resolved.manager === "bun") {
-    return [resolved.command, "add", "-g", "--trust", spec];
+    return [resolved.command, "add", "-g", spec];
   }
   return [
     resolved.command,

@@ -1,6 +1,7 @@
 // Covers package update step orchestration.
 import fs from "node:fs/promises";
 import path from "node:path";
+import * as tar from "tar";
 import { describe, expect, it, vi } from "vitest";
 import {
   PACKAGE_INSTALL_GUARD_RELATIVE_PATH,
@@ -8,8 +9,8 @@ import {
 } from "../../scripts/lib/package-dist-inventory.ts";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import { readPackageVersion } from "./package-json.js";
+import { resolvePackageRuntimeNpmCommand } from "./package-runtime-env.js";
 import {
-  createGlobalInstallPreflightStep,
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
 } from "./package-update-steps.js";
@@ -44,7 +45,11 @@ function successfulPostinstallStep(params: {
   };
 }
 
-async function writePackageRoot(packageRoot: string, version: string): Promise<void> {
+async function writePackageRoot(
+  packageRoot: string,
+  version: string,
+  options: { installGuard?: boolean; nodeEngine?: string } = {},
+): Promise<void> {
   await Promise.all([
     fs.mkdir(path.join(packageRoot, "dist"), { recursive: true }),
     fs.mkdir(path.join(packageRoot, "scripts"), { recursive: true }),
@@ -55,7 +60,7 @@ async function writePackageRoot(packageRoot: string, version: string): Promise<v
       JSON.stringify({
         name: "openclaw",
         version,
-        engines: { node: ">=0.0.0" },
+        engines: { node: options.nodeEngine ?? ">=0.0.0" },
         scripts: {
           preinstall: "node scripts/preinstall-package-manager-warning.mjs",
           postinstall: "node scripts/postinstall-bundled-plugins.mjs",
@@ -65,19 +70,39 @@ async function writePackageRoot(packageRoot: string, version: string): Promise<v
     ),
     fs.writeFile(path.join(packageRoot, "dist", "index.js"), "export {};\n", "utf8"),
     fs.writeFile(
+      path.join(packageRoot, "scripts", "preinstall-package-manager-warning.mjs"),
+      "// test preinstall\n",
+      "utf8",
+    ),
+    fs.writeFile(
       path.join(packageRoot, "scripts", "postinstall-bundled-plugins.mjs"),
       "// test postinstall\n",
       "utf8",
     ),
   ]);
   await writePackageDistInventory(packageRoot);
-  if (packageRoot.split(path.sep).some((part) => part.startsWith(".openclaw-update-stage-"))) {
+  if (
+    options.installGuard === true ||
+    packageRoot.split(path.sep).some((part) => part.startsWith(".openclaw-update-stage-"))
+  ) {
     await fs.writeFile(
       path.join(packageRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH),
       "preinstall incomplete\n",
       "utf8",
     );
   }
+}
+
+async function writePackageTarball(
+  packDir: string,
+  version: string,
+  nodeEngine = ">=0.0.0",
+): Promise<string> {
+  const packedRoot = path.join(packDir, "package");
+  await writePackageRoot(packedRoot, version, { installGuard: true, nodeEngine });
+  const tarballPath = path.join(packDir, `openclaw-${version}.tgz`);
+  await tar.c({ cwd: packDir, file: tarballPath, gzip: true }, ["package"]);
+  return tarballPath;
 }
 
 async function addHardlinkedPackageFile(packageRoot: string, linkRoot: string): Promise<void> {
@@ -103,7 +128,6 @@ function createPnpmTarget(globalRoot: string): ResolvedGlobalInstallTarget {
   return {
     manager: "pnpm",
     command: "pnpm",
-    pnpmVersion: { major: 11, minor: 0, patch: 0 },
     globalRoot,
     packageRoot: path.join(globalRoot, "openclaw"),
   };
@@ -351,7 +375,7 @@ describe("runGlobalPackageUpdateSteps", () => {
       const packageRoot = path.join(managedRoot, "openclaw");
       await writePackageRoot(packageRoot, "1.0.0");
 
-      const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+      const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
         const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
         if (postinstallStep) {
           return postinstallStep;
@@ -411,7 +435,7 @@ describe("runGlobalPackageUpdateSteps", () => {
       const packageRoot = path.join(globalRoot, "openclaw");
       await writePackageRoot(packageRoot, "1.0.0");
 
-      const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+      const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
         const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
         if (postinstallStep) {
           return postinstallStep;
@@ -470,14 +494,14 @@ describe("runGlobalPackageUpdateSteps", () => {
       await writePackageRoot(packageRoot, "1.0.0");
 
       let packDir: string | undefined;
-      const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+      const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
         const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
         if (postinstallStep) {
           return postinstallStep;
         }
         if (name === "global update pack") {
           expect(argv).toEqual([
-            "npm",
+            resolvePackageRuntimeNpmCommand(process.execPath),
             "pack",
             sourceSpec,
             "--allow-git=all",
@@ -486,6 +510,8 @@ describe("runGlobalPackageUpdateSteps", () => {
             "--json",
             "--loglevel=error",
           ]);
+          const pathEnv = env?.PATH ?? env?.Path ?? "";
+          expect(pathEnv.split(path.delimiter)[0]).toBe(path.dirname(process.execPath));
           const destination = argv[argv.indexOf("--pack-destination") + 1];
           if (!destination) {
             throw new Error("missing pack destination");
@@ -562,6 +588,92 @@ describe("runGlobalPackageUpdateSteps", () => {
     });
   });
 
+  it("falls back to the resolved npm command when selected Node has no adjacent npm", async () => {
+    await withTempDir({ prefix: "openclaw-package-update-local-pack-" }, async (base) => {
+      const prefix = path.join(base, "prefix");
+      const globalRoot = path.join(prefix, "lib", "node_modules");
+      const packageRoot = path.join(globalRoot, "openclaw");
+      const sourceDir = path.join(base, "candidate");
+      await writePackageRoot(packageRoot, "1.0.0");
+      await fs.mkdir(sourceDir, { recursive: true });
+
+      let tarball: string | undefined;
+      const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
+        if (name === "global install postinstall") {
+          expect(argv[0]).toBe("/service/node");
+          const pathEnv = env?.PATH ?? env?.Path ?? "";
+          expect(pathEnv.split(path.delimiter)[0]).toBe("/service");
+          return successfulPostinstallStep({ name, argv, cwd })!;
+        }
+        const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
+        if (postinstallStep) {
+          return postinstallStep;
+        }
+        if (name === "global update pack") {
+          expect(argv.slice(0, 3)).toEqual(["npm", "pack", sourceDir]);
+          expect(argv).not.toContain("--allow-git=all");
+          const pathEnv = env?.PATH ?? env?.Path ?? "";
+          expect(pathEnv.split(path.delimiter)[0]).toBe("/service");
+          const destination = argv[argv.indexOf("--pack-destination") + 1];
+          if (!destination) {
+            throw new Error("missing pack destination");
+          }
+          tarball = await writePackageTarball(destination, "2.0.0");
+        } else if (name === "global update") {
+          if (!tarball) {
+            throw new Error("missing packed local candidate");
+          }
+          expect(argv).toContain(tarball);
+          const stagePrefix = argv[argv.indexOf("--prefix") + 1];
+          if (!stagePrefix) {
+            throw new Error("missing staged prefix");
+          }
+          await writePackageRoot(
+            path.join(stagePrefix, "lib", "node_modules", "openclaw"),
+            "2.0.0",
+          );
+        } else {
+          throw new Error(`unexpected step ${name}`);
+        }
+        return {
+          name,
+          command: argv.join(" "),
+          cwd: cwd ?? process.cwd(),
+          durationMs: 1,
+          exitCode: 0,
+        };
+      });
+      const rootRunner = createRootRunner(globalRoot);
+      const runCommand = vi.fn<CommandRunner>(async (argv, options) =>
+        argv[0] === "/service/node" && argv[1] === "--version"
+          ? { stdout: "v24.15.0\n", stderr: "", code: 0 }
+          : await rootRunner(argv, options),
+      );
+
+      const result = await runGlobalPackageUpdateSteps({
+        installTarget: createNpmTarget(globalRoot),
+        installSpec: sourceDir,
+        packageName: "openclaw",
+        packageRoot,
+        nodePath: "/service/node",
+        runCommand,
+        runStep,
+        timeoutMs: 1000,
+        env: { PATH: "/usr/bin" },
+      });
+
+      expect(result.failedStep).toBeNull();
+      expect(result.afterVersion).toBe("2.0.0");
+      expect(result.steps.map((step) => step.name)).toEqual([
+        "global update pack",
+        "global update",
+        "global install runtime guard",
+        "global install postinstall",
+        "global install swap",
+      ]);
+    });
+  });
+
   it.each([
     {
       name: "full git url",
@@ -626,7 +738,12 @@ describe("runGlobalPackageUpdateSteps", () => {
             if (!destination) {
               throw new Error("missing pack destination");
             }
-            expect(argv.slice(0, 4)).toEqual(["npm", "pack", sourceSpec, "--allow-git=all"]);
+            expect(argv.slice(0, 4)).toEqual([
+              resolvePackageRuntimeNpmCommand(process.execPath),
+              "pack",
+              sourceSpec,
+              "--allow-git=all",
+            ]);
             tarball = path.join(destination, "openclaw-2.0.0.tgz");
             await fs.writeFile(tarball, "packed\n", "utf8");
             return {
@@ -820,18 +937,7 @@ describe("runGlobalPackageUpdateSteps", () => {
           if (name !== "global update") {
             throw new Error(`unexpected step ${name}`);
           }
-          expect(argv).toEqual([
-            "pnpm",
-            "add",
-            "-g",
-            "--global-dir",
-            globalDir,
-            "--ignore-scripts=false",
-            "--config.side-effects-cache=false",
-            "--config.dangerously-allow-all-builds=false",
-            "--allow-build=openclaw",
-            "openclaw@2.0.0",
-          ]);
+          expect(argv).toEqual(["pnpm", "add", "-g", "--global-dir", globalDir, "openclaw@2.0.0"]);
           await writePackageRoot(packageRoot, "2.0.0");
           return {
             name,
@@ -859,45 +965,6 @@ describe("runGlobalPackageUpdateSteps", () => {
     } finally {
       platformSpy.mockRestore();
     }
-  });
-
-  it("rejects pnpm 10.0-10.3 before staging an update", async () => {
-    await withTempDir({ prefix: "openclaw-package-update-old-pnpm-" }, async (base) => {
-      const globalRoot = path.join(base, "pnpm", "global", "5", "node_modules");
-      const packageRoot = path.join(globalRoot, "openclaw");
-      await writePackageRoot(packageRoot, "1.0.0");
-      const installTarget = {
-        ...createPnpmTarget(globalRoot),
-        pnpmVersion: { major: 10, minor: 3, patch: 0 },
-      };
-      const runStep = vi.fn();
-
-      const result = await runGlobalPackageUpdateSteps({
-        installTarget,
-        installSpec: "openclaw@2.0.0",
-        packageName: "openclaw",
-        packageRoot,
-        runCommand: createRootRunner(globalRoot),
-        runStep,
-        timeoutMs: 1000,
-      });
-
-      expect(runStep).not.toHaveBeenCalled();
-      expect(result.failedStep?.name).toBe("global update preflight");
-      expect(result.failedStep?.stderrTail).toContain("upgrade pnpm to 10.4.0 or newer");
-      await expect(readPackageVersion(packageRoot)).resolves.toBe("1.0.0");
-    });
-  });
-
-  it("preserves the caller-owned preflight step label", () => {
-    const target = {
-      ...createPnpmTarget("/tmp/pnpm-global/5/node_modules"),
-      pnpmVersion: { major: 10, minor: 3, patch: 0 },
-    };
-
-    expect(
-      createGlobalInstallPreflightStep(target, "/tmp/openclaw", "global install preflight"),
-    ).toMatchObject({ name: "global install preflight", exitCode: 1 });
   });
 
   it("keeps a successful staged swap when old package cleanup hits a transient Windows native module error", async () => {

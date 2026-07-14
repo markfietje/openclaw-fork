@@ -1,20 +1,21 @@
 // Preinstall tests cover package runtime enforcement and package manager warnings.
 import { describe, expect, it, vi } from "vitest";
 import { PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "../../scripts/lib/package-dist-inventory.ts";
-import {
+import { packagePreinstallRuntime } from "../../scripts/preinstall-package-manager-warning.mjs";
+import { isSupportedNodeVersion } from "../../src/infra/runtime-guard.js";
+
+const EXPECTED_NODE_ENGINE_RANGE = ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0";
+const {
   completePackageInstallGuard,
   createPackageManagerWarningMessage,
   detectLifecyclePackageManager,
   enforceSupportedNodeRuntime,
   nodeVersionSatisfiesPackageEngine,
-  PACKAGE_INSTALL_GUARD_RELATIVE_PATH as PREINSTALL_GUARD_RELATIVE_PATH,
+  PACKAGE_INSTALL_GUARD_RELATIVE_PATH: PREINSTALL_GUARD_RELATIVE_PATH,
   probePackageCliNodeRuntime,
   readPackageNodeEngine,
   warnIfNonPnpmLifecycle,
-} from "../../scripts/preinstall-package-manager-warning.mjs";
-import { isSupportedNodeVersion } from "../../src/infra/runtime-guard.js";
-
-const EXPECTED_NODE_ENGINE_RANGE = ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0";
+} = packagePreinstallRuntime;
 
 function requireFirstWarning(warn: ReturnType<typeof vi.fn>): unknown {
   const [call] = warn.mock.calls;

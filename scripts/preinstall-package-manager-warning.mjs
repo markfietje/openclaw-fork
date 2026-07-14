@@ -13,7 +13,7 @@ const NODE_ENGINE_CLAUSE_RE = /^\s*>=\s*v?(\d+\.\d+\.\d+)(?:\s+<\s*v?(\d+(?:\.\d
 const NODE_VERSION_RE = /(\d+)\.(\d+)\.(\d+)/u;
 const NODE_RUNTIME_PROBE_SOURCE =
   "process.stdout.write(JSON.stringify({version:process.versions.node??null,bunVersion:process.versions.bun??null,execPath:process.execPath??null}))";
-export const PACKAGE_INSTALL_GUARD_RELATIVE_PATH = "dist/openclaw-install-guard";
+const PACKAGE_INSTALL_GUARD_RELATIVE_PATH = "dist/openclaw-install-guard";
 
 function normalizeEnvValue(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -44,7 +44,7 @@ function isNodeVersionAtLeast(version, minimum) {
 /**
  * Checks a Node version against the standalone package engine-range subset.
  */
-export function nodeVersionSatisfiesPackageEngine(version, engine) {
+function nodeVersionSatisfiesPackageEngine(version, engine) {
   const parsedVersion = parseNodeVersion(version);
   const normalizedEngine = normalizeEnvValue(engine);
   if (!parsedVersion || !normalizedEngine) {
@@ -78,9 +78,7 @@ export function nodeVersionSatisfiesPackageEngine(version, engine) {
 /**
  * Reads the Node runtime contract from the package being installed.
  */
-export function readPackageNodeEngine(
-  packageJsonUrl = new URL("../package.json", import.meta.url),
-) {
+function readPackageNodeEngine(packageJsonUrl = new URL("../package.json", import.meta.url)) {
   try {
     const manifest = JSON.parse(readFileSync(packageJsonUrl, "utf8"));
     return normalizeEnvValue(manifest?.engines?.node) || null;
@@ -117,7 +115,7 @@ function isPackageLifecycleBinPath(entry, pathApi) {
 /**
  * Finds the real Node that will launch the installed CLI after Bun removes its lifecycle shim.
  */
-export function probePackageCliNodeRuntime({
+function probePackageCliNodeRuntime({
   pathEnv = process.env.PATH ?? "",
   platform = process.platform,
   cwd = process.cwd(),
@@ -177,7 +175,7 @@ export function probePackageCliNodeRuntime({
 /**
  * Rejects package installation before an unsupported runtime can replace a working release.
  */
-export function enforceSupportedNodeRuntime(
+function enforceSupportedNodeRuntime(
   {
     version = process.versions.node ?? null,
     bunVersion = process.versions.bun ?? null,
@@ -211,7 +209,7 @@ export function enforceSupportedNodeRuntime(
 /**
  * Removes the packed marker only after the runtime check succeeds.
  */
-export function completePackageInstallGuard(
+function completePackageInstallGuard(
   {
     markerUrl = new URL(`../${PACKAGE_INSTALL_GUARD_RELATIVE_PATH}`, import.meta.url),
     remove = rmSync,
@@ -267,7 +265,7 @@ function detectLifecyclePackageManagerFromExecPath(value) {
 /**
  * Detects the package manager running the current lifecycle script.
  */
-export function detectLifecyclePackageManager(env = process.env) {
+function detectLifecyclePackageManager(env = process.env) {
   const userAgent = normalizeEnvValue(env.npm_config_user_agent);
   const userAgentMatch = /^([A-Za-z0-9._-]+)\//u.exec(userAgent);
   if (userAgentMatch) {
@@ -280,7 +278,7 @@ export function detectLifecyclePackageManager(env = process.env) {
 /**
  * Builds the warning shown for non-pnpm lifecycle installs.
  */
-export function createPackageManagerWarningMessage(packageManager) {
+function createPackageManagerWarningMessage(packageManager) {
   if (!packageManager || packageManager === "pnpm") {
     return null;
   }
@@ -295,7 +293,7 @@ export function createPackageManagerWarningMessage(packageManager) {
 /**
  * Emits the non-pnpm lifecycle warning when needed.
  */
-export function warnIfNonPnpmLifecycle(env = process.env, warn = console.warn) {
+function warnIfNonPnpmLifecycle(env = process.env, warn = console.warn) {
   const message = createPackageManagerWarningMessage(detectLifecyclePackageManager(env));
   if (!message) {
     return false;
@@ -304,9 +302,25 @@ export function warnIfNonPnpmLifecycle(env = process.env, warn = console.warn) {
   return true;
 }
 
+/** Shared package preinstall runtime used by the lifecycle entrypoint and updater. */
+export const packagePreinstallRuntime = {
+  completePackageInstallGuard,
+  createPackageManagerWarningMessage,
+  detectLifecyclePackageManager,
+  enforceSupportedNodeRuntime,
+  nodeVersionSatisfiesPackageEngine,
+  PACKAGE_INSTALL_GUARD_RELATIVE_PATH,
+  probePackageCliNodeRuntime,
+  readPackageNodeEngine,
+  warnIfNonPnpmLifecycle,
+};
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  if (enforceSupportedNodeRuntime() && completePackageInstallGuard()) {
-    warnIfNonPnpmLifecycle();
+  if (
+    packagePreinstallRuntime.enforceSupportedNodeRuntime() &&
+    packagePreinstallRuntime.completePackageInstallGuard()
+  ) {
+    packagePreinstallRuntime.warnIfNonPnpmLifecycle();
   } else {
     process.exitCode = 1;
   }

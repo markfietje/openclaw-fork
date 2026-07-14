@@ -311,6 +311,8 @@ const REQUIRED_TARBALL_ENTRY_PREFIXES = ["dist/control-ui/assets/"];
 const LEGACY_PACKAGE_ACCEPTANCE_COMPAT_MAX = { year: 2026, month: 4, day: 25 };
 const LEGACY_LOCAL_BUILD_METADATA_COMPAT_MAX = { year: 2026, month: 4, day: 26 };
 const LEGACY_SHRINKWRAP_COMPAT_MAX = { year: 2026, month: 5, day: 20 };
+// 2026.7.1 shipped before this guard existed. Keep historical tarball inspection readable;
+// guarded npm update activation still rejects candidates that omit it.
 const LEGACY_INSTALL_GUARD_COMPAT_MAX = { year: 2026, month: 7, day: 1 };
 const FORBIDDEN_LOCAL_BUILD_METADATA_FILES = new Set(LOCAL_BUILD_METADATA_DIST_PATHS);
 

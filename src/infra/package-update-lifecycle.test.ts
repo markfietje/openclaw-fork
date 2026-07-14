@@ -1,9 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import * as tar from "tar";
 import { describe, expect, it, vi } from "vitest";
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import { PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "./package-dist-inventory.js";
-import { resolvePackageRuntime, runStagedPackageLifecycle } from "./package-update-lifecycle.js";
+import {
+  resolvePackageRuntime,
+  runPackedPackageRuntimeGuard,
+  runPackageInstallLifecycle,
+  runPackageSourceRuntimeGuard,
+} from "./package-update-lifecycle.js";
 
 async function writeCandidate(params: {
   packageRoot: string;
@@ -13,10 +19,20 @@ async function writeCandidate(params: {
   install?: string | null;
   postinstall?: string | null;
   prepare?: string | null;
+  writePreinstallFile?: boolean;
   writePostinstallFile?: boolean;
 }): Promise<void> {
-  const scriptPath = path.join(params.packageRoot, "scripts", "postinstall-bundled-plugins.mjs");
-  await fs.mkdir(path.dirname(scriptPath), { recursive: true });
+  const preinstallPath = path.join(
+    params.packageRoot,
+    "scripts",
+    "preinstall-package-manager-warning.mjs",
+  );
+  const postinstallPath = path.join(
+    params.packageRoot,
+    "scripts",
+    "postinstall-bundled-plugins.mjs",
+  );
+  await fs.mkdir(path.dirname(preinstallPath), { recursive: true });
   await fs.mkdir(path.join(params.packageRoot, "dist"), { recursive: true });
   const writes = [
     fs.writeFile(
@@ -48,8 +64,11 @@ async function writeCandidate(params: {
       "utf8",
     ),
   ];
+  if (params.writePreinstallFile !== false) {
+    writes.push(fs.writeFile(preinstallPath, "// test preinstall\n", "utf8"));
+  }
   if (params.writePostinstallFile !== false) {
-    writes.push(fs.writeFile(scriptPath, "// test postinstall\n", "utf8"));
+    writes.push(fs.writeFile(postinstallPath, "// test postinstall\n", "utf8"));
   }
   await Promise.all(writes);
   if (params.guard) {
@@ -78,7 +97,7 @@ async function withBunRuntime<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-describe("runStagedPackageLifecycle", () => {
+describe("runPackageInstallLifecycle", () => {
   it("uses the selected runtime for the guard and OpenClaw postinstall", async () => {
     await withTempDir({ prefix: "openclaw-staged-lifecycle-" }, async (packageRoot) => {
       const nodePath = "/opt/openclaw-service/bin/node";
@@ -91,7 +110,7 @@ describe("runStagedPackageLifecycle", () => {
         exitCode: 0,
       }));
 
-      const result = await runStagedPackageLifecycle({
+      const result = await runPackageInstallLifecycle({
         packageRoot,
         runStep,
         timeoutMs: 1_000,
@@ -161,6 +180,13 @@ describe("runStagedPackageLifecycle", () => {
       message: "unsupported postinstall contract",
     },
     {
+      title: "missing preinstall file",
+      guard: true,
+      engine: ">=0.0.0",
+      writePreinstallFile: false,
+      message: "missing scripts/preinstall-package-manager-warning.mjs",
+    },
+    {
       title: "missing postinstall file",
       guard: true,
       engine: ">=0.0.0",
@@ -172,7 +198,7 @@ describe("runStagedPackageLifecycle", () => {
       await writeCandidate({ packageRoot, ...testCase });
       const runStep = vi.fn();
 
-      const result = await runStagedPackageLifecycle({
+      const result = await runPackageInstallLifecycle({
         packageRoot,
         runStep,
         timeoutMs: 1_000,
@@ -181,6 +207,33 @@ describe("runStagedPackageLifecycle", () => {
       expect(result.failedStep?.name).toBe("global install runtime guard");
       expect(result.failedStep?.stderrTail).toContain(testCase.message);
       expect(runStep).not.toHaveBeenCalled();
+    });
+  });
+
+  it("rejects a packed candidate whose declared preinstall file is absent", async () => {
+    await withTempDir({ prefix: "openclaw-packed-lifecycle-reject-" }, async (base) => {
+      const packageRoot = path.join(base, "package");
+      await writeCandidate({ packageRoot, guard: true, writePreinstallFile: false });
+      const tarballPath = path.join(base, "openclaw.tgz");
+      await tar.c({ cwd: base, file: tarballPath, gzip: true }, ["package"]);
+
+      const result = await runPackedPackageRuntimeGuard(tarballPath, process.versions.node);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderrTail).toContain("missing scripts/preinstall-package-manager-warning.mjs");
+    });
+  });
+});
+
+describe("runPackageSourceRuntimeGuard", () => {
+  it("checks a trusted checkout against the selected service Node", async () => {
+    await withTempDir({ prefix: "openclaw-source-lifecycle-" }, async (packageRoot) => {
+      await writeCandidate({ packageRoot, engine: ">=24.15.0 <25" });
+
+      const result = await runPackageSourceRuntimeGuard(packageRoot, "24.14.0");
+
+      expect(result.exitCode).toBe(1);
+      expect(result.stderrTail).toContain("detected Node 24.14.0");
     });
   });
 });
@@ -267,7 +320,7 @@ describe("resolvePackageRuntime", () => {
           exitCode: 0,
         }));
 
-        const result = await runStagedPackageLifecycle({
+        const result = await runPackageInstallLifecycle({
           packageRoot,
           runStep,
           timeoutMs: 1_000,

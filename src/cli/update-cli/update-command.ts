@@ -22,7 +22,6 @@ import { disableCurrentOpenClawUpdateLaunchdJob } from "../../daemon/launchd.js"
 import { readGatewayServiceState, resolveGatewayService } from "../../daemon/service.js";
 import { createLowDiskSpaceWarning } from "../../infra/disk-space.js";
 import {
-  createGlobalInstallPreflightStep,
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
 } from "../../infra/package-update-steps.js";
@@ -53,8 +52,6 @@ import {
   canResolveRegistryVersionForPackageTarget,
   createGlobalInstallEnv,
   cleanupGlobalRenameDirs,
-  globalInstallArgs,
-  resolveGlobalInstallLocation,
   resolveGlobalInstallTarget,
   resolveGlobalInstallSpec,
   type ResolvedGlobalInstallTarget,
@@ -90,6 +87,7 @@ import {
   tryWriteCompletionCache,
   type UpdateCommandOptions,
 } from "./shared.js";
+import { runSourceCheckoutGlobalInstall } from "./source-checkout-install.js";
 import { suppressDeprecations } from "./suppress-deprecations.js";
 import {
   createUpdateConfigSnapshot,
@@ -413,6 +411,7 @@ async function runGitUpdate(params: {
   } | void>;
   allowGatewayServiceRepair: boolean;
   allowGatewayActivation: boolean;
+  nodeRunner?: string;
 }): Promise<UpdateRunResult> {
   const updateRoot = params.switchToGit ? resolveGitInstallDir() : params.root;
   const effectiveTimeout = params.timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
@@ -458,35 +457,19 @@ async function runGitUpdate(params: {
   const steps = [...(cloneStep ? [cloneStep] : []), ...updateResult.steps];
 
   if (params.switchToGit && updateResult.status === "ok") {
-    const manager = await resolveGlobalManager({
-      root: params.root,
+    const sourceInstall = await runSourceCheckoutGlobalInstall({
+      sourceRoot: updateRoot,
+      currentPackageRoot: params.root,
       installKind: params.installKind,
+      nodeRunner: params.nodeRunner,
+      env: installEnv,
       timeoutMs: effectiveTimeout,
+      progress: params.progress,
     });
-    const runCommand = createGlobalCommandRunner();
-    const installTarget = await resolveGlobalInstallTarget({
-      manager,
-      runCommand,
-      timeoutMs: effectiveTimeout,
-      pkgRoot: params.root,
-    });
-    const installLocation = resolveGlobalInstallLocation(installTarget);
-    const installStep =
-      createGlobalInstallPreflightStep(installTarget, updateRoot, "global install preflight") ??
-      (await runUpdateStep({
-        name: "global install",
-        argv: globalInstallArgs(installTarget, updateRoot, undefined, installLocation),
-        cwd: updateRoot,
-        env: installEnv,
-        timeoutMs: effectiveTimeout,
-        progress: params.progress,
-      }));
-    steps.push(installStep);
-
-    const failedStep = installStep.exitCode !== 0 ? installStep : null;
+    steps.push(...sourceInstall.steps);
     return {
       ...updateResult,
-      status: updateResult.status === "ok" && !failedStep ? "ok" : "error",
+      status: sourceInstall.failedStep ? "error" : "ok",
       steps,
       durationMs: Date.now() - params.startedAt,
     };
@@ -764,22 +747,24 @@ async function updateCommandInternal(
           );
         }
       }
-    } else {
-      // Roots match but the node binary may still differ (e.g. user switched
-      // nvm/fnm/brew node after gateway install).
-      managedServiceNodeRunner = await resolveManagedServiceNodeRunnerOverride();
-      if (managedServiceNodeRunner && !opts.json) {
-        defaultRuntime.log(
-          theme.warn(
-            `Current Node (${resolveNodeRunner()}) differs from the managed gateway service Node (${managedServiceNodeRunner}).`,
-          ),
-        );
-        defaultRuntime.log(
-          theme.muted(
-            `Using the managed service Node for this update so the gateway can start after the upgrade.`,
-          ),
-        );
-      }
+    }
+  }
+
+  if (!managedServiceRootRedirect && (updateInstallKind === "package" || switchToGit)) {
+    // Roots match or the update is switching to a source checkout, but the
+    // managed service can still use a different Node than the current shell.
+    managedServiceNodeRunner = await resolveManagedServiceNodeRunnerOverride();
+    if (managedServiceNodeRunner && !opts.json) {
+      defaultRuntime.log(
+        theme.warn(
+          `Current Node (${resolveNodeRunner()}) differs from the managed gateway service Node (${managedServiceNodeRunner}).`,
+        ),
+      );
+      defaultRuntime.log(
+        theme.muted(
+          `Using the managed service Node for this update so the gateway can start after the upgrade.`,
+        ),
+      );
     }
   }
 
@@ -1144,6 +1129,7 @@ async function updateCommandInternal(
                 : undefined,
             allowGatewayServiceRepair: false,
             allowGatewayActivation: false,
+            nodeRunner: managedServiceNodeRunner,
           });
   } catch (err) {
     stop();

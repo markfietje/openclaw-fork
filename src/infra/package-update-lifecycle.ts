@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import * as tar from "tar";
 import {
-  probePackageCliNodeRuntime,
+  packagePreinstallRuntime,
   type PackageCliNodeRuntime,
 } from "../../scripts/preinstall-package-manager-warning.mjs";
 import { formatErrorMessage } from "./errors.js";
@@ -11,12 +12,19 @@ import type { PackageUpdateStepResult, PackageUpdateStepRunner } from "./package
 import { nodeVersionSatisfiesEngine } from "./runtime-guard.js";
 import type { CommandRunner } from "./update-global.js";
 
-const PACKAGE_PREINSTALL_COMMAND = "node scripts/preinstall-package-manager-warning.mjs";
+const PACKAGE_PREINSTALL_RELATIVE_PATH = "scripts/preinstall-package-manager-warning.mjs";
+const PACKAGE_PREINSTALL_COMMAND = `node ${PACKAGE_PREINSTALL_RELATIVE_PATH}`;
 const PACKAGE_POSTINSTALL_RELATIVE_PATH = "scripts/postinstall-bundled-plugins.mjs";
 const PACKAGE_POSTINSTALL_COMMAND = `node ${PACKAGE_POSTINSTALL_RELATIVE_PATH}`;
+const PACKED_PACKAGE_MANIFEST_PATH = "package/package.json";
+const PACKED_PACKAGE_GUARD_PATH = `package/${PACKAGE_INSTALL_GUARD_RELATIVE_PATH}`;
+const PACKED_PACKAGE_PREINSTALL_PATH = `package/${PACKAGE_PREINSTALL_RELATIVE_PATH}`;
+const PACKED_PACKAGE_POSTINSTALL_PATH = `package/${PACKAGE_POSTINSTALL_RELATIVE_PATH}`;
+const MAX_PACKED_PACKAGE_MANIFEST_BYTES = 1024 * 1024;
+const { probePackageCliNodeRuntime } = packagePreinstallRuntime;
 
-// Packed releases omit the checkout-only prepare hook. Staging replaces preinstall with the
-// runtime guard below and rejects any published-hook drift before activating the candidate.
+// Packed releases omit the checkout-only prepare hook. The updater owns guard/postinstall
+// execution and rejects any published-hook drift before activating the candidate.
 const PACKAGE_LIFECYCLE_CONTRACT = {
   preinstall: PACKAGE_PREINSTALL_COMMAND,
   install: null,
@@ -67,16 +75,16 @@ function normalizePackageCliNodeRuntime(runtime: PackageCliNodeRuntime | null): 
   return { nodePath: runtime.execPath, version: runtime.version };
 }
 
-async function readCandidatePackageContract(packageRoot: string): Promise<{
+type CandidatePackageContract = {
   nodeEngine: string | null;
   preinstall: string | null;
   install: string | null;
   postinstall: string | null;
   prepare: string | null;
-}> {
-  const manifest = JSON.parse(
-    await fs.readFile(path.join(packageRoot, "package.json"), "utf8"),
-  ) as {
+};
+
+function parseCandidatePackageContract(value: string): CandidatePackageContract {
+  const manifest = JSON.parse(value) as {
     engines?: { node?: unknown };
     scripts?: Record<string, unknown>;
   };
@@ -94,8 +102,132 @@ async function readCandidatePackageContract(packageRoot: string): Promise<{
   };
 }
 
+async function readCandidatePackageContract(
+  packageRoot: string,
+): Promise<CandidatePackageContract> {
+  return parseCandidatePackageContract(
+    await fs.readFile(path.join(packageRoot, "package.json"), "utf8"),
+  );
+}
+
+async function readPackedCandidatePackageContract(tarballPath: string): Promise<{
+  contract: CandidatePackageContract;
+  hasGuard: boolean;
+  hasPreinstall: boolean;
+  hasPostinstall: boolean;
+}> {
+  const manifestChunks: Buffer[] = [];
+  let manifestBytes = 0;
+  let manifestCount = 0;
+  let manifestError: Error | null = null;
+  let hasGuard = false;
+  let hasPreinstall = false;
+  let hasPostinstall = false;
+
+  await tar.t({
+    file: tarballPath,
+    strict: true,
+    onentry: (entry) => {
+      const entryPath = entry.path.replace(/^\.\//u, "");
+      if (entryPath === PACKED_PACKAGE_GUARD_PATH) {
+        hasGuard = true;
+      }
+      if (entryPath === PACKED_PACKAGE_PREINSTALL_PATH) {
+        hasPreinstall = true;
+      }
+      if (entryPath === PACKED_PACKAGE_POSTINSTALL_PATH) {
+        hasPostinstall = true;
+      }
+      if (entryPath !== PACKED_PACKAGE_MANIFEST_PATH) {
+        entry.resume();
+        return;
+      }
+
+      manifestCount += 1;
+      if (manifestCount > 1) {
+        manifestError = new Error(
+          `candidate package contains duplicate ${PACKED_PACKAGE_MANIFEST_PATH}`,
+        );
+        entry.resume();
+        return;
+      }
+      if (entry.size > MAX_PACKED_PACKAGE_MANIFEST_BYTES) {
+        manifestError = new Error(`staged package ${PACKED_PACKAGE_MANIFEST_PATH} is too large`);
+        entry.resume();
+        return;
+      }
+      entry.on("data", (chunk: Buffer) => {
+        const buffer = Buffer.from(chunk);
+        manifestBytes += buffer.byteLength;
+        if (manifestBytes > MAX_PACKED_PACKAGE_MANIFEST_BYTES) {
+          manifestError = new Error(`staged package ${PACKED_PACKAGE_MANIFEST_PATH} is too large`);
+          return;
+        }
+        manifestChunks.push(buffer);
+      });
+    },
+  });
+
+  if (manifestError) {
+    throw manifestError;
+  }
+  if (manifestCount !== 1) {
+    throw new Error(`candidate package is missing ${PACKED_PACKAGE_MANIFEST_PATH}`);
+  }
+  return {
+    contract: parseCandidatePackageContract(Buffer.concat(manifestChunks).toString("utf8")),
+    hasGuard,
+    hasPreinstall,
+    hasPostinstall,
+  };
+}
+
+function validateCandidateNodeEngine(
+  contract: CandidatePackageContract,
+  runtimeVersion: string | null,
+): void {
+  const engine = contract.nodeEngine;
+  const satisfied = nodeVersionSatisfiesEngine(runtimeVersion, engine);
+  if (satisfied === true) {
+    return;
+  }
+  const requirement = engine
+    ? `this OpenClaw release requires Node ${engine}`
+    : "could not read this OpenClaw release's Node requirement";
+  throw new Error(
+    `${requirement}; detected Node ${runtimeVersion ?? "missing"}. Upgrade Node, then retry the OpenClaw update.`,
+  );
+}
+
+function validateCandidatePackageContract(params: {
+  contract: CandidatePackageContract;
+  runtimeVersion: string | null;
+  hasGuard: boolean;
+  hasPreinstall: boolean;
+  hasPostinstall: boolean;
+}): void {
+  if (!params.hasGuard) {
+    throw new Error("candidate package is missing its package install guard");
+  }
+  validateCandidateNodeEngine(params.contract, params.runtimeVersion);
+  for (const [lifecycleName, expected] of Object.entries(PACKAGE_LIFECYCLE_CONTRACT)) {
+    const actual = params.contract[lifecycleName as keyof typeof PACKAGE_LIFECYCLE_CONTRACT];
+    if (actual !== expected) {
+      throw new Error(
+        `candidate package declares unsupported ${lifecycleName} contract ${JSON.stringify(actual)}`,
+      );
+    }
+  }
+  if (!params.hasPreinstall) {
+    throw new Error(`candidate package is missing ${PACKAGE_PREINSTALL_RELATIVE_PATH}`);
+  }
+  if (!params.hasPostinstall) {
+    throw new Error(`candidate package is missing ${PACKAGE_POSTINSTALL_RELATIVE_PATH}`);
+  }
+}
+
 /** Validates a guarded candidate without executing package-manager lifecycle code. */
-export async function runPackageRuntimeGuard(
+async function runPackageRuntimeGuard(
   packageRoot: string,
   runtimeVersion: string | null = process.versions.node ?? null,
   name = "global install runtime guard",
@@ -103,31 +235,14 @@ export async function runPackageRuntimeGuard(
   const markerPath = path.join(packageRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH);
   const startedAt = Date.now();
   try {
-    if (!(await pathExists(markerPath))) {
-      throw new Error("staged package is missing its package install guard");
-    }
     const contract = await readCandidatePackageContract(packageRoot);
-    const engine = contract.nodeEngine;
-    const satisfied = nodeVersionSatisfiesEngine(runtimeVersion, engine);
-    if (satisfied !== true) {
-      const requirement = engine
-        ? `this OpenClaw release requires Node ${engine}`
-        : "could not read this OpenClaw release's Node requirement";
-      throw new Error(
-        `${requirement}; detected Node ${runtimeVersion ?? "missing"}. Upgrade Node, then retry the OpenClaw update.`,
-      );
-    }
-    for (const [lifecycleName, expected] of Object.entries(PACKAGE_LIFECYCLE_CONTRACT)) {
-      const actual = contract[lifecycleName as keyof typeof PACKAGE_LIFECYCLE_CONTRACT];
-      if (actual !== expected) {
-        throw new Error(
-          `staged package declares unsupported ${lifecycleName} contract ${JSON.stringify(actual)}`,
-        );
-      }
-    }
-    if (!(await pathExists(path.join(packageRoot, PACKAGE_POSTINSTALL_RELATIVE_PATH)))) {
-      throw new Error(`staged package is missing ${PACKAGE_POSTINSTALL_RELATIVE_PATH}`);
-    }
+    validateCandidatePackageContract({
+      contract,
+      runtimeVersion,
+      hasGuard: await pathExists(markerPath),
+      hasPreinstall: await pathExists(path.join(packageRoot, PACKAGE_PREINSTALL_RELATIVE_PATH)),
+      hasPostinstall: await pathExists(path.join(packageRoot, PACKAGE_POSTINSTALL_RELATIVE_PATH)),
+    });
     await fs.rm(markerPath, { force: true });
     return {
       name,
@@ -135,7 +250,77 @@ export async function runPackageRuntimeGuard(
       cwd: packageRoot,
       durationMs: Date.now() - startedAt,
       exitCode: 0,
-      stdoutTail: `validated Node ${runtimeVersion} against ${engine}`,
+      stdoutTail: `validated Node ${runtimeVersion} against ${contract.nodeEngine}`,
+      stderrTail: null,
+    };
+  } catch (error) {
+    return {
+      name,
+      command: `validate ${path.join(packageRoot, "package.json")} engines.node`,
+      cwd: packageRoot,
+      durationMs: Date.now() - startedAt,
+      exitCode: 1,
+      stdoutTail: null,
+      stderrTail: formatErrorMessage(error),
+    };
+  }
+}
+
+/** Validates a packed candidate before a non-staged package manager can mutate the live install. */
+export async function runPackedPackageRuntimeGuard(
+  tarballPath: string,
+  runtimeVersion: string | null,
+  name = "global install runtime guard",
+): Promise<PackageUpdateStepResult> {
+  const startedAt = Date.now();
+  try {
+    const packed = await readPackedCandidatePackageContract(tarballPath);
+    validateCandidatePackageContract({
+      contract: packed.contract,
+      runtimeVersion,
+      hasGuard: packed.hasGuard,
+      hasPreinstall: packed.hasPreinstall,
+      hasPostinstall: packed.hasPostinstall,
+    });
+    return {
+      name,
+      command: `validate ${tarballPath} ${PACKED_PACKAGE_MANIFEST_PATH} engines.node`,
+      cwd: path.dirname(tarballPath),
+      durationMs: Date.now() - startedAt,
+      exitCode: 0,
+      stdoutTail: `validated Node ${runtimeVersion} against ${packed.contract.nodeEngine}`,
+      stderrTail: null,
+    };
+  } catch (error) {
+    return {
+      name,
+      command: `validate ${tarballPath} ${PACKED_PACKAGE_MANIFEST_PATH} engines.node`,
+      cwd: path.dirname(tarballPath),
+      durationMs: Date.now() - startedAt,
+      exitCode: 1,
+      stdoutTail: null,
+      stderrTail: formatErrorMessage(error),
+    };
+  }
+}
+
+/** Validates a trusted source checkout against the runtime that will launch the updated service. */
+export async function runPackageSourceRuntimeGuard(
+  packageRoot: string,
+  runtimeVersion: string | null,
+  name = "global install runtime guard",
+): Promise<PackageUpdateStepResult> {
+  const startedAt = Date.now();
+  try {
+    const contract = await readCandidatePackageContract(packageRoot);
+    validateCandidateNodeEngine(contract, runtimeVersion);
+    return {
+      name,
+      command: `validate ${path.join(packageRoot, "package.json")} engines.node`,
+      cwd: packageRoot,
+      durationMs: Date.now() - startedAt,
+      exitCode: 0,
+      stdoutTail: `validated Node ${runtimeVersion} against ${contract.nodeEngine}`,
       stderrTail: null,
     };
   } catch (error) {
@@ -152,7 +337,7 @@ export async function runPackageRuntimeGuard(
 }
 
 /** Runs only OpenClaw's package-root postinstall after dependency scripts stayed disabled. */
-export async function runPackagePostinstall(params: {
+async function runPackagePostinstall(params: {
   packageRoot: string;
   runStep: PackageUpdateStepRunner;
   timeoutMs: number;
@@ -169,7 +354,7 @@ export async function runPackagePostinstall(params: {
       durationMs: 0,
       exitCode: 1,
       stdoutTail: null,
-      stderrTail: "could not resolve the real Node runtime for staged package postinstall",
+      stderrTail: "could not resolve the real Node runtime for package postinstall",
     };
   }
   return params.runStep({
@@ -181,7 +366,18 @@ export async function runPackagePostinstall(params: {
   });
 }
 
-export async function runStagedPackageLifecycle(params: {
+/** Runs the trusted OpenClaw root postinstall after a scripts-disabled source activation. */
+export async function runPackageSourcePostinstall(params: {
+  packageRoot: string;
+  runStep: PackageUpdateStepRunner;
+  timeoutMs: number;
+  env?: NodeJS.ProcessEnv;
+  nodePath?: string;
+}): Promise<PackageUpdateStepResult> {
+  return runPackagePostinstall(params);
+}
+
+export async function runPackageInstallLifecycle(params: {
   packageRoot: string;
   runStep: PackageUpdateStepRunner;
   timeoutMs: number;

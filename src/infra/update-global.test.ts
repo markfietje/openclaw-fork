@@ -533,7 +533,13 @@ describe("update global helpers", () => {
       const pathNpmRoot = path.join(base, "shell", "lib", "node_modules");
       await fs.mkdir(pkgRoot, { recursive: true });
 
-      const runCommand = createNpmRootRunner({ defaultNpmRoot: pathNpmRoot });
+      const npmRootRunner = createNpmRootRunner({ defaultNpmRoot: pathNpmRoot });
+      const runCommand: CommandRunner = async (argv, options) => {
+        if (argv.join(" ") === "bun --version") {
+          return { stdout: "1.3.14\n", stderr: "", code: 0 };
+        }
+        return npmRootRunner(argv, options);
+      };
 
       await expect(
         resolveGlobalInstallTarget({
@@ -573,6 +579,9 @@ describe("update global helpers", () => {
       const runCommand: CommandRunner = async (argv) => {
         if (argv[0] === "npm") {
           return { stdout: "", stderr: "", code: 1 };
+        }
+        if (argv[1] === "--version") {
+          return { stdout: "10.4.0\n", stderr: "", code: 0 };
         }
         if (argv[0] === "pnpm") {
           return { stdout: `${defaultPnpmRoot}\n`, stderr: "", code: 0 };
@@ -631,6 +640,9 @@ describe("update global helpers", () => {
           return { stdout: "", stderr: "", code: 1 };
         }
         if (argv[0] === "pnpm") {
+          if (argv[1] === "--version") {
+            return { stdout: "10.4.0\n", stderr: "", code: 0 };
+          }
           return { stdout: `${defaultPnpmRoot}\n`, stderr: "", code: 0 };
         }
         throw new Error(`unexpected command: ${argv.join(" ")}`);
@@ -673,6 +685,9 @@ describe("update global helpers", () => {
           return { stdout: "", stderr: "", code: 1 };
         }
         if (argv[0] === "pnpm") {
+          if (argv[1] === "--version") {
+            return { stdout: "10.4.0\n", stderr: "", code: 0 };
+          }
           return { stdout: `${defaultPnpmRoot}\n`, stderr: "", code: 0 };
         }
         throw new Error(`unexpected command: ${argv.join(" ")}`);
@@ -750,39 +765,43 @@ describe("update global helpers", () => {
       "--loglevel=error",
       "--min-release-age=0",
     ]);
-    expect(globalInstallArgs("pnpm", "openclaw@latest")).toEqual([
+    expect(
+      globalInstallArgs(
+        {
+          manager: "pnpm",
+          command: "pnpm",
+        },
+        "openclaw@latest",
+      ),
+    ).toEqual([
       "pnpm",
       "add",
       "-g",
+      "--ignore-scripts",
       "openclaw@latest",
     ]);
     expect(globalInstallArgs("pnpm", "github:openclaw/openclaw#release/2026.5.12")).toEqual([
       "pnpm",
       "add",
       "-g",
-      "--allow-build=openclaw",
+      "--ignore-scripts",
       "github:openclaw/openclaw#release/2026.5.12",
     ]);
     expect(globalInstallArgs("bun", "openclaw@latest")).toEqual([
       "bun",
       "add",
       "-g",
+      "--ignore-scripts",
       "openclaw@latest",
     ]);
     expect(
-      globalInstallArgs("pnpm", "/tmp/openclaw-candidate.tgz", null, null, {
-        ignorePackageLifecycle: true,
-      }),
+      globalInstallArgs("pnpm", "/tmp/openclaw-candidate.tgz", null, null),
     ).toEqual(["pnpm", "add", "-g", "--ignore-scripts", "/tmp/openclaw-candidate.tgz"]);
     expect(
-      globalInstallArgs("bun", "/tmp/openclaw-candidate.tgz", null, null, {
-        ignorePackageLifecycle: true,
-      }),
+      globalInstallArgs("bun", "/tmp/openclaw-candidate.tgz", null, null),
     ).toEqual(["bun", "add", "-g", "--ignore-scripts", "/tmp/openclaw-candidate.tgz"]);
     expect(
-      globalInstallArgs("npm", "/tmp/openclaw-candidate.tgz", null, "/tmp/stage", {
-        ignorePackageLifecycle: true,
-      }),
+      globalInstallArgs("npm", "/tmp/openclaw-candidate.tgz", null, "/tmp/stage"),
     ).toEqual([
       "npm",
       "i",

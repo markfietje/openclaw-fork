@@ -47,14 +47,17 @@ describe("install runtime enforcement", () => {
     },
   );
 
-  it("blocks unsupported Node before package replacement", () => {
+  it("blocks the unsupported PATH Node before package replacement", () => {
     const reportError = vi.fn();
     expect(
       enforceSupportedNodeRuntime(
         {
-          version: "24.14.1",
           engine: EXPECTED_NODE_ENGINE_RANGE,
-          execPath: "/opt/node/bin/node",
+          probeNodeRuntime: () => ({
+            version: "24.14.1",
+            bunVersion: null,
+            execPath: "/opt/node/bin/node",
+          }),
         },
         reportError,
       ),
@@ -65,14 +68,17 @@ describe("install runtime enforcement", () => {
     expect(reportError).toHaveBeenCalledWith(expect.stringContaining("detected Node 24.14.1"));
   });
 
-  it("allows supported Node without an error", () => {
+  it("allows the supported PATH Node without an error", () => {
     const reportError = vi.fn();
     expect(
       enforceSupportedNodeRuntime(
         {
-          version: "24.15.0",
           engine: EXPECTED_NODE_ENGINE_RANGE,
-          execPath: "/opt/node/bin/node",
+          probeNodeRuntime: () => ({
+            version: "24.15.0",
+            bunVersion: null,
+            execPath: "/opt/node/bin/node",
+          }),
         },
         reportError,
       ),
@@ -85,10 +91,7 @@ describe("install runtime enforcement", () => {
     expect(
       enforceSupportedNodeRuntime(
         {
-          version: "24.14.1",
-          bunVersion: "1.3.0",
           engine: EXPECTED_NODE_ENGINE_RANGE,
-          execPath: "/opt/bun/bin/bun",
           probeNodeRuntime: () => ({
             version: "24.15.0",
             bunVersion: null,
@@ -106,7 +109,6 @@ describe("install runtime enforcement", () => {
     expect(
       enforceSupportedNodeRuntime(
         {
-          bunVersion: "1.3.0",
           engine: EXPECTED_NODE_ENGINE_RANGE,
           probeNodeRuntime: () => ({
             version: "24.14.1",
@@ -125,7 +127,6 @@ describe("install runtime enforcement", () => {
     expect(
       enforceSupportedNodeRuntime(
         {
-          bunVersion: "1.3.0",
           engine: EXPECTED_NODE_ENGINE_RANGE,
           probeNodeRuntime: () => null,
         },

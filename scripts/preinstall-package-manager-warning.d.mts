@@ -15,10 +15,7 @@ export const packagePreinstallRuntime: {
   detectLifecyclePackageManager: (env?: NodeJS.ProcessEnv) => string | null;
   enforceSupportedNodeRuntime: (
     options?: {
-      version?: string | null;
-      bunVersion?: string | null;
       engine?: string | null;
-      execPath?: string | null;
       probeNodeRuntime?: () => PackageCliNodeRuntime | null;
     },
     reportError?: (...data: unknown[]) => void,

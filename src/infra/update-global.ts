@@ -63,7 +63,6 @@ const GLOBAL_RENAME_PREFIX = ".";
 const OPENCLAW_MAIN_PACKAGE_SPEC = "github:openclaw/openclaw#main";
 const COREPACK_ENABLE_DOWNLOAD_PROMPT_DEFAULT = "0";
 const NPM_GLOBAL_INSTALL_QUIET_FLAGS = ["--no-fund", "--no-audit", "--loglevel=error"] as const;
-const PNPM_OPENCLAW_BUILD_ALLOWLIST_FLAG = `--allow-build=${PRIMARY_PACKAGE_NAME}`;
 const FIRST_PACKAGED_DIST_INVENTORY_VERSION = { major: 2026, minor: 4, patch: 15 };
 const OMITTED_PRIVATE_QA_BUNDLED_PLUGIN_ROOTS = new Set([
   "dist/extensions/qa-channel",
@@ -93,23 +92,6 @@ function normalizePackageVersionForComparison(value: string | null | undefined):
 /** Returns true when a user target requests the moving main-branch package spec. */
 function isMainPackageTarget(value: string): boolean {
   return normalizeLowercaseStringOrEmpty(normalizePackageTarget(value)) === "main";
-}
-
-function stripPrimaryPackageAlias(spec: string): string {
-  const normalized = normalizePackageTarget(spec);
-  const prefix = `${PRIMARY_PACKAGE_NAME}@`;
-  return normalized.toLowerCase().startsWith(prefix)
-    ? normalized.slice(prefix.length).trim()
-    : normalized;
-}
-
-function isPnpmOpenClawSourceInstallSpec(spec: string): boolean {
-  const target = stripPrimaryPackageAlias(spec);
-  return (
-    /^github:/i.test(target) ||
-    /^git\+(?:ssh|https|http|file):/i.test(target) ||
-    /^git:/i.test(target)
-  );
 }
 
 /**
@@ -906,9 +888,6 @@ export function globalInstallArgs(
   spec: string,
   pkgRoot?: string | null,
   installPrefix?: string | null,
-  options: {
-    ignorePackageLifecycle?: boolean;
-  } = {},
 ): string[] {
   const resolved = normalizeGlobalInstallCommand(managerOrCommand, pkgRoot);
   if (resolved.manager === "pnpm") {
@@ -917,21 +896,12 @@ export function globalInstallArgs(
       "add",
       "-g",
       ...(installPrefix ? ["--global-dir", installPrefix] : []),
-      ...(options.ignorePackageLifecycle === true ? ["--ignore-scripts"] : []),
-      ...(options.ignorePackageLifecycle !== true && isPnpmOpenClawSourceInstallSpec(spec)
-        ? [PNPM_OPENCLAW_BUILD_ALLOWLIST_FLAG]
-        : []),
+      "--ignore-scripts",
       spec,
     ];
   }
   if (resolved.manager === "bun") {
-    return [
-      resolved.command,
-      "add",
-      "-g",
-      ...(options.ignorePackageLifecycle === true ? ["--ignore-scripts"] : []),
-      spec,
-    ];
+    return [resolved.command, "add", "-g", "--ignore-scripts", spec];
   }
   return [
     resolved.command,

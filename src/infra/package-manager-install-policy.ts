@@ -25,6 +25,12 @@ function stripPackageAlias(packageName: string, spec: string): string {
     : normalized;
 }
 
+/** Identifies registry tags and versions after removing the package-name alias. */
+export function isRegistryPackageInstallSpec(packageName: string, spec: string): boolean {
+  const target = stripPackageAlias(packageName, spec);
+  return target.length > 0 && !isExplicitPackageInstallSpec(target);
+}
+
 function isHttpGitInstallSpec(value: string): boolean {
   if (hostedGitInfo.fromUrl(value) != null) {
     return true;

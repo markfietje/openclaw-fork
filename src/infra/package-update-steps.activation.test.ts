@@ -16,6 +16,7 @@ import {
   writePackageTarball,
 } from "../../test/helpers/package-update-steps.js";
 import { withTempDir } from "../test-helpers/temp-dir.js";
+import { PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "./package-dist-inventory.js";
 import { readPackageVersion } from "./package-json.js";
 import { pinGitPackageInstallSpec } from "./package-manager-install-policy.js";
 import { runGlobalPackageUpdateSteps } from "./package-update-steps.js";
@@ -551,14 +552,18 @@ describe("runGlobalPackageUpdateSteps activation", () => {
         if (name !== "global update") {
           throw new Error(`unexpected step ${name}`);
         }
-        expect(argv[0]).toBe(expectedPackageRuntimeNpmCommand());
-        expect(argv).toContain("i");
-        expect(argv).toContain("-g");
-        expect(argv).toContain("--prefix");
-        expect(argv).toContain("openclaw@2.0.0");
-        expect(argv).not.toContain("pnpm");
-        const prefixIndex = argv.indexOf("--prefix");
-        const stagePrefix = argv[prefixIndex + 1];
+        const normalizedNpmArgv = /^npm(?:\.cmd)?$/iu.test(path.basename(argv[0] ?? ""))
+          ? argv.slice(1)
+          : (argv[1] ?? "").replaceAll("\\", "/").endsWith("/npm-cli.js")
+            ? argv.slice(2)
+            : [];
+        expect(normalizedNpmArgv).toContain("i");
+        expect(normalizedNpmArgv).toContain("-g");
+        expect(normalizedNpmArgv).toContain("--prefix");
+        expect(normalizedNpmArgv).toContain("openclaw@2.0.0");
+        expect(normalizedNpmArgv).not.toContain("pnpm");
+        const prefixIndex = normalizedNpmArgv.indexOf("--prefix");
+        const stagePrefix = normalizedNpmArgv[prefixIndex + 1];
         if (!stagePrefix) {
           throw new Error("missing staged prefix");
         }
@@ -603,12 +608,42 @@ describe("runGlobalPackageUpdateSteps activation", () => {
         const packageRoot = path.join(globalRoot, "openclaw");
         await writePackageRoot(packageRoot, "1.0.0");
 
-        const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+        const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
+          const postinstallStep = successfulPackagePostinstallStep({ name, argv, cwd });
+          if (postinstallStep) {
+            return postinstallStep;
+          }
+          if (name === "global update registry resolve") {
+            const isolatedGlobalDir = argv[argv.indexOf("--global-dir") + 1];
+            if (!isolatedGlobalDir) {
+              throw new Error("missing isolated pnpm global directory");
+            }
+            await writePackageRoot(
+              path.join(isolatedGlobalDir, "5", "node_modules", "openclaw"),
+              "2.0.0",
+            );
+            return {
+              name,
+              command: argv.join(" "),
+              cwd: cwd ?? process.cwd(),
+              durationMs: 1,
+              exitCode: 0,
+            };
+          }
           if (name !== "global update") {
             throw new Error(`unexpected step ${name}`);
           }
-          expect(argv).toEqual(["pnpm", "add", "-g", "--global-dir", globalDir, "openclaw@2.0.0"]);
-          await writePackageRoot(packageRoot, "2.0.0");
+          expect(argv).toEqual([
+            "pnpm",
+            "add",
+            "-g",
+            "--global-dir",
+            globalDir,
+            "--ignore-scripts",
+            "openclaw@2.0.0",
+          ]);
+          expect(env?.PATH).toBe("C:\\pnpm-bin");
+          await writePackageRoot(packageRoot, "2.0.0", { installGuard: true });
           return {
             name,
             command: argv.join(" "),
@@ -618,19 +653,37 @@ describe("runGlobalPackageUpdateSteps activation", () => {
           };
         });
 
+        const rootRunner = createRootRunner(globalRoot);
+        const runCommand: CommandRunner = async (argv, options) => {
+          if (argv[0] === process.execPath && argv[1] === "--version") {
+            return { stdout: `${process.version}\n`, stderr: "", code: 0 };
+          }
+          return rootRunner(argv, options);
+        };
+
         const result = await runGlobalPackageUpdateSteps({
           installTarget: createPnpmTarget(globalRoot),
           installSpec: "openclaw@2.0.0",
           packageName: "openclaw",
           packageRoot,
-          runCommand: createRootRunner(globalRoot),
+          nodePath: process.execPath,
+          env: { PATH: "C:\\pnpm-bin" },
+          runCommand,
           runStep,
           timeoutMs: 1000,
         });
 
         expect(result.failedStep).toBeNull();
         expect(result.afterVersion).toBe("2.0.0");
-        expect(result.steps.map((step) => step.name)).toEqual(["global update"]);
+        expect(result.steps.map((step) => step.name)).toEqual([
+          "global update registry resolve",
+          "global update registry version guard",
+          "global update registry runtime guard",
+          "global update",
+          "global install runtime guard",
+          "global install postinstall",
+        ]);
+        await expectPathMissing(path.join(packageRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH));
       });
     } finally {
       platformSpy.mockRestore();

@@ -63,7 +63,6 @@ export async function runSourceCheckoutGlobalInstall(params: {
         installTarget.manager === "pnpm"
           ? resolvePnpmGlobalDirFromGlobalRoot(installTarget.globalRoot)
           : null,
-        { ignorePackageLifecycle: true },
       ),
       cwd: params.sourceRoot,
       env: installEnv,

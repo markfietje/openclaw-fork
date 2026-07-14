@@ -362,13 +362,18 @@ describe("runPackageSourceRuntimeGuard", () => {
 });
 
 describe("resolvePackageRuntime", () => {
-  it("uses the current runtime when no alternate Node is selected", async () => {
+  it("uses the PATH runtime that will launch the installed CLI", async () => {
     const runCommand = vi.fn();
+    const probeNodeRuntime = vi.fn(() => ({
+      version: "24.15.3",
+      bunVersion: null,
+      execPath: "/usr/local/bin/node",
+    }));
 
-    await expect(resolvePackageRuntime({ runCommand, timeoutMs: 20_000 })).resolves.toEqual({
-      nodePath: process.execPath,
-      version: process.versions.node,
-    });
+    await expect(
+      resolvePackageRuntime({ runCommand, timeoutMs: 20_000, probeNodeRuntime }),
+    ).resolves.toEqual({ nodePath: "/usr/local/bin/node", version: "24.15.3" });
+    expect(probeNodeRuntime).toHaveBeenCalledOnce();
     expect(runCommand).not.toHaveBeenCalled();
   });
 

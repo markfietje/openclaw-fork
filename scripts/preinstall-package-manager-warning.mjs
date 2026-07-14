@@ -179,18 +179,10 @@ function probePackageCliNodeRuntime({
  * Rejects package installation before an unsupported runtime can replace a working release.
  */
 function enforceSupportedNodeRuntime(
-  {
-    version = process.versions.node ?? null,
-    bunVersion = process.versions.bun ?? null,
-    engine = readPackageNodeEngine(),
-    execPath = process.execPath,
-    probeNodeRuntime = probePackageCliNodeRuntime,
-  } = {},
+  { engine = readPackageNodeEngine(), probeNodeRuntime = probePackageCliNodeRuntime } = {},
   reportError = console.error,
 ) {
-  const detectedRuntime = normalizeEnvValue(bunVersion)
-    ? probeNodeRuntime()
-    : { version, execPath };
+  const detectedRuntime = probeNodeRuntime();
   if (nodeVersionSatisfiesPackageEngine(detectedRuntime?.version ?? null, engine)) {
     return true;
   }

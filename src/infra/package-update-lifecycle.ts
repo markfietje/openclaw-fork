@@ -43,9 +43,6 @@ export async function resolvePackageRuntime(params: {
   cwd?: string;
   probeNodeRuntime?: typeof probePackageCliNodeRuntime;
 }): Promise<{ nodePath: string | null; version: string | null }> {
-  if (!params.nodePath && !process.versions.bun) {
-    return { nodePath: process.execPath, version: process.versions.node ?? null };
-  }
   if (!params.nodePath) {
     const env = params.env ?? process.env;
     const runtime = (params.probeNodeRuntime ?? probePackageCliNodeRuntime)({

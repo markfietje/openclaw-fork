@@ -22,12 +22,15 @@ import {
 } from "./update-runner.js";
 
 const execFileSyncMock = vi.hoisted(() => vi.fn(() => "/tmp/openclaw-test-global-npmrc\n"));
+const spawnSyncMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     execFileSync: execFileSyncMock,
+    spawnSync: (...args: unknown[]) =>
+      spawnSyncMock(...args) ?? Reflect.apply(actual.spawnSync, actual, args),
   };
 });
 
@@ -123,6 +126,7 @@ describe("runGatewayUpdate", () => {
 
   beforeEach(async () => {
     execFileSyncMock.mockClear();
+    spawnSyncMock.mockClear();
     tempDir = await fixtureRootTracker.make("case");
     await fs.writeFile(path.join(tempDir, "openclaw.mjs"), "export {};\n", "utf-8");
   });
@@ -2794,6 +2798,36 @@ describe("runGatewayUpdate", () => {
         }
         return { stdout: "", stderr: "", code: 1 };
       }
+      const isPnpmRegistryResolution =
+        normalizedArgv[0] === "pnpm" &&
+        normalizedArgv[1] === "add" &&
+        normalizedArgv.includes("--ignore-scripts") &&
+        !matchesInstallCommand(argv);
+      if (isPnpmRegistryResolution) {
+        const globalDir = normalizedArgv[normalizedArgv.indexOf("--global-dir") + 1];
+        if (!globalDir) {
+          throw new Error("missing isolated pnpm global directory");
+        }
+        const packageRoot = path.join(globalDir, "5", "node_modules", "openclaw");
+        await writeGlobalPackageVersion(packageRoot);
+        await addPackageInstallGuard(packageRoot);
+        return { stdout: "ok", stderr: "", code: 0 };
+      }
+      const isBunRegistryResolution =
+        normalizedArgv[0] === "bun" &&
+        normalizedArgv[1] === "add" &&
+        normalizedArgv.includes("--ignore-scripts") &&
+        !matchesInstallCommand(argv);
+      if (isBunRegistryResolution) {
+        const globalDir = options?.env?.BUN_INSTALL_GLOBAL_DIR;
+        if (!globalDir) {
+          throw new Error("missing isolated Bun global directory");
+        }
+        const packageRoot = path.join(globalDir, "node_modules", "openclaw");
+        await writeGlobalPackageVersion(packageRoot);
+        await addPackageInstallGuard(packageRoot);
+        return { stdout: "ok", stderr: "", code: 0 };
+      }
       if (isNpmCommand(normalizedArgv[0]) && normalizedArgv[1] === "view") {
         return {
           stdout: JSON.stringify({
@@ -3203,6 +3237,15 @@ describe("runGatewayUpdate", () => {
 
     await withMockedWindowsPlatform(async () => {
       await withEnvAsync({ LOCALAPPDATA: localAppData }, async () => {
+        spawnSyncMock.mockReturnValueOnce({
+          status: 0,
+          stdout: JSON.stringify({
+            version: process.versions.node,
+            bunVersion: null,
+            execPath: process.execPath,
+          }),
+          stderr: "",
+        });
         const result = await runWithCommand(runCommand, { cwd: pkgRoot });
         expect(result.status).toBe("ok");
       });
@@ -3325,8 +3368,11 @@ describe("runGatewayUpdate", () => {
 
       const { calls, runCommand } = createGlobalInstallHarness({
         pkgRoot,
-        installCommand: "bun add -g openclaw@latest",
-        onInstall: async () => await writeGlobalPackageVersion(pkgRoot),
+        installCommand: "bun add -g --ignore-scripts openclaw@2.0.0",
+        onInstall: async () => {
+          await writeGlobalPackageVersion(pkgRoot);
+          await addPackageInstallGuard(pkgRoot);
+        },
       });
 
       const result = await runWithCommand(runCommand, { cwd: pkgRoot });
@@ -3335,7 +3381,8 @@ describe("runGatewayUpdate", () => {
       expect(result.mode).toBe("bun");
       expect(result.before?.version).toBe("1.0.0");
       expect(result.after?.version).toBe("2.0.0");
-      expect(calls).toContain("bun add -g openclaw@latest");
+      expect(calls).toContain("bun add -g --ignore-scripts openclaw@latest");
+      expect(calls).toContain("bun add -g --ignore-scripts openclaw@2.0.0");
       expect(calls.some((call) => call.startsWith("npm i "))).toBe(false);
     });
   });

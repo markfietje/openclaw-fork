@@ -96,8 +96,13 @@ the service metadata and restarts it unless you pass `--no-restart`.
 For package installs with a managed Gateway service, `openclaw update` targets
 the package root used by that service. If the shell `openclaw` command comes
 from a different install, the updater prints both roots and the managed
-service's Node path, and checks that Node version against the target release's
-`engines.node` requirement before replacing the package.
+service's Node path. For pnpm and Bun registry updates, it resolves the exact
+target version before the live install. Every registry update path checks the
+selected Node against the release's `engines.node` requirement before replacing
+the package. Resolution runs in an isolated temporary global directory, so the
+package manager's release-age policy still selects the candidate without touching
+the live install. Package-manager lifecycle hooks stay disabled; OpenClaw then
+runs only its validated root lifecycle under that selected Node.
 
 ## Alternative: re-run the installer
 

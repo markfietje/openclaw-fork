@@ -1,4 +1,5 @@
 // Runs package update move, inventory, and cleanup steps.
+import path from "node:path";
 import { readPackageVersion } from "./package-json.js";
 import {
   createPackageRuntimeEnv,
@@ -20,7 +21,10 @@ import {
   type StagedNpmInstall,
   withNpmInvocation,
 } from "./package-update-npm-stage.js";
-import { preparePackedPackageInstallSpec } from "./package-update-source.js";
+import {
+  preparePackedPackageInstallSpec,
+  prepareRegistryPackageInstallSpec,
+} from "./package-update-source.js";
 import type { PackageUpdateStepResult, PackageUpdateStepRunner } from "./package-update-types.js";
 import { trimLogTail } from "./restart-sentinel.js";
 import {
@@ -106,6 +110,23 @@ async function readPackageVersionIfPresent(packageRoot: string | null): Promise<
   }
 }
 
+function createPackageManagerInstallEnv(
+  target: ResolvedGlobalInstallTarget,
+  env: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv | undefined {
+  if (target.manager !== "bun" || !target.globalRoot) {
+    return env;
+  }
+  return {
+    ...Object.fromEntries(
+      Object.entries(env ?? process.env).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    ),
+    BUN_INSTALL_GLOBAL_DIR: path.dirname(target.globalRoot),
+  };
+}
+
 /**
  * Runs the global package update flow, including npm staging when possible,
  * package verification, optional post-verification, and cleanup.
@@ -148,15 +169,15 @@ export async function runGlobalPackageUpdateSteps(params: {
     const preflightInstallTarget = knownNpmTarget ?? params.installTarget;
     const stagedNpmLayout = resolveStagedNpmTargetLayout(preflightInstallTarget);
     const updateUsesNpm = preflightInstallTarget.manager === "npm" || stagedNpmLayout !== null;
-    const selectedRuntime = updateUsesNpm
-      ? await resolvePackageRuntime({
-          runCommand: params.runCommand,
-          timeoutMs: params.timeoutMs,
-          ...(params.nodePath === undefined ? {} : { nodePath: params.nodePath }),
-          ...installEnv,
-          ...installCwd,
-        })
-      : { nodePath: null, version: null };
+    const selectedRuntime = await resolvePackageRuntime({
+      runCommand: params.runCommand,
+      timeoutMs: params.timeoutMs,
+      ...(params.nodePath === undefined ? {} : { nodePath: params.nodePath }),
+      ...installEnv,
+      ...installCwd,
+    });
+    // npm must run under the selected Node. pnpm and Bun retain the caller PATH
+    // so that managed Node directories cannot shadow their selected manager.
     const updateEnv = updateUsesNpm
       ? createPackageRuntimeEnv(params.env, selectedRuntime.nodePath)
       : params.env;
@@ -218,23 +239,49 @@ export async function runGlobalPackageUpdateSteps(params: {
       };
     }
 
-    const steps: PackageUpdateStepResult[] = [];
     const installCommandTarget = stagedInstall?.installTarget ?? effectiveInstallTarget;
-    const preparedSpec = await preparePackedPackageInstallSpec({
+    const packageManagerEnv = createPackageManagerInstallEnv(installCommandTarget, updateEnv);
+    const steps: PackageUpdateStepResult[] = [];
+    const registrySpec = await prepareRegistryPackageInstallSpec({
       installTarget: installCommandTarget,
       installSpec: params.installSpec,
       packageName: params.packageName,
       runStep: params.runStep,
       timeoutMs: params.timeoutMs,
       runtimeVersion: selectedRuntime.version,
-      env: updateEnv,
+      ...(packageManagerEnv === undefined ? {} : { env: packageManagerEnv }),
+      ...(params.installCwd === undefined ? {} : { installCwd: params.installCwd }),
+    });
+    steps.push(...registrySpec.steps);
+    if (registrySpec.failedStep) {
+      return {
+        steps,
+        verifiedPackageRoot:
+          effectiveInstallTarget.packageRoot ??
+          params.packageRoot ??
+          params.installTarget.packageRoot,
+        afterVersion: await readPackageVersionIfPresent(
+          params.packageRoot ?? params.installTarget.packageRoot,
+        ),
+        failedStep: registrySpec.failedStep,
+      };
+    }
+
+    const preparedSpec = await preparePackedPackageInstallSpec({
+      installTarget: installCommandTarget,
+      installSpec: registrySpec.installSpec,
+      packageName: params.packageName,
+      runStep: params.runStep,
+      timeoutMs: params.timeoutMs,
+      runtimeVersion: selectedRuntime.version,
+      env: packageManagerEnv,
       installCwd: params.installCwd,
       forcePack: recoveredNpmTarget !== null,
       packCommandArgv: npmCommandArgv,
     });
     const expectedInstalledVersion = resolveExpectedInstalledVersionFromSpec(
       params.packageName,
-      params.installSpec,
+      registrySpec.installSpec,
     );
     packedInstallDir = preparedSpec.packDir;
     steps.push(...preparedSpec.steps);
@@ -285,12 +332,17 @@ export async function runGlobalPackageUpdateSteps(params: {
     const updateStep = await params.runStep({
       name: "global update",
       argv: withNpmInvocation(
-        globalInstallArgs(installCommandTarget, activationInstallSpec, undefined, installLocation),
+        globalInstallArgs(
+          installCommandTarget,
+          activationInstallSpec,
+          undefined,
+          installLocation,
+        ),
         installCommandTarget,
         npmCommandArgv,
       ),
       ...installCwd,
-      ...(updateEnv === undefined ? {} : { env: updateEnv }),
+      ...(packageManagerEnv === undefined ? {} : { env: packageManagerEnv }),
       timeoutMs: params.timeoutMs,
     });
 
@@ -329,7 +381,7 @@ export async function runGlobalPackageUpdateSteps(params: {
             npmCommandArgv,
           ),
           ...installCwd,
-          ...(updateEnv === undefined ? {} : { env: updateEnv }),
+          ...(packageManagerEnv === undefined ? {} : { env: packageManagerEnv }),
           timeoutMs: params.timeoutMs,
         });
         steps.push(fallbackStep);
@@ -352,16 +404,15 @@ export async function runGlobalPackageUpdateSteps(params: {
       ).packageRoot ??
       null;
     const manualLifecyclePackageRoot =
-      stagedInstall?.packageRoot ??
-      (effectiveInstallTarget.manager === "npm" ? livePackageRoot : null);
-    // npm installs with dependency scripts disabled. Validate and run only OpenClaw's trusted
-    // root lifecycle before the staged package can replace the live tree.
+      stagedInstall?.packageRoot ?? livePackageRoot;
+    // Package-manager hooks stay disabled. Validate and run only OpenClaw's
+    // root lifecycle under the same Node that passed the candidate guard.
     if (finalInstallStep.exitCode === 0 && manualLifecyclePackageRoot) {
       const lifecycle = await runPackageInstallLifecycle({
         packageRoot: manualLifecyclePackageRoot,
         runStep: params.runStep,
         timeoutMs: params.timeoutMs,
-        ...(updateEnv === undefined ? {} : { env: updateEnv }),
+        ...(packageManagerEnv === undefined ? {} : { env: packageManagerEnv }),
         runtimeVersion: selectedRuntime.version,
         ...(selectedRuntime.nodePath === null ? {} : { nodePath: selectedRuntime.nodePath }),
         allowMissingGuardForVersion: expectedInstalledVersion,

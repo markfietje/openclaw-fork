@@ -32,7 +32,6 @@ const UNGUARDED_RUNTIME_API_PLUGIN_IDS = [
   "qa-channel",
   "qa-lab",
   "qa-matrix",
-  "qqbot",
   "reef",
   "tlon",
   "tokenjuice",

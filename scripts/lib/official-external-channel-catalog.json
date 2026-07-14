@@ -513,11 +513,18 @@
       }
     },
     {
-      "name": "@openclaw/qqbot",
-      "description": "OpenClaw QQ Bot channel plugin",
-      "source": "official",
+      "name": "@tencent-connect/openclaw-qqbot",
+      "description": "OpenClaw QQ Bot channel plugin by the Tencent Connect team.",
+      "source": "external",
       "kind": "channel",
       "openclaw": {
+        "plugin": {
+          "id": "openclaw-qqbot",
+          "label": "QQ Bot"
+        },
+        "contracts": {
+          "tools": ["qqbot_platform_api", "qqbot_remind"]
+        },
         "channel": {
           "id": "qqbot",
           "label": "QQ Bot",
@@ -526,12 +533,32 @@
           "docsPath": "/channels/qqbot",
           "docsLabel": "qqbot",
           "blurb": "connect to QQ via official QQ Bot API with group chat and direct message support.",
+          "envVars": ["QQBOT_APP_ID", "QQBOT_CLIENT_SECRET"],
           "systemImage": "bubble.left.and.bubble.right"
         },
+        "channelConfigs": {
+          "qqbot": {
+            "label": "QQ Bot",
+            "description": "QQ Bot API conversation channel.",
+            "preferOver": ["qqbot"],
+            "schema": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "appId": {
+                  "type": "string"
+                },
+                "clientSecret": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
         "install": {
-          "npmSpec": "@openclaw/qqbot",
+          "npmSpec": "@tencent-connect/openclaw-qqbot@2.0.0",
           "defaultChoice": "npm",
-          "minHostVersion": ">=2026.4.10"
+          "expectedIntegrity": "sha512-8/M8S+PSms7F3ojgcgCZY72nfA5Gzqujo8JhNI4bwNAXSLsvi5qh03RF4qtso+67MN+rM482Cn7G3ZPhqOP78A=="
         }
       }
     },

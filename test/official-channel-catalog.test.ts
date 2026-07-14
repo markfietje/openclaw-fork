@@ -179,6 +179,36 @@ describe("buildOfficialChannelCatalog", () => {
     });
     expect(
       summarizeCatalogEntry(
+        findCatalogEntry(entries, (entry) => entry.name === "@tencent-connect/openclaw-qqbot"),
+      ),
+    ).toEqual({
+      name: "@tencent-connect/openclaw-qqbot",
+      description: "OpenClaw QQ Bot channel plugin by the Tencent Connect team.",
+      source: "external",
+      plugin: {
+        id: "openclaw-qqbot",
+        label: "QQ Bot",
+      },
+      channel: {
+        id: "qqbot",
+        label: "QQ Bot",
+        selectionLabel: "QQ Bot (Official API)",
+        detailLabel: "QQ Bot",
+        docsPath: "/channels/qqbot",
+        docsLabel: "qqbot",
+        blurb: "connect to QQ via official QQ Bot API with group chat and direct message support.",
+        envVars: ["QQBOT_APP_ID", "QQBOT_CLIENT_SECRET"],
+        systemImage: "bubble.left.and.bubble.right",
+      },
+      install: {
+        npmSpec: "@tencent-connect/openclaw-qqbot@2.0.0",
+        defaultChoice: "npm",
+        expectedIntegrity:
+          "sha512-8/M8S+PSms7F3ojgcgCZY72nfA5Gzqujo8JhNI4bwNAXSLsvi5qh03RF4qtso+67MN+rM482Cn7G3ZPhqOP78A==",
+      },
+    });
+    expect(
+      summarizeCatalogEntry(
         findCatalogEntry(entries, (entry) => entry.name === "@openclaw/whatsapp"),
       ),
     ).toEqual({
@@ -263,7 +293,6 @@ describe("buildOfficialChannelCatalog", () => {
         },
       },
     });
-
     const entry = buildOfficialChannelCatalog({ repoRoot }).entries.find(
       (candidate) => candidate.openclaw?.channel?.id === "storepack-chat",
     );

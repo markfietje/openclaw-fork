@@ -1,6 +1,7 @@
 import { createPackageRuntimeEnv } from "../../infra/package-runtime-env.js";
 import {
   resolvePackageRuntime,
+  runPackageSourcePostinstall,
   runPackageSourceRuntimeGuard,
 } from "../../infra/package-update-lifecycle.js";
 import { runGlobalPackageUpdateSteps } from "../../infra/package-update-steps.js";
@@ -50,8 +51,8 @@ export async function runSourceCheckoutGlobalInstall(params: {
     if (runtimeGuard.exitCode !== 0) {
       return { steps: [runtimeGuard], failedStep: runtimeGuard };
     }
-    // pnpm and Bun activate the source checkout in place. Guard first, then keep
-    // lifecycle scripts on the same Node that will relaunch the managed service.
+    // pnpm and Bun activate the source checkout in place. Guard first, keep all
+    // manager hooks disabled, then run only OpenClaw's known postinstall.
     const installEnv = createPackageRuntimeEnv(params.env, runtime.nodePath) ?? params.env;
     const installStep = await runUpdateStep({
       name: "global install",
@@ -62,15 +63,30 @@ export async function runSourceCheckoutGlobalInstall(params: {
         installTarget.manager === "pnpm"
           ? resolvePnpmGlobalDirFromGlobalRoot(installTarget.globalRoot)
           : null,
+        { ignorePackageLifecycle: true },
       ),
       cwd: params.sourceRoot,
       env: installEnv,
       timeoutMs: params.timeoutMs,
       progress: params.progress,
     });
+    if (installStep.exitCode !== 0) {
+      return { steps: [runtimeGuard, installStep], failedStep: installStep };
+    }
+    const postinstallStep = await runPackageSourcePostinstall({
+      packageRoot: params.sourceRoot,
+      runStep: (step) =>
+        runUpdateStep({
+          ...step,
+          ...(params.progress === undefined ? {} : { progress: params.progress }),
+        }),
+      timeoutMs: params.timeoutMs,
+      env: installEnv,
+      ...(runtime.nodePath === null ? {} : { nodePath: runtime.nodePath }),
+    });
     return {
-      steps: [runtimeGuard, installStep],
-      failedStep: installStep.exitCode === 0 ? null : installStep,
+      steps: [runtimeGuard, installStep, postinstallStep],
+      failedStep: postinstallStep.exitCode === 0 ? null : postinstallStep,
     };
   }
   const result = await runGlobalPackageUpdateSteps({

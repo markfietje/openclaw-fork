@@ -72,16 +72,59 @@ describe("runSourceCheckoutGlobalInstall", () => {
     expect(result.steps.map((step) => step.name)).toEqual([
       "global install runtime guard",
       "global install",
+      "global install postinstall",
     ]);
     expect(result.failedStep).toBeNull();
-    expect(sharedMocks.runUpdateStep).toHaveBeenCalledWith(
+    expect(sharedMocks.runUpdateStep).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
-        argv: ["pnpm", "add", "-g", "--global-dir", "/tmp/openclaw-pnpm-global", sourceRoot],
+        argv: [
+          "pnpm",
+          "add",
+          "-g",
+          "--global-dir",
+          "/tmp/openclaw-pnpm-global",
+          "--ignore-scripts",
+          sourceRoot,
+        ],
         env: expect.objectContaining({
           PATH: `${path.dirname(nodeRunner)}${path.delimiter}/usr/bin`,
         }),
       }),
     );
+    expect(sharedMocks.runUpdateStep).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        argv: [nodeRunner, path.join(sourceRoot, "scripts/postinstall-bundled-plugins.mjs")],
+        cwd: sourceRoot,
+      }),
+    );
+  });
+
+  it("surfaces a trusted source postinstall failure", async () => {
+    sharedMocks.runUpdateStep.mockImplementation(async (step) => ({
+      name: step.name,
+      command: step.argv.join(" "),
+      cwd: step.cwd,
+      durationMs: 1,
+      exitCode: step.name === "global install postinstall" ? 1 : 0,
+      stdoutTail: "",
+      stderrTail: step.name === "global install postinstall" ? "postinstall failed" : "",
+    }));
+
+    const result = await runSourceCheckoutGlobalInstall({
+      sourceRoot,
+      currentPackageRoot: path.join(pnpmGlobalRoot, "openclaw"),
+      installKind: "package",
+      nodeRunner,
+      env: { PATH: "/usr/bin" },
+      timeoutMs: 20_000,
+    });
+
+    expect(result.failedStep).toMatchObject({
+      name: "global install postinstall",
+      stderrTail: "postinstall failed",
+    });
   });
 
   it("blocks pnpm source activation when the managed service Node is incompatible", async () => {

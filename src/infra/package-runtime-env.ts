@@ -4,7 +4,9 @@ import { resolveExecutablePath } from "./executable-path.js";
 import { pathExists } from "./fs-safe.js";
 import { applyPathPrepend } from "./path-prepend.js";
 
-function resolveRuntimePathApi(value: string): typeof path.posix | typeof path.win32 | null {
+type RuntimePathApi = typeof path.posix;
+
+function resolveRuntimePathApi(value: string): RuntimePathApi | null {
   const pathApi =
     /^[A-Za-z]:[\\/]/u.test(value) || value.startsWith("\\\\") || value.startsWith("//")
       ? path.win32
@@ -32,7 +34,7 @@ export function createPackageRuntimeEnv(
   const result = Object.fromEntries(
     Object.entries(env ?? process.env)
       .filter((entry): entry is [string, string] => entry[1] !== undefined)
-      .map(([key, value]) => [key, String(value)]),
+      .map(([key, value]) => [key, value]),
   );
   applyPathPrepend(result, [pathApi.dirname(trimmed)]);
   return result;
@@ -86,10 +88,7 @@ export function resolvePackageRuntimeNpmPrefix(invocation: readonly string[]): s
     : parentDir;
 }
 
-function resolveNpmCliCandidates(
-  commandPath: string,
-  pathApi: typeof path.posix | typeof path.win32,
-): string[] {
+function resolveNpmCliCandidates(commandPath: string, pathApi: RuntimePathApi): string[] {
   const commandDir = pathApi.dirname(commandPath);
   const candidates =
     pathApi.basename(commandPath).toLowerCase() === "npm-cli.js" ? [commandPath] : [];

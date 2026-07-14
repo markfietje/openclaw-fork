@@ -99,8 +99,8 @@ async function withBunRuntime<T>(run: () => Promise<T>): Promise<T> {
 }
 
 describe("runPackageInstallLifecycle", () => {
-  it("uses the selected runtime for the guard and OpenClaw postinstall", async () => {
-    await withTempDir({ prefix: "openclaw-staged-lifecycle-" }, async (packageRoot) => {
+  it("consumes the validated guard before running only OpenClaw postinstall", async () => {
+    await withTempDir({ prefix: "openclaw-install-lifecycle-" }, async (packageRoot) => {
       const nodePath = "/opt/openclaw-service/bin/node";
       await writeCandidate({ packageRoot, guard: true, engine: ">=999.0.0" });
       const runStep = vi.fn(async ({ name, argv, cwd }) => ({
@@ -132,6 +132,68 @@ describe("runPackageInstallLifecycle", () => {
       await expect(
         fs.access(path.join(packageRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH)),
       ).rejects.toHaveProperty("code", "ENOENT");
+    });
+  });
+
+  it("rejects a missing guard before postinstall", async () => {
+    await withTempDir({ prefix: "openclaw-install-lifecycle-reject-" }, async (packageRoot) => {
+      await writeCandidate({ packageRoot });
+      const runStep = vi.fn();
+
+      const result = await runPackageInstallLifecycle({
+        packageRoot,
+        runStep,
+        timeoutMs: 1_000,
+      });
+
+      expect(result.failedStep).toMatchObject({
+        name: "global install runtime guard",
+        stderrTail: expect.stringContaining("missing its package install guard"),
+      });
+      expect(runStep).not.toHaveBeenCalled();
+    });
+  });
+
+  it("preserves an OpenClaw postinstall failure", async () => {
+    await withTempDir({ prefix: "openclaw-install-postinstall-failure-" }, async (packageRoot) => {
+      await writeCandidate({ packageRoot, guard: true });
+      const runStep = vi.fn(async ({ name, argv, cwd }) => ({
+        name,
+        command: argv.join(" "),
+        cwd: cwd ?? process.cwd(),
+        durationMs: 1,
+        exitCode: 1,
+        stderrTail: "postinstall failed",
+      }));
+
+      const result = await runPackageInstallLifecycle({
+        packageRoot,
+        runStep,
+        timeoutMs: 1_000,
+      });
+
+      expect(result.failedStep).toMatchObject({
+        name: "global install postinstall",
+        stderrTail: "postinstall failed",
+      });
+    });
+  });
+});
+
+describe("runPackedPackageRuntimeGuard", () => {
+  it("validates the packed lifecycle contract without consuming its guard", async () => {
+    await withTempDir({ prefix: "openclaw-staged-lifecycle-" }, async (base) => {
+      const packageRoot = path.join(base, "package");
+      await writeCandidate({ packageRoot, guard: true, engine: ">=999.0.0" });
+      const tarballPath = path.join(base, "openclaw.tgz");
+      await tar.c({ cwd: base, file: tarballPath, gzip: true }, ["package"]);
+
+      const result = await runPackedPackageRuntimeGuard(tarballPath, "999.0.0");
+
+      expect(result.exitCode).toBe(0);
+      await expect(
+        fs.access(path.join(packageRoot, PACKAGE_INSTALL_GUARD_RELATIVE_PATH)),
+      ).resolves.toBeUndefined();
     });
   });
 
@@ -194,45 +256,37 @@ describe("runPackageInstallLifecycle", () => {
       writePostinstallFile: false,
       message: "missing scripts/postinstall-bundled-plugins.mjs",
     },
-  ])("rejects a candidate with $title before postinstall", async (testCase) => {
-    await withTempDir({ prefix: "openclaw-staged-lifecycle-reject-" }, async (packageRoot) => {
+  ])("rejects a packed candidate with $title", async (testCase) => {
+    await withTempDir({ prefix: "openclaw-staged-lifecycle-reject-" }, async (base) => {
+      const packageRoot = path.join(base, "package");
       await writeCandidate({ packageRoot, ...testCase });
-      const runStep = vi.fn();
+      const tarballPath = path.join(base, "openclaw.tgz");
+      await tar.c({ cwd: base, file: tarballPath, gzip: true }, ["package"]);
 
-      const result = await runPackageInstallLifecycle({
-        packageRoot,
-        runStep,
-        timeoutMs: 1_000,
-      });
+      const result = await runPackedPackageRuntimeGuard(tarballPath, process.versions.node);
 
-      expect(result.failedStep?.name).toBe("global install runtime guard");
-      expect(result.failedStep?.stderrTail).toContain(testCase.message);
-      expect(runStep).not.toHaveBeenCalled();
+      expect(result.name).toBe("global install runtime guard");
+      expect(result.stderrTail).toContain(testCase.message);
     });
   });
 
   it.each(["2026.7.1", "2026.4.10"])(
     "allows exact legacy registry target %s without the newer install guard",
     async (version) => {
-      await withTempDir({ prefix: "openclaw-staged-lifecycle-legacy-" }, async (packageRoot) => {
+      await withTempDir({ prefix: "openclaw-staged-lifecycle-legacy-" }, async (base) => {
+        const packageRoot = path.join(base, "package");
         await writeCandidate({ packageRoot, version });
-        const runStep = vi.fn(async ({ name, argv, cwd }) => ({
-          name,
-          command: argv.join(" "),
-          cwd: cwd ?? process.cwd(),
-          durationMs: 1,
-          exitCode: 0,
-        }));
+        const tarballPath = path.join(base, "openclaw.tgz");
+        await tar.c({ cwd: base, file: tarballPath, gzip: true }, ["package"]);
 
-        const result = await runPackageInstallLifecycle({
-          packageRoot,
-          runStep,
-          timeoutMs: 1_000,
-          allowMissingGuardForVersion: version,
-        });
+        const result = await runPackedPackageRuntimeGuard(
+          tarballPath,
+          process.versions.node,
+          "global install runtime guard",
+          version,
+        );
 
-        expect(result.failedStep).toBeNull();
-        expect(runStep).toHaveBeenCalledOnce();
+        expect(result.exitCode).toBe(0);
       });
     },
   );
@@ -243,21 +297,21 @@ describe("runPackageInstallLifecycle", () => {
   ])(
     "does not bypass the guard for candidate $candidateVersion requested as $requestedVersion",
     async ({ candidateVersion, requestedVersion }) => {
-      await withTempDir(
-        { prefix: "openclaw-staged-lifecycle-legacy-reject-" },
-        async (packageRoot) => {
-          await writeCandidate({ packageRoot, version: candidateVersion });
+      await withTempDir({ prefix: "openclaw-staged-lifecycle-legacy-reject-" }, async (base) => {
+        const packageRoot = path.join(base, "package");
+        await writeCandidate({ packageRoot, version: candidateVersion });
+        const tarballPath = path.join(base, "openclaw.tgz");
+        await tar.c({ cwd: base, file: tarballPath, gzip: true }, ["package"]);
 
-          const result = await runPackageInstallLifecycle({
-            packageRoot,
-            runStep: vi.fn(),
-            timeoutMs: 1_000,
-            allowMissingGuardForVersion: requestedVersion,
-          });
+        const result = await runPackedPackageRuntimeGuard(
+          tarballPath,
+          process.versions.node,
+          "global install runtime guard",
+          requestedVersion,
+        );
 
-          expect(result.failedStep?.stderrTail).toContain("missing its package install guard");
-        },
-      );
+        expect(result.stderrTail).toContain("missing its package install guard");
+      });
     },
   );
 
@@ -374,39 +428,6 @@ describe("resolvePackageRuntime", () => {
           probeNodeRuntime,
         }),
       ).resolves.toEqual({ nodePath: null, version: null });
-    });
-  });
-
-  it("runs staged postinstall with PATH Node when the updater uses Bun", async () => {
-    await withBunRuntime(async () => {
-      await withTempDir({ prefix: "openclaw-staged-lifecycle-bun-" }, async (packageRoot) => {
-        await writeCandidate({ packageRoot, guard: true });
-        const runStep = vi.fn(async ({ name, argv, cwd }) => ({
-          name,
-          command: argv.join(" "),
-          cwd: cwd ?? process.cwd(),
-          durationMs: 1,
-          exitCode: 0,
-        }));
-
-        const result = await runPackageInstallLifecycle({
-          packageRoot,
-          runStep,
-          timeoutMs: 1_000,
-          runtimeVersion: "24.15.3",
-          nodePath: "/usr/local/bin/node",
-        });
-
-        expect(result.failedStep).toBeNull();
-        expect(runStep).toHaveBeenCalledWith(
-          expect.objectContaining({
-            argv: [
-              "/usr/local/bin/node",
-              path.join(packageRoot, "scripts", "postinstall-bundled-plugins.mjs"),
-            ],
-          }),
-        );
-      });
     });
   });
 });

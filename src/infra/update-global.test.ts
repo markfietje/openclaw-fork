@@ -27,6 +27,7 @@ import {
   resolveGlobalInstallSpec,
   resolveNpmGlobalPrefixLayoutFromGlobalRoot,
   resolveNpmGlobalPrefixLayoutFromPrefix,
+  resolveExpectedInstalledVersionFromSpec,
   resolvePnpmGlobalDirFromGlobalRoot,
   type CommandRunner,
 } from "./update-global.js";
@@ -84,6 +85,23 @@ function createNpmRootRunner(params: {
 }
 
 describe("update global helpers", () => {
+  it("extracts only exact installed versions from package specs", () => {
+    expect(resolveExpectedInstalledVersionFromSpec("openclaw", "openclaw@v2026.3.23-2")).toBe(
+      "2026.3.23-2",
+    );
+    for (const spec of [
+      "openclaw@latest",
+      "openclaw@beta",
+      "openclaw@^2026.3.23",
+      "openclaw@~2026.3.23",
+      "openclaw@2026.3.x",
+      "openclaw@>=2026.3.23",
+      "openclaw@github:openclaw/openclaw#main",
+    ]) {
+      expect(resolveExpectedInstalledVersionFromSpec("openclaw", spec)).toBeNull();
+    }
+  });
+
   let envSnapshot: ReturnType<typeof captureEnv> | undefined;
 
   afterEach(() => {
@@ -751,6 +769,36 @@ describe("update global helpers", () => {
       "-g",
       "openclaw@latest",
     ]);
+    expect(
+      globalInstallArgs("pnpm", "/tmp/openclaw-candidate.tgz", null, null, {
+        ignorePackageLifecycle: true,
+      }),
+    ).toEqual(["pnpm", "add", "-g", "--ignore-scripts", "/tmp/openclaw-candidate.tgz"]);
+    expect(
+      globalInstallArgs("bun", "/tmp/openclaw-candidate.tgz", null, null, {
+        ignorePackageLifecycle: true,
+      }),
+    ).toEqual(["bun", "add", "-g", "--ignore-scripts", "/tmp/openclaw-candidate.tgz"]);
+    expect(
+      globalInstallArgs("npm", "/tmp/openclaw-candidate.tgz", null, "/tmp/stage", {
+        ignorePackageLifecycle: true,
+      }),
+    ).toEqual([
+      "npm",
+      "i",
+      "-g",
+      "--prefix",
+      "/tmp/stage",
+      "--ignore-scripts",
+      "/tmp/openclaw-candidate.tgz",
+      "--no-fund",
+      "--no-audit",
+      "--loglevel=error",
+      "--min-release-age=0",
+    ]);
+    expect(
+      globalInstallFallbackArgs("npm", "/tmp/openclaw-candidate.tgz", null, "/tmp/stage"),
+    ).toContain("--ignore-scripts");
     for (const spec of ["/tmp/openclaw-candidate.tgz", "/tmp/openclaw-source"]) {
       const argv = globalInstallArgs("npm", spec);
       expect(argv).toContain("--ignore-scripts");

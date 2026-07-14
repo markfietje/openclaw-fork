@@ -130,7 +130,6 @@ export async function runGlobalPackageUpdateSteps(params: {
 }> {
   const installCwd = params.installCwd === undefined ? {} : { cwd: params.installCwd };
   const installEnv = params.env === undefined ? {} : { env: params.env };
-  let updateEnv = params.env;
   let stagedInstall: StagedNpmInstall | null | undefined;
   let packedInstallDir: string | null = null;
 
@@ -158,7 +157,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           ...installCwd,
         })
       : { nodePath: null, version: null };
-    updateEnv = updateUsesNpm
+    const updateEnv = updateUsesNpm
       ? createPackageRuntimeEnv(params.env, selectedRuntime.nodePath)
       : params.env;
     let npmCommandArgv: string[] | null = null;
@@ -447,4 +446,3 @@ export async function runGlobalPackageUpdateSteps(params: {
     }
   }
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

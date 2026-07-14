@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { parse as parsePackageSemver } from "semver";
 import { BUNDLED_RUNTIME_SIDECAR_PATHS } from "../plugins/runtime-sidecar-paths.js";
 import { pathExists } from "../utils.js";
 import {
@@ -135,7 +136,8 @@ export function resolveExpectedInstalledVersionFromSpec(
   ) {
     return null;
   }
-  return normalizePackageVersionForComparison(rawVersion);
+  const normalizedVersion = normalizePackageVersionForComparison(rawVersion);
+  return normalizedVersion && parsePackageSemver(normalizedVersion) ? normalizedVersion : null;
 }
 
 /**
@@ -904,6 +906,9 @@ export function globalInstallArgs(
   spec: string,
   pkgRoot?: string | null,
   installPrefix?: string | null,
+  options: {
+    ignorePackageLifecycle?: boolean;
+  } = {},
 ): string[] {
   const resolved = normalizeGlobalInstallCommand(managerOrCommand, pkgRoot);
   if (resolved.manager === "pnpm") {
@@ -912,12 +917,21 @@ export function globalInstallArgs(
       "add",
       "-g",
       ...(installPrefix ? ["--global-dir", installPrefix] : []),
-      ...(isPnpmOpenClawSourceInstallSpec(spec) ? [PNPM_OPENCLAW_BUILD_ALLOWLIST_FLAG] : []),
+      ...(options.ignorePackageLifecycle === true ? ["--ignore-scripts"] : []),
+      ...(options.ignorePackageLifecycle !== true && isPnpmOpenClawSourceInstallSpec(spec)
+        ? [PNPM_OPENCLAW_BUILD_ALLOWLIST_FLAG]
+        : []),
       spec,
     ];
   }
   if (resolved.manager === "bun") {
-    return [resolved.command, "add", "-g", spec];
+    return [
+      resolved.command,
+      "add",
+      "-g",
+      ...(options.ignorePackageLifecycle === true ? ["--ignore-scripts"] : []),
+      spec,
+    ];
   }
   return [
     resolved.command,

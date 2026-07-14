@@ -25,8 +25,8 @@ const MAX_PACKED_PACKAGE_MANIFEST_BYTES = 1024 * 1024;
 const LEGACY_INSTALL_GUARD_COMPAT_MAX_VERSION = "2026.7.1";
 const { probePackageCliNodeRuntime } = packagePreinstallRuntime;
 
-// Packed releases omit the checkout-only prepare hook. The updater owns guard/postinstall
-// execution and rejects any published-hook drift before activating the candidate.
+// Packed releases omit the checkout-only prepare hook. Validate the published lifecycle
+// contract before the package manager executes it and before any live activation.
 const PACKAGE_LIFECYCLE_CONTRACT = {
   preinstall: PACKAGE_PREINSTALL_COMMAND,
   install: null,
@@ -93,8 +93,8 @@ function parseCandidatePackageContract(value: string): CandidatePackageContract 
     scripts?: Record<string, unknown>;
   };
   const lifecycleCommand = (name: keyof typeof PACKAGE_LIFECYCLE_CONTRACT): string | null => {
-    const value = manifest.scripts?.[name];
-    return typeof value === "string" ? value.trim() || null : null;
+    const scriptValue = manifest.scripts?.[name];
+    return typeof scriptValue === "string" ? scriptValue.trim() || null : null;
   };
   return {
     version: typeof manifest.version === "string" ? manifest.version.trim() || null : null,
@@ -124,7 +124,7 @@ async function readPackedCandidatePackageContract(tarballPath: string): Promise<
   const manifestChunks: Buffer[] = [];
   let manifestBytes = 0;
   let manifestCount = 0;
-  let manifestError: Error | null = null;
+  const manifestState: { error: Error | null } = { error: null };
   let hasGuard = false;
   let hasPreinstall = false;
   let hasPostinstall = false;
@@ -150,14 +150,16 @@ async function readPackedCandidatePackageContract(tarballPath: string): Promise<
 
       manifestCount += 1;
       if (manifestCount > 1) {
-        manifestError = new Error(
+        manifestState.error = new Error(
           `candidate package contains duplicate ${PACKED_PACKAGE_MANIFEST_PATH}`,
         );
         entry.resume();
         return;
       }
       if (entry.size > MAX_PACKED_PACKAGE_MANIFEST_BYTES) {
-        manifestError = new Error(`staged package ${PACKED_PACKAGE_MANIFEST_PATH} is too large`);
+        manifestState.error = new Error(
+          `staged package ${PACKED_PACKAGE_MANIFEST_PATH} is too large`,
+        );
         entry.resume();
         return;
       }
@@ -165,7 +167,9 @@ async function readPackedCandidatePackageContract(tarballPath: string): Promise<
         const buffer = Buffer.from(chunk);
         manifestBytes += buffer.byteLength;
         if (manifestBytes > MAX_PACKED_PACKAGE_MANIFEST_BYTES) {
-          manifestError = new Error(`staged package ${PACKED_PACKAGE_MANIFEST_PATH} is too large`);
+          manifestState.error = new Error(
+            `staged package ${PACKED_PACKAGE_MANIFEST_PATH} is too large`,
+          );
           return;
         }
         manifestChunks.push(buffer);
@@ -173,8 +177,8 @@ async function readPackedCandidatePackageContract(tarballPath: string): Promise<
     },
   });
 
-  if (manifestError) {
-    throw manifestError;
+  if (manifestState.error) {
+    throw manifestState.error;
   }
   if (manifestCount !== 1) {
     throw new Error(`candidate package is missing ${PACKED_PACKAGE_MANIFEST_PATH}`);
@@ -272,7 +276,7 @@ function validateCandidatePackageContract(params: {
   }
 }
 
-/** Validates a guarded candidate without executing package-manager lifecycle code. */
+/** Validates and consumes a guarded candidate without executing untrusted manager hooks. */
 async function runPackageRuntimeGuard(
   packageRoot: string,
   runtimeVersion: string | null = process.versions.node ?? null,
@@ -314,7 +318,7 @@ async function runPackageRuntimeGuard(
   }
 }
 
-/** Validates a packed candidate before a non-staged package manager can mutate the live install. */
+/** Validates a packed candidate before its package-manager lifecycle or live activation. */
 export async function runPackedPackageRuntimeGuard(
   tarballPath: string,
   runtimeVersion: string | null,
@@ -370,7 +374,6 @@ export async function runPackageSourceRuntimeGuard(
   }
 }
 
-/** Runs only OpenClaw's package-root postinstall after dependency scripts stayed disabled. */
 async function runPackagePostinstall(params: {
   packageRoot: string;
   runStep: PackageUpdateStepRunner;
@@ -400,7 +403,7 @@ async function runPackagePostinstall(params: {
   });
 }
 
-/** Runs the trusted OpenClaw root postinstall after a scripts-disabled source activation. */
+/** Runs the known OpenClaw postinstall after scripts-disabled trusted source activation. */
 export async function runPackageSourcePostinstall(params: {
   packageRoot: string;
   runStep: PackageUpdateStepRunner;
@@ -411,6 +414,7 @@ export async function runPackageSourcePostinstall(params: {
   return runPackagePostinstall(params);
 }
 
+/** Runs only OpenClaw's validated root lifecycle after a scripts-disabled package install. */
 export async function runPackageInstallLifecycle(params: {
   packageRoot: string;
   runStep: PackageUpdateStepRunner;

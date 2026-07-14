@@ -40,19 +40,24 @@ async function invokeWebhookServerRequest(params: {
 
   return await new Promise<{ body: string; status: number }>((resolve) => {
     let status = 0;
-    const res = {
+    type MutableMockResponse = {
+      headersSent: boolean;
+      writeHead(code: number): MutableMockResponse;
+      end(body?: string): MutableMockResponse;
+    };
+    const resObj: MutableMockResponse = {
       headersSent: false,
       writeHead(code: number) {
         status = code;
-        this.headersSent = true;
-        return this;
+        resObj.headersSent = true;
+        return resObj;
       },
       end(body?: string) {
         resolve({ body: body ?? "", status });
-        return this;
+        return resObj;
       },
-    } as unknown as ServerResponse;
-    listener(req, res);
+    };
+    listener(req, resObj as unknown as ServerResponse);
   });
 }
 

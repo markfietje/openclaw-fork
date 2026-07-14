@@ -125,22 +125,7 @@ function commitFile(repo: string, filePath: string, content: string, message: st
   return git(repo, ["rev-parse", "HEAD"]);
 }
 
-function plistFor(shortVersion: string, buildVersion: string): string {
-  return [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<plist version="1.0">',
-    "<dict>",
-    "    <key>CFBundleShortVersionString</key>",
-    `    <string>${shortVersion}</string>`,
-    "    <key>CFBundleVersion</key>",
-    `    <string>${buildVersion}</string>`,
-    "</dict>",
-    "</plist>",
-    "",
-  ].join("\n");
-}
-
-function createRepo(options: { plistBuildVersion?: string } = {}) {
+function createRepo(options: { pluginVersion?: string } = {}) {
   const origin = tempDirs.make("evidence-reuse-origin-");
   git(origin, ["init", "-q", "-b", "main"]);
   git(origin, ["config", "user.email", "test-user@example.invalid"]);
@@ -150,10 +135,18 @@ function createRepo(options: { plistBuildVersion?: string } = {}) {
     join(origin, "package.json"),
     `${JSON.stringify({ name: "x", version: "2026.7.1" }, null, 2)}\n`,
   );
-  mkdirSync(join(origin, "apps/macos/Sources/OpenClaw/Resources"), { recursive: true });
+  mkdirSync(join(origin, "extensions/test-plugin"), { recursive: true });
   writeFileSync(
-    join(origin, "apps/macos/Sources/OpenClaw/Resources/Info.plist"),
-    plistFor("2026.7.1", options.plistBuildVersion ?? "2026070100"),
+    join(origin, "extensions/test-plugin/package.json"),
+    `${JSON.stringify(
+      {
+        name: "@openclaw/test-plugin",
+        openclaw: { release: { publishToNpm: true } },
+        version: options.pluginVersion ?? "2026.7.1",
+      },
+      null,
+      2,
+    )}\n`,
   );
   mkdirSync(join(origin, "docs/install"), { recursive: true });
   writeFileSync(join(origin, "docs/install/updating.md"), "# Updating\n");
@@ -851,7 +844,7 @@ describe("scripts/github/find-reusable-release-validation.sh", () => {
   });
 
   it("rejects target version metadata that is internally inconsistent", () => {
-    const { origin, priorSha } = createRepo({ plistBuildVersion: "2026061000" });
+    const { origin, priorSha } = createRepo({ pluginVersion: "2026.7.0" });
     const clone = cloneHead(origin);
     const record = normalizedEvidence({ targetSha: priorSha });
     const { binDir, fixtures, validatorPath } = setUpFixtures([{ record, runId: "111" }]);

@@ -161,9 +161,9 @@ if ! jq -e \
   no_reuse "workflow SHA is not on trusted main lineage"
 fi
 
-# Exact-target reuse still requires internally consistent version stamps
-# (for example package.json must agree with the macOS plist).
-if ! (cd "$REPO_DIR" && node "$PREFLIGHT" --macos-versions-only >&2); then
+# Exact-target reuse still requires internally consistent npm version stamps.
+# Native version metadata is outside the npm-only extended-stable contract.
+if ! (cd "$REPO_DIR" && node "$PREFLIGHT" --npm-versions-only >&2); then
   no_reuse "target version metadata is inconsistent"
 fi
 

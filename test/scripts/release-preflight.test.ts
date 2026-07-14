@@ -92,6 +92,14 @@ describe("scripts/release-preflight.mjs", () => {
     expect(result.stdout).toBe("");
   });
 
+  it("checks npm version metadata without invoking package-manager commands", () => {
+    const result = runPreflight(["--npm-versions-only"], undefined, { PATH: "" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("[release-preflight] npm version metadata OK");
+    expect(result.stderr).toBe("");
+  });
+
   it("runs every check command and reports all failed release artifact checks", () => {
     const fakePnpm = makeFakePnpm();
     const result = runPreflight(["--check"], fakePnpm, {

@@ -232,37 +232,36 @@ describe("OnePasswordBroker validation and policy", () => {
     ]);
   });
 
-  it("isolates identical tool call ids across sessions", async () => {
+  it("authorizes when hook and execute contexts disagree on session fields", async () => {
+    // Production regression: the hook's PluginHookToolContext and the tool
+    // execute invocation context are sourced independently by core and can
+    // carry different session fields for the same call. Only toolCallId is
+    // guaranteed to match; a tuple key over session fields caused live
+    // POLICY_NOT_EVALUATED failures.
     const { broker, audit } = setup();
-    const sessionA = { agentId: "agent-a", sessionKey: "session-a", sessionId: "conversation-a" };
-    const sessionB = { agentId: "agent-b", sessionKey: "session-b", sessionId: "conversation-b" };
-    for (const [scope, reason] of [
-      [sessionA, "first session"],
-      [sessionB, "second session"],
-    ] as const) {
-      await broker.beforeToolCall(
-        {
-          toolName: "onepassword",
-          params: { action: "get", slug: "automatic", reason },
-          toolCallId: "call-1",
-        },
-        { toolName: "onepassword", toolCallId: "call-1", ...scope },
-      );
-    }
-    await expect(
-      broker.get("call-1", { action: "get", slug: "automatic", reason: "first session" }, sessionA),
-    ).resolves.toMatchObject({ slug: "automatic" });
+    await broker.beforeToolCall(
+      {
+        toolName: "onepassword",
+        params: { action: "get", slug: "automatic", reason: "asymmetric contexts" },
+        toolCallId: "call_x|fc_y",
+      },
+      {
+        toolName: "onepassword",
+        toolCallId: "call_x|fc_y",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        sessionId: "hook-run-uuid",
+      },
+    );
     await expect(
       broker.get(
-        "call-1",
-        { action: "get", slug: "automatic", reason: "second session" },
-        sessionB,
+        "call_x|fc_y",
+        { action: "get", slug: "automatic", reason: "asymmetric contexts" },
+        { agentId: "main", sessionKey: "agent:main:main" },
       ),
     ).resolves.toMatchObject({ slug: "automatic" });
-    expect((await audit.entries()).map((entry) => entry.value.sessionKey)).toEqual([
-      "session-a",
-      "session-b",
-    ]);
+    const rows = await audit.entries();
+    expect(rows.map((entry) => entry.value.outcome)).toEqual(["auto"]);
   });
 
   it("authorizes when hook and execute contexts disagree on session fields", async () => {

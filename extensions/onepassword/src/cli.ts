@@ -64,6 +64,7 @@ async function readAuditRows(auditStore: PluginStateKeyedStore<AuditRow>, limit:
       agent: value.agentId,
       slug: value.slug,
       outcome: value.outcome,
+      ...(value.errorCode ? { errorCode: value.errorCode } : {}),
       reason: truncateReason(value.reason),
     }));
 }

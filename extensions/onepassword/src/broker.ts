@@ -231,11 +231,14 @@ export class OnePasswordBroker {
     };
   }
 
-  private pendingKey(
-    context: Pick<AccessContext, "agentId" | "sessionKey" | "sessionId" | "toolCallId">,
-  ): string {
-    const { agentId, sessionKey, sessionId, toolCallId } = context;
-    return JSON.stringify([agentId, sessionKey, sessionId, toolCallId]);
+  // Key pending authorizations by toolCallId only. The hook context
+  // (PluginHookToolContext) and the tool execute context are sourced
+  // independently by core and can disagree on session fields in production;
+  // a multi-field tuple key caused live POLICY_NOT_EVALUATED failures.
+  // toolCallId is provider-unique per call; get() still cross-checks
+  // slug/reason before honoring the entry.
+  private pendingKey(context: Pick<AccessContext, "toolCallId">): string {
+    return context.toolCallId;
   }
 
   private async audit(

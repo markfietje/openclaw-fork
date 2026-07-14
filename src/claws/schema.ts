@@ -1,6 +1,6 @@
 // Strict parser for grouped Claw schema version 1 manifests.
 import { z } from "zod";
-import { parseDurationMs } from "../cli/parse-duration.js";
+import { HeartbeatSchema } from "../config/zod-schema.agent-runtime.js";
 import { computeNextRunAtMs } from "../cron/schedule.js";
 import {
   CLAW_BOOTSTRAP_FILE_NAMES,
@@ -31,14 +31,6 @@ function isSafeRelativePath(value: string): boolean {
 
 const packageRelativePath = nonEmptyString.refine(isSafeRelativePath, {
   message: "Path must be package-relative and must not contain traversal segments.",
-});
-
-const durationString = nonEmptyString.superRefine((value, ctx) => {
-  try {
-    parseDurationMs(value, { defaultUnit: "m" });
-  } catch {
-    ctx.addIssue({ code: "custom", message: "Invalid duration; use ms, s, m, or h." });
-  }
 });
 
 const identitySchema = z
@@ -75,20 +67,7 @@ const agentSchema = z
       })
       .strict()
       .optional(),
-    heartbeat: z
-      .object({
-        every: durationString.optional(),
-        activeHours: z
-          .object({ start: optionalString, end: optionalString, timezone: optionalString })
-          .strict()
-          .optional(),
-        lightContext: z.boolean().optional(),
-        isolatedSession: z.boolean().optional(),
-        skipWhenBusy: z.boolean().optional(),
-        timeoutSeconds: z.number().int().positive().optional(),
-      })
-      .strict()
-      .optional(),
+    heartbeat: HeartbeatSchema,
     humanDelay: z
       .object({
         mode: z.enum(["off", "natural", "custom"]).optional(),

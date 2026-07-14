@@ -66,9 +66,7 @@ async function writePackage(): Promise<{ root: string; workspace: string }> {
       workspace: {
         bootstrapFiles: { "AGENTS.md": { source: "workspace/AGENTS.md" } },
       },
-      packages: [
-        { kind: "skill", source: "clawhub", ref: "@acme/demo-skill", version: "1.0.0" },
-      ],
+      packages: [{ kind: "skill", source: "clawhub", ref: "@acme/demo-skill", version: "1.0.0" }],
     }),
     "utf8",
   );
@@ -142,9 +140,9 @@ describe("claws cli", () => {
       stability: "experimental",
       claw: { kind: "package", name: "@acme/demo-agent", version: "1.2.3" },
       agent: { finalId: "demo-agent", workspace },
-      summary: { agentActions: 1, workspaceActions: 2, packageActions: 1, blockedActions: 0 },
+      summary: { agentActions: 1, workspaceActions: 2, packageActions: 1, blockedActions: 1 },
     });
-    expect(mocks.runtime.exit).not.toHaveBeenCalled();
+    expect(mocks.runtime.exit).toHaveBeenCalledWith(1);
   });
 
   it("blocks adding into an existing agent instead of merging", async () => {
@@ -154,7 +152,9 @@ describe("claws cli", () => {
     await runCli(["claws", "add", root, "--dry-run", "--workspace", workspace, "--json"]);
 
     const payload = JSON.parse(mocks.logs[0] ?? "{}");
-    expect(payload.blockers).toContainEqual(expect.objectContaining({ code: "agent_id_collision" }));
+    expect(payload.blockers).toContainEqual(
+      expect.objectContaining({ code: "agent_id_collision" }),
+    );
     expect(mocks.runtime.exit).toHaveBeenCalledWith(1);
   });
 
@@ -178,7 +178,7 @@ describe("claws cli", () => {
       requestedId: "demo-agent",
       finalId: "demo-agent-two",
     });
-    expect(mocks.runtime.exit).not.toHaveBeenCalled();
+    expect(mocks.runtime.exit).toHaveBeenCalledWith(1);
   });
 
   it("fails closed when add is invoked without dry-run", async () => {

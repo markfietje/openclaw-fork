@@ -21,12 +21,18 @@ type StatusFooterActivity = {
   runId?: string;
 };
 
+type PendingStrip = Pick<StatusFooterRecord, "messageId" | "textWithoutFooter" | "edit">;
+
 const records = new Map<string, StatusFooterRecord>();
 const activities = new Map<string, StatusFooterActivity>();
 const runStartedAt = new Map<string, number>();
 const chains = new Map<string, Promise<void>>();
 const pendingConversationCountsByRun = new Map<string, Map<string, number>>();
 const terminalRuns = new Set<string>();
+// Failed strip edits get one deferred retry (next relocation or finalize), then drop.
+// Without it a transient edit failure leaves a stale "Working" line on the platform forever.
+const pendingStrips = new Map<string, PendingStrip[]>();
+const MAX_PENDING_STRIPS = 2;
 
 export function createStatusFooterConversationKey(
   channel: string,
@@ -55,14 +61,20 @@ export function noteStatusFooterRunStarted(runId: string, startedAt: number): vo
 
 function normalizeActivity(line: string): string {
   const normalized = line.replace(/\s+/g, " ").trim();
-  if (normalized.length <= MAX_ACTIVITY_CHARS) {
+  // Truncate on code points, not UTF-16 units: a hard cut inside a surrogate
+  // pair renders as replacement garbage and some transports reject it.
+  const points = Array.from(normalized);
+  if (points.length <= MAX_ACTIVITY_CHARS) {
     return normalized;
   }
   const contentLimit = MAX_ACTIVITY_CHARS - 1;
-  const candidate = normalized.slice(0, contentLimit + 1);
+  const candidate = points.slice(0, contentLimit + 1).join("");
   const wordBoundary = candidate.lastIndexOf(" ");
-  const end = wordBoundary >= Math.floor(contentLimit * 0.6) ? wordBoundary : contentLimit;
-  return `${normalized.slice(0, end).trimEnd()}…`;
+  const base =
+    wordBoundary >= Math.floor(candidate.length * 0.6)
+      ? candidate.slice(0, wordBoundary)
+      : points.slice(0, contentLimit).join("");
+  return `${base.trimEnd()}…`;
 }
 
 export function noteActivity(conversationKey: string, line: string, runId?: string): void {
@@ -114,22 +126,53 @@ function enqueue<T>(conversationKey: string, operation: () => Promise<T>): Promi
   return result;
 }
 
+async function attemptStrip(
+  conversationKey: string,
+  strip: PendingStrip,
+  retryOnFailure: boolean,
+): Promise<void> {
+  try {
+    await strip.edit(strip.messageId, strip.textWithoutFooter);
+  } catch (error) {
+    log.debug("status footer strip failed", {
+      conversationKey,
+      messageId: strip.messageId,
+      error: String(error),
+    });
+    if (retryOnFailure) {
+      const queued = pendingStrips.get(conversationKey) ?? [];
+      if (queued.length < MAX_PENDING_STRIPS) {
+        queued.push({
+          messageId: strip.messageId,
+          textWithoutFooter: strip.textWithoutFooter,
+          edit: strip.edit,
+        });
+        pendingStrips.set(conversationKey, queued);
+      }
+    }
+  }
+}
+
+async function flushPendingStrips(conversationKey: string): Promise<void> {
+  const queued = pendingStrips.get(conversationKey);
+  if (!queued?.length) {
+    return;
+  }
+  // One retry each, then gone for good: never leaves an unbounded retry loop behind.
+  pendingStrips.delete(conversationKey);
+  for (const strip of queued) {
+    await attemptStrip(conversationKey, strip, false);
+  }
+}
+
 async function stripRecord(conversationKey: string, runId?: string): Promise<void> {
   const record = records.get(conversationKey);
   if (!record || (runId && record.runId && record.runId !== runId)) {
     return;
   }
-  // Delete first: an edit failure may leave one stale line, but never poisons later relocation.
+  // Delete first so relocation is never blocked; a failed edit is parked for one retry.
   records.delete(conversationKey);
-  try {
-    await record.edit(record.messageId, record.textWithoutFooter);
-  } catch (error) {
-    log.debug("status footer strip failed", {
-      conversationKey,
-      messageId: record.messageId,
-      error: String(error),
-    });
-  }
+  await attemptStrip(conversationKey, record, true);
 }
 
 export async function decorateIntermediate<T>(params: {
@@ -159,7 +202,7 @@ export async function decorateIntermediate<T>(params: {
   }
   try {
     return await enqueue(params.conversationKey, async () => {
-      await stripRecord(params.conversationKey);
+      await flushPendingStrips(params.conversationKey);
       const footerText = renderFooter({
         conversationKey: params.conversationKey,
         mode,
@@ -167,7 +210,10 @@ export async function decorateIntermediate<T>(params: {
         now: (params.now ?? Date.now)(),
         escapeHtml: params.escapeHtml === true,
       });
+      // Send first, strip after: a failed replacement send must not cost the
+      // previous message its footer. The ms-scale two-footer window is fine.
       const result = await params.send(`${params.textWithoutFooter}\n\n${footerText}`);
+      await stripRecord(params.conversationKey);
       const messageId = params.getMessageId(result);
       if (messageId) {
         // Exact rendered text is the edit source of truth; regex stripping would risk user content.
@@ -204,6 +250,7 @@ export async function stripPrevious(conversationKey: string, runId?: string): Pr
 
 export async function finalize(conversationKey: string, runId?: string): Promise<void> {
   await enqueue(conversationKey, async () => {
+    await flushPendingStrips(conversationKey);
     await stripRecord(conversationKey, runId);
     const activity = activities.get(conversationKey);
     if (!runId || !activity?.runId || activity.runId === runId) {
@@ -251,4 +298,5 @@ export function resetStatusFooterStateForTest(): void {
   chains.clear();
   pendingConversationCountsByRun.clear();
   terminalRuns.clear();
+  pendingStrips.clear();
 }

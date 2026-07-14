@@ -135,14 +135,54 @@ describe("status footer", () => {
     expect(fallback.text).toContain("▸ Working · 0s");
   });
 
-  it("swallows edit failures and drops the stale record", async () => {
+  it("retries a failed strip once on the next flush, then drops it", async () => {
+    const transport = createTransport();
+    const first = await sendIntermediate({ transport, text: "first" });
+    transport.edit.mockRejectedValueOnce(new Error("edit failed"));
+
+    const second = await sendIntermediate({ transport, text: "second" });
+    expect(transport.messages.get(first.id)).toContain("▸ Working");
+
+    await finalize("telegram:chat-1");
+    expect(transport.messages.get(first.id)).toBe("first");
+    expect(transport.messages.get(second.id)).toBe("second");
+    // failed strip + finalize retry + second-message strip
+    expect(transport.edit).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops a strip permanently after its single retry also fails", async () => {
     const transport = createTransport();
     await sendIntermediate({ transport, text: "first" });
     transport.edit.mockRejectedValueOnce(new Error("edit failed"));
+    await sendIntermediate({ transport, text: "second" });
+    transport.edit.mockRejectedValueOnce(new Error("retry failed"));
 
-    await expect(sendIntermediate({ transport, text: "second" })).resolves.toBeDefined();
     await finalize("telegram:chat-1");
-    expect(transport.edit).toHaveBeenCalledTimes(2);
+    const editCallsAfterFinalize = transport.edit.mock.calls.length;
+    await finalize("telegram:chat-1");
+    expect(transport.edit.mock.calls.length).toBe(editCallsAfterFinalize);
+  });
+
+  it("keeps the previous footer when a replacement send fails", async () => {
+    const transport = createTransport();
+    const first = await sendIntermediate({ transport, text: "first" });
+    transport.send.mockRejectedValueOnce(new Error("send failed"));
+
+    await expect(sendIntermediate({ transport, text: "second" })).rejects.toThrow("send failed");
+    expect(transport.messages.get(first.id)).toContain("▸ Working");
+    expect(transport.edit).not.toHaveBeenCalled();
+
+    await finalize("telegram:chat-1");
+    expect(transport.messages.get(first.id)).toBe("first");
+  });
+
+  it("truncates emoji-heavy activity without splitting surrogate pairs", async () => {
+    const transport = createTransport();
+    noteActivity("telegram:chat-1", "🧪".repeat(80));
+
+    const sent = await sendIntermediate({ transport, text: "emoji" });
+    expect(sent.text.isWellFormed()).toBe(true);
+    expect(sent.text).toContain("…");
   });
 
   it("serializes rapid intermediate relocation", async () => {

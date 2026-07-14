@@ -75,10 +75,11 @@ describe("claws lifecycle cli e2e", () => {
     });
   });
 
-  it("builds a complete read-only add plan for one new agent", async () => {
-    const add = parseJson(
-      (await runOpenClaw(["claws", "add", manifestPath, "--dry-run", "--json"])).stdout,
-    );
+  it("fails closed in dry-run when package preflight is not available", async () => {
+    const result = await runOpenClaw(["claws", "add", manifestPath, "--dry-run", "--json"], {
+      expectFailure: true,
+    });
+    const add = parseJson(result.stdout);
 
     expect(add).toMatchObject({
       schemaVersion: "openclaw.clawAddPlan.v1",
@@ -93,9 +94,11 @@ describe("claws lifecycle cli e2e", () => {
         packageActions: 2,
         mcpServerActions: 1,
         cronJobActions: 1,
-        blockedActions: 0,
+        blockedActions: 2,
       },
-      blockers: [],
+      blockers: expect.arrayContaining([
+        expect.objectContaining({ code: "package_install_unavailable" }),
+      ]),
     });
   });
 
@@ -134,9 +137,10 @@ describe("claws lifecycle cli e2e", () => {
 
     expect(result.code).toBe(1);
     expect(parseJson(result.stdout)).toMatchObject({
-      schemaVersion: "openclaw.clawAddResult.v1",
-      status: "failed",
-      error: { code: "unsupported_components" },
+      schemaVersion: "openclaw.clawAddPlan.v1",
+      blockers: expect.arrayContaining([
+        expect.objectContaining({ code: "package_install_unavailable" }),
+      ]),
     });
   });
 

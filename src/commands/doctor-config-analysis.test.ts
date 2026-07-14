@@ -48,6 +48,22 @@ describe("doctor config analysis helpers", () => {
     expect((result.config as Record<string, unknown>).hooks).toStrictEqual({});
   });
 
+  it("preserves plugin-owned channel keys for plugin doctor migrations", () => {
+    const config = {
+      channels: {
+        signal: {
+          apiMode: "auto",
+          httpUrl: "http://signal:8080",
+        },
+      },
+    } as never;
+
+    const result = stripUnknownConfigKeys(config);
+
+    expect(result.config).toBe(config);
+    expect(result.removed).toEqual([]);
+  });
+
   it("preserves user-authored model and agent metadata during unknown-key cleanup", () => {
     const result = stripUnknownConfigKeys({
       defaultModel: "minimax/MiniMax-M2.7",

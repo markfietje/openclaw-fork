@@ -82,7 +82,7 @@ describe("browser navigation guard", () => {
     ).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);
   });
 
-  it("allows blocked hostnames when explicitly allowed", async () => {
+  it("blocks explicitly allowed hostnames that resolve to loopback", async () => {
     const lookupFn = createLookupFn("127.0.0.1");
     await expect(
       assertBrowserNavigationAllowed({
@@ -92,7 +92,7 @@ describe("browser navigation guard", () => {
         },
         lookupFn,
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toBeInstanceOf(SsrFBlockedError);
     expect(lookupFn).toHaveBeenCalledWith("agent.internal", { all: true });
   });
 

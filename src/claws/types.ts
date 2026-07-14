@@ -3,7 +3,6 @@
 export const CLAW_SCHEMA_VERSION = 1 as const;
 export const CLAW_ADD_PLAN_SCHEMA_VERSION = "openclaw.clawAddPlan.v1" as const;
 export const CLAW_INSPECT_RESULT_SCHEMA_VERSION = "openclaw.clawInspect.v1" as const;
-export const CLAW_FEED_SCHEMA_VERSION = "openclaw.clawFeed.v1" as const;
 export const CLAW_OUTPUT_STABILITY = "experimental" as const;
 
 export type ClawDiagnosticLevel = "error" | "warning";
@@ -189,47 +188,3 @@ export type ClawAddPlan = {
   blockers: ClawDiagnostic[];
   diagnostics: ClawDiagnostic[];
 };
-
-export type ClawFeedOwner = {
-  type: "publisher" | "clawhub" | "local";
-  id: string;
-};
-
-export type ClawFeedTrustLevel = "unknown" | "source" | "verified";
-
-export type ClawFeedEntry = {
-  id: string;
-  name: string;
-  version: string;
-  source: string;
-  publisher?: string;
-  description?: string;
-  owner?: ClawFeedOwner;
-  trust?: { level: ClawFeedTrustLevel };
-};
-
-export type ClawFeed = {
-  schemaVersion: typeof CLAW_FEED_SCHEMA_VERSION;
-  id: string;
-  name: string;
-  publisher?: string;
-  description?: string;
-  generatedAt?: string;
-  entries: ClawFeedEntry[];
-};
-
-export type ClawFeedReadResult =
-  | { ok: true; feed: ClawFeed; diagnostics: ClawDiagnostic[] }
-  | { ok: false; diagnostics: ClawDiagnostic[] };
-
-export type ClawFeedManifestReadResult =
-  | {
-      ok: true;
-      feed: ClawFeed;
-      entry: ClawFeedEntry;
-      manifest: ClawManifest;
-      source: ClawSourceIdentity;
-      manifestPath: string;
-      diagnostics: ClawDiagnostic[];
-    }
-  | { ok: false; diagnostics: ClawDiagnostic[] };

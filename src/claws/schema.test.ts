@@ -364,7 +364,7 @@ describe("buildClawAddPlan", () => {
         packageActions: 2,
         mcpServerActions: 1,
         cronJobActions: 1,
-        blockedActions: 0,
+        blockedActions: 2,
       },
     });
     expect(plan.actions).toContainEqual(
@@ -400,10 +400,12 @@ describe("buildClawAddPlan", () => {
     expect(plan.blockers.map((item) => item.code)).toEqual([
       "agent_id_collision",
       "workspace_collision",
+      "package_install_unavailable",
+      "package_install_unavailable",
       "mcp_server_collision",
       "cron_job_collision",
     ]);
-    expect(plan.summary.blockedActions).toBe(6);
+    expect(plan.summary.blockedActions).toBe(8);
   });
 
   it("uses an explicit unused agent id for every derived action", async () => {

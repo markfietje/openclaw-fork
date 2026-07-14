@@ -3,6 +3,15 @@ import { describe, expect, it } from "vitest";
 import { telegramPlugin } from "./channel.js";
 
 describe("telegram session route", () => {
+  it("declares reserved session literals as non-destination targets", () => {
+    expect(telegramPlugin.messaging?.targetResolver?.reservedLiterals).toEqual([
+      "current",
+      "self",
+      "this",
+      "me",
+    ]);
+  });
+
   it("scopes direct topic session suffixes by chat id", async () => {
     const route = await telegramPlugin.messaging?.resolveOutboundSessionRoute?.({
       cfg: {},

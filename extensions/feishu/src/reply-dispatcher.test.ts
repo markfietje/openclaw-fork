@@ -222,7 +222,8 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   }
 
   function createRuntimeLogger() {
-    return { log: vi.fn(), error: vi.fn() } as never;
+    const runtime = { log: vi.fn(), error: vi.fn() };
+    return runtime as typeof runtime & ReplyDispatcherArgs["runtime"];
   }
 
   function createDispatcherHarness(overrides: Partial<ReplyDispatcherArgs> = {}) {

@@ -11,7 +11,7 @@ import {
 import type { PackageUpdateStepResult, PackageUpdateStepRunner } from "./package-update-types.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
 
-const NPM_PACK_QUIET_FLAGS = ["--json", "--loglevel=error"] as const;
+const NPM_PACK_FLAGS = ["--ignore-scripts", "--json", "--loglevel=error"] as const;
 
 async function findPackedTarball(packDir: string): Promise<string | null> {
   const entries = await fs.readdir(packDir).catch((): string[] => []);
@@ -80,7 +80,7 @@ export async function preparePackedPackageInstallSpec(params: {
       ...sourceAccessArgs,
       "--pack-destination",
       packDir,
-      ...NPM_PACK_QUIET_FLAGS,
+      ...NPM_PACK_FLAGS,
     ],
     cwd: params.installCwd,
     env: params.env,

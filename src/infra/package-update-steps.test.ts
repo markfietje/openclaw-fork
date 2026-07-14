@@ -509,6 +509,7 @@ describe("runGlobalPackageUpdateSteps", () => {
             "--allow-git=all",
             "--pack-destination",
             expect.any(String),
+            "--ignore-scripts",
             "--json",
             "--loglevel=error",
           ]);
@@ -614,6 +615,7 @@ describe("runGlobalPackageUpdateSteps", () => {
         if (name === "global update pack") {
           expect(argv.slice(0, 3)).toEqual(["npm", "pack", sourceDir]);
           expect(argv).not.toContain("--allow-git=all");
+          expect(argv).toContain("--ignore-scripts");
           const pathEnv = env?.PATH ?? env?.Path ?? "";
           expect(pathEnv.split(path.delimiter)[0]).toBe("/service");
           const destination = argv[argv.indexOf("--pack-destination") + 1];
@@ -746,6 +748,7 @@ describe("runGlobalPackageUpdateSteps", () => {
               sourceSpec,
               "--allow-git=all",
             ]);
+            expect(argv).toContain("--ignore-scripts");
             tarball = path.join(destination, "openclaw-2.0.0.tgz");
             await fs.writeFile(tarball, "packed\n", "utf8");
             return {

@@ -114,7 +114,26 @@ const MatrixConfigSchema = z.object({
   name: z.string().optional(),
   enabled: z.boolean().optional(),
   defaultAccount: z.string().optional(),
-  accounts: z.record(z.string(), z.unknown()).optional(),
+  // Accounts stay schema-open, but retired scalar streaming must fail loudly
+  // instead of silently resolving to "off"; doctor migrates the old spelling.
+  accounts: z
+    .record(
+      z.string(),
+      z
+        .unknown()
+        .refine(
+          (account) =>
+            typeof account !== "object" ||
+            account === null ||
+            !("streaming" in account) ||
+            typeof (account as { streaming?: unknown }).streaming === "object",
+          {
+            message:
+              'scalar "streaming" values are no longer supported; use streaming.mode and run "openclaw doctor --fix"',
+          },
+        ),
+    )
+    .optional(),
   markdown: MarkdownConfigSchema,
   homeserver: z.string().optional(),
   network: matrixNetworkSchema,

@@ -141,4 +141,28 @@ describe("MatrixConfigSchema SecretInput", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it.each([
+    ["boolean", true],
+    ["mode string", "progress"],
+  ])("rejects retired scalar account streaming (%s) with a doctor pointer", (_name, scalar) => {
+    const result = MatrixConfigSchema.safeParse({
+      homeserver: "https://matrix.example.org",
+      accessToken: "token",
+      accounts: { work: { streaming: scalar } },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.error.issues)).toContain("doctor --fix");
+    }
+  });
+
+  it("keeps schema-open account entries with nested streaming objects", () => {
+    const result = MatrixConfigSchema.safeParse({
+      homeserver: "https://matrix.example.org",
+      accessToken: "token",
+      accounts: { work: { streaming: { mode: "progress" }, customField: 1 } },
+    });
+    expect(result.success).toBe(true);
+  });
 });

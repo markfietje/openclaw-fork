@@ -182,17 +182,48 @@ async function readPackedCandidatePackageContract(tarballPath: string): Promise<
   };
 }
 
-function validateCandidateNodeEngine(
-  contract: CandidatePackageContract,
+async function runPackedPackageContractGuard(params: {
+  tarballPath: string;
+  runtimeVersion: string | null;
+  name: string;
+  validate: (packed: Awaited<ReturnType<typeof readPackedCandidatePackageContract>>) => void;
+}): Promise<PackageUpdateStepResult> {
+  const startedAt = Date.now();
+  try {
+    const packed = await readPackedCandidatePackageContract(params.tarballPath);
+    params.validate(packed);
+    return {
+      name: params.name,
+      command: `validate ${params.tarballPath} ${PACKED_PACKAGE_MANIFEST_PATH} engines.node`,
+      cwd: path.dirname(params.tarballPath),
+      durationMs: Date.now() - startedAt,
+      exitCode: 0,
+      stdoutTail: `validated Node ${params.runtimeVersion} against ${packed.contract.nodeEngine}`,
+      stderrTail: null,
+    };
+  } catch (error) {
+    return {
+      name: params.name,
+      command: `validate ${params.tarballPath} ${PACKED_PACKAGE_MANIFEST_PATH} engines.node`,
+      cwd: path.dirname(params.tarballPath),
+      durationMs: Date.now() - startedAt,
+      exitCode: 1,
+      stdoutTail: null,
+      stderrTail: formatErrorMessage(error),
+    };
+  }
+}
+
+export function validatePackageNodeEngine(
+  nodeEngine: string | null,
   runtimeVersion: string | null,
 ): void {
-  const engine = contract.nodeEngine;
-  const satisfied = nodeVersionSatisfiesEngine(runtimeVersion, engine);
+  const satisfied = nodeVersionSatisfiesEngine(runtimeVersion, nodeEngine);
   if (satisfied === true) {
     return;
   }
-  const requirement = engine
-    ? `this OpenClaw release requires Node ${engine}`
+  const requirement = nodeEngine
+    ? `this OpenClaw release requires Node ${nodeEngine}`
     : "could not read this OpenClaw release's Node requirement";
   throw new Error(
     `${requirement}; detected Node ${runtimeVersion ?? "missing"}. Upgrade Node, then retry the OpenClaw update.`,
@@ -209,7 +240,7 @@ function validateCandidatePackageContract(params: {
   if (!params.hasGuard) {
     throw new Error("candidate package is missing its package install guard");
   }
-  validateCandidateNodeEngine(params.contract, params.runtimeVersion);
+  validatePackageNodeEngine(params.contract.nodeEngine, params.runtimeVersion);
   for (const [lifecycleName, expected] of Object.entries(PACKAGE_LIFECYCLE_CONTRACT)) {
     const actual = params.contract[lifecycleName as keyof typeof PACKAGE_LIFECYCLE_CONTRACT];
     if (actual !== expected) {
@@ -272,36 +303,20 @@ export async function runPackedPackageRuntimeGuard(
   runtimeVersion: string | null,
   name = "global install runtime guard",
 ): Promise<PackageUpdateStepResult> {
-  const startedAt = Date.now();
-  try {
-    const packed = await readPackedCandidatePackageContract(tarballPath);
-    validateCandidatePackageContract({
-      contract: packed.contract,
-      runtimeVersion,
-      hasGuard: packed.hasGuard,
-      hasPreinstall: packed.hasPreinstall,
-      hasPostinstall: packed.hasPostinstall,
-    });
-    return {
-      name,
-      command: `validate ${tarballPath} ${PACKED_PACKAGE_MANIFEST_PATH} engines.node`,
-      cwd: path.dirname(tarballPath),
-      durationMs: Date.now() - startedAt,
-      exitCode: 0,
-      stdoutTail: `validated Node ${runtimeVersion} against ${packed.contract.nodeEngine}`,
-      stderrTail: null,
-    };
-  } catch (error) {
-    return {
-      name,
-      command: `validate ${tarballPath} ${PACKED_PACKAGE_MANIFEST_PATH} engines.node`,
-      cwd: path.dirname(tarballPath),
-      durationMs: Date.now() - startedAt,
-      exitCode: 1,
-      stdoutTail: null,
-      stderrTail: formatErrorMessage(error),
-    };
-  }
+  return runPackedPackageContractGuard({
+    tarballPath,
+    runtimeVersion,
+    name,
+    validate: (packed) => {
+      validateCandidatePackageContract({
+        contract: packed.contract,
+        runtimeVersion,
+        hasGuard: packed.hasGuard,
+        hasPreinstall: packed.hasPreinstall,
+        hasPostinstall: packed.hasPostinstall,
+      });
+    },
+  });
 }
 
 /** Validates a trusted source checkout against the runtime that will launch the updated service. */
@@ -313,7 +328,7 @@ export async function runPackageSourceRuntimeGuard(
   const startedAt = Date.now();
   try {
     const contract = await readCandidatePackageContract(packageRoot);
-    validateCandidateNodeEngine(contract, runtimeVersion);
+    validatePackageNodeEngine(contract.nodeEngine, runtimeVersion);
     return {
       name,
       command: `validate ${path.join(packageRoot, "package.json")} engines.node`,

@@ -17,6 +17,7 @@ import type { OpenClawConfig, ConfigFileSnapshot } from "../config/types.opencla
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import { GATEWAY_SERVICE_RUNTIME_PID_ENV } from "../daemon/constants.js";
 import type { ClawHubRiskAcknowledgementRequest } from "../infra/clawhub-install-trust.js";
+import { pinGitPackageInstallSpec } from "../infra/package-manager-install-policy.js";
 import { isBetaTag } from "../infra/update-channels.js";
 import {
   createDeferredConfiguredPluginRepairDoctorResult,
@@ -79,6 +80,7 @@ const restartHealthTestControl = vi.hoisted(() => ({
   snapshot: undefined as unknown,
 }));
 const nodeVersionSatisfiesEngine = vi.fn();
+const TEST_GIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const execFile = vi.fn((...args: unknown[]) => {
   const callback = args.at(-1);
   if (typeof callback === "function") {
@@ -156,6 +158,18 @@ async function maybeWritePackedPackageCandidate(
     await writePackedPackageCandidate(destination, version);
   }
   return true;
+}
+
+function maybeResolvePackageSourceMetadata(argv: string[]): string | null {
+  if (!isNpmCommand(argv) || argv[1] !== "view" || !argv.includes("_resolved")) {
+    return null;
+  }
+  return JSON.stringify([
+    {
+      "engines.node": ">=0.0.0",
+      _resolved: `git+https://github.com/openclaw/openclaw.git#${TEST_GIT_COMMIT}`,
+    },
+  ]);
 }
 
 async function maybeWriteInstalledPackageGuard(argv: string[], packageRoot: string): Promise<void> {
@@ -606,8 +620,13 @@ describe("update-cli", () => {
   const packageInstallCommandCall = () =>
     commandCalls().find(([argv]) => isNpmCommand(argv) && argv[1] === "i" && argv[2] === "-g");
 
-  const packagePackCommandCall = () =>
-    commandCalls().find(([argv]) => isNpmCommand(argv) && argv[1] === "pack");
+  const packagePackCommandCalls = () =>
+    commandCalls().filter(([argv]) => isNpmCommand(argv) && argv[1] === "pack");
+
+  const packagePackCommandCall = () => packagePackCommandCalls()[0];
+
+  const packageSourceMetadataCommandCall = () =>
+    commandCalls().find(([argv]) => isNpmCommand(argv) && argv[1] === "view");
 
   const stripOpenClawPackageAlias = (spec: string) => {
     const trimmed = spec.trim();
@@ -759,22 +778,53 @@ describe("update-cli", () => {
 
   const expectPackageInstallSpec = (spec: string) => {
     expect(runGatewayUpdate).not.toHaveBeenCalled();
-    const packCall = packagePackCommandCall();
-    const packSourceAccess = isNpmGitPackageSpec(spec)
+    const packCalls = packagePackCommandCalls();
+    const isGitSource = isNpmGitPackageSpec(spec);
+    const packedSpec = isGitSource
+      ? pinGitPackageInstallSpec("openclaw", spec, TEST_GIT_COMMIT)
+      : spec;
+    const packSourceAccess = isGitSource
       ? ["--allow-git=all"]
       : /^https?:\/\//iu.test(spec)
         ? ["--allow-remote=root"]
         : [];
-    expect(packCall?.[0]).toEqual([
+    const metadataCall = packageSourceMetadataCommandCall();
+    if (isGitSource) {
+      expect(metadataCall?.[0]).toEqual([
+        expect.stringMatching(/npm(?:\.cmd)?$/iu),
+        "view",
+        spec,
+        "engines.node",
+        "_resolved",
+        "--allow-git=root",
+        "--ignore-scripts",
+        "--json",
+        "--loglevel=error",
+      ]);
+    } else {
+      expect(metadataCall).toBeUndefined();
+    }
+    expect(packCalls).toHaveLength(1);
+    expect(packCalls[0]?.[0]).toEqual([
       expect.stringMatching(/npm(?:\.cmd)?$/iu),
       "pack",
-      spec,
+      packedSpec,
       ...packSourceAccess,
       "--pack-destination",
       expect.any(String),
+      isGitSource ? "--ignore-scripts=false" : "--ignore-scripts",
       "--json",
       "--loglevel=error",
     ]);
+    const sourceCalls = metadataCall ? [metadataCall, ...packCalls] : packCalls;
+    for (const [, options] of sourceCalls) {
+      const env = options.env as NodeJS.ProcessEnv | undefined;
+      expect(
+        env?.npm_config_min_release_age === "0" ||
+          (typeof env?.npm_config_before === "string" && env.npm_config_before.length > 0),
+      ).toBe(true);
+    }
+    const packCall = packCalls[0];
     const packDestinationIndex = packCall?.[0].indexOf("--pack-destination") ?? -1;
     const packDir = packCall?.[0][packDestinationIndex + 1];
     if (!packDir) {
@@ -1006,7 +1056,7 @@ describe("update-cli", () => {
     vi.mocked(runCommandWithTimeout).mockImplementation(async (argv) => {
       await maybeWritePackedPackageCandidate(argv);
       return {
-        stdout: "",
+        stdout: maybeResolvePackageSourceMetadata(argv) ?? "",
         stderr: "",
         code: 0,
         signal: null,

@@ -34,6 +34,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 type CommandResponse = { stdout?: string; stderr?: string; code?: number | null };
 type CommandResult = { stdout: string; stderr: string; code: number | null };
 const TELEGRAM_RUNTIME_API = bundledDistPluginFile("telegram", "runtime-api.js");
+const TEST_GIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const fixtureRootTracker = createSuiteTempRootTracker({ prefix: "openclaw-update-" });
 
 function toCommandResult(response?: CommandResponse): CommandResult {
@@ -2765,6 +2766,16 @@ describe("runGatewayUpdate", () => {
         }
         return { stdout: "", stderr: "", code: 1 };
       }
+      if (isNpmCommand(argv[0]) && argv[1] === "view") {
+        return {
+          stdout: JSON.stringify({
+            "engines.node": ">=0.0.0",
+            _resolved: `git+https://github.com/openclaw/openclaw.git#${TEST_GIT_COMMIT}`,
+          }),
+          stderr: "",
+          code: 0,
+        };
+      }
       if (isNpmCommand(argv[0]) && argv[1] === "pack") {
         const destination = argv[argv.indexOf("--pack-destination") + 1];
         if (!destination) {
@@ -2846,6 +2857,7 @@ describe("runGatewayUpdate", () => {
 
   it("updates global npm installs from the GitHub main package spec", async () => {
     const sourceSpec = "github:openclaw/openclaw#main";
+    const pinnedSourceSpec = `github:openclaw/openclaw#${TEST_GIT_COMMIT}`;
     const { calls, result } = await runNpmGlobalUpdateCase({
       expectedInstallCommand: (argv) =>
         argv[0] === "npm" &&
@@ -2860,13 +2872,15 @@ describe("runGatewayUpdate", () => {
 
     expect(result.status).toBe("ok");
     expect(result.mode).toBe("npm");
+    expect(result.steps.map((step) => step.name)).toContain("global update source metadata");
     expect(result.steps.map((step) => step.name)).toContain("global update pack");
     expect(
       calls.some((call) => {
         const argv = call.split(" ");
         return (
           isNpmCommand(argv[0]) &&
-          argv.slice(1, 4).join(" ") === `pack ${sourceSpec} --allow-git=all` &&
+          argv.slice(1, 4).join(" ") === `pack ${pinnedSourceSpec} --allow-git=all` &&
+          argv.includes("--ignore-scripts=false") &&
           argv.includes("--pack-destination")
         );
       }),

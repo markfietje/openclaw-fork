@@ -162,12 +162,16 @@ When `openclaw update` manages a global npm install, it installs the
 candidate with dependency lifecycle scripts disabled and validates the
 candidate's packaged Node engine guard before activation. An update that needs
 a newer Node runtime therefore fails without replacing the working install.
-OpenClaw then runs its own packaged postinstall explicitly with the selected
-Node runtime. npm uses a temporary prefix, verifies the packaged `dist`
-inventory, and swaps the clean package tree into the real global prefix —
-avoiding npm overlaying a new package onto stale files from the old one. If the
-install command fails, OpenClaw retries once with `--omit=optional`, which
-helps hosts where native optional dependencies cannot compile.
+For Git and local-directory npm targets, OpenClaw first reads source metadata
+without lifecycle scripts and checks its Node requirement; only compatible
+sources run their normal pack lifecycle. Git sources are pinned to the exact
+commit resolved during that metadata check. OpenClaw then runs its own packaged
+postinstall explicitly with the selected Node runtime. npm uses a temporary
+prefix, verifies the packaged `dist` inventory, and swaps the clean package tree
+into the real global prefix — avoiding npm overlaying a new package onto stale
+files from the old one. If the install command fails, OpenClaw retries once with
+`--omit=optional`, which helps hosts where native optional dependencies cannot
+compile.
 
 OpenClaw-managed npm update and plugin-update commands also clear npm's
 `min-release-age` supply-chain quarantine (or the older `before` config key)

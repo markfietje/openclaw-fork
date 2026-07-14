@@ -10,7 +10,12 @@ import {
 import { withTempDir } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { readPackageVersion } from "./package-json.js";
+import {
+  npmPackageMetadataInstallSpec,
+  pinGitPackageInstallSpec,
+} from "./package-manager-install-policy.js";
 import { resolvePackageRuntimeNpmCommand } from "./package-runtime-env.js";
+import { preparePackedPackageInstallSpec } from "./package-update-source.js";
 import {
   markPackagePostInstallDoctorAdvisory,
   runGlobalPackageUpdateSteps,
@@ -28,6 +33,8 @@ import {
 type PackageUpdateStepResult = Awaited<
   ReturnType<typeof runGlobalPackageUpdateSteps>
 >["steps"][number];
+const TEST_GIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
+const TEST_GIT_SHA256_COMMIT = `${TEST_GIT_COMMIT}0123456789abcdef01234567`;
 
 function successfulPostinstallStep(params: {
   name: string;
@@ -43,6 +50,31 @@ function successfulPostinstallStep(params: {
     cwd: params.cwd ?? process.cwd(),
     durationMs: 1,
     exitCode: 0,
+  };
+}
+
+function successfulSourceMetadataStep(params: {
+  name: string;
+  argv: string[];
+  cwd?: string;
+  nodeEngine?: string;
+  resolved: string;
+  arrayOutput?: boolean;
+}): PackageUpdateStepResult | null {
+  if (params.name !== "global update source metadata") {
+    return null;
+  }
+  const metadata = {
+    "engines.node": params.nodeEngine ?? ">=0.0.0",
+    _resolved: params.resolved,
+  };
+  return {
+    name: params.name,
+    command: params.argv.join(" "),
+    cwd: params.cwd ?? process.cwd(),
+    durationMs: 1,
+    exitCode: 0,
+    stdoutTail: JSON.stringify(params.arrayOutput === false ? metadata : [metadata]),
   };
 }
 
@@ -97,11 +129,13 @@ async function writePackageRoot(
 async function writePackageTarball(
   packDir: string,
   version: string,
-  nodeEngine = ">=0.0.0",
-  packageName = "openclaw",
+  options: { packageName?: string } = {},
 ): Promise<string> {
   const packedRoot = path.join(packDir, "package");
-  await writePackageRoot(packedRoot, version, { installGuard: true, nodeEngine, packageName });
+  await writePackageRoot(packedRoot, version, {
+    installGuard: true,
+    ...(options.packageName === undefined ? {} : { packageName: options.packageName }),
+  });
   const tarballPath = path.join(packDir, `openclaw-${version}.tgz`);
   await tar.c({ cwd: packDir, file: tarballPath, gzip: true }, ["package"]);
   return tarballPath;
@@ -153,6 +187,68 @@ function createRootRunner(globalRoot: string): CommandRunner {
     throw new Error(`unexpected command: ${argv.join(" ")}`);
   };
 }
+
+describe("npm Git source metadata", () => {
+  it.each([
+    { name: "SHA-1", commit: TEST_GIT_COMMIT },
+    { name: "SHA-256", commit: TEST_GIT_SHA256_COMMIT },
+  ])("peels an exact $name commit before the npm 10 metadata probe", async ({ commit }) => {
+    await withTempDir({ prefix: "openclaw-package-update-exact-git-" }, async (base) => {
+      const sourceSpec = `openclaw@github:openclaw/openclaw#${commit}::path:packages/openclaw`;
+      const metadataSpec = `github:openclaw/openclaw#${commit}^0::path:packages/openclaw`;
+      const pinnedSpec = `github:openclaw/openclaw#${commit}::path:packages/openclaw`;
+      const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+        if (name === "global update source metadata") {
+          expect(argv[2]).toBe(metadataSpec);
+          return {
+            name,
+            command: argv.join(" "),
+            cwd: cwd ?? process.cwd(),
+            durationMs: 1,
+            exitCode: 0,
+            stdoutTail: JSON.stringify({
+              "engines.node": ">=0.0.0",
+              _resolved: `git+https://github.com/openclaw/openclaw.git#${commit}`,
+            }),
+          };
+        }
+        if (name === "global update pack") {
+          expect(argv[2]).toBe(pinnedSpec);
+          const destination = argv[argv.indexOf("--pack-destination") + 1];
+          if (!destination) {
+            throw new Error("missing pack destination");
+          }
+          await writePackageTarball(destination, "2.0.0");
+          return {
+            name,
+            command: argv.join(" "),
+            cwd: cwd ?? process.cwd(),
+            durationMs: 1,
+            exitCode: 0,
+          };
+        }
+        throw new Error(`unexpected step ${name}`);
+      });
+
+      const result = await preparePackedPackageInstallSpec({
+        installTarget: createNpmTarget(path.join(base, "global")),
+        installSpec: sourceSpec,
+        packageName: "openclaw",
+        runStep,
+        timeoutMs: 1000,
+        runtimeVersion: process.version,
+      });
+
+      expect(result.failedStep).toBeNull();
+      expect(result.installSpec).toMatch(/openclaw-2\.0\.0\.tgz$/u);
+      expect(npmPackageMetadataInstallSpec("openclaw", sourceSpec)).toBe(metadataSpec);
+      expect(pinGitPackageInstallSpec("openclaw", sourceSpec, commit)).toBe(pinnedSpec);
+      if (result.packDir) {
+        await fs.rm(result.packDir, { recursive: true, force: true });
+      }
+    });
+  });
+});
 
 describe("markPackagePostInstallDoctorAdvisory", () => {
   it("marks only explicit post-install doctor advisory exits", () => {
@@ -496,20 +592,43 @@ describe("runGlobalPackageUpdateSteps", () => {
       await writePackageRoot(packageRoot, "1.0.0");
 
       let packDir: string | undefined;
+      let finalTarball: string | undefined;
       const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
+        const metadataStep = successfulSourceMetadataStep({
+          name,
+          argv,
+          cwd,
+          resolved: `git+https://github.com/openclaw/openclaw.git#${TEST_GIT_COMMIT}`,
+          arrayOutput: false,
+        });
+        if (metadataStep) {
+          expect(argv).toEqual([
+            resolvePackageRuntimeNpmCommand(process.execPath),
+            "view",
+            sourceSpec,
+            "engines.node",
+            "_resolved",
+            "--allow-git=root",
+            "--ignore-scripts",
+            "--json",
+            "--loglevel=error",
+          ]);
+          return metadataStep;
+        }
         const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
         if (postinstallStep) {
           return postinstallStep;
         }
         if (name === "global update pack") {
+          const pinnedSpec = pinGitPackageInstallSpec("openclaw", sourceSpec, TEST_GIT_COMMIT);
           expect(argv).toEqual([
             resolvePackageRuntimeNpmCommand(process.execPath),
             "pack",
-            sourceSpec,
+            pinnedSpec,
             "--allow-git=all",
             "--pack-destination",
             expect.any(String),
-            "--ignore-scripts",
+            "--ignore-scripts=false",
             "--json",
             "--loglevel=error",
           ]);
@@ -520,7 +639,7 @@ describe("runGlobalPackageUpdateSteps", () => {
             throw new Error("missing pack destination");
           }
           packDir = destination;
-          await fs.writeFile(path.join(destination, "openclaw-2.0.0.tgz"), "packed\n", "utf8");
+          finalTarball = await writePackageTarball(destination, "2.0.0");
           return {
             name,
             command: argv.join(" "),
@@ -534,8 +653,8 @@ describe("runGlobalPackageUpdateSteps", () => {
         }
         const prefixIndex = argv.indexOf("--prefix");
         const stagePrefix = argv[prefixIndex + 1];
-        if (!stagePrefix || !packDir) {
-          throw new Error("missing staged prefix or pack dir");
+        if (!stagePrefix || !packDir || !finalTarball) {
+          throw new Error("missing staged prefix or packed candidate");
         }
         expect(argv).toEqual([
           "npm",
@@ -544,7 +663,7 @@ describe("runGlobalPackageUpdateSteps", () => {
           "--prefix",
           stagePrefix,
           "--ignore-scripts",
-          `openclaw@file:${path.join(packDir, "openclaw-2.0.0.tgz")}`,
+          `openclaw@file:${finalTarball}`,
           "--no-fund",
           "--no-audit",
           "--loglevel=error",
@@ -577,7 +696,12 @@ describe("runGlobalPackageUpdateSteps", () => {
 
       expect(result.failedStep).toBeNull();
       expect(result.afterVersion).toBe("2.0.0");
+      expect(result.steps[0]?.stdoutTail).toBe(
+        "resolved source metadata without running lifecycle scripts",
+      );
       expect(result.steps.map((step) => step.name)).toEqual([
+        "global update source metadata",
+        "global update source runtime guard",
         "global update pack",
         "global update",
         "global install runtime guard",
@@ -588,6 +712,95 @@ describe("runGlobalPackageUpdateSteps", () => {
         throw new Error("expected npm pack directory");
       }
       await expectPathMissing(packDir);
+    });
+  });
+
+  it("rejects mutable npm Git metadata before the source pack lifecycle", async () => {
+    await withTempDir({ prefix: "openclaw-package-update-source-pin-" }, async (base) => {
+      const globalRoot = path.join(base, "prefix", "lib", "node_modules");
+      const packageRoot = path.join(globalRoot, "openclaw");
+      const sourceSpec = "github:openclaw/openclaw#main";
+      await writePackageRoot(packageRoot, "1.0.0");
+
+      const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+        const metadataStep = successfulSourceMetadataStep({
+          name,
+          argv,
+          cwd,
+          resolved: "git+https://github.com/openclaw/openclaw.git#main",
+        });
+        if (!metadataStep) {
+          throw new Error(`unexpected step ${name}`);
+        }
+        return metadataStep;
+      });
+
+      const result = await runGlobalPackageUpdateSteps({
+        installTarget: createNpmTarget(globalRoot),
+        installSpec: sourceSpec,
+        packageName: "openclaw",
+        packageRoot,
+        runCommand: createRootRunner(globalRoot),
+        runStep,
+        timeoutMs: 1000,
+      });
+
+      expect(result.failedStep?.name).toBe("global update source runtime guard");
+      expect(result.failedStep?.stderrTail).toContain("immutable Git commit");
+      expect(result.steps.map((step) => step.name)).toEqual([
+        "global update source metadata",
+        "global update source runtime guard",
+      ]);
+      expect(runStep).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("rejects an npm source before its pack lifecycle when selected Node is unsupported", async () => {
+    await withTempDir({ prefix: "openclaw-package-update-source-guard-" }, async (base) => {
+      const globalRoot = path.join(base, "prefix", "lib", "node_modules");
+      const packageRoot = path.join(globalRoot, "openclaw");
+      const sourceSpec = "github:openclaw/openclaw#main";
+      await writePackageRoot(packageRoot, "1.0.0");
+
+      const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+        const metadataStep = successfulSourceMetadataStep({
+          name,
+          argv,
+          cwd,
+          nodeEngine: ">=24.15.0 <25",
+          resolved: `git+https://github.com/openclaw/openclaw.git#${TEST_GIT_COMMIT}`,
+        });
+        if (!metadataStep) {
+          throw new Error(`unexpected step ${name}`);
+        }
+        expect(argv).toContain("--ignore-scripts");
+        return metadataStep;
+      });
+      const rootRunner = createRootRunner(globalRoot);
+      const runCommand = vi.fn<CommandRunner>(async (argv, options) =>
+        argv[0] === "/service/node" && argv[1] === "--version"
+          ? { stdout: "v24.14.0\n", stderr: "", code: 0 }
+          : await rootRunner(argv, options),
+      );
+
+      const result = await runGlobalPackageUpdateSteps({
+        installTarget: createNpmTarget(globalRoot),
+        installSpec: sourceSpec,
+        packageName: "openclaw",
+        packageRoot,
+        nodePath: "/service/node",
+        runCommand,
+        runStep,
+        timeoutMs: 1000,
+      });
+
+      expect(result.failedStep?.name).toBe("global update source runtime guard");
+      expect(result.failedStep?.stderrTail).toContain("detected Node 24.14.0");
+      expect(result.steps.map((step) => step.name)).toEqual([
+        "global update source metadata",
+        "global update source runtime guard",
+      ]);
+      expect(runStep).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -602,6 +815,25 @@ describe("runGlobalPackageUpdateSteps", () => {
 
       let tarball: string | undefined;
       const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
+        const metadataStep = successfulSourceMetadataStep({
+          name,
+          argv,
+          cwd,
+          resolved: sourceDir,
+        });
+        if (metadataStep) {
+          expect(argv).toEqual([
+            "npm",
+            "view",
+            sourceDir,
+            "engines.node",
+            "_resolved",
+            "--ignore-scripts",
+            "--json",
+            "--loglevel=error",
+          ]);
+          return metadataStep;
+        }
         if (name === "global install postinstall") {
           expect(argv[0]).toBe("/service/node");
           const pathEnv = env?.PATH ?? env?.Path ?? "";
@@ -615,7 +847,7 @@ describe("runGlobalPackageUpdateSteps", () => {
         if (name === "global update pack") {
           expect(argv.slice(0, 3)).toEqual(["npm", "pack", sourceDir]);
           expect(argv).not.toContain("--allow-git=all");
-          expect(argv).toContain("--ignore-scripts");
+          expect(argv).toContain("--ignore-scripts=false");
           const pathEnv = env?.PATH ?? env?.Path ?? "";
           expect(pathEnv.split(path.delimiter)[0]).toBe("/service");
           const destination = argv[argv.indexOf("--pack-destination") + 1];
@@ -669,6 +901,8 @@ describe("runGlobalPackageUpdateSteps", () => {
       expect(result.failedStep).toBeNull();
       expect(result.afterVersion).toBe("2.0.0");
       expect(result.steps.map((step) => step.name)).toEqual([
+        "global update source metadata",
+        "global update source runtime guard",
         "global update pack",
         "global update",
         "global install runtime guard",
@@ -708,6 +942,10 @@ describe("runGlobalPackageUpdateSteps", () => {
       sourceSpec: "openclaw/openclaw#main",
     },
     {
+      name: "GitHub semver with package subdirectory",
+      sourceSpec: "github:openclaw/openclaw#semver:^2026.7.0::path:packages/openclaw",
+    },
+    {
       name: "SCP-style SSH",
       sourceSpec: "git@github.com:openclaw/openclaw.git#main",
     },
@@ -733,6 +971,23 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         let tarball: string | undefined;
         const runStep = vi.fn(async ({ name, argv, cwd }): Promise<PackageUpdateStepResult> => {
+          const metadataStep = successfulSourceMetadataStep({
+            name,
+            argv,
+            cwd,
+            resolved: `git+https://example.invalid/openclaw.git#${TEST_GIT_COMMIT}`,
+          });
+          if (metadataStep) {
+            expect(argv.slice(0, 6)).toEqual([
+              resolvePackageRuntimeNpmCommand(process.execPath),
+              "view",
+              sourceSpec,
+              "engines.node",
+              "_resolved",
+              "--allow-git=root",
+            ]);
+            return metadataStep;
+          }
           const postinstallStep = successfulPostinstallStep({ name, argv, cwd });
           if (postinstallStep) {
             return postinstallStep;
@@ -742,15 +997,15 @@ describe("runGlobalPackageUpdateSteps", () => {
             if (!destination) {
               throw new Error("missing pack destination");
             }
+            const pinnedSpec = pinGitPackageInstallSpec("openclaw", sourceSpec, TEST_GIT_COMMIT);
             expect(argv.slice(0, 4)).toEqual([
               resolvePackageRuntimeNpmCommand(process.execPath),
               "pack",
-              sourceSpec,
+              pinnedSpec,
               "--allow-git=all",
             ]);
-            expect(argv).toContain("--ignore-scripts");
-            tarball = path.join(destination, "openclaw-2.0.0.tgz");
-            await fs.writeFile(tarball, "packed\n", "utf8");
+            expect(argv).toContain("--ignore-scripts=false");
+            tarball = await writePackageTarball(destination, "2.0.0");
             return {
               name,
               command: argv.join(" "),
@@ -792,6 +1047,8 @@ describe("runGlobalPackageUpdateSteps", () => {
 
         expect(result.failedStep).toBeNull();
         expect(result.steps.map((step) => step.name)).toEqual([
+          "global update source metadata",
+          "global update source runtime guard",
           "global update pack",
           "global update",
           "global install runtime guard",
@@ -827,7 +1084,9 @@ describe("runGlobalPackageUpdateSteps", () => {
           if (!destination) {
             throw new Error("missing pack destination");
           }
-          tarball = await writePackageTarball(destination, "2.0.0", ">=0.0.0", "@vendor/openclaw");
+          tarball = await writePackageTarball(destination, "2.0.0", {
+            packageName: "@vendor/openclaw",
+          });
         } else if (name === "global update") {
           if (!tarball) {
             throw new Error("missing packed alias candidate");

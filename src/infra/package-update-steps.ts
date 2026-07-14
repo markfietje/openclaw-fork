@@ -472,6 +472,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       packageName: params.packageName,
       runStep: params.runStep,
       timeoutMs: params.timeoutMs,
+      runtimeVersion: selectedRuntime.version,
       env: updateEnv,
       installCwd: params.installCwd,
       forcePack: requiresPackedGuard,

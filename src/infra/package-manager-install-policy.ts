@@ -65,6 +65,49 @@ export function isGitPackageInstallSpec(packageName: string, spec: string): bool
   return isGitInstallSpec(stripPackageAlias(packageName, spec));
 }
 
+/** Makes an exact Git commit safe for npm's metadata-only source probe. */
+export function npmPackageMetadataInstallSpec(packageName: string, spec: string): string {
+  const target = stripPackageAlias(packageName, spec);
+  if (!isGitInstallSpec(target)) {
+    return spec;
+  }
+  const hashIndex = target.indexOf("#");
+  if (hashIndex === -1) {
+    return spec;
+  }
+  const repository = target.slice(0, hashIndex);
+  const selector = target.slice(hashIndex + 1);
+  const [commit, ...qualifiers] = selector.split("::");
+  if (!commit || !/^[a-f0-9]{40,64}$/iu.test(commit)) {
+    return spec;
+  }
+  // Pacote in npm 10 prepares already-resolved hosted commits even with
+  // ignore-scripts. The equivalent peel expression forces manifest-only clone.
+  return `${repository}#${commit}^0${qualifiers.map((part) => `::${part}`).join("")}`;
+}
+
+/** Replaces a mutable git selector with the exact commit resolved by npm metadata. */
+export function pinGitPackageInstallSpec(
+  packageName: string,
+  spec: string,
+  commit: string,
+): string | null {
+  if (!/^[a-f0-9]{40,64}$/iu.test(commit)) {
+    return null;
+  }
+  const target = stripPackageAlias(packageName, spec);
+  if (!isGitInstallSpec(target)) {
+    return null;
+  }
+  const hashIndex = target.indexOf("#");
+  const repository = hashIndex === -1 ? target : target.slice(0, hashIndex);
+  const selector = hashIndex === -1 ? "" : target.slice(hashIndex + 1);
+  const subdirSelectors = selector
+    .split("::")
+    .filter((part) => part.toLowerCase().startsWith("path:"));
+  return `${repository}#${commit}${subdirSelectors.map((part) => `::${part}`).join("")}`;
+}
+
 /** Identifies local package directories that must be packed before a scripts-disabled install. */
 export function isLocalDirectoryPackageInstallSpec(packageName: string, spec: string): boolean {
   const target = stripPackageAlias(packageName, spec);

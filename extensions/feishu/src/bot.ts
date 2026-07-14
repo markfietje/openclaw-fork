@@ -1469,7 +1469,7 @@ export async function handleFeishuMessage(params: {
                     dispatcher,
                     onSettled: () => markDispatchIdle(),
                     run: () =>
-                      core.channel.reply.dispatchReplyFromConfig({
+                      core.channel.reply.dispatchInboundMessage({
                         ctx: agentCtx,
                         cfg,
                         dispatcher,
@@ -1531,7 +1531,7 @@ export async function handleFeishuMessage(params: {
                   core.channel.reply.withReplyDispatcher({
                     dispatcher: noopDispatcher,
                     run: () =>
-                      core.channel.reply.dispatchReplyFromConfig({
+                      core.channel.reply.dispatchInboundMessage({
                         ctx: agentCtx,
                         cfg,
                         dispatcher: noopDispatcher,
@@ -1668,7 +1668,7 @@ export async function handleFeishuMessage(params: {
                   markDispatchIdle();
                 },
                 run: () =>
-                  core.channel.reply.dispatchReplyFromConfig({
+                  core.channel.reply.dispatchInboundMessage({
                     ctx: ctxPayload,
                     cfg: effectiveCfg,
                     dispatcher,

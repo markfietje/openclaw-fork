@@ -175,6 +175,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
           chunkMarkdownTextWithMode: vi.fn((text) => [text]),
         },
         reply: {
+          attachDeliveryCompletion: <T extends object>(result: T) => result,
           createReplyDispatcherWithTyping: createReplyDispatcherWithTypingMock,
           resolveHumanDelayConfig: vi.fn(() => undefined),
         },
@@ -666,6 +667,21 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     expect(sendMediaFeishuMock).not.toHaveBeenCalled();
   });
 
+  it("reports text-bearing internal blocks with attached media as not delivered", async () => {
+    const { options } = createDispatcherHarness();
+
+    await expect(
+      options.deliver(
+        { text: "internal reasoning chunk", mediaUrl: "https://example.com/internal.png" },
+        { kind: "block" },
+      ),
+    ).resolves.toEqual({ visibleReplySent: false });
+
+    expect(sendMessageFeishuMock).not.toHaveBeenCalled();
+    expect(sendMarkdownCardFeishuMock).not.toHaveBeenCalled();
+    expect(sendMediaFeishuMock).not.toHaveBeenCalled();
+  });
+
   it("disables block streaming by default to prevent silent reply drops", () => {
     const result = createFeishuReplyDispatcher({
       cfg: {} as never,
@@ -717,10 +733,12 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
 
     await options.deliver({ text: "First paragraph." }, { kind: "block" });
-    await options.deliver(
-      { text: "Second paragraph.", mediaUrl: "https://example.com/block.png" },
-      { kind: "block" },
-    );
+    await expect(
+      options.deliver(
+        { text: "Second paragraph.", mediaUrl: "https://example.com/block.png" },
+        { kind: "block" },
+      ),
+    ).resolves.toEqual({ visibleReplySent: true });
     await options.onIdle?.();
 
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(3);
@@ -2084,7 +2102,9 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     const runtime = createRuntimeLogger();
     const { result, options } = createDispatcherHarness({ runtime });
 
-    await options.deliver({ mediaUrl: "https://example.com/a.png" }, { kind: "block" });
+    await expect(
+      options.deliver({ mediaUrl: "https://example.com/a.png" }, { kind: "block" }),
+    ).resolves.toEqual({ visibleReplySent: true });
     await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(false);
 
     expect(sendMediaFeishuMock).toHaveBeenCalledTimes(1);
@@ -2095,7 +2115,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     });
   });
 
-  it("sends no-visible-reply fallback after an empty card streaming close", async () => {
+  it("does not start a card before an accepted payload", async () => {
     resolveFeishuAccountMock.mockReturnValue({
       accountId: "main",
       appId: "app_id",
@@ -2113,8 +2133,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     await options.onIdle?.();
     await expect(result.ensureNoVisibleReplyFallback("zero-final-count")).resolves.toBe(true);
 
-    expect(streamingInstances).toHaveLength(1);
-    expect(requireStreamingInstance(0).close).toHaveBeenCalledWith("", { note: "Agent: agent" });
+    expect(streamingInstances).toHaveLength(0);
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
     expect(result.getVisibleReplyState()).toEqual({
       visibleReplySent: true,

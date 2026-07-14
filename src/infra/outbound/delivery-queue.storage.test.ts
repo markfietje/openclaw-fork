@@ -45,6 +45,7 @@ describe("delivery-queue storage", () => {
           queuePolicy: "required",
           requireUnknownSendReconciliation: true,
           payloads: [{ text: "hello" }],
+          preparedHookPayloadIndexes: [0],
           renderedBatchPlan: {
             payloadCount: 1,
             textCount: 1,
@@ -106,6 +107,7 @@ describe("delivery-queue storage", () => {
       });
       expect(entry.retryCount).toBe(0);
       expect(entry.payloads).toEqual([{ text: "hello" }]);
+      expect(entry.preparedHookPayloadIndexes).toEqual([0]);
 
       await ackDelivery(id, tmpDir());
       expect(await loadPendingDeliveries(tmpDir())).toHaveLength(0);

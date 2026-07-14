@@ -70,6 +70,7 @@ const GrammyErrorCtor: typeof GrammyError | undefined =
 
 type DeliveryProgress = ReplyThreadDeliveryProgress & {
   deliveredCount: number;
+  firstDeliveredMessageId?: number;
   promptContext?: TelegramPromptContextProjectionSequence;
 };
 
@@ -736,6 +737,7 @@ export function emitTelegramMessageSentHooks(params: EmitMessageSentHookParams):
 export async function deliverReplies(params: {
   replies: ReplyPayload[];
   cfg?: import("openclaw/plugin-sdk/config-contracts").OpenClawConfig;
+  lifecycleHookOwner?: "delivery" | "caller";
   chatId: string;
   accountId?: string;
   sessionKeyForInternalHooks?: string;
@@ -776,9 +778,7 @@ export async function deliverReplies(params: {
   promptContextSequence?: TelegramPromptContextProjectionSequence;
   /** Text is already prepared Telegram HTML and must not be parsed as Markdown again. */
   textMode?: "html";
-}): Promise<{
-  delivered: boolean;
-}> {
+}): Promise<{ delivered: boolean; messageId?: number }> {
   const progress: DeliveryProgress = {
     hasReplied: false,
     hasDelivered: false,
@@ -789,8 +789,10 @@ export async function deliverReplies(params: {
   const transcriptMirror = params.transcriptMirror;
   const deliveredContents: Array<{ text: string; mediaUrls: string[] }> = [];
   const hookRunner = getGlobalHookRunner();
-  const hasMessageSendingHooks = hookRunner?.hasHooks("message_sending") ?? false;
-  const hasMessageSentHooks = hookRunner?.hasHooks("message_sent") ?? false;
+  const ownsLifecycleHooks = params.lifecycleHookOwner !== "caller";
+  const hookSessionKey = ownsLifecycleHooks ? params.sessionKeyForInternalHooks : undefined;
+  const hasMessageSendingHooks = ownsLifecycleHooks && hookRunner?.hasHooks("message_sending");
+  const hasMessageSentHooks = ownsLifecycleHooks && (hookRunner?.hasHooks("message_sent") ?? false);
   const chunkText = buildChunkTextResolver({
     textLimit:
       params.richMessages === true
@@ -855,7 +857,6 @@ export async function deliverReplies(params: {
       params.runtime.error?.(danger("reply missing text/media"));
       continue;
     }
-
     const rawContent = resolvedReplyText;
     const spokenHookContent =
       !rawContent && reply.audioAsVoice === true && reply.spokenText?.trim()
@@ -904,7 +905,6 @@ export async function deliverReplies(params: {
 
     let contentForSentHook =
       reply.text || (reply.audioAsVoice === true ? resolveVoiceFallbackText(reply) : "") || "";
-
     try {
       const deliveredCountBeforeReply = progress.deliveredCount;
       const replyMarkup = buildInlineKeyboard(
@@ -984,6 +984,7 @@ export async function deliverReplies(params: {
           contentForSentHook = mediaDelivery.visibleFallbackText;
         }
       }
+      progress.firstDeliveredMessageId ??= firstDeliveredMessageId;
       await maybePinFirstDeliveredMessage({
         pin: reply.delivery?.pin,
         bot: params.bot,
@@ -991,15 +992,13 @@ export async function deliverReplies(params: {
         runtime: params.runtime,
         firstDeliveredMessageId,
       });
-
       if (progress.deliveredCount > deliveredCountBeforeReply && transcriptMirror) {
         deliveredContents.push({ text: contentForSentHook, mediaUrls: mediaList });
       }
-
       emitMessageSentHooks({
         hookRunner,
         enabled: hasMessageSentHooks,
-        sessionKeyForInternalHooks: params.sessionKeyForInternalHooks,
+        sessionKeyForInternalHooks: hookSessionKey,
         chatId: params.chatId,
         accountId: params.accountId,
         content: contentForSentHook,
@@ -1012,7 +1011,7 @@ export async function deliverReplies(params: {
       emitMessageSentHooks({
         hookRunner,
         enabled: hasMessageSentHooks,
-        sessionKeyForInternalHooks: params.sessionKeyForInternalHooks,
+        sessionKeyForInternalHooks: hookSessionKey,
         chatId: params.chatId,
         accountId: params.accountId,
         content: contentForSentHook,
@@ -1024,7 +1023,6 @@ export async function deliverReplies(params: {
       throw error;
     }
   }
-
   if (progress.hasDelivered && transcriptMirror) {
     const text = deliveredContents
       .map((content) => content.text)
@@ -1042,7 +1040,8 @@ export async function deliverReplies(params: {
       }
     }
   }
-
-  return { delivered: progress.hasDelivered };
+  return progress.firstDeliveredMessageId
+    ? { delivered: true, messageId: progress.firstDeliveredMessageId }
+    : { delivered: progress.hasDelivered };
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

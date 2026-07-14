@@ -153,6 +153,8 @@ function createTestRuntime(overrides?: {
       reply: {
         finalizeInboundContext,
         dispatchReplyFromConfig,
+        dispatchInboundMessage:
+          dispatchReplyFromConfig as unknown as PluginRuntime["channel"]["reply"]["dispatchInboundMessage"],
         withReplyDispatcher,
       },
       session: {

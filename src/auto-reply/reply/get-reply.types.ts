@@ -21,6 +21,8 @@ type InternalReplySessionOptions = {
   sessionPromptSourceReplyDeliveryMode?: GetReplyOptions["sourceReplyDeliveryMode"];
   /** Marks when this reply is waiting to own its session's reply lane. */
   onReplyAdmissionWaitChange?: (waiting: boolean) => void;
+  /** Buffer channel-owned preview callbacks until outbound modifiers accept a payload. */
+  bufferPreDeliveryProgress?: boolean;
 };
 
 export type InternalGetReplyOptions = GetReplyOptions &

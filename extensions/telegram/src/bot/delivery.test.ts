@@ -662,6 +662,27 @@ describe("deliverReplies", () => {
     });
   });
 
+  it("leaves modifying and sent hooks to an outer dispatcher", async () => {
+    messageHookRunner.hasHooks.mockReturnValue(true);
+    const runtime = createRuntime(false);
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 9, chat: { id: "123" } });
+    const bot = createBot({ sendMessage });
+
+    const result = await deliverWith({
+      lifecycleHookOwner: "caller",
+      sessionKeyForInternalHooks: "agent:test:telegram:123",
+      replies: [{ text: "already prepared" }],
+      runtime,
+      bot,
+    });
+
+    expect(result).toEqual({ delivered: true, messageId: 9 });
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(messageHookRunner.runMessageSending).not.toHaveBeenCalled();
+    expect(messageHookRunner.runMessageSent).not.toHaveBeenCalled();
+    expect(triggerInternalHook).not.toHaveBeenCalled();
+  });
+
   it("sets disable_notification when silent is true", async () => {
     const runtime = createRuntime();
     const sendMessage = vi.fn().mockResolvedValue({

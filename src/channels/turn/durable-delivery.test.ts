@@ -23,6 +23,7 @@ vi.mock("../message/send.js", async (importOriginal) => {
 });
 
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
+import { getSuccessfulNativeDelivery } from "../../infra/outbound/message-sent-hook.js";
 import { deliverInboundReplyWithMessageSendContext } from "./durable-delivery.js";
 
 type SendDurableMessageBatchRequest = {
@@ -33,6 +34,7 @@ type SendDurableMessageBatchRequest = {
   durability?: string;
   requireUnknownSendReconciliation?: boolean;
   gatewayClientScopes?: readonly string[];
+  lifecycleHookOwner?: "delivery" | "caller";
 };
 
 type DeliverySupportRequest = {
@@ -107,6 +109,20 @@ describe("durable inbound reply delivery", () => {
     expect(request.threadId).toBeNull();
     expect(request.durability).toBe("best_effort");
     expect(request.gatewayClientScopes).toEqual([]);
+  });
+
+  it("forwards outer lifecycle ownership into durable delivery", async () => {
+    await deliverInboundReplyWithMessageSendContext({
+      cfg: {},
+      channel: "telegram",
+      agentId: "main",
+      info: { kind: "final" },
+      payload: { text: "plain reply" },
+      lifecycleHookOwner: "caller",
+      ctxPayload: ctxPayload({ OriginatingTo: "chat-1" }),
+    });
+
+    expect(latestSendDurableMessageBatchRequest().lifecycleHookOwner).toBe("caller");
   });
 
   it("does not require unknown-send reconciliation for the default best-effort final path", async () => {
@@ -185,5 +201,36 @@ describe("durable inbound reply delivery", () => {
 
     expect(result).toEqual({ status: "failed", error, sentBeforeError: true });
     expect(error).toMatchObject({ sentBeforeError: true, visibleReplySent: true });
+  });
+
+  it("carries native success through a later queue cleanup failure", async () => {
+    const error = new Error("queue ack failed");
+    mocks.sendDurableMessageBatch.mockResolvedValueOnce({
+      status: "partial_failed",
+      results: [{ channel: "telegram", messageId: "m1" }],
+      receipt: {
+        primaryPlatformMessageId: "m1",
+        platformMessageIds: ["m1"],
+        parts: [{ platformMessageId: "m1", kind: "text", index: 0 }],
+        sentAt: 1,
+      },
+      error,
+      sentBeforeError: true,
+      stage: "queue",
+    });
+
+    const result = await deliverInboundReplyWithMessageSendContext({
+      cfg: {},
+      channel: "telegram",
+      agentId: "main",
+      info: { kind: "final" },
+      payload: { text: "final" },
+      lifecycleHookOwner: "caller",
+      ctxPayload: ctxPayload({ OriginatingTo: "chat-1" }),
+    });
+
+    expect(result.status).toBe("failed");
+    const resultError = result.status === "failed" ? result.error : undefined;
+    expect(getSuccessfulNativeDelivery(resultError)).toEqual({ messageId: "m1" });
   });
 });

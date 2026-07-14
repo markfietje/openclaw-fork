@@ -32,6 +32,7 @@ import { streamingStartBackoffUntilByAccount } from "./reply-dispatcher-state.js
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu, sendStructuredCardFeishu, type CardHeaderConfig } from "./send.js";
 import { FeishuStreamingSession, mergeStreamingText } from "./streaming-card.js";
+import { createFeishuStreamingDeliveryCompletionQueue } from "./streaming-delivery-completion.js";
 import { resolveReceiveIdType } from "./targets.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
 
@@ -283,7 +284,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   let streamingCloseErroredForReply = false;
   let visibleReplySent = false;
   let skippedFinalReason: string | null = null;
-  let idleSideEffectsPromise: Promise<void> = Promise.resolve();
   let replyLifecycleStateInitialized = false;
   type StreamTextUpdateMode = "snapshot" | "delta";
 
@@ -605,8 +605,16 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     });
   };
 
+  const streamingDeliveryCompletions = createFeishuStreamingDeliveryCompletionQueue(
+    core.channel.reply.attachDeliveryCompletion,
+    closeStreaming,
+    () => typingCallbacks?.onIdle?.(),
+    () => visibleReplySent,
+  );
+  const queueIdleSideEffects = streamingDeliveryCompletions.queueIdle;
+
   const ensureNoVisibleReplyFallback = async (reason: string): Promise<boolean> => {
-    await idleSideEffectsPromise;
+    await streamingDeliveryCompletions.waitForIdle();
     if (visibleReplySent) {
       return false;
     }
@@ -630,15 +638,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       `feishu[${account.accountId}]: sent no-visible-reply fallback (${reason})`,
     );
     return true;
-  };
-
-  const queueIdleSideEffects = (options?: { markClosedForReply?: boolean }): Promise<void> => {
-    const nextIdleSideEffects = idleSideEffectsPromise.then(async () => {
-      await closeStreaming(options);
-      typingCallbacks?.onIdle?.();
-    });
-    idleSideEffectsPromise = nextIdleSideEffects.catch(() => {});
-    return nextIdleSideEffects;
   };
 
   const { dispatcher, replyOptions, markDispatchIdle } =
@@ -666,9 +665,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           streamingCloseErroredForReply = false;
           visibleReplySent = false;
           skippedFinalReason = null;
-        }
-        if (streamingEnabled && renderMode === "card") {
-          startStreaming();
         }
         await Promise.resolve(typingCallbacks?.onReplyStart?.());
       },
@@ -731,7 +727,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             (hasMedia && ((hasVoiceMedia && !shouldDeliverText) || skipTextForDuplicateFinal)));
 
         if (!shouldDeliverText && !hasMedia) {
-          return;
+          return { visibleReplySent: false };
         }
 
         if (shouldDiscardStreamingPreview) {
@@ -744,6 +740,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             // streaming-card fallback content or send them as independent
             // messages for true progressive delivery.
             if (!useStreamingCard) {
+              let visibleBlockReplySent = false;
               if (coreBlockStreamingEnabled) {
                 // Reuse normal text chunking, but notify mentions only on the first visible chunk.
                 const isFirstBlock = !sentIndependentBlockText;
@@ -767,12 +764,15 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
                     });
                   },
                 });
+                visibleBlockReplySent = true;
                 sentIndependentBlockText = true;
                 if (hasMedia) {
                   await sendMediaReplies(payload);
                 }
               }
-              return;
+              // Text-bearing internal blocks suppress their attached media too when block delivery
+              // is disabled. Media-only blocks bypass this branch and are delivered below.
+              return { visibleReplySent: visibleBlockReplySent };
             }
             startStreaming();
             if (streamingStartPromise) {
@@ -807,7 +807,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             if (hasMedia) {
               await sendMediaReplies(payload);
             }
-            return;
+            return streamingDeliveryCompletions.defer();
           }
 
           if (useCard) {
@@ -861,6 +861,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             hasVoiceMedia && hasText ? { fallbackText: text } : undefined,
           );
         }
+        return { visibleReplySent: true };
       },
       onError: async (error, info) => {
         streamingCloseErroredForReply = true;

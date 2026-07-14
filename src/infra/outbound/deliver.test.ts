@@ -9,6 +9,7 @@ import {
   type TrustedMessageAuditEvent,
 } from "../../audit/message-audit-events.js";
 import { chunkText } from "../../auto-reply/chunk.js";
+import { setReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { createMessageReceiptFromOutboundResults } from "../../channels/message/receipt.js";
 import type {
   ChannelMessageSendMediaContext,
@@ -41,6 +42,7 @@ import {
 import { retryAsync } from "../retry.js";
 import { resolvePreferredOpenClawTmpDir } from "../tmp-openclaw-dir.js";
 import { PlatformMessageNotDispatchedError } from "./deliver-types.js";
+import { isMessageSentHookOwned } from "./message-sent-hook.js";
 
 const mocks = vi.hoisted(() => ({
   appendAssistantMessageToSessionTranscript: vi.fn<() => Promise<SessionTranscriptAppendResult>>(
@@ -1336,6 +1338,58 @@ describe("deliverOutboundPayloads", () => {
     expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id");
   });
 
+  it("does not rerun outbound modifiers prepared by the reply dispatcher", async () => {
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "reply_payload_sending" || hookName === "message_sending",
+    );
+    const sendMatrix = vi.fn().mockResolvedValue({ messageId: "m1", roomId: "!room:example" });
+    const payload = setReplyPayloadMetadata(
+      { text: "prepared" },
+      { outboundHookLifecycle: { state: "prepared", originalMediaCount: 0 } },
+    );
+
+    await expect(
+      deliverOutboundPayloads({
+        cfg: {},
+        channel: "matrix",
+        to: "!room:example",
+        payloads: [payload],
+        replyPayloadSendingHook: {
+          kind: "final",
+          channel: "matrix",
+          context: { channelId: "matrix", conversationId: "!room:example" },
+        },
+        deps: { matrix: sendMatrix },
+      }),
+    ).resolves.toHaveLength(1);
+
+    expect(hookMocks.runner.runReplyPayloadSending).not.toHaveBeenCalled();
+    expect(hookMocks.runner.runMessageSending).not.toHaveBeenCalled();
+    expect(sendMatrix).toHaveBeenCalledTimes(1);
+
+    await expect(
+      deliverOutboundPayloads({
+        cfg: {},
+        channel: "matrix",
+        to: "!room:example",
+        payloads: [{ text: "prepared" }],
+        replyPayloadSendingHook: {
+          kind: "final",
+          channel: "matrix",
+          context: { channelId: "matrix", conversationId: "!room:example" },
+        },
+        deps: { matrix: sendMatrix },
+        skipQueue: true,
+        deliveryQueueId: "recovered-prepared-attempt",
+        preparedHookPayloadIndexes: [0],
+      }),
+    ).resolves.toHaveLength(1);
+
+    expect(hookMocks.runner.runReplyPayloadSending).not.toHaveBeenCalled();
+    expect(hookMocks.runner.runMessageSending).not.toHaveBeenCalled();
+    expect(sendMatrix).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps a canceled zero-result delivery retryable when queue ack fails", async () => {
     hookMocks.runner.hasHooks.mockImplementation(
       (hookName?: string) => hookName === "message_sending",
@@ -2185,7 +2239,11 @@ describe("deliverOutboundPayloads", () => {
         deps: { matrix: sendMatrix },
         queuePolicy: "required",
       }),
-    ).rejects.toThrow("ack offline");
+    ).rejects.toMatchObject({
+      message: "ack offline",
+      stage: "queue",
+      results: [expect.objectContaining({ messageId: "m1" })],
+    });
 
     expect(sendMatrix).toHaveBeenCalled();
     expect(queueMocks.markDeliveryPlatformOutcomeUnknown).toHaveBeenCalledWith("mock-queue-id");
@@ -2950,12 +3008,121 @@ describe("deliverOutboundPayloads", () => {
     );
   });
 
-  it("strips internal runtime scaffolding before adapter payload normalization copies text", async () => {
+  it("keeps hook failures inside the per-payload best-effort boundary", async () => {
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "reply_payload_sending",
+    );
+    hookMocks.runner.runReplyPayloadSending.mockReset();
+    hookMocks.runner.runReplyPayloadSending
+      .mockRejectedValueOnce(new Error("first hook failed"))
+      .mockResolvedValueOnce(undefined);
+    const sendMatrix = vi.fn().mockResolvedValue({
+      messageId: "second-sent",
+      roomId: "!room:example",
+    });
+    const onError = vi.fn();
+    const payloadOutcomes: unknown[] = [];
+
+    const results = await deliverOutboundPayloads({
+      cfg: {},
+      channel: "matrix",
+      to: "!room:example",
+      payloads: [{ text: "first" }, { text: "second" }],
+      deps: { matrix: sendMatrix },
+      bestEffort: true,
+      onError,
+      onPayloadDeliveryOutcome: (outcome) => payloadOutcomes.push(outcome),
+      replyPayloadSendingHook: {
+        kind: "final",
+        channel: "matrix",
+        context: { channelId: "matrix", conversationId: "!room:example" },
+      },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(requireMatrixSendCall(sendMatrix)[1]).toBe("second");
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "first hook failed" }),
+      expect.objectContaining({ text: "first" }),
+    );
+    expect(payloadOutcomes).toMatchObject([
+      { index: 0, status: "failed", stage: "unknown", sentBeforeError: false },
+      { index: 1, status: "sent" },
+    ]);
+  });
+
+  it("delivers earlier payloads before a later hook failure stops the batch", async () => {
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "reply_payload_sending",
+    );
+    hookMocks.runner.runReplyPayloadSending.mockReset();
+    hookMocks.runner.runReplyPayloadSending
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("second hook failed"));
+    const sendMatrix = vi.fn().mockResolvedValue({
+      messageId: "first-sent",
+      roomId: "!room:example",
+    });
+
+    await expect(
+      deliverOutboundPayloads({
+        cfg: {},
+        channel: "matrix",
+        to: "!room:example",
+        payloads: [{ text: "first" }, { text: "second" }],
+        deps: { matrix: sendMatrix },
+        replyPayloadSendingHook: {
+          kind: "final",
+          channel: "matrix",
+          context: { channelId: "matrix", conversationId: "!room:example" },
+        },
+      }),
+    ).rejects.toThrow("second hook failed");
+
+    expect(sendMatrix).toHaveBeenCalledTimes(1);
+    expect(requireMatrixSendCall(sendMatrix)[1]).toBe("first");
+  });
+
+  it("stops hook preparation for the batch when cancellation arrives during a hook", async () => {
     hookMocks.runner.hasHooks.mockImplementation(
       (hookName?: string) => hookName === "message_sending",
     );
-    hookMocks.runner.runMessageSending.mockResolvedValue({
-      content: "<previous_response>null</previous_response>visible",
+    const abortController = new AbortController();
+    hookMocks.runner.runMessageSending.mockReset();
+    hookMocks.runner.runMessageSending.mockImplementationOnce(async () => {
+      abortController.abort();
+      return undefined;
+    });
+    const sendMatrix = vi.fn().mockResolvedValue({
+      messageId: "should-not-send",
+      roomId: "!room:example",
+    });
+
+    await expect(
+      deliverOutboundPayloads({
+        cfg: {},
+        channel: "matrix",
+        to: "!room:example",
+        payloads: [{ text: "first" }, { text: "second" }],
+        deps: { matrix: sendMatrix },
+        abortSignal: abortController.signal,
+        bestEffort: true,
+      }),
+    ).rejects.toThrow("Operation aborted");
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledTimes(1);
+    expect(sendMatrix).not.toHaveBeenCalled();
+  });
+
+  it("strips internal runtime scaffolding before adapter payload normalization copies text", async () => {
+    const order: string[] = [];
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName?: string) => hookName === "message_sending",
+    );
+    hookMocks.runner.runMessageSending.mockImplementation(async () => {
+      order.push("message_sending");
+      return { content: "<previous_response>null</previous_response>visible" };
     });
     const sendPayload = vi.fn().mockResolvedValue({
       channel: "matrix" as const,
@@ -2971,10 +3138,13 @@ describe("deliverOutboundPayloads", () => {
             id: "matrix",
             outbound: {
               deliveryMode: "direct",
-              normalizePayload: ({ payload }) => ({
-                ...payload,
-                channelData: { copiedText: payload.text },
-              }),
+              normalizePayload: ({ payload }) => {
+                order.push("provider_normalize");
+                return {
+                  ...payload,
+                  channelData: { copiedText: payload.text },
+                };
+              },
               sendText: vi.fn(),
               sendMedia: vi.fn(),
               sendPayload,
@@ -2996,6 +3166,8 @@ describe("deliverOutboundPayloads", () => {
       | undefined;
     expect(deliveredPayload?.text).toBe("visible");
     expect(deliveredPayload?.channelData).toStrictEqual({ copiedText: "visible" });
+    expect(order[0]).toBe("message_sending");
+    expect(order.slice(1)).toEqual(["provider_normalize", "provider_normalize"]);
   });
 
   it("passes delivery config and account context to adapter payload normalization", async () => {
@@ -4784,21 +4956,68 @@ describe("deliverOutboundPayloads", () => {
     hookMocks.runner.hasHooks.mockReturnValue(true);
     const sendMatrix = vi.fn().mockResolvedValue({ messageId: "m1", roomId: "!room:example" });
 
-    await deliverOutboundPayloads({
+    const results = await deliverOutboundPayloads({
       cfg: {},
       channel: "matrix",
       to: "!room:example",
-      payloads: [{ text: "hello" }],
+      payloads: [
+        setReplyPayloadMetadata(
+          { text: "hello" },
+          {
+            outboundHookLifecycle: {
+              state: "prepared",
+              originalMediaCount: 0,
+              runId: "run-message-sent",
+            },
+          },
+        ),
+      ],
       deps: { matrix: sendMatrix },
     });
 
+    expect(isMessageSentHookOwned(results)).toBe(true);
+
     const sentCall = requireMockCall(hookMocks.runner.runMessageSent, "message_sent hook") as
-      | [{ content?: unknown; success?: unknown; to?: unknown }, { channelId?: unknown }]
+      | [
+          { content?: unknown; runId?: unknown; success?: unknown; to?: unknown },
+          { channelId?: unknown },
+        ]
       | undefined;
     expect(sentCall?.[0]?.to).toBe("!room:example");
     expect(sentCall?.[0]?.content).toBe("hello");
     expect(sentCall?.[0]?.success).toBe(true);
+    expect(sentCall?.[0]?.runId).toBe("run-message-sent");
     expect(sentCall?.[1]?.channelId).toBe("matrix");
+  });
+
+  it("leaves modifying and sent hooks to an outer lifecycle owner", async () => {
+    hookMocks.runner.hasHooks.mockReturnValue(true);
+    const sendMatrix = vi.fn().mockResolvedValue({ messageId: "m1", roomId: "!room:example" });
+    const payload = setReplyPayloadMetadata(
+      { text: "already prepared" },
+      { outboundHookLifecycle: { state: "prepared", originalMediaCount: 0 } },
+    );
+
+    const results = await deliverOutboundPayloads({
+      cfg: {},
+      channel: "matrix",
+      to: "!room:example",
+      payloads: [{ ...payload }],
+      deps: { matrix: sendMatrix },
+      lifecycleHookOwner: "caller",
+    });
+
+    expect(sendMatrix).toHaveBeenCalledTimes(1);
+    expect(requireMatrixSendCall(sendMatrix)[1]).toBe("already prepared");
+    expect(queueMocks.enqueueDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloads: [{ text: "already prepared" }],
+        preparedHookPayloadIndexes: [0],
+      }),
+    );
+    expect(hookMocks.runner.runMessageSending).not.toHaveBeenCalled();
+    expect(hookMocks.runner.runMessageSent).not.toHaveBeenCalled();
+    expect(isMessageSentHookOwned(results)).toBe(false);
   });
 
   it("threads sessionKey into the message_sending hook context when session is provided", async () => {
@@ -5596,15 +5815,22 @@ describe("deliverOutboundPayloads", () => {
     hookMocks.runner.hasHooks.mockReturnValue(true);
     const sendMatrix = vi.fn().mockRejectedValue(new Error("downstream failed"));
 
-    await expect(
-      deliverOutboundPayloads({
+    let deliveryError: unknown;
+    try {
+      await deliverOutboundPayloads({
         cfg: {},
         channel: "matrix",
         to: "!room:example",
         payloads: [{ text: "hi" }],
         deps: { matrix: sendMatrix },
-      }),
-    ).rejects.toThrow("downstream failed");
+      });
+    } catch (err: unknown) {
+      deliveryError = err;
+    }
+
+    expect(deliveryError).toBeInstanceOf(Error);
+    expect(deliveryError).toEqual(expect.objectContaining({ message: "downstream failed" }));
+    expect(isMessageSentHookOwned(deliveryError)).toBe(true);
 
     const sentCall = requireMockCall(hookMocks.runner.runMessageSent, "message_sent hook") as
       | [

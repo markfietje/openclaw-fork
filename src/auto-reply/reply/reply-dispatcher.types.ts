@@ -20,6 +20,16 @@ export type ReplyDispatchBeforeDeliver = (
   info: ReplyDispatchRuntimeInfo,
 ) => Promise<ReplyPayload | null> | ReplyPayload | null;
 
+export type ReplyDispatchAfterDeliverOutcome =
+  | { status: "delivered"; result: unknown }
+  | { status: "failed"; error: unknown };
+
+export type ReplyDispatchAfterDeliver = (
+  payload: ReplyPayload,
+  info: ReplyDispatchRuntimeInfo,
+  outcome: ReplyDispatchAfterDeliverOutcome,
+) => Promise<void> | void;
+
 /** An owner-declared settlement budget for one before-delivery callback. */
 export type ReplyDispatchBeforeDeliverOptions = {
   /** Positive finite per-callback deadline in milliseconds; omit for the dispatcher default. */
@@ -34,6 +44,13 @@ export type ReplyDispatcher = {
     hook: ReplyDispatchBeforeDeliver,
     options?: ReplyDispatchBeforeDeliverOptions,
   ) => void;
+  /** Core lifecycle stages use prepend so they always run before provider preparation. */
+  prependBeforeDeliver?: (
+    hook: ReplyDispatchBeforeDeliver,
+    options?: ReplyDispatchBeforeDeliverOptions,
+  ) => void;
+  /** Observe attempted native delivery without changing its result. */
+  appendAfterDeliver?: (hook: ReplyDispatchAfterDeliver) => void;
   waitForIdle: () => Promise<void>;
   getQueuedCounts: () => Record<ReplyDispatchKind, number>;
   getCancelledCounts?: () => Record<ReplyDispatchKind, number>;

@@ -252,6 +252,7 @@ export function createMatrixHandlerTestHarness(
             })),
           resolveHumanDelayConfig: options.resolveHumanDelayConfig ?? (() => undefined),
           dispatchReplyFromConfig,
+          dispatchInboundMessage: dispatchReplyFromConfig,
           withReplyDispatcher:
             options.withReplyDispatcher ??
             (async <T>(params: {

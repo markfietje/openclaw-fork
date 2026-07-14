@@ -304,7 +304,7 @@ export async function handleFeishuCommentEvent(
             core.channel.reply.withReplyDispatcher({
               dispatcher,
               run: () =>
-                core.channel.reply.dispatchReplyFromConfig({
+                core.channel.reply.dispatchInboundMessage({
                   ctx: ctxPayload,
                   cfg: effectiveCfg,
                   dispatcher,

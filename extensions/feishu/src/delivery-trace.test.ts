@@ -107,6 +107,7 @@ vi.mock("./runtime.js", async () => {
         resolveMarkdownTableMode: markdownTables.resolveMarkdownTableMode,
       },
       reply: {
+        attachDeliveryCompletion: <T extends object>(result: T) => result,
         createReplyDispatcherWithTyping: (options: FeishuDispatcherOptions) => {
           traceState.dispatcherOptions = options;
           return { dispatcher: {}, replyOptions: {}, markDispatchIdle: () => {} };

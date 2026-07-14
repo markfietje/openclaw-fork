@@ -2050,6 +2050,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
           humanDelay: core.channel.reply.resolveHumanDelayConfig(cfg, _route.agentId),
           deliver: async (payload: ReplyPayload, info: { kind: string }) => {
             if (draftStream && info.kind !== "tool" && !payload.isCompactionNotice) {
+              let visibleReplySent: boolean;
               const hasMedia = Boolean(payload.mediaUrl) || (payload.mediaUrls?.length ?? 0) > 0;
               const ttsSupplement = getReplyPayloadTtsSupplement(payload);
               const fallbackPayload =
@@ -2058,10 +2059,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 !payload.text?.trim()
                   ? { ...payload, text: ttsSupplement.spokenText }
                   : payload;
-
               if (draftConsumed) {
                 await draftStream.discardPending();
-                await deliverMatrixReplies({
+                visibleReplySent = await deliverMatrixReplies({
                   cfg,
                   replies: [fallbackPayload],
                   roomId,
@@ -2075,9 +2075,8 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                   mediaLocalRoots,
                   tableMode,
                 });
-                return;
+                return { visibleReplySent };
               }
-
               const payloadReplyToId = normalizeOptionalString(payload.replyToId);
               const payloadReplyMismatch =
                 replyToMode !== "off" &&
@@ -2116,7 +2115,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 !draftFinalTextNeedsNormalMentionDelivery
               ) {
                 const finalPreviewText = payload.text;
-                await deliverWithFinalizableLivePreviewAdapter<
+                const result = await deliverWithFinalizableLivePreviewAdapter<
                   ReplyPayload,
                   string,
                   {
@@ -2171,7 +2170,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                   }),
                   deliverNormally: async () => {
                     await redactMatrixDraftEvent(client, roomId, draftEventId);
-                    await deliverMatrixReplies({
+                    return await deliverMatrixReplies({
                       cfg,
                       replies: [fallbackPayload],
                       roomId,
@@ -2187,6 +2186,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                     });
                   },
                 });
+                visibleReplySent = result.kind !== "normal-skipped";
                 draftConsumed = true;
               } else if (draftEventId && hasMedia && !payloadReplyMismatch) {
                 let textEditOk = !mustDeliverFinalNormally;
@@ -2239,7 +2239,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                               ? undefined
                               : ttsSupplement?.spokenText)),
                       };
-                await deliverMatrixReplies({
+                const deliveredMedia = await deliverMatrixReplies({
                   cfg,
                   replies: [mediaPayload],
                   roomId,
@@ -2253,6 +2253,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                   mediaLocalRoots,
                   tableMode,
                 });
+                visibleReplySent = reusesDraftAsFinalText || deliveredMedia;
                 draftConsumed = true;
               } else {
                 const draftRedacted =
@@ -2281,6 +2282,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 if (draftRedacted || deliveredFallback) {
                   draftConsumed = true;
                 }
+                visibleReplySent = deliveredFallback;
               }
 
               if (info.kind === "block") {
@@ -2289,28 +2291,26 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 draftStream.reset();
                 currentDraftReplyToId = replyToMode === "all" ? draftReplyToId : undefined;
                 updateDraftFromLatestFullText();
-
-                // Re-assert typing so the user still sees the indicator while
-                // the next block generates.
                 const { sendTypingMatrix } = await loadMatrixSendModule();
                 await sendTypingMatrix(roomId, true, undefined, client).catch(() => {});
               }
-            } else {
-              await deliverMatrixReplies({
-                cfg,
-                replies: [payload],
-                roomId,
-                client,
-                runtime,
-                textLimit,
-                replyToMode,
-                threadId: threadTarget,
-                replyToId: threadTarget ?? replyToEventId ?? undefined,
-                accountId: _route.accountId,
-                mediaLocalRoots,
-                tableMode,
-              });
+              return { visibleReplySent };
             }
+            const visibleReplySent = await deliverMatrixReplies({
+              cfg,
+              replies: [payload],
+              roomId,
+              client,
+              runtime,
+              textLimit,
+              replyToMode,
+              threadId: threadTarget,
+              replyToId: threadTarget ?? replyToEventId ?? undefined,
+              accountId: _route.accountId,
+              mediaLocalRoots,
+              tableMode,
+            });
+            return { visibleReplySent };
           },
           onError: (err: unknown, info: { kind: "tool" | "block" | "final" }) => {
             if (info.kind === "final") {
@@ -2442,7 +2442,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
                 },
                 run: async () => {
                   try {
-                    return await core.channel.reply.dispatchReplyFromConfig({
+                    return await core.channel.reply.dispatchInboundMessage({
                       ctx: ctxPayload,
                       cfg,
                       dispatcher,

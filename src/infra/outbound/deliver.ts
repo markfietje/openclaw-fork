@@ -3,6 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 // sends, commit hooks, diagnostics, transcript mirroring, and payload outcomes.
 import { hasTrustedMessageAuditListeners } from "../../audit/message-audit-events.js";
 import { resolveChunkMode, resolveTextChunkLimit } from "../../auto-reply/chunk.js";
+import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { runReplyPayloadSendingHook } from "../../auto-reply/reply/reply-payload-sending-hook.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { createRenderedMessageBatchPlan } from "../../channels/message/rendered-batch.js";
@@ -25,14 +26,6 @@ import type {
 import { resolveMirroredTranscriptText } from "../../config/sessions/transcript-mirror.js";
 import type { ReplyToMode } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { fireAndForgetHook } from "../../hooks/fire-and-forget.js";
-import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
-import {
-  buildCanonicalSentMessageHookContext,
-  toInternalMessageSentContext,
-  toPluginMessageContext,
-  toPluginMessageSentEvent,
-} from "../../hooks/message-hook-mappers.js";
 import {
   hasReplyPayloadContent,
   normalizeMessagePresentation,
@@ -88,6 +81,12 @@ import {
   planOutboundTextMessageUnits,
   type OutboundMessageSendOverrides,
 } from "./message-plan.js";
+import { runMessageSendingHookForPayload } from "./message-sending-hook.js";
+import {
+  createMessageSentHookEmitter,
+  isMessageSentHookOwned,
+  markMessageSentHookOwned,
+} from "./message-sent-hook.js";
 import type { DeliveryMirror } from "./mirror.js";
 import {
   completedOutboundAuditTerminals,
@@ -729,6 +728,10 @@ type DeliverOutboundPayloadsCoreParams = {
   gifPlayback?: boolean;
   forceDocument?: boolean;
   replyPayloadSendingHook?: QueuedReplyPayloadSendingHook;
+  /** @internal Payload indexes whose modifying hooks completed before queue persistence. */
+  preparedHookPayloadIndexes?: readonly number[];
+  /** The outer dispatcher already ran and will observe the canonical outbound hook lifecycle. */
+  lifecycleHookOwner?: "delivery" | "caller";
   abortSignal?: AbortSignal;
   bestEffort?: boolean;
   onError?: (err: unknown, payload: NormalizedOutboundPayload) => void;
@@ -773,13 +776,6 @@ export type DeliverOutboundPayloadsParams = DeliverOutboundPayloadsCoreParams & 
   queuePolicy?: OutboundDeliveryQueuePolicy;
   renderedBatchPlan?: QueuedRenderedMessageBatchPlan;
   onDeliveryIntent?: (intent: OutboundDeliveryIntent) => void;
-};
-
-type MessageSentEvent = {
-  success: boolean;
-  content: string;
-  error?: string;
-  messageId?: string;
 };
 
 /**
@@ -1088,178 +1084,6 @@ async function renderPresentationForDelivery(
   };
 }
 
-function createMessageSentEmitter(params: {
-  hookRunner: ReturnType<typeof getGlobalHookRunner>;
-  channel: Exclude<OutboundChannel, "none">;
-  to: string;
-  accountId?: string;
-  sessionKeyForInternalHooks?: string;
-  mirrorIsGroup?: boolean;
-  mirrorGroupId?: string;
-}): { emitMessageSent: (event: MessageSentEvent) => void; hasMessageSentHooks: boolean } {
-  const hasMessageSentHooks = params.hookRunner?.hasHooks("message_sent") ?? false;
-  const canEmitInternalHook = Boolean(params.sessionKeyForInternalHooks);
-  const emitMessageSent = (event: MessageSentEvent) => {
-    if (!hasMessageSentHooks && !canEmitInternalHook) {
-      return;
-    }
-    const canonical = buildCanonicalSentMessageHookContext({
-      to: params.to,
-      content: event.content,
-      success: event.success,
-      error: event.error,
-      channelId: params.channel,
-      accountId: params.accountId ?? undefined,
-      conversationId: params.to,
-      // Mirror the canonical outbound session key into the `message_sent`
-      // hook context so plugins that observe both `message_sending` and
-      // `message_sent` see the same `sessionKey` (and so it matches the
-      // value the internal `message:sent` hook fires with). The value is
-      // already computed for the internal hook below; reusing it here
-      // keeps the contract documented in `PluginHookMessageContext`
-      // honest for both outbound delivery hooks.
-      sessionKey: params.sessionKeyForInternalHooks,
-      messageId: event.messageId,
-      isGroup: params.mirrorIsGroup,
-      groupId: params.mirrorGroupId,
-    });
-    if (hasMessageSentHooks) {
-      fireAndForgetHook(
-        params.hookRunner!.runMessageSent(
-          toPluginMessageSentEvent(canonical),
-          toPluginMessageContext(canonical),
-        ),
-        "deliverOutboundPayloads: message_sent plugin hook failed",
-        (message) => {
-          log.warn(message);
-        },
-      );
-    }
-    if (!canEmitInternalHook) {
-      return;
-    }
-    fireAndForgetHook(
-      triggerInternalHook(
-        createInternalHookEvent(
-          "message",
-          "sent",
-          params.sessionKeyForInternalHooks!,
-          toInternalMessageSentContext(canonical),
-        ),
-      ),
-      "deliverOutboundPayloads: message:sent internal hook failed",
-      (message) => {
-        log.warn(message);
-      },
-    );
-  };
-  return { emitMessageSent, hasMessageSentHooks };
-}
-
-async function applyMessageSendingHook(params: {
-  hookRunner: ReturnType<typeof getGlobalHookRunner>;
-  enabled: boolean;
-  payload: ReplyPayload;
-  payloadSummary: NormalizedOutboundPayload;
-  to: string;
-  channel: Exclude<OutboundChannel, "none">;
-  accountId?: string;
-  replyToId?: string | null;
-  threadId?: string | number | null;
-  sessionKey?: string;
-}): Promise<{
-  cancelled: boolean;
-  cancelReason?: string;
-  hookMetadata?: Record<string, unknown>;
-  contentRewritten: boolean;
-  payload: ReplyPayload;
-  payloadSummary: NormalizedOutboundPayload;
-}> {
-  if (!params.enabled) {
-    return {
-      cancelled: false,
-      contentRewritten: false,
-      payload: params.payload,
-      payloadSummary: params.payloadSummary,
-    };
-  }
-  try {
-    const sendingResult = await params.hookRunner!.runMessageSending(
-      {
-        to: params.to,
-        content: params.payloadSummary.hookContent ?? params.payloadSummary.text,
-        replyToId: params.replyToId ?? undefined,
-        threadId: params.threadId ?? undefined,
-        metadata: {
-          channel: params.channel,
-          accountId: params.accountId,
-          mediaUrls: params.payloadSummary.mediaUrls,
-        },
-      },
-      {
-        channelId: params.channel,
-        accountId: params.accountId ?? undefined,
-        conversationId: params.to,
-        ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
-      },
-    );
-    if (sendingResult?.cancel) {
-      return {
-        cancelled: true,
-        ...(sendingResult.cancelReason ? { cancelReason: sendingResult.cancelReason } : {}),
-        ...(sendingResult.metadata ? { hookMetadata: sendingResult.metadata } : {}),
-        contentRewritten: false,
-        payload: params.payload,
-        payloadSummary: params.payloadSummary,
-      };
-    }
-    if (sendingResult?.content == null) {
-      return {
-        cancelled: false,
-        contentRewritten: false,
-        payload: params.payload,
-        payloadSummary: params.payloadSummary,
-      };
-    }
-    if (params.payloadSummary.hookContent && !params.payloadSummary.text) {
-      const spokenText = sendingResult.content;
-      return {
-        cancelled: false,
-        contentRewritten: true,
-        payload: {
-          ...params.payload,
-          spokenText,
-        },
-        payloadSummary: {
-          ...params.payloadSummary,
-          hookContent: spokenText,
-        },
-      };
-    }
-    const payload = {
-      ...params.payload,
-      text: sendingResult.content,
-    };
-    return {
-      cancelled: false,
-      contentRewritten: true,
-      payload,
-      payloadSummary: {
-        ...params.payloadSummary,
-        text: sendingResult.content,
-      },
-    };
-  } catch {
-    // Don't block delivery on hook failure.
-    return {
-      cancelled: false,
-      contentRewritten: false,
-      payload: params.payload,
-      payloadSummary: params.payloadSummary,
-    };
-  }
-}
-
 async function applyReplyPayloadSendingHook(params: {
   hook: QueuedReplyPayloadSendingHook | undefined;
   payload: ReplyPayload;
@@ -1375,6 +1199,14 @@ export async function deliverOutboundPayloadsInternal(
     }
   }
   const queuePolicy = params.queuePolicy ?? "best_effort";
+  // Persist only accepted post-policy content when the outer dispatcher already prepared hooks.
+  // Recovery uses the aligned indexes to avoid either replaying raw secrets or applying hooks twice.
+  const preparedHookPayloadIndexes = payloads.flatMap((payload, index) =>
+    params.lifecycleHookOwner === "caller" ||
+    getReplyPayloadMetadata(payload)?.outboundHookLifecycle?.state === "prepared"
+      ? [index]
+      : [],
+  );
   const queuePayloads = payloads.map(stripInternalRuntimeScaffoldingFromPayload);
   const queuePayloadsChanged = queuePayloads.some((payload, index) => payload !== payloads[index]);
   const renderedBatchPlan =
@@ -1394,6 +1226,7 @@ export async function deliverOutboundPayloadsInternal(
         queuePolicy,
         requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
         payloads: queuePayloads,
+        ...(preparedHookPayloadIndexes.length > 0 ? { preparedHookPayloadIndexes } : {}),
         renderedBatchPlan: queueRenderedBatchPlan,
         threadId: params.threadId,
         replyToId: params.replyToId,
@@ -1657,7 +1490,12 @@ async function deliverOutboundPayloadsWithQueueCleanup(
                       );
                     }
                     if (queuePolicy === "required") {
-                      throw err;
+                      throw toOutboundDeliveryError({
+                        error: err,
+                        results,
+                        payloadOutcomes: auditPayloadOutcomes ?? [],
+                        stage: "queue",
+                      });
                     }
                     log.warn(
                       hasSendEvidence
@@ -1763,7 +1601,9 @@ async function deliverOutboundPayloadsWithQueueCleanup(
         }),
       );
     }
-    throw err;
+    throw isMessageSentHookOwned(err) || isMessageSentHookOwned(deliveredResults)
+      ? markMessageSentHookOwned(err)
+      : err;
   }
 }
 
@@ -1773,13 +1613,17 @@ async function deliverOutboundPayloadsCore(
 ): Promise<OutboundDeliveryResult[]> {
   const { cfg, channel, to, payloads } = params;
   const directiveOptions = await resolveChannelOutboundDirectiveOptions({ cfg, channel });
-  const outboundPayloadPlan = createOutboundPayloadPlan(payloads, {
+  const outboundPayloadPlanContext = {
     cfg,
     sessionKey: params.session?.policyKey ?? params.session?.key,
     surface: channel,
     conversationType: params.session?.conversationType,
     extractMarkdownImages: directiveOptions.extractMarkdownImages,
-  });
+  };
+  const initialOutboundPayloadPlan = createOutboundPayloadPlan(
+    payloads,
+    outboundPayloadPlanContext,
+  );
   const accountId = params.accountId;
   const deps = params.deps;
   const abortSignal = params.abortSignal;
@@ -2047,7 +1891,6 @@ async function deliverOutboundPayloadsCore(
       await recordIdentifiedDeliveryResult(await sendHandler.sendText(unit.text, unit.overrides));
     }
   };
-  const normalizedPayloads = normalizePayloadsForChannelDelivery(outboundPayloadPlan, handler);
   const payloadOutcomes: OutboundPayloadDeliveryOutcome[] = [];
   const effectiveDeliveryKinds = new Map<number, OutboundPayloadDeliveryKind>();
   const recordPayloadOutcome = (outcome: OutboundPayloadDeliveryOutcome): void => {
@@ -2057,29 +1900,8 @@ async function deliverOutboundPayloadsCore(
     payloadOutcomes.push(recordedOutcome);
     params.onPayloadDeliveryOutcome?.(recordedOutcome);
   };
-  if (normalizedPayloads.length === 0) {
-    for (const [index] of payloads.entries()) {
-      recordPayloadOutcome(suppressedPayloadOutcome({ index, reason: "no_visible_payload" }));
-    }
-  } else {
-    const normalizedPayloadIndexes = new Set(normalizedPayloads.map((entry) => entry.index));
-    for (const [index] of payloads.entries()) {
-      if (!normalizedPayloadIndexes.has(index)) {
-        recordPayloadOutcome(suppressedPayloadOutcome({ index, reason: "no_visible_payload" }));
-      }
-    }
-  }
-  const deliveredMirrorPayloads: NormalizedOutboundPayload[] = [];
-  const recordDeliveredMirrorPayload = (
-    payloadSummary: NormalizedOutboundPayload,
-    deliveredResults: readonly OutboundDeliveryResult[],
-  ): void => {
-    if (!params.mirror || deliveredResults.length === 0) {
-      return;
-    }
-    deliveredMirrorPayloads.push(payloadSummary);
-  };
   const hookRunner = getGlobalHookRunner();
+  const ownsLifecycleHooks = params.lifecycleHookOwner !== "caller";
   // Canonical session key forwarded to internal lifecycle hooks
   // (`message:sent` event, `message_sending` plugin hook ctx, etc.). Mirror
   // delivery wins because mirror sends are explicitly bound to the mirror's
@@ -2092,17 +1914,39 @@ async function deliverOutboundPayloadsCore(
   const sessionKeyForInternalHooks = params.mirror?.sessionKey ?? params.session?.key;
   const mirrorIsGroup = params.mirror?.isGroup;
   const mirrorGroupId = params.mirror?.groupId;
-  const { emitMessageSent, hasMessageSentHooks } = createMessageSentEmitter({
-    hookRunner,
-    channel,
-    to,
-    accountId,
-    sessionKeyForInternalHooks,
-    mirrorIsGroup,
-    mirrorGroupId,
-  });
-  const hasMessageSendingHooks = hookRunner?.hasHooks("message_sending") ?? false;
+  const hasMessageSentHooks = ownsLifecycleHooks && (hookRunner?.hasHooks("message_sent") ?? false);
+  const emitMessageSent = ownsLifecycleHooks
+    ? createMessageSentHookEmitter({
+        channel,
+        to,
+        accountId,
+        sessionKey: sessionKeyForInternalHooks,
+        isGroup: mirrorIsGroup,
+        groupId: mirrorGroupId,
+      })
+    : () => {};
+  const hasMessageSendingHooks =
+    ownsLifecycleHooks && (hookRunner?.hasHooks("message_sending") ?? false);
   const diagnosticSessionKey = sessionKeyForDeliveryDiagnostics(params);
+  const preparedHookPayloadIndexes = new Set(params.preparedHookPayloadIndexes ?? []);
+  const plannedPayloadIndexes = new Set(
+    initialOutboundPayloadPlan.map((entry) => entry.sourceIndex),
+  );
+  for (const [index] of payloads.entries()) {
+    if (!plannedPayloadIndexes.has(index)) {
+      recordPayloadOutcome(suppressedPayloadOutcome({ index, reason: "no_visible_payload" }));
+    }
+  }
+  const deliveredMirrorPayloads: NormalizedOutboundPayload[] = [];
+  const recordDeliveredMirrorPayload = (
+    payloadSummary: NormalizedOutboundPayload,
+    deliveredResults: readonly OutboundDeliveryResult[],
+  ): void => {
+    if (!params.mirror || deliveredResults.length === 0) {
+      return;
+    }
+    deliveredMirrorPayloads.push(payloadSummary);
+  };
   if (hasMessageSentHooks && params.session?.agentId && !sessionKeyForInternalHooks) {
     log.warn(
       "deliverOutboundPayloads: session.agentId present without session key; internal message:sent hook will be skipped",
@@ -2113,10 +1957,22 @@ async function deliverOutboundPayloadsCore(
       },
     );
   }
-  for (const { index: payloadIndex, payload } of normalizedPayloads) {
+  for (const planEntry of initialOutboundPayloadPlan) {
+    const payloadIndex = planEntry.sourceIndex;
+    const sourcePayload = payloads[payloadIndex] ?? planEntry.payload;
     const payloadResultStartIndex = results.length;
-    let payloadSummary = buildPayloadSummary(payload);
-    const originalMediaCount = payloadSummary.mediaUrls.length;
+    let payloadSummary = buildPayloadSummary(planEntry.payload);
+    const preparedHookLifecycle = getReplyPayloadMetadata(sourcePayload)?.outboundHookLifecycle;
+    const hooksPreparedForThisAttempt =
+      preparedHookLifecycle?.state === "prepared" ||
+      preparedHookPayloadIndexes.has(payloadIndex) ||
+      !ownsLifecycleHooks;
+    const payloadRunId = preparedHookLifecycle?.runId ?? params.replyPayloadSendingHook?.runId;
+    const originalMediaCount = hooksPreparedForThisAttempt
+      ? (preparedHookLifecycle?.originalMediaCount ?? planEntry.parts.mediaCount)
+      : planEntry.parts.mediaCount;
+    let replyHookChanged = false;
+    let messageHookChanged = false;
     let deliveryKind: DiagnosticMessageDeliveryKind = "other";
     let deliveryStartedAt = 0;
     let deliveryStarted = false;
@@ -2160,54 +2016,108 @@ async function deliverOutboundPayloadsCore(
     };
     try {
       throwIfAborted(abortSignal);
+      let preparedPlan = planEntry;
+      if (!hooksPreparedForThisAttempt) {
+        const replyHookResult = await applyReplyPayloadSendingHook({
+          hook: params.replyPayloadSendingHook,
+          payload: planEntry.payload,
+        });
+        throwIfAborted(abortSignal);
+        replyHookChanged = replyHookResult.changed;
+        if (replyHookResult.cancelled) {
+          recordPayloadOutcome(
+            suppressedPayloadOutcome({
+              index: payloadIndex,
+              reason: "cancelled_by_reply_payload_sending_hook",
+            }),
+          );
+          continue;
+        }
 
-      const replyHookResult = await applyReplyPayloadSendingHook({
-        hook: params.replyPayloadSendingHook,
-        payload,
-      });
-      if (replyHookResult.cancelled) {
+        const replyHookPlan = createOutboundPayloadPlan(
+          [replyHookResult.payload],
+          outboundPayloadPlanContext,
+        )[0];
+        if (!replyHookPlan) {
+          recordPayloadOutcome(
+            suppressedPayloadOutcome({
+              index: payloadIndex,
+              reason: replyHookChanged
+                ? "empty_after_reply_payload_sending_hook"
+                : "no_visible_payload",
+            }),
+          );
+          continue;
+        }
+
+        const hookResult = await runMessageSendingHookForPayload({
+          hookRunner,
+          enabled: hasMessageSendingHooks,
+          payload: replyHookPlan.payload,
+          payloadSummary: summarizeOutboundPayloadForTransport(replyHookPlan.payload),
+          to,
+          channel,
+          accountId,
+          replyToId: resolveCurrentReplyTo(replyHookPlan.payload).replyToId,
+          threadId: params.threadId,
+          sessionKey: sessionKeyForInternalHooks,
+        });
+        throwIfAborted(abortSignal);
+        messageHookChanged = hookResult.contentRewritten;
+        if (hookResult.cancelled) {
+          const hookEffect =
+            hookResult.cancelReason || hookResult.hookMetadata
+              ? {
+                  ...(hookResult.cancelReason ? { cancelReason: hookResult.cancelReason } : {}),
+                  ...(hookResult.hookMetadata ? { metadata: hookResult.hookMetadata } : {}),
+                }
+              : undefined;
+          recordPayloadOutcome(
+            suppressedPayloadOutcome({
+              index: payloadIndex,
+              reason: "cancelled_by_message_sending_hook",
+              ...(hookEffect ? { hookEffect } : {}),
+            }),
+          );
+          continue;
+        }
+
+        const hookPreparedPlan = createOutboundPayloadPlan(
+          [hookResult.payload],
+          outboundPayloadPlanContext,
+        )[0];
+        if (!hookPreparedPlan) {
+          recordPayloadOutcome(
+            suppressedPayloadOutcome({
+              index: payloadIndex,
+              reason: messageHookChanged
+                ? "empty_after_message_sending_hook"
+                : replyHookChanged
+                  ? "empty_after_reply_payload_sending_hook"
+                  : "no_visible_payload",
+            }),
+          );
+          continue;
+        }
+        preparedPlan = { ...hookPreparedPlan, sourceIndex: payloadIndex };
+      }
+
+      const normalizedPayload = normalizePayloadsForChannelDelivery([preparedPlan], handler)[0];
+      if (!normalizedPayload) {
         recordPayloadOutcome(
           suppressedPayloadOutcome({
             index: payloadIndex,
-            reason: "cancelled_by_reply_payload_sending_hook",
+            reason: messageHookChanged
+              ? "empty_after_message_sending_hook"
+              : replyHookChanged
+                ? "empty_after_reply_payload_sending_hook"
+                : "no_visible_payload",
           }),
         );
         continue;
       }
-      let deliveryPayload = replyHookResult.payload;
+      const deliveryPayload = normalizedPayload.payload;
       payloadSummary = buildPayloadSummary(deliveryPayload);
-
-      // Run message_sending plugin hook (may modify content or cancel)
-      const hookResult = await applyMessageSendingHook({
-        hookRunner,
-        enabled: hasMessageSendingHooks,
-        payload: deliveryPayload,
-        payloadSummary,
-        to,
-        channel,
-        accountId,
-        replyToId: resolveCurrentReplyTo(deliveryPayload).replyToId,
-        threadId: params.threadId,
-        sessionKey: sessionKeyForInternalHooks,
-      });
-      if (hookResult.cancelled) {
-        const hookEffect =
-          hookResult.cancelReason || hookResult.hookMetadata
-            ? {
-                ...(hookResult.cancelReason ? { cancelReason: hookResult.cancelReason } : {}),
-                ...(hookResult.hookMetadata ? { metadata: hookResult.hookMetadata } : {}),
-              }
-            : undefined;
-        recordPayloadOutcome(
-          suppressedPayloadOutcome({
-            index: payloadIndex,
-            reason: "cancelled_by_message_sending_hook",
-            ...(hookEffect ? { hookEffect } : {}),
-          }),
-        );
-        continue;
-      }
-      deliveryPayload = hookResult.payload;
       const presentationHandler = await getDeliveryHandler(
         buildPayloadSummary(deliveryPayload).mediaUrls,
       );
@@ -2229,9 +2139,9 @@ async function deliverOutboundPayloadsCore(
         recordPayloadOutcome(
           suppressedPayloadOutcome({
             index: payloadIndex,
-            reason: hookResult.contentRewritten
+            reason: messageHookChanged
               ? "empty_after_message_sending_hook"
-              : replyHookResult.changed
+              : replyHookChanged
                 ? "empty_after_reply_payload_sending_hook"
                 : "no_visible_payload",
           }),
@@ -2321,6 +2231,7 @@ async function deliverOutboundPayloadsCore(
           success: true,
           content: payloadSummary.hookContent ?? payloadSummary.text,
           messageId: deliveredResults.at(-1)?.messageId,
+          ...(payloadRunId ? { runId: payloadRunId } : {}),
         });
         continue;
       }
@@ -2372,6 +2283,7 @@ async function deliverOutboundPayloadsCore(
           success: deliveredResults.length > 0,
           content: payloadSummary.hookContent ?? payloadSummary.text,
           messageId,
+          ...(payloadRunId ? { runId: payloadRunId } : {}),
         });
         continue;
       }
@@ -2429,6 +2341,7 @@ async function deliverOutboundPayloadsCore(
           success: deliveredResults.length > 0,
           content: payloadSummary.hookContent ?? payloadSummary.text,
           messageId,
+          ...(payloadRunId ? { runId: payloadRunId } : {}),
         });
         continue;
       }
@@ -2493,33 +2406,42 @@ async function deliverOutboundPayloadsCore(
         success: results.length > beforeCount,
         content: payloadSummary.hookContent ?? payloadSummary.text,
         messageId: lastMessageId,
+        ...(payloadRunId ? { runId: payloadRunId } : {}),
       });
     } catch (err) {
       // A rejected adapter has no final return to reconcile with its progress
       // results. Keep the results, but never match them to a later payload.
       reportedResults = [];
+      const failureStage: OutboundDeliveryFailureStage = deliveryStarted
+        ? "platform_send"
+        : "unknown";
       const failedPayloadResults = results.slice(payloadResultStartIndex);
       recordPayloadOutcome({
         index: payloadIndex,
         status: "failed",
         error: err,
         sentBeforeError: failedPayloadResults.length > 0,
-        stage: "platform_send",
+        stage: failureStage,
         results: failedPayloadResults,
       });
       errorDeliveryDiagnostics(err);
-      emitMessageSent({
-        success: false,
-        content: payloadSummary.hookContent ?? payloadSummary.text,
-        error: formatErrorMessage(err),
-      });
-      if (!params.bestEffort) {
-        throw toOutboundDeliveryError({
+      if (deliveryStarted) {
+        emitMessageSent({
+          success: false,
+          content: payloadSummary.hookContent ?? payloadSummary.text,
+          error: formatErrorMessage(err),
+          ...(payloadRunId ? { runId: payloadRunId } : {}),
+        });
+      }
+      // Cancellation is batch-terminal even in best-effort mode; do not run hooks for later items.
+      if (!params.bestEffort || abortSignal?.aborted) {
+        const deliveryError = toOutboundDeliveryError({
           error: err,
           results,
           payloadOutcomes,
-          stage: "platform_send",
+          stage: failureStage,
         });
+        throw ownsLifecycleHooks ? markMessageSentHookOwned(deliveryError) : deliveryError;
       }
       params.onError?.(err, payloadSummary);
     }
@@ -2564,6 +2486,6 @@ async function deliverOutboundPayloadsCore(
     }
   }
 
-  return results;
+  return ownsLifecycleHooks ? markMessageSentHookOwned(results) : results;
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

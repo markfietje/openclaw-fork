@@ -561,6 +561,13 @@ Decision rules:
   delivery, including replies routed back to the originating channel.
   Handlers run sequentially and each handler sees the latest payload produced
   by higher-priority handlers.
+- Automatic channel replies run `reply_payload_sending`, then `message_sending`,
+  then channel preparation and native delivery. Each modifying hook runs once
+  per logical payload in a live delivery attempt; durable recovery is a new
+  attempt and can run the hooks again.
+- While either modifying hook family is registered, channel-owned partial and
+  progress previews are buffered until the final payload is accepted. This
+  prevents unmodified content from appearing before a rewrite or cancellation.
 - `reply_payload_sending` payloads do not expose runtime trust markers such as
   `trustedLocalMedia`; plugins can edit payload shape but cannot grant local
   media trust.
@@ -569,7 +576,10 @@ Decision rules:
   delivery outcome with reason `cancelled_by_message_sending_hook`; legacy
   direct delivery keeps returning an empty result array for compatibility.
 - `message_sent` is observation-only. Handler failures are logged and do not
-  change the delivery result.
+  change the delivery result. It runs once for the logical payload after native
+  delivery succeeds or fails, not once per transport chunk.
+- These guarantees apply to canonical channel reply entry points. Deprecated
+  low-level dispatcher escape hatches retain their shipped callback contract.
 
 ## Install hooks
 

@@ -189,6 +189,10 @@ function createFeishuBotRuntime(overrides: DeepPartial<PluginRuntime> = {}): Plu
           queuedFinal: false,
           counts: { final: 1 },
         }),
+        dispatchInboundMessage: vi.fn().mockResolvedValue({
+          queuedFinal: false,
+          counts: { final: 1 },
+        }),
         withReplyDispatcher: withReplyDispatcherMock as never,
       },
       commands: {
@@ -1079,6 +1083,8 @@ describe("handleFeishuMessage command authorization", () => {
             formatAgentEnvelope: vi.fn((params: { body: string }) => params.body),
             finalizeInboundContext: mockFinalizeInboundContext as never,
             dispatchReplyFromConfig: mockDispatchReplyFromConfig,
+            dispatchInboundMessage:
+              mockDispatchReplyFromConfig as unknown as PluginRuntime["channel"]["reply"]["dispatchInboundMessage"],
             withReplyDispatcher: mockWithReplyDispatcher as never,
           },
           commands: {

@@ -312,6 +312,7 @@ function createRuntimeCore(
           options,
         })),
         dispatchReplyFromConfig: mockState.dispatchReplyFromConfig,
+        dispatchInboundMessage: mockState.dispatchReplyFromConfig,
         finalizeInboundContext: (context: unknown) => context,
         formatInboundEnvelope: (params: { channel: string; from: string; body: string }) =>
           `${params.channel} ${params.from}\n${params.body}`,

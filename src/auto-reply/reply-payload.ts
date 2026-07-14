@@ -213,6 +213,15 @@ export type ReplyPayloadMetadata = {
   foregroundDeliverySuppression?: {
     reason: "stale-foreground";
   };
+  /**
+   * Core outbound modifiers completed for this live logical delivery attempt.
+   * The durable queue persists the prepared index separately because WeakMap metadata is live-only.
+   */
+  outboundHookLifecycle?: {
+    state: "pending" | "prepared";
+    originalMediaCount: number;
+    runId?: string;
+  };
   /** Opaque owner for one final-delivery transcript capture on a shared dispatcher. */
   finalDeliveryCapture?: object;
   /** Durable pending-final intent represented by this runtime payload. */
@@ -278,6 +287,18 @@ export function isReplyPayloadNonTerminalToolErrorWarning(payload: object): bool
 export function copyReplyPayloadMetadata<T extends object>(source: object, payload: T): T {
   const metadata = getReplyPayloadMetadata(source);
   return metadata ? setReplyPayloadMetadata(payload, metadata) : payload;
+}
+
+/** Inherits source metadata while preserving values explicitly finalized on the target payload. */
+export function inheritReplyPayloadMetadata<T extends object>(source: object, payload: T): T {
+  const sourceMetadata = getReplyPayloadMetadata(source);
+  if (!sourceMetadata) {
+    return payload;
+  }
+  return setReplyPayloadMetadata(payload, {
+    ...sourceMetadata,
+    ...getReplyPayloadMetadata(payload),
+  });
 }
 
 /** Marks a notice payload as deliverable even when normal source replies are suppressed. */

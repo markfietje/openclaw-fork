@@ -90,6 +90,10 @@ export type PluginRuntimeChannel = {
   };
   reply: {
     dispatchReplyWithBufferedBlockDispatcher: DispatchReplyWithBufferedBlockDispatcher;
+    /** Canonical inbound reply entry point for runtime-created dispatchers. */
+    dispatchInboundMessage: typeof import("../../auto-reply/dispatch.js").dispatchInboundMessage;
+    /** Defers lifecycle observers until channel-owned native finalization settles. */
+    attachDeliveryCompletion: typeof import("../../auto-reply/reply/reply-dispatcher-after-deliver.js").attachReplyDispatchDeliveryCompletion;
     /**
      * @deprecated Prefer `openclaw/plugin-sdk/channel-outbound` adapters plus
      * `dispatchReplyWithBufferedBlockDispatcher` or channel turn helpers.

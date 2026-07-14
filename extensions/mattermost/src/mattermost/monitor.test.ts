@@ -388,7 +388,7 @@ describe("deliverMattermostReplyWithDraftPreview", () => {
     const deliverFinal = vi.fn(async () => {});
     const recordThreadParticipation = vi.fn();
 
-    await deliverMattermostReplyWithDraftPreview({
+    const result = await deliverMattermostReplyWithDraftPreview({
       payload: { text: "  \n > Reasoning:\n> _hidden_" } as never,
       info: { kind: "final" },
       kind: "channel",
@@ -407,6 +407,7 @@ describe("deliverMattermostReplyWithDraftPreview", () => {
     expect(draftStream.discardPending).not.toHaveBeenCalled();
     expect(draftStream.clear).not.toHaveBeenCalled();
     expect(updateMattermostPostSpy).not.toHaveBeenCalled();
+    expect(result).toEqual({ visibleReplySent: false });
     // No visible reply was sent, so the thread must not be marked as participated.
     expect(recordThreadParticipation).not.toHaveBeenCalled();
   });
@@ -416,7 +417,7 @@ describe("deliverMattermostReplyWithDraftPreview", () => {
     const deliverFinal = vi.fn(async () => {});
     const recordThreadParticipation = vi.fn();
 
-    await deliverMattermostReplyWithDraftPreview({
+    const result = await deliverMattermostReplyWithDraftPreview({
       payload: { text: "All good" } as never,
       info: { kind: "final" },
       kind: "channel",
@@ -437,6 +438,7 @@ describe("deliverMattermostReplyWithDraftPreview", () => {
     });
     expect(deliverFinal).not.toHaveBeenCalled();
     expect(recordThreadParticipation).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ visibleReplySent: true });
   });
 
   it("deletes the preview after a successful normal final send", async () => {

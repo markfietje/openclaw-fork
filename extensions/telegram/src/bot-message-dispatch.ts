@@ -77,7 +77,7 @@ import {
   type SessionEntry,
 } from "./bot-message-dispatch.runtime.js";
 import type { TelegramBotOptions } from "./bot.types.js";
-import { deliverReplies, emitInternalMessageSentHook } from "./bot/delivery.js";
+import { deliverReplies } from "./bot/delivery.js";
 import {
   buildTelegramGroupPeerId,
   buildTelegramGroupFrom,
@@ -115,6 +115,8 @@ import { canonicalizeTelegramPresentationPayload } from "./interactive-fallback.
 import {
   createLaneDeliveryStateTracker,
   createLaneTextDeliverer,
+  resolveLaneDeliveryContent,
+  resolveLaneDeliveryMessageId,
   type DraftLaneState,
   type LaneDeliveryResult,
   type LaneName,
@@ -141,6 +143,7 @@ import {
   createTelegramReasoningStepState,
   splitTelegramReasoningText,
 } from "./reasoning-lane-coordinator.js";
+import { noVisibleReplyDelivery, replyDeliveryResult } from "./reply-delivery-result.js";
 import { buildTelegramRichMarkdown, TELEGRAM_RICH_TEXT_LIMIT } from "./rich-message.js";
 import { editMessageTelegram } from "./send.js";
 import { getTelegramSequentialKey } from "./sequential-key.js";
@@ -1691,7 +1694,7 @@ export const dispatchTelegramMessage = async ({
     ) => {
       if (isDispatchSuperseded()) {
         await options?.promptContextSequence?.fail();
-        return false;
+        return noVisibleReplyDelivery;
       }
       const targetedPayload = applyQuoteReplyTarget(payload);
       const finalReplyTargetId = resolveTelegramReplyId(targetedPayload.replyToId);
@@ -1752,6 +1755,9 @@ export const dispatchTelegramMessage = async ({
               nativeQuote: !consumedSingleUseReply && usesNativeTelegramQuote(effectivePayload),
             },
           }),
+          // The surrounding buffered inbound dispatcher owns the canonical modifiers and
+          // after-delivery observers; nested durable delivery must not emit them again.
+          lifecycleHookOwner: "caller",
         });
         if (durable.status === "failed") {
           await projectionSequence.fail();
@@ -1759,11 +1765,15 @@ export const dispatchTelegramMessage = async ({
         }
         if (durable.status === "handled_visible") {
           deliveryState.markDelivered();
-          return true;
+          return replyDeliveryResult(
+            true,
+            durable.delivery.messageIds?.[0],
+            effectivePayload.text || effectivePayload.spokenText,
+          );
         }
         if (durable.status === "handled_no_send") {
           await projectionSequence.fail();
-          return false;
+          return noVisibleReplyDelivery;
         }
       }
       let result: Awaited<ReturnType<typeof deliverReplies>>;
@@ -1784,6 +1794,9 @@ export const dispatchTelegramMessage = async ({
           onVoiceRecording: sendRecordVoice,
           silent,
           mediaLoader: telegramDeps.loadWebMedia,
+          // The surrounding buffered inbound dispatcher owns the canonical modifiers and
+          // after-delivery observers; this transport send must not emit them again.
+          lifecycleHookOwner: "caller",
           promptContextSequence: projectionSequence,
           ...(options?.textMode ? { textMode: options.textMode } : {}),
         });
@@ -1793,26 +1806,20 @@ export const dispatchTelegramMessage = async ({
       }
       if (!result.delivered) {
         await projectionSequence.fail();
-        return false;
+        return noVisibleReplyDelivery;
       }
       await projectionSequence.finish();
       deliveryState.markDelivered();
-      return true;
+      return replyDeliveryResult(
+        true,
+        result.messageId ? String(result.messageId) : undefined,
+        effectivePayload.text || effectivePayload.spokenText,
+      );
     };
-    const emitPreviewFinalizedHook = async (result: LaneDeliveryResult) => {
+    const mirrorPreviewFinalizedTranscript = async (result: LaneDeliveryResult) => {
       if (isDispatchSuperseded() || result.kind !== "preview-finalized") {
         return;
       }
-      (telegramDeps.emitInternalMessageSentHook ?? emitInternalMessageSentHook)({
-        sessionKeyForInternalHooks: deliveryBaseOptions.sessionKeyForInternalHooks,
-        chatId: deliveryBaseOptions.chatId,
-        accountId: deliveryBaseOptions.accountId,
-        content: result.delivery.content,
-        success: true,
-        messageId: result.delivery.messageId,
-        isGroup: deliveryBaseOptions.mirrorIsGroup,
-        groupId: deliveryBaseOptions.mirrorGroupId,
-      });
       if (deliveryBaseOptions.transcriptMirror && result.delivery.content) {
         void deliveryBaseOptions
           .transcriptMirror({ text: result.delivery.content })
@@ -1901,7 +1908,7 @@ export const dispatchTelegramMessage = async ({
         durable: false,
       });
       activeAnswerBlockDelivery = undefined;
-      await emitPreviewFinalizedHook(result);
+      await mirrorPreviewFinalizedTranscript(result);
     };
     // The one-line activity digest for the collapse bar, or undefined when the
     // window never rendered (rv mode delivers everything durably — no bar) or
@@ -2003,17 +2010,21 @@ export const dispatchTelegramMessage = async ({
         // deliver the error below.
         progressSummaryDelivered = true;
         await teardownProgressWindow();
-        const delivered = await sendPayload(applyTextToPayload(payload, text), {
+        const delivery = await sendPayload(applyTextToPayload(payload, text), {
           afterAcceptedDraft,
           durable: true,
           promptContextSequence,
         });
-        if (!delivered) {
+        if (!delivery.visibleReplySent) {
           return { kind: "skipped" };
         }
         answerLane.finalized = true;
         markProgressFinalDelivered();
-        return { kind: "sent" };
+        return {
+          kind: "sent",
+          messageId: delivery.messageId,
+          ...(delivery.content === undefined ? {} : { content: delivery.content }),
+        };
       }
       // Snapshot the bar line BEFORE the final send so the final's own delivery
       // cannot perturb the counts/timer (and the once-guard fires exactly once).
@@ -2022,7 +2033,7 @@ export const dispatchTelegramMessage = async ({
       // THEN collapse the window above it. Editing the tall window down to a
       // one-line bar after the final is delivered keeps the shrink above the
       // anchor, so the final never scrolls off screen (edit-shrink anchor loss).
-      const delivered = await sendPayload(applyTextToPayload(payload, text), {
+      const delivery = await sendPayload(applyTextToPayload(payload, text), {
         afterAcceptedDraft,
         durable: true,
         promptContextSequence,
@@ -2038,12 +2049,16 @@ export const dispatchTelegramMessage = async ({
         // stale window down rather than leaving it above the final.
         await teardownProgressWindow();
       }
-      if (!delivered) {
+      if (!delivery.visibleReplySent) {
         return { kind: "skipped" };
       }
       answerLane.finalized = true;
       markProgressFinalDelivered();
-      return { kind: "sent" };
+      return {
+        kind: "sent",
+        messageId: delivery.messageId,
+        ...(delivery.content === undefined ? {} : { content: delivery.content }),
+      };
     };
     async function deliverFinalAnswerText(
       answerPayload: ReplyPayload,
@@ -2089,7 +2104,7 @@ export const dispatchTelegramMessage = async ({
         }
       }
       if (result.kind === "preview-finalized") {
-        await emitPreviewFinalizedHook(result);
+        await mirrorPreviewFinalizedTranscript(result);
       }
       return result;
     }
@@ -2158,7 +2173,6 @@ export const dispatchTelegramMessage = async ({
             record: dispatchContext.turn.record,
             runDispatch: () => {
               const sentBlockMediaUrls = new Set<string>();
-
               return telegramDeps.dispatchReplyWithBufferedBlockDispatcher({
                 ctx: ctxPayload,
                 cfg,
@@ -2175,22 +2189,23 @@ export const dispatchTelegramMessage = async ({
                   },
                   deliver: async (payload, info) => {
                     if (isDispatchSuperseded()) {
-                      return;
+                      return noVisibleReplyDelivery;
                     }
-
                     const normalizedPayload = normalizeDeliveryPayload(payload);
                     if (!normalizedPayload) {
-                      return;
+                      return noVisibleReplyDelivery;
                     }
                     const deduped =
                       info.kind === "final"
                         ? deduplicateBlockSentMedia(normalizedPayload, sentBlockMediaUrls)
                         : normalizedPayload;
                     if (deduped === undefined) {
-                      return;
+                      return noVisibleReplyDelivery;
                     }
                     const effectivePayload = deduped;
-
+                    let visibleReplySent = false;
+                    let messageId: string | undefined;
+                    let deliveryContent: string | undefined;
                     if (
                       shouldSuppressLocalTelegramExecApprovalPrompt({
                         cfg,
@@ -2199,7 +2214,7 @@ export const dispatchTelegramMessage = async ({
                       })
                     ) {
                       queuedFinal = true;
-                      return;
+                      return noVisibleReplyDelivery;
                     }
                     const telegramButtons = resolvePayloadTelegramInlineButtons(effectivePayload);
                     const lanePayload =
@@ -2236,12 +2251,11 @@ export const dispatchTelegramMessage = async ({
                       !reply.hasMedia &&
                       !hasExecApprovalPayload(effectivePayload)
                     ) {
-                      return;
+                      return noVisibleReplyDelivery;
                     }
                     if (payload.isError === true) {
                       hadErrorReplyFailureOrSkip = true;
                     }
-
                     const flushBufferedFinalAnswer = async () => {
                       const buffered =
                         reasoningStepState.takeBufferedFinalAnswer(replyFenceGeneration);
@@ -2249,14 +2263,16 @@ export const dispatchTelegramMessage = async ({
                         return;
                       }
                       const bufferedButtons = resolvePayloadTelegramInlineButtons(buffered.payload);
-                      await deliverFinalAnswerText(
+                      const result = await deliverFinalAnswerText(
                         buffered.payload,
                         buffered.text,
                         bufferedButtons,
                       );
+                      visibleReplySent ||= result.kind !== "skipped";
+                      messageId ??= resolveLaneDeliveryMessageId(result);
+                      deliveryContent = resolveLaneDeliveryContent(result) ?? deliveryContent;
                       reasoningStepState.resetForNextStep();
                     };
-
                     let blockDelivered = false;
                     const hasAnswerSegment = segments.some((segment) => segment.lane === "answer");
                     if (info.kind === "block" && !hasAnswerSegment) {
@@ -2282,12 +2298,12 @@ export const dispatchTelegramMessage = async ({
                         if (verboseProgressActive()) {
                           // Durable lane owns tool payloads: send standalone instead
                           // of diverting into the draft, which is discarded at final.
-                          if (
-                            await sendPayload(
-                              applyTextToPayload(effectivePayload, segment.update.text),
-                            )
-                          ) {
+                          const delivery = await sendPayload(
+                            applyTextToPayload(effectivePayload, segment.update.text),
+                          );
+                          if (delivery.visibleReplySent) {
                             blockDelivered = true;
+                            visibleReplySent = true;
                           }
                           continue;
                         }
@@ -2316,12 +2332,12 @@ export const dispatchTelegramMessage = async ({
                             }))
                           ) {
                             blockDelivered = true;
+                            visibleReplySent = true;
                             continue;
                           }
                         }
                         await prepareAnswerLaneForToolProgress();
                       }
-
                       const ownedByQueuedAnswerBlockRotation = queuedAnswerBlockRotations.some(
                         (entry) =>
                           queuedAnswerBlockRotationMatchesDelivery(
@@ -2330,7 +2346,6 @@ export const dispatchTelegramMessage = async ({
                             info.assistantMessageIndex,
                           ),
                       );
-
                       const skipTextOnlyBlock =
                         streamMode === "partial" &&
                         info.kind === "block" &&
@@ -2342,7 +2357,6 @@ export const dispatchTelegramMessage = async ({
                         !activeAnswerDraftIsToolProgressOnly &&
                         !ownedByQueuedAnswerBlockRotation &&
                         segment.update.text.trimEnd() === answerLane.lastPartialText.trimEnd();
-
                       // Progress mode: the window is a pure activity log — interim
                       // answer blocks (intermediate assistant messages before the
                       // final) never render into it (Discord parity). Buffer the
@@ -2410,7 +2424,7 @@ export const dispatchTelegramMessage = async ({
                         info.kind !== "final" &&
                         result.kind === "preview-finalized"
                       ) {
-                        await emitPreviewFinalizedHook(result);
+                        await mirrorPreviewFinalizedTranscript(result);
                       }
                       if (
                         segment.lane === "answer" &&
@@ -2424,6 +2438,11 @@ export const dispatchTelegramMessage = async ({
                         };
                       }
                       blockDelivered = blockDelivered || result.kind !== "skipped";
+                      visibleReplySent ||= result.kind !== "skipped";
+                      messageId ??= resolveLaneDeliveryMessageId(result);
+                      if (segment.lane === "answer") {
+                        deliveryContent = resolveLaneDeliveryContent(result) ?? deliveryContent;
+                      }
                       if (segment.lane === "reasoning") {
                         if (result.kind !== "skipped") {
                           reasoningStepState.noteReasoningDelivered();
@@ -2449,7 +2468,7 @@ export const dispatchTelegramMessage = async ({
 
                     if (segments.length > 0) {
                       trackBlockMedia(blockDelivered);
-                      return;
+                      return replyDeliveryResult(visibleReplySent, messageId, deliveryContent);
                     }
                     if (split.suppressedReasoningOnly) {
                       let delivered = false;
@@ -2464,9 +2483,12 @@ export const dispatchTelegramMessage = async ({
                           typeof effectivePayload.text === "string"
                             ? { ...effectivePayload, text: "" }
                             : effectivePayload;
-                        delivered = await sendPayload(payloadWithoutSuppressedReasoning, {
+                        const delivery = await sendPayload(payloadWithoutSuppressedReasoning, {
                           durable: info.kind === "final",
                         });
+                        delivered = delivery.visibleReplySent;
+                        messageId ??= delivery.messageId;
+                        deliveryContent = delivery.content ?? deliveryContent;
                       }
                       if (info.kind === "final" && delivered) {
                         markProgressFinalDelivered();
@@ -2475,7 +2497,8 @@ export const dispatchTelegramMessage = async ({
                         await flushBufferedFinalAnswer();
                       }
                       trackBlockMedia(delivered);
-                      return;
+                      visibleReplySent ||= delivered;
+                      return replyDeliveryResult(visibleReplySent, messageId, deliveryContent);
                     }
 
                     if (info.kind === "final") {
@@ -2489,11 +2512,14 @@ export const dispatchTelegramMessage = async ({
                       if (info.kind === "final") {
                         await flushBufferedFinalAnswer();
                       }
-                      return;
+                      return replyDeliveryResult(visibleReplySent, messageId, deliveryContent);
                     }
-                    const delivered = await sendPayload(effectivePayload, {
+                    const delivery = await sendPayload(effectivePayload, {
                       durable: info.kind === "final",
                     });
+                    const delivered = delivery.visibleReplySent;
+                    messageId ??= delivery.messageId;
+                    deliveryContent = delivery.content ?? deliveryContent;
                     if (info.kind === "final" && delivered) {
                       markProgressFinalDelivered();
                     }
@@ -2501,6 +2527,8 @@ export const dispatchTelegramMessage = async ({
                       await flushBufferedFinalAnswer();
                     }
                     trackBlockMedia(delivered);
+                    visibleReplySent ||= delivered;
+                    return replyDeliveryResult(visibleReplySent, messageId, deliveryContent);
                   },
                   onSkip: (payload, info) => {
                     if (info.kind === "block") {

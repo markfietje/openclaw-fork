@@ -126,6 +126,8 @@ function installFeishuLifecycleRuntime(params: {
         formatAgentEnvelope: vi.fn((value: { body: string }) => value.body),
         finalizeInboundContext: params.finalizeInboundContext,
         dispatchReplyFromConfig: params.dispatchReplyFromConfig,
+        dispatchInboundMessage:
+          params.dispatchReplyFromConfig as unknown as PluginRuntime["channel"]["reply"]["dispatchInboundMessage"],
         withReplyDispatcher: params.withReplyDispatcher,
       },
       commands: {

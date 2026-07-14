@@ -11,6 +11,10 @@ import {
   type OutboundDeliveryIntent,
   resolveOutboundDurableFinalDeliverySupport,
 } from "../../infra/outbound/deliver.js";
+import {
+  markMessageSentHookOwned,
+  markSuccessfulNativeDelivery,
+} from "../../infra/outbound/message-sent-hook.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
 import { deriveDurableFinalDeliveryRequirements } from "../message/capabilities.js";
 import { sendDurableMessageBatch } from "../message/send.js";
@@ -20,7 +24,14 @@ import type { ChannelDeliveryInfo, ChannelDeliveryResult } from "./types.js";
 /** Options controlling durable final delivery for inbound channel replies. */
 export type DurableInboundReplyDeliveryOptions = Pick<
   DeliverOutboundPayloadsParams,
-  "deps" | "formatting" | "identity" | "mediaAccess" | "replyToMode" | "silent" | "threadId"
+  | "deps"
+  | "formatting"
+  | "identity"
+  | "lifecycleHookOwner"
+  | "mediaAccess"
+  | "replyToMode"
+  | "silent"
+  | "threadId"
 > & {
   to?: string | null;
   replyToId?: string | null;
@@ -210,25 +221,44 @@ export async function deliverInboundReplyWithMessageSendContext(
     ...(durability === "required" ? { requireUnknownSendReconciliation: true } : {}),
     session,
     gatewayClientScopes: params.ctxPayload.GatewayClientScopes ?? [],
+    lifecycleHookOwner: params.lifecycleHookOwner,
   });
   if (send.status === "failed") {
-    return { status: "failed" as const, error: send.error };
-  }
-  if (send.status === "partial_failed") {
     return {
       status: "failed" as const,
-      error: markDurableInboundReplyDeliveryErrorVisible(send.error),
+      error:
+        send.stage === "platform_send" && params.lifecycleHookOwner !== "caller"
+          ? markMessageSentHookOwned(send.error)
+          : send.error,
+    };
+  }
+  if (send.status === "partial_failed") {
+    const visibleError = markDurableInboundReplyDeliveryErrorVisible(send.error);
+    if (send.stage === "queue") {
+      markSuccessfulNativeDelivery(visibleError, send.receipt.primaryPlatformMessageId);
+    }
+    const error =
+      params.lifecycleHookOwner === "caller"
+        ? visibleError
+        : markMessageSentHookOwned(visibleError);
+    return {
+      status: "failed" as const,
+      error,
       sentBeforeError: true,
     };
   }
 
-  const delivery = createChannelDeliveryResultFromReceipt({
+  const deliveryResult = createChannelDeliveryResultFromReceipt({
     receipt: send.receipt,
     threadId: stringifyThreadId(threadId),
     ...(replyToId ? { replyToId } : {}),
     visibleReplySent: send.status === "sent",
     ...(send.deliveryIntent ? { deliveryIntent: toDeliveryIntent(send.deliveryIntent) } : {}),
   });
+  const delivery =
+    params.lifecycleHookOwner === "caller"
+      ? deliveryResult
+      : markMessageSentHookOwned(deliveryResult);
   if (send.status === "suppressed") {
     return { status: "handled_no_send", reason: "no_visible_result", delivery };
   }

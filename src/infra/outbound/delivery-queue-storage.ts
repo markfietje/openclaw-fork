@@ -51,12 +51,10 @@ export type QueuedDeliveryPayload = {
   queuePolicy?: "required" | "best_effort";
   /** Caller preflight explicitly required provider unknown-send reconciliation. */
   requireUnknownSendReconciliation?: boolean;
-  /**
-   * Original payloads before plugin hooks. On recovery, hooks re-run on these
-   * payloads — this is intentional since hooks are stateless transforms and
-   * should produce the same result on replay.
-   */
+  /** Payloads accepted for durable replay; prepared entries contain only post-policy content. */
   payloads: ReplyPayload[];
+  /** Payload indexes whose modifying hooks completed before the durable intent was written. */
+  preparedHookPayloadIndexes?: number[];
   /** Replayable projection summary captured when the durable send intent is created. */
   renderedBatchPlan?: QueuedRenderedMessageBatchPlan;
   threadId?: string | number | null;
@@ -114,6 +112,7 @@ export async function enqueueDelivery(
     queuePolicy: params.queuePolicy,
     requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
     payloads: params.payloads,
+    preparedHookPayloadIndexes: params.preparedHookPayloadIndexes,
     renderedBatchPlan: params.renderedBatchPlan,
     threadId: params.threadId,
     replyToId: params.replyToId,

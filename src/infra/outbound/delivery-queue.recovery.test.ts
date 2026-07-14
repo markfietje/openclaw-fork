@@ -1393,6 +1393,7 @@ describe("delivery-queue recovery", () => {
         channel: "demo-channel-a",
         to: "+1",
         payloads: [{ text: "a" }],
+        preparedHookPayloadIndexes: [0],
         replyToId: "root-message",
         replyToMode: "first",
         formatting: {
@@ -1435,6 +1436,7 @@ describe("delivery-queue recovery", () => {
       formatting?: unknown;
       gatewayClientScopes?: string[];
       mirror?: unknown;
+      preparedHookPayloadIndexes?: number[];
       session?: unknown;
     };
     expect(deliverInput.bestEffort).toBe(true);
@@ -1463,6 +1465,7 @@ describe("delivery-queue recovery", () => {
       requesterSenderUsername: "sender.one",
       requesterSenderE164: "+15551234567",
     });
+    expect(deliverInput.preparedHookPayloadIndexes).toEqual([0]);
   });
 
   it("respects maxRecoveryMs time budget without bumping deferred retries", async () => {

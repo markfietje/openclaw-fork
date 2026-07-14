@@ -35,6 +35,7 @@ import {
 import {
   createMattermostReplyDeliveryBarrier,
   deliverMattermostReplyPayload,
+  isMattermostReplyDeliveryVisible,
 } from "./reply-delivery.js";
 import {
   buildModelsProviderData,
@@ -472,7 +473,6 @@ async function authorizeSlashInvocation(params: {
   const { account, cfg, client, commandText, channelId, senderId, senderName, log } = params;
   const core = getMattermostRuntime();
 
-  // Resolve channel info so we can enforce DM vs group/channel policies.
   let channelInfo: MattermostChannel | null = null;
   try {
     channelInfo = await fetchMattermostChannel(client, channelId);
@@ -632,7 +632,6 @@ export function createSlashCommandHttpHandler(params: SlashHttpHandlerParams) {
       return;
     }
 
-    // Extract command info
     const client = createMattermostClient({
       baseUrl: account.baseUrl ?? "",
       botToken: account.botToken ?? "",
@@ -654,7 +653,6 @@ export function createSlashCommandHttpHandler(params: SlashHttpHandlerParams) {
       return;
     }
 
-    // Extract command info
     const trigger = normalizeSlashCommandTrigger(payload.command);
     const commandText = resolveCommandText(trigger, payload.text, triggerMap);
     const channelId = payload.channel_id;
@@ -899,7 +897,7 @@ async function handleSlashCommandAsync(params: {
       onDeliverySettled: deliveryBarrier.markDeliverySettled,
       humanDelay,
       deliver: async (payload: ReplyPayload) => {
-        await deliverMattermostReplyPayload({
+        const outcome = await deliverMattermostReplyPayload({
           core,
           cfg,
           payload,
@@ -911,7 +909,9 @@ async function handleSlashCommandAsync(params: {
           sendMessage: sendMessageMattermost,
           onDmChannelResolution: deliveryBarrier.trackDmChannelResolution,
         });
-        runtime.log?.(`delivered slash reply to ${to}`);
+        const visibleReplySent = isMattermostReplyDeliveryVisible(outcome);
+        runtime.log?.(`mattermost slash reply outcome=${outcome} to=${to}`);
+        return { visibleReplySent };
       },
       onError: (err, info) => {
         runtime.error?.(
@@ -927,7 +927,7 @@ async function handleSlashCommandAsync(params: {
       markDispatchIdle();
     },
     run: () =>
-      core.channel.reply.dispatchReplyFromConfig({
+      core.channel.reply.dispatchInboundMessage({
         ctx: ctxPayload,
         cfg,
         dispatcher,

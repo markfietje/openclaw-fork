@@ -589,6 +589,10 @@ export function createPluginRuntimeMock(overrides: DeepPartial<PluginRuntime> = 
         dispatchReplyWithBufferedBlockDispatcher: vi.fn(
           async () => undefined,
         ) as unknown as PluginRuntime["channel"]["reply"]["dispatchReplyWithBufferedBlockDispatcher"],
+        dispatchInboundMessage:
+          vi.fn() as unknown as PluginRuntime["channel"]["reply"]["dispatchInboundMessage"],
+        attachDeliveryCompletion:
+          vi.fn() as unknown as PluginRuntime["channel"]["reply"]["attachDeliveryCompletion"],
         createReplyDispatcherWithTyping:
           vi.fn() as unknown as PluginRuntime["channel"]["reply"]["createReplyDispatcherWithTyping"],
         resolveEffectiveMessagesConfig:

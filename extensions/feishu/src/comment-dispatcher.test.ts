@@ -120,6 +120,7 @@ describe("createFeishuCommentReplyDispatcher", () => {
           chunkTextWithMode: vi.fn((text: string) => [text]),
         },
         reply: {
+          attachDeliveryCompletion: <T extends object>(result: T) => result,
           createReplyDispatcherWithTyping: createReplyDispatcherWithTypingMock,
           resolveHumanDelayConfig: vi.fn(() => undefined),
         },

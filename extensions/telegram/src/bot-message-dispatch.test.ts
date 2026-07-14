@@ -701,7 +701,10 @@ describe("dispatchTelegramMessage draft streaming", () => {
       minInitialChars: 30,
     });
     expect(draftStream.update).toHaveBeenCalledWith("Hello");
-    const delivery = expectDeliverRepliesParams({ thread: { id: 777, scope: "dm" } });
+    const delivery = expectDeliverRepliesParams({
+      lifecycleHookOwner: "caller",
+      thread: { id: 777, scope: "dm" },
+    });
     const mediaLocalRoots = delivery.mediaLocalRoots as string[] | undefined;
     expect(mediaLocalRoots?.some((root) => /[\\/]\.openclaw[\\/]workspace-work$/u.test(root))).toBe(
       true,
@@ -1433,8 +1436,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
         visibleReplySent: true,
       },
     });
+    let deliveryResult: unknown;
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
-      await dispatcherOptions.deliver({ text: "Hello queued" }, { kind: "final" });
+      deliveryResult = await dispatcherOptions.deliver({ text: "Hello queued" }, { kind: "final" });
       return { queuedFinal: true };
     });
 
@@ -1469,6 +1473,11 @@ describe("dispatchTelegramMessage draft streaming", () => {
       SenderId: "42",
       SenderName: "Alice",
       SenderUsername: "alice",
+    });
+    expect(deliveryResult).toEqual({
+      visibleReplySent: true,
+      messageId: "1001",
+      content: "Hello queued",
     });
     expect(deliverReplies).not.toHaveBeenCalled();
   });
@@ -2572,8 +2581,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
       text: "Final answer",
       timestamp: transcriptTimestamp,
     });
+    let deliveryResult: unknown;
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async ({ dispatcherOptions }) => {
-      await dispatcherOptions.deliver({ text: "Final answer" }, { kind: "final" });
+      deliveryResult = await dispatcherOptions.deliver({ text: "Final answer" }, { kind: "final" });
       return { queuedFinal: true };
     });
 
@@ -2583,10 +2593,12 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(answerDraftStream.stop).toHaveBeenCalled();
     expect(deliverReplies).not.toHaveBeenCalled();
     expect(editMessageTelegram).not.toHaveBeenCalled();
-    expectRecordFields(mockCallArg(emitInternalMessageSentHook), {
+    expect(deliveryResult).toEqual({
+      visibleReplySent: true,
+      messageId: "2001",
       content: "Final answer",
-      messageId: 2001,
     });
+    expect(emitInternalMessageSentHook).not.toHaveBeenCalled();
     expectRecordFields(mockCallArg(recordOutboundMessageForPromptContext), {
       account: {
         accountId: "default",
@@ -3082,10 +3094,14 @@ describe("dispatchTelegramMessage draft streaming", () => {
       text: fullAnswer,
       timestamp: Date.now() + 1_000,
     });
+    let deliveryResult: unknown;
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
         await replyOptions?.onPartialReply?.({ text: fullAnswer });
-        await dispatcherOptions.deliver({ text: truncatedFinal }, { kind: "final" });
+        deliveryResult = await dispatcherOptions.deliver(
+          { text: truncatedFinal },
+          { kind: "final" },
+        );
         return { queuedFinal: true };
       },
     );
@@ -3094,10 +3110,12 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
     expect(answerDraftStream.update).toHaveBeenCalledWith(fullAnswer);
     expect(answerDraftStream.update).not.toHaveBeenCalledWith(truncatedFinal);
-    expectRecordFields(mockCallArg(emitInternalMessageSentHook), {
+    expect(deliveryResult).toMatchObject({
+      visibleReplySent: true,
+      messageId: "2001",
       content: fullAnswer,
-      messageId: 2001,
     });
+    expect(emitInternalMessageSentHook).not.toHaveBeenCalled();
     expectRecordFields(mockCallArg(appendAssistantMirrorMessageByIdentity), {
       agentId: "default",
       sessionId: "s1",
@@ -4993,10 +5011,14 @@ describe("dispatchTelegramMessage draft streaming", () => {
       text: fullAnswer,
       timestamp: Date.now() + 1_000,
     });
+    let deliveryResult: unknown;
     dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
       async ({ dispatcherOptions, replyOptions }) => {
         await replyOptions?.onToolStart?.({ name: "exec", phase: "start" });
-        await dispatcherOptions.deliver({ text: truncatedFinal }, { kind: "final" });
+        deliveryResult = await dispatcherOptions.deliver(
+          { text: truncatedFinal },
+          { kind: "final" },
+        );
         return { queuedFinal: true };
       },
     );
@@ -5009,6 +5031,10 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
     expectWindowCollapsedTo(answerDraftStream, "🛠️ 1 tool call · ⏱️ 1s");
     expectDeliveredReply(0, { text: fullAnswer });
+    expect(deliveryResult).toMatchObject({
+      visibleReplySent: true,
+      content: fullAnswer,
+    });
   });
 
   it("hands the complete long final to draft-owned pagination", async () => {
@@ -5903,10 +5929,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
     expect(deliverReplies).toHaveBeenCalledTimes(2);
     expect(answerDraftStream.update).toHaveBeenCalledWith("Buffered answer");
-    expectRecordFields(mockCallArg(emitInternalMessageSentHook), {
-      content: "Buffered answer",
-      messageId: 2001,
-    });
+    expect(emitInternalMessageSentHook).not.toHaveBeenCalled();
     expectRecordFields(mockCallArg(recordOutboundMessageForPromptContext), {
       messageId: 2001,
       text: "Buffered answer",
@@ -5938,10 +5961,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(answerDraftStream.update).toHaveBeenCalledWith("Answer");
     expect(answerDraftStream.stop).toHaveBeenCalled();
     expect(deliverReplies).not.toHaveBeenCalled();
-    expectRecordFields(mockCallArg(emitInternalMessageSentHook), {
-      content: "Answer",
-      messageId: 2001,
-    });
+    expect(emitInternalMessageSentHook).not.toHaveBeenCalled();
     expectRecordFields(mockCallArg(recordOutboundMessageForPromptContext), {
       chatId: "-100123",
       messageId: 2001,
@@ -7480,10 +7500,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(answerDraftStream.stop).toHaveBeenCalled();
     expect(answerDraftStream.clear).not.toHaveBeenCalled();
     expect(deliverReplies).not.toHaveBeenCalled();
-    expectRecordFields(mockCallArg(emitInternalMessageSentHook), {
-      content: "block-only answer",
-      messageId: 2001,
-    });
+    expect(emitInternalMessageSentHook).not.toHaveBeenCalled();
   });
 
   it("delivers a block-only answer when a native quote disables the draft stream", async () => {
@@ -7565,10 +7582,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
     expect(answerDraftStream.stop).toHaveBeenCalled();
     expect(answerDraftStream.clear).not.toHaveBeenCalled();
-    expectRecordFields(mockCallArg(emitInternalMessageSentHook), {
-      content: "partial answer",
-      messageId: 2001,
-    });
+    expect(emitInternalMessageSentHook).not.toHaveBeenCalled();
     expectRecordFields(mockCallArg(recordOutboundMessageForPromptContext), {
       text: "partial answer",
       messageId: 2001,
@@ -7639,10 +7653,7 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
     expect(answerDraftStream.stop).toHaveBeenCalled();
     expect(answerDraftStream.clear).not.toHaveBeenCalled();
-    expectRecordFields(mockCallArg(emitInternalMessageSentHook), {
-      content: "pending answer",
-      messageId: 2001,
-    });
+    expect(emitInternalMessageSentHook).not.toHaveBeenCalled();
   });
 
   it("keeps queued room events abortable after their source dispatch returns", async () => {

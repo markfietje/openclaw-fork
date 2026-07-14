@@ -110,11 +110,11 @@ import { resolveTelegramGroupPromptSettings } from "./group-config-helpers.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 import { buildInlineKeyboard } from "./inline-keyboard.js";
 import { buildTelegramNativeCommandCallbackData } from "./native-command-callback-data.js";
+import { replyDeliveryResult } from "./reply-delivery-result.js";
 import { recordSentMessage } from "./sent-message-cache.js";
 import { getTopicName, resolveTopicNameCacheScope } from "./topic-name-cache.js";
 
 export { parseTelegramNativeCommandCallbackData } from "./native-command-callback-data.js";
-
 const EMPTY_RESPONSE_FALLBACK = "No response generated. Please try again.";
 const activeTelegramCodexLoginFlows = new Map<string, { expiresAt: number }>();
 
@@ -1668,7 +1668,6 @@ export const registerTelegramNativeCommands = ({
           channel: "telegram",
           accountId: route.accountId,
         });
-
         await telegramDeps.dispatchReplyWithBufferedBlockDispatcher({
           ctx: ctxPayload,
           cfg: runtimeCfg,
@@ -1684,7 +1683,7 @@ export const registerTelegramNativeCommands = ({
                 })
               ) {
                 deliveryState.delivered = true;
-                return;
+                return { visibleReplySent: false };
               }
               const result = await deliverReplies({
                 replies: [
@@ -1696,11 +1695,15 @@ export const registerTelegramNativeCommands = ({
                       },
                 ],
                 ...deliveryBaseOptions,
+                // The core buffered inbound dispatcher owns the canonical modifiers and
+                // after-delivery observers; this transport send must not emit them again.
+                lifecycleHookOwner: "caller",
                 silent: runtimeTelegramCfg.silentErrorReplies === true && payload.isError === true,
               });
               if (result.delivered) {
                 deliveryState.delivered = true;
               }
+              return replyDeliveryResult(result.delivered, result.messageId);
             },
             onSkip: (_payload, info) => {
               if (info.reason !== "silent") {
@@ -1725,7 +1728,6 @@ export const registerTelegramNativeCommands = ({
         }
       });
     }
-
     for (const pluginCommand of pluginCatalog.commands) {
       bot.command(pluginCommand.command, async (ctx: TelegramNativeCommandContext) => {
         const msg = ctx.message;

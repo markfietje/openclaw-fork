@@ -185,6 +185,7 @@ function buildRecoveryDeliverParams(entry: QueuedDelivery, cfg: OpenClawConfig, 
       ? { requireUnknownSendReconciliation: true }
       : {}),
     payloads: entry.payloads,
+    preparedHookPayloadIndexes: entry.preparedHookPayloadIndexes,
     renderedBatchPlan: entry.renderedBatchPlan,
     threadId: entry.threadId,
     replyToId: entry.replyToId,

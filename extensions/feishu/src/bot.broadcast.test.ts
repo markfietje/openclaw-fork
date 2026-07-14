@@ -108,6 +108,7 @@ describe("broadcast dispatch", () => {
         finalizeInboundContext:
           mockFinalizeInboundContext as unknown as PluginRuntime["channel"]["reply"]["finalizeInboundContext"],
         dispatchReplyFromConfig: mockDispatchReplyFromConfig,
+        dispatchInboundMessage: mockDispatchReplyFromConfig,
         withReplyDispatcher:
           mockWithReplyDispatcher as unknown as PluginRuntime["channel"]["reply"]["withReplyDispatcher"],
       },

@@ -16,7 +16,11 @@ import {
   shouldComputeCommandAuthorized,
 } from "../../auto-reply/command-detection.js";
 import { shouldHandleTextCommands } from "../../auto-reply/commands-registry.js";
-import { settleReplyDispatcher, withReplyDispatcher } from "../../auto-reply/dispatch.js";
+import {
+  dispatchInboundMessage,
+  settleReplyDispatcher,
+  withReplyDispatcher,
+} from "../../auto-reply/dispatch.js";
 import {
   formatAgentEnvelope,
   formatInboundEnvelope,
@@ -34,6 +38,7 @@ import {
   matchesMentionWithExplicit,
 } from "../../auto-reply/reply/mentions.js";
 import { dispatchReplyWithBufferedBlockDispatcher } from "../../auto-reply/reply/provider-dispatcher.js";
+import { attachReplyDispatchDeliveryCompletion } from "../../auto-reply/reply/reply-dispatcher-after-deliver.js";
 import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.js";
 import {
   createAckReactionHandle,
@@ -113,6 +118,8 @@ export function createRuntimeChannel(): PluginRuntime["channel"] {
     },
     reply: {
       dispatchReplyWithBufferedBlockDispatcher,
+      dispatchInboundMessage,
+      attachDeliveryCompletion: attachReplyDispatchDeliveryCompletion,
       createReplyDispatcherWithTyping,
       resolveEffectiveMessagesConfig,
       resolveHumanDelayConfig,

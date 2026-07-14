@@ -14,8 +14,6 @@ import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-tr
 import { resolveGlobalMap } from "../../../shared/global-singleton.js";
 import {
   buildCollectPrompt,
-  buildQueueSummaryLine,
-  buildQueueSummaryPrompt,
   beginQueueDrain,
   clearQueueSummaryState,
   drainCollectQueueStep,
@@ -123,6 +121,33 @@ export function resolveFollowupAuthorizationKey(run: FollowupRun["run"]): string
     run.bashElevated?.allowed === true,
     run.bashElevated?.defaultLevel ?? "",
   ]);
+}
+
+function splitCollectItemsByAuthorization(items: FollowupRun[]): FollowupRun[][] {
+  if (items.length <= 1) {
+    return items.length === 0 ? [] : [items];
+  }
+
+  const groups: FollowupRun[][] = [];
+  let currentGroup: FollowupRun[] = [];
+  let currentKey: string | undefined;
+
+  for (const item of items) {
+    const itemKey = resolveFollowupAuthorizationKey(item.run);
+    if (currentGroup.length === 0 || itemKey === currentKey) {
+      currentGroup.push(item);
+      currentKey = itemKey;
+      continue;
+    }
+    groups.push(currentGroup);
+    currentGroup = [item];
+    currentKey = itemKey;
+  }
+
+  if (currentGroup.length > 0) {
+    groups.push(currentGroup);
+  }
+  return groups;
 }
 
 export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {

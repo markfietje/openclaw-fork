@@ -107,12 +107,19 @@ export function shouldSkipPluginValidationForDoctorConfigPreflight(
   return isTruthyEnvValue(env.OPENCLAW_UPDATE_IN_PROGRESS);
 }
 
-function noteStateMigrationResult(result: { changes: string[]; warnings: string[] }): void {
+function noteStateMigrationResult(result: {
+  changes: string[];
+  warnings: string[];
+  notices?: string[];
+}): void {
   if (result.changes.length > 0) {
     note(result.changes.map((entry) => `- ${entry}`).join("\n"), "Doctor changes");
   }
   if (result.warnings.length > 0) {
     note(result.warnings.map((entry) => `- ${entry}`).join("\n"), "Doctor warnings");
+  }
+  if (result.notices && result.notices.length > 0) {
+    note(result.notices.map((entry) => `- ${entry}`).join("\n"), "Doctor notes");
   }
 }
 
@@ -130,210 +137,22 @@ export async function runDoctorConfigPreflight(
     recoverCorruptTargetStore?: boolean;
     invalidConfigNote?: string | false;
     beforeStateMigrations?: (snapshot?: ConfigFileSnapshot) => Promise<boolean>;
-    requireStartupMigrationCheckpoint?: boolean;
-    /**
-     * Allows legacy imports whose source lives in the DEFAULT home state dir
-     * while OPENCLAW_STATE_DIR points elsewhere. Only explicit doctor repair
-     * runs opt in; the implicit CLI/gateway preflight must never archive
-     * files that belong to another install's state dir.
-     */
+    /** Explicit doctor repair may import approval state from the default state directory. */
     crossStateDirImports?: boolean;
   } = {},
 ): Promise<DoctorConfigPreflightResult> {
   const stateMigrations =
     options.migrateState !== false ? await loadDoctorStateMigrations() : undefined;
-  const startupCheckpoint =
-    options.requireStartupMigrationCheckpoint === true
-      ? await import("../infra/startup-migration-checkpoint.js")
-      : undefined;
-  let startupMigrationEnv = process.env;
-  let shouldRecordStartupCheckpoint = false;
-  let startupMigrationLease: StartupMigrationLease | undefined;
-  let startupMigrationHeartbeat: ReturnType<typeof setInterval> | undefined;
-  let startupMigrationHeartbeatError: unknown;
-  const startupMigrationWarnings: string[] = [];
-  const noteStartupStateMigrationResult = (result: {
-    changes: string[];
-    warnings: string[];
-    notices?: string[];
-  }) => {
-    startupMigrationWarnings.push(...result.warnings);
-    noteStateMigrationResult(result);
-  };
-  try {
-    // The gateway uses this last-moment guard to ensure its prepared config did not change before
-    // any automatic migration mutates state. A rejected guard skips every state migration stage.
-    const stateMigrationsAllowed =
-      stateMigrations === undefined ||
-      options.beforeStateMigrations === undefined ||
-      (await options.beforeStateMigrations());
-    if (startupCheckpoint && !stateMigrationsAllowed) {
-      throwStartupMigrationGuardRejected();
-    }
-    if (startupCheckpoint) {
-      // Later config reads can apply state selectors. Pin the accepted lease target for its lifetime.
-      startupMigrationEnv = cloneEnvWithPlatformSemantics(process.env);
-      shouldRecordStartupCheckpoint = startupCheckpoint.needsStartupMigrationCheckpoint({
-        env: startupMigrationEnv,
-      });
-      startupMigrationLease = shouldRecordStartupCheckpoint
-        ? startupCheckpoint.acquireStartupMigrationLease({ env: startupMigrationEnv })
-        : undefined;
-      if (startupMigrationLease) {
-        startupMigrationHeartbeat = setInterval(() => {
-          try {
-            startupMigrationLease?.heartbeat();
-          } catch (error) {
-            startupMigrationHeartbeatError = error;
-          }
-        }, 60_000);
-        startupMigrationHeartbeat.unref?.();
-      }
-    }
-    if (stateMigrations && stateMigrationsAllowed) {
-      const { autoMigrateLegacyStateDir } = stateMigrations;
-      const stateDirResult = await autoMigrateLegacyStateDir({ env: process.env });
-      noteStartupStateMigrationResult(stateDirResult);
-    }
-
-    if (options.migrateLegacyConfig !== false) {
-      const legacyConfigChanges = await maybeMigrateLegacyConfig();
-      if (legacyConfigChanges.length > 0) {
-        note(legacyConfigChanges.map((entry) => `- ${entry}`).join("\n"), "Doctor changes");
-      }
-    }
-
-    const readOptions = {
-      skipPluginValidation: shouldSkipPluginValidationForDoctorConfigPreflight(),
-    };
-    let snapshot = addDoctorLegacyIssues(await readConfigFileSnapshot(readOptions));
-    if (options.repairPrefixedConfig === true && snapshot.exists && !snapshot.valid) {
-      if (await recoverConfigFromJsonRootSuffix(snapshot)) {
-        note(
-          "Removed non-JSON prefix from openclaw.json; original saved as .clobbered.*.",
-          "Config",
-        );
-        snapshot = addDoctorLegacyIssues(await readConfigFileSnapshot(readOptions));
-      } else if (
-        await recoverConfigFromLastKnownGood({ snapshot, reason: "doctor-invalid-config" })
-      ) {
-        note(
-          "Restored openclaw.json from last-known-good; original saved as .clobbered.*.",
-          "Config",
-        );
-        snapshot = addDoctorLegacyIssues(await readConfigFileSnapshot(readOptions));
-      }
-    }
-    const invalidConfigNote =
-      options.invalidConfigNote ?? "Config invalid; doctor will run with best-effort config.";
-    if (
-      invalidConfigNote &&
-      snapshot.exists &&
-      !snapshot.valid &&
-      snapshot.legacyIssues.length === 0
-    ) {
-      note(invalidConfigNote, "Config");
-      noteIncludeConfinementWarning(snapshot);
-    }
-
-    const warnings = snapshot.warnings ?? [];
-    if (warnings.length > 0) {
-      note(formatConfigIssueLines(warnings, "-").join("\n"), "Config warnings");
-    }
-
-    const baseConfig = snapshot.sourceConfig ?? snapshot.config ?? {};
-    const stateMigrationInput = resolveStateMigrationConfigInput({ snapshot, baseConfig });
-    const freshConfigGuardAllowed =
-      stateMigrations === undefined ||
-      !stateMigrationsAllowed ||
-      options.beforeStateMigrations === undefined ||
-      (await options.beforeStateMigrations(snapshot));
-    if (startupCheckpoint && !freshConfigGuardAllowed) {
-      throwStartupMigrationGuardRejected();
-    }
-    if (stateMigrations && stateMigrationsAllowed && freshConfigGuardAllowed) {
-      const {
-        autoMigrateLegacyState,
-        autoMigrateLegacyPluginDoctorState,
-        autoMigrateLegacyTaskStateSidecars,
-      } = stateMigrations;
-      if (stateMigrationInput) {
-        if (stateMigrationInput.cfg) {
-          const { repairLegacyCronStoreWithoutPrompt } = await loadDoctorCron();
-          const cronResult = await repairLegacyCronStoreWithoutPrompt({
-            cfg: stateMigrationInput.cfg,
-          });
-          noteStartupStateMigrationResult(cronResult);
-          noteStartupStateMigrationResult(
-            await autoMigrateLegacyState({
-              cfg: stateMigrationInput.cfg,
-              ...(stateMigrationInput.pluginDoctorConfig
-                ? { pluginDoctorConfig: stateMigrationInput.pluginDoctorConfig }
-                : {}),
-              env: process.env,
-              recoverCorruptTargetStore: options.recoverCorruptTargetStore,
-              crossStateDirImports: options.crossStateDirImports,
-            }),
-          );
-        } else if (stateMigrationInput.pluginDoctorConfig) {
-          noteStartupStateMigrationResult(
-            await autoMigrateLegacyPluginDoctorState({
-              config: stateMigrationInput.pluginDoctorConfig,
-              env: process.env,
-            }),
-          );
-          noteStartupStateMigrationResult(
-            await autoMigrateLegacyTaskStateSidecars({
-              env: process.env,
-              crossStateDirImports: options.crossStateDirImports,
-            }),
-          );
-        }
-      } else {
-        noteStartupStateMigrationResult(
-          await autoMigrateLegacyTaskStateSidecars({
-            env: process.env,
-            crossStateDirImports: options.crossStateDirImports,
-          }),
-        );
-      }
-    }
-
-    if (shouldRecordStartupCheckpoint) {
-      if (startupMigrationHeartbeatError) {
-        throw startupMigrationHeartbeatError instanceof Error
-          ? startupMigrationHeartbeatError
-          : new Error("OpenClaw startup migration lease heartbeat failed.");
-      }
-      const blockers =
-        startupMigrationWarnings.length > 0
-          ? []
-          : snapshot.valid
-            ? await runStartupUpgradeConvergence({ cfg: baseConfig, env: process.env })
-            : ['OpenClaw config is invalid; run "openclaw doctor --fix" before startup.'];
-      if (startupMigrationWarnings.length > 0 || blockers.length > 0) {
-        throw new Error(
-          formatStartupMigrationFailure({
-            warnings: startupMigrationWarnings,
-            blockers,
-          }),
-        );
-      }
-      startupCheckpoint?.recordSuccessfulStartupMigrations({
-        env: startupMigrationEnv,
-        lease: startupMigrationLease,
-      });
-    }
-
-    return {
-      snapshot,
-      baseConfig,
-    };
-  } finally {
-    if (startupMigrationHeartbeat) {
-      clearInterval(startupMigrationHeartbeat);
-    }
-    startupMigrationLease?.release();
+  // The gateway uses this last-moment guard to ensure its prepared config did not change before
+  // any automatic migration mutates state. A rejected guard skips every state migration stage.
+  const stateMigrationsAllowed =
+    stateMigrations === undefined ||
+    options.beforeStateMigrations === undefined ||
+    (await options.beforeStateMigrations());
+  if (stateMigrations && stateMigrationsAllowed) {
+    const { autoMigrateLegacyStateDir } = stateMigrations;
+    const stateDirResult = await autoMigrateLegacyStateDir({ env: process.env });
+    noteStateMigrationResult(stateDirResult);
   }
 
   if (options.migrateLegacyConfig !== false) {
@@ -395,10 +214,16 @@ export async function runDoctorConfigPreflight(
           cfg: baseConfig,
           env: process.env,
           recoverCorruptTargetStore: options.recoverCorruptTargetStore,
+          crossStateDirImports: options.crossStateDirImports,
         }),
       );
     } else {
-      noteStateMigrationResult(await autoMigrateLegacyTaskStateSidecars({ env: process.env }));
+      noteStateMigrationResult(
+        await autoMigrateLegacyTaskStateSidecars({
+          env: process.env,
+          crossStateDirImports: options.crossStateDirImports,
+        }),
+      );
     }
   }
 

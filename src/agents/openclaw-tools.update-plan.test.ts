@@ -77,9 +77,7 @@ describe("openclaw-tools update_plan gating", () => {
         tools: { allow: ["update_plan"] },
         transcripts: { enabled: true },
       } as OpenClawConfig,
-      cwd: "/repo",
       enableHeartbeatTool: true,
-      taskSuggestionDeliveryMode: "gateway",
     });
 
     expect(emittedNames.filter((name) => !describedNames.has(name))).toEqual([]);

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeStateDirDotEnv } from "../config/test-helpers.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { collectPreservedExistingServiceEnvVars } from "./daemon-install-helpers.js";
 
 const mocks = vi.hoisted(() => ({
@@ -485,6 +486,7 @@ describe("buildGatewayInstallPlan", () => {
         models: {
           providers: {
             openai: {
+              baseUrl: "https://api.openai.com/v1",
               apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
               models: [],
             },
@@ -538,7 +540,7 @@ describe("buildGatewayInstallPlan", () => {
             token: { source: "exec", provider: "onepassword", id: "value" },
           },
         },
-      },
+      } as unknown as OpenClawConfig,
     });
 
     expect(plan.environment.OP_CONNECT_TOKEN).toBe("op-connect-token");
@@ -1287,7 +1289,7 @@ describe("buildGatewayInstallPlan — dotenv merge", () => {
             },
           },
         },
-      },
+      } as unknown as OpenClawConfig,
     });
 
     expect(plan.environment.TELEGRAM_DEFAULT_BOTTOKEN).toBe("telegram-shell-token");

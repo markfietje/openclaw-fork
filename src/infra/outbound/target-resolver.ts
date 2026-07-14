@@ -11,7 +11,11 @@ import type {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
 import { buildDirectoryCacheKey, DirectoryCache } from "./directory-cache.js";
-import { ambiguousTargetError, unknownTargetError } from "./target-errors.js";
+import {
+  ambiguousTargetError,
+  reservedTargetLiteralError,
+  unknownTargetError,
+} from "./target-errors.js";
 import { maybeResolveIdLikeTarget, type ResolvedIdLikeTarget } from "./target-id-resolution.js";
 import {
   buildTargetResolverSignature,
@@ -20,6 +24,7 @@ import {
   normalizeChannelTargetInput,
   normalizeTargetForProvider,
   resolveNormalizedTargetInput,
+  resolveReservedTargetLiteral,
 } from "./target-normalization.js";
 
 /** Directory-backed destination kind used by outbound target resolution. */
@@ -398,8 +403,10 @@ export async function resolveMessagingTarget(params: {
   const kind = detectTargetKind(params.channel, raw, params.preferredKind, plugin);
   const normalizedInput = resolveNormalizedTargetInput(params.channel, raw, plugin);
   const normalized = normalizedInput?.normalized ?? raw;
+  const reservedLiteral = resolveReservedTargetLiteral({ raw, plugin });
   if (
     normalizedInput &&
+    !reservedLiteral &&
     looksLikeTargetId({
       channel: params.channel,
       raw: normalizedInput.raw,
@@ -473,6 +480,9 @@ export async function resolveMessagingTarget(params: {
       error: ambiguousTargetError(providerLabel, raw, hint),
       candidates: match.entries,
     };
+  }
+  if (reservedLiteral) {
+    return { ok: false, error: reservedTargetLiteralError(providerLabel, reservedLiteral, hint) };
   }
   const resolvedFallbackTarget = asResolvedMessagingTarget(
     await maybeResolvePluginMessagingTarget({

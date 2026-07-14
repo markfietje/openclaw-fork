@@ -986,7 +986,7 @@ describe("runMessageAction plugin dispatch", () => {
     });
 
     it.each([
-      ["a caller-owned deadline", true, null],
+      ["a caller-owned deadline", true, 9 * 60_000],
       ["one bounded wait without a caller signal", false, 60_000],
     ] as const)(
       "reattaches a timed-out gateway send with %s and the original idempotency key",

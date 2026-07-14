@@ -38,6 +38,7 @@ export const CORE_TOOL_FACTORY_DESCRIPTORS = [
   { name: "skill_workshop", family: "openclaw" },
   { name: "create_goal", family: "openclaw" },
   { name: "subagents", family: "openclaw" },
+  { name: "transcripts", family: "openclaw" },
   { name: "tts", family: "openclaw" },
   { name: "update_goal", family: "openclaw" },
   { name: "update_plan", family: "openclaw" },

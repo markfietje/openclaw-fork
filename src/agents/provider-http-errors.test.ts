@@ -9,6 +9,7 @@ import {
   ProviderHttpError,
   readProviderBinaryResponse,
   readProviderJsonResponse,
+  readProviderTextResponse,
   readResponseTextLimited,
 } from "./provider-http-errors.js";
 
@@ -260,6 +261,17 @@ describe("provider error utils", () => {
       }),
     ).rejects.toThrow("Provider catalog failed: JSON response exceeds 2048 bytes");
 
+    expect(streamed.getReadCount()).toBeLessThan(20);
+  });
+
+  it("caps successful text responses instead of buffering oversized bodies", async () => {
+    const streamed = createStreamingJsonResponse({ chunkCount: 20, chunkSize: 1024 });
+
+    await expect(
+      readProviderTextResponse(streamed.response, "Provider text failed", {
+        maxBytes: 2048,
+      }),
+    ).rejects.toThrow("Provider text failed: text response exceeds 2048 bytes");
     expect(streamed.getReadCount()).toBeLessThan(20);
   });
 

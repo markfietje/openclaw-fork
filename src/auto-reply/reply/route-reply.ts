@@ -108,7 +108,7 @@ type RouteReplyParams = {
   runId?: string;
 };
 
-type RouteReplyResult = {
+export type RouteReplyResult = {
   /** Whether the reply was sent successfully. */
   ok: boolean;
   /** Whether provider-visible delivery actually occurred. */

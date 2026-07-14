@@ -1065,14 +1065,17 @@ function createReplySessionInitializationRevision(params: {
   entry: SessionEntry | undefined;
   storePath: string;
 }): string {
-  const { entry, storePath } = params;
+  const { entry } = params;
   if (!entry) {
     return JSON.stringify(null);
   }
   // The guard only rejects a true session-identity rebind. Same-session
   // activity/context writes are merged below; comparing them here would reject
   // before the merge can preserve the concurrent metadata.
-  const projected = projectSessionEntryForPersistenceRevision({ storePath, entry });
+  // v6.11's persistence projection only changes prompt-cache metadata, not
+  // session identity. Compare the identity fields directly rather than
+  // importing the newer session-store projection architecture.
+  const projected = entry;
   const revisionEntry: Pick<SessionEntry, "sessionFile" | "sessionId"> = {
     sessionId: projected.sessionId,
   };

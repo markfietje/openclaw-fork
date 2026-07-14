@@ -123,7 +123,7 @@ function createTestMcpLoopbackServerConfig(port: number) {
         },
       },
     },
-  };
+  } as const;
 }
 
 function createTestMcpLoopbackClientGrant(params: {

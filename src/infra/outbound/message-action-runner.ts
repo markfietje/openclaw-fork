@@ -215,7 +215,7 @@ async function callGatewayMessageAction<T>(params: {
     token: gateway.token,
     method: "message.action",
     params: params.actionParams,
-    timeoutMs: gateway.timeoutMs,
+    timeoutMs: gateway.timeoutMs ?? undefined,
     signal: params.abortSignal,
     clientName: gateway.clientName,
     clientDisplayName: gateway.clientDisplayName,
@@ -231,9 +231,7 @@ async function callGatewayMessageAction<T>(params: {
     (requesterAccountId !== undefined ||
       requesterSenderId !== undefined ||
       params.actionParams.senderIsOwner !== undefined);
-  type GatewayActionCallOptions = Omit<typeof callParams, "timeoutMs"> & {
-    timeoutMs: number | null;
-  };
+  type GatewayActionCallOptions = typeof callParams;
   const invokeGatewayAction = async (options: GatewayActionCallOptions): Promise<T> => {
     if (!carriesTrustedRequester) {
       return await callGatewayLeastPrivilege<T>(options);
@@ -263,12 +261,11 @@ async function callGatewayMessageAction<T>(params: {
     : undefined;
   const reconciliationCall = {
     ...callParams,
-    // `null` keeps startup bounded but removes the per-request timer after
-    // hello. The dedicated signal bounds a joined in-flight action without
-    // reconnecting every minute or inheriting the run's much longer lifetime.
+    // v6.11 does not support the newer null/handshake-only timeout contract.
+    // Give the single reconciliation call the same hard bound as its signal.
     timeoutMs: params.abortSignal
-      ? null
-      : Math.max(callParams.timeoutMs, MESSAGE_ACTION_RECONCILIATION_TIMEOUT_MS),
+      ? MESSAGE_ACTION_RECONCILIATION_MAX_MS
+      : Math.max(callParams.timeoutMs ?? 0, MESSAGE_ACTION_RECONCILIATION_TIMEOUT_MS),
     signal: reconciliationSignal,
   };
   // A caller-side timeout does not cancel Gateway work. Reattach once with the

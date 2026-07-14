@@ -48,6 +48,28 @@ const probeGateway = vi.fn();
 const pathExists = vi.fn();
 const syncPluginsForUpdateChannel = vi.fn();
 const updateNpmInstalledPlugins = vi.fn();
+const runPostCorePluginConvergenceMock = vi.fn(
+  async (params: {
+    baselineInstallRecords?: unknown;
+  }): Promise<{
+    changes: string[];
+    warnings: Array<{
+      pluginId?: string;
+      reason: string;
+      message: string;
+      guidance: string[];
+    }>;
+    errored: boolean;
+    smokeFailures: unknown[];
+    installRecords: unknown;
+  }> => ({
+    changes: [],
+    warnings: [],
+    errored: false,
+    smokeFailures: [],
+    installRecords: params.baselineInstallRecords ?? {},
+  }),
+);
 const loadInstalledPluginIndexInstallRecords = vi.fn(
   async (params: { config?: OpenClawConfig } = {}) => params.config?.plugins?.installs ?? {},
 );
@@ -261,13 +283,7 @@ vi.mock("./update-cli/post-core-plugin-convergence.js", () => ({
       })),
     errored: convergence.errored,
   }),
-  runPostCorePluginConvergence: vi.fn(async (params: { baselineInstallRecords?: unknown }) => ({
-    changes: [],
-    warnings: [],
-    errored: false,
-    smokeFailures: [],
-    installRecords: params.baselineInstallRecords ?? {},
-  })),
+  runPostCorePluginConvergence: runPostCorePluginConvergenceMock,
 }));
 
 vi.mock("../daemon/service.js", () => ({
@@ -542,7 +558,7 @@ describe("update-cli", () => {
 
   const npmPluginUpdateCall = (index = 0) => {
     const calls = updateNpmInstalledPlugins.mock.calls as unknown as Array<
-      [{ config?: OpenClawConfig; timeoutMs?: number }]
+      [{ config?: OpenClawConfig; timeoutMs?: number; updateChannel?: string }]
     >;
     return calls[index]?.[0];
   };
@@ -2321,7 +2337,7 @@ describe("update-cli", () => {
   it("retains extended-stable after a post-commit plugin convergence failure", async () => {
     const tempDir = createCaseDir("openclaw-update");
     mockPackageInstallStatus(tempDir);
-    runPostCorePluginConvergenceSpy.mockResolvedValueOnce({
+    runPostCorePluginConvergenceMock.mockResolvedValueOnce({
       changes: [],
       warnings: [
         {

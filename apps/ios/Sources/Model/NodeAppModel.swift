@@ -509,6 +509,7 @@ final class NodeAppModel {
     @ObservationIgnored private var testExecApprovalResolutionReconcilesUnknownAck = false
     #endif
     private var pttVoiceWakeLeaseCaptureId: String?
+    private var chatDictationCaptureId: String?
     private var talkPttCommandEpoch: UInt64 = 0
     private var talkPreparationInFlight = false
     private var auxiliaryAudioCapture: AuxiliaryAudioCapture?
@@ -570,6 +571,10 @@ final class NodeAppModel {
             self.talkMode.isEnabled ||
             self.talkMode.isPushToTalkActive ||
             self.pttVoiceWakeLeaseCaptureId != nil
+    }
+
+    var isChatDictationActive: Bool {
+        self.chatDictationCaptureId != nil
     }
 
     var localChatFixture: LocalChatFixture? {
@@ -2728,6 +2733,62 @@ final class NodeAppModel {
                 ok: false,
                 error: OpenClawNodeError(code: .invalidRequest, message: "INVALID_REQUEST: unknown command"))
         }
+    }
+
+    /// Captures one locally recognized utterance for the chat draft. Unlike
+    /// remote PTT, this returns text without starting an agent turn or TTS.
+    func transcribeChatDraft() async throws -> String? {
+        guard self.chatDictationCaptureId == nil else { return nil }
+
+        let commandEpoch = self.talkPttCommandEpoch
+        var reservedCaptureId: String?
+        let start: TalkPushToTalkOnceStart
+        do {
+            start = try await self.withTalkCapturePreparation(commandEpoch: commandEpoch) {
+                try self.rejectTalkCaptureWhileOtherAudioActive()
+                return try await self.talkMode.beginPushToTalkOnce(
+                    maxDurationSeconds: 30,
+                    transcriptionOnly: true,
+                    canStartCapture: {
+                        self.talkPttCommandEpoch == commandEpoch && !self.isBackgrounded
+                    },
+                    onCaptureReserved: { captureId in
+                        reservedCaptureId = captureId
+                        self.chatDictationCaptureId = captureId
+                        self.acquirePttVoiceWakeLease(for: captureId)
+                    })
+            }
+        } catch {
+            if let reservedCaptureId {
+                _ = self.talkMode.cancelPushToTalk(captureId: reservedCaptureId)
+                if self.chatDictationCaptureId == reservedCaptureId {
+                    self.chatDictationCaptureId = nil
+                }
+            }
+            throw error
+        }
+
+        let payload: OpenClawTalkPTTStopPayload = switch start {
+        case let .busy(busyPayload):
+            busyPayload
+        case .started:
+            await self.talkMode.awaitPushToTalkOnce(start)
+        }
+        if self.chatDictationCaptureId == payload.captureId {
+            self.chatDictationCaptureId = nil
+        }
+        return payload.transcript?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func finishChatDictation() {
+        guard let captureId = self.chatDictationCaptureId else { return }
+        _ = self.talkMode.endPushToTalk(captureId: captureId)
+    }
+
+    func cancelChatDictation() {
+        guard let captureId = self.chatDictationCaptureId else { return }
+        _ = self.talkMode.cancelPushToTalk(captureId: captureId)
+        self.chatDictationCaptureId = nil
     }
 
     private func rejectTalkCaptureWhileOtherAudioActive() throws {

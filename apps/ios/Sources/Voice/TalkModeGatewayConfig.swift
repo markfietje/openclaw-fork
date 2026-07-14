@@ -349,6 +349,7 @@ struct TalkModeGatewayConfigState {
     let realtimeProvider: String?
     let realtimeModelId: String?
     let realtimeVoiceId: String?
+    let realtimeBrain: String
     let rawConfigApiKey: String?
     let interruptOnSpeech: Bool?
     let silenceTimeoutMs: Int
@@ -400,6 +401,7 @@ enum TalkModeGatewayConfigParser {
         let realtimeModelId = realtimeModel ?? defaultRealtimeModelIdFallback
         let realtimeVoiceId = Self.firstString(realtime, keys: ["voice"])
             ?? Self.firstString(realtimeProviderConfig, keys: ["voice"])
+        let realtimeBrain = Self.firstString(realtime, keys: ["brain"])?.lowercased() ?? "agent-consult"
         let realtimeTransport = Self.firstString(realtime, keys: ["transport"])?.lowercased()
         let requiresGatewayRealtimeTransport = realtimeTransport == "gateway-relay"
             || realtimeTransport == "provider-websocket"
@@ -435,6 +437,7 @@ enum TalkModeGatewayConfigParser {
             realtimeProvider: realtimeProvider,
             realtimeModelId: realtimeModelId,
             realtimeVoiceId: realtimeVoiceId,
+            realtimeBrain: realtimeBrain,
             rawConfigApiKey: rawConfigApiKey,
             interruptOnSpeech: interruptOnSpeech,
             silenceTimeoutMs: silenceTimeoutMs,
@@ -463,7 +466,7 @@ enum TalkModeGatewayConfigParser {
         guard mode == "realtime" else {
             return .native
         }
-        if brain != nil, brain != "agent-consult" {
+        if brain != nil, brain != "agent-consult", brain != "none" {
             return .native
         }
         if requiresGatewayRealtimeTransport {

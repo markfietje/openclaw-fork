@@ -55,7 +55,8 @@ private struct FinishingPushToTalk {
 
 private struct ActivePushToTalk {
     let captureId: String
-    let gatewayContext: PushToTalkGatewayContext
+    let gatewayContext: PushToTalkGatewayContext?
+    let transcriptionOnly: Bool
 }
 
 private enum ChatCompletionState {
@@ -272,6 +273,7 @@ final class TalkModeManager: NSObject {
     private var realtimeProvider: String?
     private var realtimeModelId: String?
     private var realtimeVoiceId: String?
+    private var realtimeBrain = "agent-consult"
     private var configuredVoiceModeDescriptor = TalkVoiceModeDescriptor(
         title: String(localized: "Not loaded"),
         subtitle: nil,
@@ -387,7 +389,7 @@ final class TalkModeManager: NSObject {
         if self.realtimeSessionReadyAt == nil {
             self.realtimeSessionReadyAt = Date()
         }
-        self.markRealtimeActive()
+        markRealtimeActive()
     }
 
     private func scheduleRealtimeRestart(after delayNanoseconds: UInt64?, generation: Int) {
@@ -458,7 +460,7 @@ final class TalkModeManager: NSObject {
             activeDuration: activeDuration)
         self.rapidRealtimeRestartCount = attempt
         guard let delay = Self.realtimeRestartDelayNanoseconds(attempt: attempt) else {
-            let issue = self.realtimeIssue(
+            let issue = realtimeIssue(
                 message: "Realtime disconnected repeatedly.",
                 phase: "reconnect")
             self.pendingRealtimeIssue = issue
@@ -484,7 +486,7 @@ final class TalkModeManager: NSObject {
 
     func attachGateway(_ gateway: GatewayNodeSession) {
         if let current = self.gateway, current !== gateway {
-            if let captureId = self.activePTTCaptureId {
+            if let captureId = activePTTCaptureId {
                 _ = self.cancelPushToTalk(captureId: captureId)
             }
             self.cancelFinishingPushToTalk()
@@ -502,7 +504,7 @@ final class TalkModeManager: NSObject {
             }
         } else {
             self.cancelPendingStart()
-            if let captureId = self.activePTTCaptureId {
+            if let captureId = activePTTCaptureId {
                 _ = self.cancelPushToTalk(captureId: captureId)
             }
             self.cancelFinishingPushToTalk()
@@ -510,7 +512,7 @@ final class TalkModeManager: NSObject {
             self.stopRealtimeSession()
             self.stopNativeCaptureAndDiscardTranscript()
             self.stopSpeaking(storeInterruption: false)
-            self.deactivateAudioSession()
+            deactivateAudioSession()
             self.gatewayTalkActiveModeTitle = String(localized: "Not active")
             self.gatewayTalkActiveModeSubtitle = nil
             if self.isEnabled, !self.isSpeaking {
@@ -527,10 +529,12 @@ final class TalkModeManager: NSObject {
     func updateMainSessionKey(_ sessionKey: String?) -> Bool {
         let trimmed = (sessionKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        if trimmed == self.mainSessionKey { return false }
+        if trimmed == self.mainSessionKey {
+            return false
+        }
         let hasTalkOwner = self.hasRealtimeOwnerOrStart || self.hasContinuousTalkOwner
         let shouldRestartTalk = self.isEnabled && hasTalkOwner
-        if let captureId = self.activePTTCaptureId {
+        if let captureId = activePTTCaptureId {
             _ = self.cancelPushToTalk(captureId: captureId)
         }
         self.cancelFinishingPushToTalk()
@@ -541,7 +545,7 @@ final class TalkModeManager: NSObject {
             self.resetRealtimeRestartState()
             self.stopRealtimeSession()
             self.stopNativeCaptureAndDiscardTranscript()
-            self.deactivateAudioSession()
+            deactivateAudioSession()
         }
         self.mainSessionKey = trimmed
         if shouldRestartTalk, self.gatewayConnected, self.isEnabled {
@@ -618,9 +622,9 @@ final class TalkModeManager: NSObject {
             if let realtimeSession {
                 try realtimeSession.applyAudioRoutePreferenceChanged()
             } else if self.realtimeRelaySession != nil {
-                try self.configureOwnedRealtimeAudioSession()
+                try configureOwnedRealtimeAudioSession()
             } else {
-                try self.configureOwnedAudioSession()
+                try configureOwnedAudioSession()
             }
         } catch {
             GatewayDiagnostics.log("talk audio route preference failed error=\(error.localizedDescription)")
@@ -642,7 +646,7 @@ final class TalkModeManager: NSObject {
             }
         }
         #if DEBUG
-        if let testStartEntryHandler = self.testStartEntryHandler {
+        if let testStartEntryHandler {
             await testStartEntryHandler()
             guard self.isCurrentStartAttempt(attemptID) else { return }
         }
@@ -667,7 +671,7 @@ final class TalkModeManager: NSObject {
             return
         }
         guard self.isCurrentStartAttempt(attemptID) else { return }
-        await self.ensureTalkConfigLoadedForStart()
+        await ensureTalkConfigLoadedForStart()
         guard self.isCurrentStartAttempt(attemptID) else { return }
         if self.gatewayTalkPermissionState.requiresTalkPermissionAction {
             self.setStatus(String(localized: "Gateway permission required"), phase: .idle)
@@ -697,7 +701,7 @@ final class TalkModeManager: NSObject {
         guard speechOk else {
             self.logger.warning("start blocked: speech permission denied")
             self.stopNativeCaptureAndDiscardTranscript()
-            self.deactivateAudioSession()
+            deactivateAudioSession()
             let status = Self.permissionMessage(
                 kind: String(localized: "Speech recognition"),
                 status: SFSpeechRecognizer.authorizationStatus())
@@ -711,7 +715,7 @@ final class TalkModeManager: NSObject {
 
         do {
             GatewayDiagnostics.log("talk.timeline fallback speech pipeline start")
-            try self.configureOwnedAudioSession()
+            try configureOwnedAudioSession()
             // Set this before starting recognition so any early speech errors are classified correctly.
             self.captureMode = .continuous
             try self.startRecognition()
@@ -725,7 +729,7 @@ final class TalkModeManager: NSObject {
             self.logger.info("listening")
         } catch {
             self.stopNativeCaptureAndDiscardTranscript()
-            self.deactivateAudioSession()
+            deactivateAudioSession()
             let status = String(
                 format: String(localized: "Start failed: %@"),
                 error.localizedDescription)
@@ -841,7 +845,7 @@ final class TalkModeManager: NSObject {
         self.pttTimeoutTask?.cancel()
         self.pttTimeoutTask = nil
         self.pttAutoStopEnabled = false
-        if let pendingCaptureId, self.pttOnceOperations[pendingCaptureId] != nil {
+        if let pendingCaptureId, pttOnceOperations[pendingCaptureId] != nil {
             let payload = OpenClawTalkPTTStopPayload(
                 captureId: pendingCaptureId,
                 transcript: nil,
@@ -852,7 +856,7 @@ final class TalkModeManager: NSObject {
             self.finishActivePushToTalk(pendingCaptureId)
         }
         TalkSystemSpeechSynthesizer.shared.stop()
-        self.deactivateAudioSession()
+        deactivateAudioSession()
     }
 
     /// Suspends microphone usage without disabling Talk Mode.
@@ -903,13 +907,15 @@ final class TalkModeManager: NSObject {
         }
         TalkSystemSpeechSynthesizer.shared.stop()
 
-        self.deactivateAudioSession()
+        deactivateAudioSession()
     }
 
     func resumeAfterBackground(wasKeptActive: Bool = false) {
         self.foregroundPushToTalkAllowed = true
         self.foregroundAudioCaptureAllowed = true
-        if wasKeptActive, self.hasContinuousTalkOwner { return }
+        if wasKeptActive, self.hasContinuousTalkOwner {
+            return
+        }
         guard self.isEnabled else { return }
         Task { @MainActor [weak self] in
             await self?.start()
@@ -917,6 +923,7 @@ final class TalkModeManager: NSObject {
     }
 
     func beginPushToTalk(
+        transcriptionOnly: Bool = false,
         canStartCapture: @MainActor () -> Bool = { true },
         onCaptureReserved: @MainActor (String) -> Void = { _ in }) async throws -> OpenClawTalkPTTStartPayload
     {
@@ -930,10 +937,12 @@ final class TalkModeManager: NSObject {
         if self.finishingPushToTalk != nil {
             throw Self.pushToTalkBusyError()
         }
-        guard self.gatewayConnected else { throw self.pushToTalkOfflineError() }
+        guard transcriptionOnly || self.gatewayConnected else { throw self.pushToTalkOfflineError() }
 
-        let gatewayContext: PushToTalkGatewayContext
-        if let gateway = self.gateway {
+        let gatewayContext: PushToTalkGatewayContext?
+        if transcriptionOnly {
+            gatewayContext = nil
+        } else if let gateway {
             let gatewayRoute = await gateway.currentRoute()
             try Task.checkCancellation()
             guard canStartCapture(), self.gatewayConnected, self.gateway === gateway else {
@@ -961,7 +970,7 @@ final class TalkModeManager: NSObject {
             #endif
         }
         try Task.checkCancellation()
-        guard canStartCapture(), self.gatewayConnected, self.foregroundPushToTalkAllowed else {
+        guard canStartCapture(), transcriptionOnly || self.gatewayConnected, self.foregroundPushToTalkAllowed else {
             throw Self.pushToTalkStartCancelledError()
         }
         guard self.activePushToTalk == nil, self.finishingPushToTalk == nil else {
@@ -987,7 +996,8 @@ final class TalkModeManager: NSObject {
         let captureId = UUID().uuidString
         self.activePushToTalk = ActivePushToTalk(
             captureId: captureId,
-            gatewayContext: gatewayContext)
+            gatewayContext: gatewayContext,
+            transcriptionOnly: transcriptionOnly)
         // Reserve the capture mode before permission awaits so delayed continuous
         // starts cannot open a second microphone while PTT is preparing.
         self.captureMode = .pushToTalk
@@ -997,7 +1007,7 @@ final class TalkModeManager: NSObject {
 
         do {
             #if DEBUG
-            if let testPTTReservedHandler = self.testPTTReservedHandler {
+            if let testPTTReservedHandler {
                 await testPTTReservedHandler()
                 try self.ensurePushToTalkStartCurrent(captureId: captureId, canStartCapture: canStartCapture)
             }
@@ -1032,7 +1042,7 @@ final class TalkModeManager: NSObject {
             }
 
             try self.ensurePushToTalkStartCurrent(captureId: captureId, canStartCapture: canStartCapture)
-            try self.configureOwnedAudioSession()
+            try configureOwnedAudioSession()
             try self.ensurePushToTalkStartCurrent(captureId: captureId, canStartCapture: canStartCapture)
             self.captureMode = .pushToTalk
             try self.startRecognition(pttCaptureId: captureId)
@@ -1077,7 +1087,7 @@ final class TalkModeManager: NSObject {
     }
 
     func endPushToTalk(captureId: String) -> OpenClawTalkPTTStopPayload {
-        guard let activePushToTalk = self.activePushToTalk,
+        guard let activePushToTalk,
               activePushToTalk.captureId == captureId
         else {
             return OpenClawTalkPTTStopPayload(captureId: captureId, transcript: nil, status: "idle")
@@ -1128,6 +1138,19 @@ final class TalkModeManager: NSObject {
             return payload
         }
 
+        if activePushToTalk.transcriptionOnly {
+            self.setStatus(String(localized: "Ready"), phase: .idle)
+            let shouldResume = self.isEnabled
+            self.finishActivePushToTalk(captureId)
+            let payload = OpenClawTalkPTTStopPayload(
+                captureId: captureId,
+                transcript: transcript,
+                status: "transcribed")
+            self.finishPTTOnce(payload)
+            self.scheduleContinuousResume(shouldResume)
+            return payload
+        }
+
         guard self.gatewayConnected else {
             self.setStatus(String(localized: "Gateway not connected"), phase: .idle)
             let shouldResume = self.isEnabled
@@ -1147,10 +1170,13 @@ final class TalkModeManager: NSObject {
             status: "queued")
         // Finishing owns shared chat/TTS state after microphone capture ends.
         // Publish it first so a replacement cannot overlap old finalizer cleanup.
+        guard let gatewayContext = activePushToTalk.gatewayContext else {
+            preconditionFailure("Agent push-to-talk requires a gateway context")
+        }
         self.startFinishingPushToTalk(
             captureId: captureId,
             transcript: transcript,
-            gatewayContext: activePushToTalk.gatewayContext)
+            gatewayContext: gatewayContext)
         // Reply generation can open interruption recognition. Keep the PTT
         // external-audio lease until that finalizer exits or is canceled.
         self.transferActivePushToTalkToFinalizer(captureId)
@@ -1160,23 +1186,25 @@ final class TalkModeManager: NSObject {
 
     func beginPushToTalkOnce(
         maxDurationSeconds: TimeInterval = 12,
+        transcriptionOnly: Bool = false,
         canStartCapture: @MainActor () -> Bool = { true },
         onCaptureReserved: @MainActor (String) -> Void = { _ in }) async throws -> TalkPushToTalkOnceStart
     {
-        if let captureId = self.activePTTCaptureId ?? self.finishingPushToTalk?.captureId {
+        if let captureId = activePTTCaptureId ?? finishingPushToTalk?.captureId {
             return .busy(OpenClawTalkPTTStopPayload(
                 captureId: captureId,
                 transcript: nil,
                 status: "busy"))
         }
 
-        let start = try await self.beginPushToTalk(
+        let start = try await beginPushToTalk(
+            transcriptionOnly: transcriptionOnly,
             canStartCapture: canStartCapture,
             onCaptureReserved: onCaptureReserved)
         let captureId = start.captureId
         do {
             #if DEBUG
-            if let testPTTOnceStartedHandler = self.testPTTOnceStartedHandler {
+            if let testPTTOnceStartedHandler {
                 await testPTTOnceStartedHandler()
             }
             #endif
@@ -1199,7 +1227,7 @@ final class TalkModeManager: NSObject {
         case let .busy(payload):
             return payload
         case let .started(captureId):
-            guard let operation = self.pttOnceOperations[captureId] else {
+            guard let operation = pttOnceOperations[captureId] else {
                 return OpenClawTalkPTTStopPayload(captureId: captureId, transcript: nil, status: "idle")
             }
             let payload = await withTaskCancellationHandler {
@@ -1288,7 +1316,7 @@ final class TalkModeManager: NSObject {
 
     private func finishActivePushToTalk(_ captureId: String) {
         guard self.clearActivePushToTalk(captureId) else { return }
-        self.deactivateStandaloneAudioSessionIfIdle()
+        deactivateStandaloneAudioSessionIfIdle()
         self.pttAudioOwnershipEndHandler?(captureId)
     }
 
@@ -1359,12 +1387,12 @@ final class TalkModeManager: NSObject {
     }
 
     private func clearFinishingPushToTalk(captureId: String, generation: UInt64) {
-        guard let finishing = self.finishingPushToTalk,
+        guard let finishing = finishingPushToTalk,
               finishing.captureId == captureId,
               finishing.generation == generation
         else { return }
         self.finishingPushToTalk = nil
-        self.deactivateStandaloneAudioSessionIfIdle()
+        deactivateStandaloneAudioSessionIfIdle()
         self.pttAudioOwnershipEndHandler?(captureId)
         if self.phase.isFinalizerTransient {
             self.setStatus(
@@ -1478,7 +1506,7 @@ final class TalkModeManager: NSObject {
         self.micLevel = (self.micLevel * 0.80) + (raw * 0.20)
         self.updateNoiseFloorIfNeeded(raw)
 
-        let threshold: Double = if let floor = self.noiseFloor, self.noiseFloorReady {
+        let threshold: Double = if let floor = noiseFloor, noiseFloorReady {
             min(0.35, max(0.12, floor + 0.10))
         } else {
             0.18
@@ -1512,7 +1540,7 @@ final class TalkModeManager: NSObject {
         recognitionGeneration: UInt64)
     {
         guard self.recognitionGeneration == recognitionGeneration else { return }
-        if let pttCaptureId, self.activePTTCaptureId != pttCaptureId {
+        if let pttCaptureId, activePTTCaptureId != pttCaptureId {
             return
         }
         if let error, !self.handleRecognitionError(error) {
@@ -1593,18 +1621,20 @@ final class TalkModeManager: NSObject {
     private func restartRecognitionAfterError(expectedGeneration: UInt64) async {
         guard self.canRestartNativeRecognition(expectedGeneration: expectedGeneration) else { return }
         // Avoid thrashing the audio engine if it’s already running.
-        if self.recognitionTask != nil, self.audioEngine.isRunning { return }
+        if self.recognitionTask != nil, self.audioEngine.isRunning {
+            return
+        }
         try? await Task.sleep(nanoseconds: 250_000_000)
         guard self.canRestartNativeRecognition(expectedGeneration: expectedGeneration) else { return }
         do {
-            try self.configureOwnedAudioSession()
+            try configureOwnedAudioSession()
             try self.startRecognition()
             self.isListening = true
             self.restoreListeningStatusAfterSpeechErrorRestart()
             GatewayDiagnostics.log("talk speech: recognition restarted")
         } catch {
             self.stopNativeCaptureAndDiscardTranscript()
-            self.deactivateAudioSession()
+            deactivateAudioSession()
             let msg = error.localizedDescription
             GatewayDiagnostics.log("talk speech: restart failed error=\(msg)")
         }
@@ -1677,7 +1707,7 @@ final class TalkModeManager: NSObject {
         recognitionGeneration: UInt64) async
     {
         guard self.recognitionGeneration == recognitionGeneration else { return }
-        if let pttCaptureId, self.activePTTCaptureId != pttCaptureId {
+        if let pttCaptureId, activePTTCaptureId != pttCaptureId {
             return
         }
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1735,7 +1765,9 @@ final class TalkModeManager: NSObject {
             guard !transcript.isEmpty else { return }
             let lastActivity = [lastHeard, lastAudioActivity].compactMap(\.self).max()
             guard let lastActivity else { return }
-            if Date().timeIntervalSince(lastActivity) < self.silenceWindow { return }
+            if Date().timeIntervalSince(lastActivity) < self.silenceWindow {
+                return
+            }
             await self.processTranscript(transcript, restartAfter: true)
             return
         }
@@ -1749,7 +1781,9 @@ final class TalkModeManager: NSObject {
         guard !transcript.isEmpty else { return }
         let lastActivity = [lastHeard, lastAudioActivity].compactMap(\.self).max()
         guard let lastActivity else { return }
-        if Date().timeIntervalSince(lastActivity) < self.silenceWindow { return }
+        if Date().timeIntervalSince(lastActivity) < self.silenceWindow {
+            return
+        }
         if let pttCaptureId {
             _ = self.endPushToTalk(captureId: pttCaptureId)
         } else {
@@ -1794,16 +1828,16 @@ final class TalkModeManager: NSObject {
                 self.continuousTranscriptProcessingGeneration = nil
             }
         }
-        guard let gateway = self.gateway else {
+        guard let gateway else {
             self.setStatus(String(localized: "Gateway not connected"), phase: .idle)
             self.scheduleContinuousResume(restartAfter)
             return
         }
         let sessionKey = self.mainSessionKey
         guard let gatewayRoute = await gateway.currentRoute(),
-              self.isCurrentTranscriptProcessing(generation),
+              isCurrentTranscriptProcessing(generation),
               self.gateway === gateway,
-              self.mainSessionKey == sessionKey
+              mainSessionKey == sessionKey
         else { return }
         await self.processTranscript(
             transcript,
@@ -1823,7 +1857,7 @@ final class TalkModeManager: NSObject {
         transcriptProcessingGeneration generation: UInt64) async
     {
         let streamingOwner = TranscriptStreamingOwner()
-        await self.runTranscriptProcessing(
+        await runTranscriptProcessing(
             transcript,
             restartAfter: restartAfter,
             gateway: gateway,
@@ -1932,7 +1966,7 @@ final class TalkModeManager: NSObject {
                     "talk: chat.send terminal ack runId=\(runId) status=\(normalizedStatus)")
                 return
             }
-            guard let completedSuccessfully = try await self.completeTranscriptResponse(
+            guard let completedSuccessfully = try await completeTranscriptResponse(
                 acknowledgement: acknowledgement,
                 startedAt: startedAt,
                 gateway: gateway,
@@ -2102,6 +2136,7 @@ final class TalkModeManager: NSObject {
         let session = TalkRealtimeWebRTCSession(
             gateway: gateway,
             sessionKey: mainSessionKey,
+            brain: realtimeBrain,
             delegate: self)
         self.realtimeSession = session
         // WebRTC owns the shared AVAudioSession internally; track the attempt
@@ -2213,7 +2248,7 @@ final class TalkModeManager: NSObject {
             })
         self.realtimeRelaySession = relaySession
         do {
-            try self.configureOwnedRealtimeAudioSession()
+            try configureOwnedRealtimeAudioSession()
             try await relaySession.start()
             guard self.realtimeRelaySession === relaySession,
                   self.realtimeRelayGeneration == relayGeneration,
@@ -2312,7 +2347,11 @@ final class TalkModeManager: NSObject {
         model: String?,
         voice: String?) async throws -> TalkRealtimeClientSession
     {
-        let params = TalkRealtimeClientCreateParams(provider: provider, model: model, voice: voice)
+        let params = TalkRealtimeClientCreateParams(
+            provider: provider,
+            brain: realtimeBrain,
+            model: model,
+            voice: voice)
         let data = try JSONEncoder().encode(params)
         let json = String(data: data, encoding: .utf8)
         let res = try await gateway.request(
@@ -2538,7 +2577,9 @@ final class TalkModeManager: NSObject {
             guard let content = msg["content"] as? [[String: Any]] else { continue }
             let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { return trimmed }
+            if !trimmed.isEmpty {
+                return trimmed
+            }
         }
         return nil
     }
@@ -2658,7 +2699,7 @@ final class TalkModeManager: NSObject {
                 self.startSpeechInterruptionRecognitionIfNeeded()
 
                 self.setStatus(String(localized: "Speaking…"), phase: .speaking)
-                let result = await self.playElevenLabsStream(
+                let result = await playElevenLabsStream(
                     rawStream,
                     sampleRate: TalkTTSValidation.pcmSampleRate(from: outputFormat))
                 { mp3Format in
@@ -2715,7 +2756,7 @@ final class TalkModeManager: NSObject {
         let synthesizer: any TalkGatewaySpeechSynthesizing
         if let gatewaySpeechSynthesizerOverride {
             synthesizer = gatewaySpeechSynthesizerOverride
-        } else if let gateway = gatewayOverride ?? self.gateway, let gatewayRoute {
+        } else if let gateway = gatewayOverride ?? gateway, let gatewayRoute {
             synthesizer = TalkGatewaySpeechClient(gateway: gateway, route: gatewayRoute)
         } else {
             throw NSError(domain: "TalkGatewaySpeech", code: 1, userInfo: [
@@ -2737,7 +2778,7 @@ final class TalkModeManager: NSObject {
             modelId: modelId,
             outputFormat: outputFormat,
             directive: directive))
-        if let gatewayRoute, let gateway = gatewayOverride ?? self.gateway {
+        if let gatewayRoute, let gateway = gatewayOverride ?? gateway {
             guard await gateway.currentRoute() == gatewayRoute else { throw CancellationError() }
         }
         guard generation == self.speechGeneration, self.isSpeaking else { return }
@@ -3411,7 +3452,7 @@ final class TalkModeManager: NSObject {
             client.streamSynthesize(voiceId: voiceId, request: request)
         }
         let playbackFormat = prefetchedAudio?.outputFormat ?? context.outputFormat
-        let result = await self.playElevenLabsStream(
+        let result = await playElevenLabsStream(
             rawStream,
             sampleRate: TalkTTSValidation.pcmSampleRate(from: playbackFormat))
         { mp3Format in
@@ -3595,7 +3636,9 @@ extension TalkModeManager {
         let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let normalized = trimmed.lowercased()
-        if let mapped = voiceAliases[normalized] { return mapped }
+        if let mapped = voiceAliases[normalized] {
+            return mapped
+        }
         if self.voiceAliases.values.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
             return trimmed
         }
@@ -3614,10 +3657,14 @@ extension TalkModeManager {
             if Self.isLikelyVoiceId(trimmed) {
                 return trimmed
             }
-            if let resolved = resolveVoiceAlias(trimmed) { return resolved }
+            if let resolved = resolveVoiceAlias(trimmed) {
+                return resolved
+            }
             self.logger.warning("unknown voice alias \(trimmed, privacy: .public)")
         }
-        if let fallbackVoiceId { return fallbackVoiceId }
+        if let fallbackVoiceId {
+            return fallbackVoiceId
+        }
 
         do {
             let voices = try await ElevenLabsTTSClient(apiKey: apiKey).listVoices()
@@ -3653,7 +3700,9 @@ extension TalkModeManager {
         guard !trimmed.isEmpty else { return nil }
         guard trimmed != Self.redactedConfigSentinel else { return nil }
         // Config values may be env placeholders (for example `${ELEVENLABS_API_KEY}`).
-        if trimmed.hasPrefix("${"), trimmed.hasSuffix("}") { return nil }
+        if trimmed.hasPrefix("${"), trimmed.hasSuffix("}") {
+            return nil
+        }
         return trimmed
     }
 
@@ -3901,7 +3950,7 @@ extension TalkModeManager {
         gatewayRoute: GatewayNodeSessionRoute? = nil,
         shouldApply: @MainActor @Sendable () -> Bool = { true }) async
     {
-        guard let gateway = gatewayOverride ?? self.gateway else { return }
+        guard let gateway = gatewayOverride ?? gateway else { return }
         do {
             guard let loaded = try await loadTalkConfig(from: gateway, gatewayRoute: gatewayRoute) else { return }
             if let gatewayRoute {
@@ -3990,6 +4039,7 @@ extension TalkModeManager {
         self.realtimeProvider = routing.realtimeProvider
         self.realtimeModelId = routing.realtimeModelId
         self.realtimeVoiceId = realtimeVoiceId
+        self.realtimeBrain = parsed.realtimeBrain
         self.defaultVoiceId = parsed.defaultVoiceId
         self.voiceAliases = parsed.voiceAliases
         if !self.voiceOverrideActive {
@@ -4147,6 +4197,7 @@ extension TalkModeManager {
         self.realtimeProvider = nil
         self.realtimeModelId = nil
         self.realtimeVoiceId = nil
+        self.realtimeBrain = "agent-consult"
         self.configuredProviderModelId = nil
         self.gatewayTalkProviderLabel = String(localized: "Not loaded")
         self.gatewayTalkTransportLabel = String(localized: "Not loaded")
@@ -4331,9 +4382,13 @@ private final class AudioTapDiagnostics: @unchecked Sendable {
 
         let resolvedRms = Float(TalkAudioLevel.rms(buffer: buffer))
         self.lock.lock()
-        if resolvedRms > self.maxRmsWindow { self.maxRmsWindow = resolvedRms }
+        if resolvedRms > self.maxRmsWindow {
+            self.maxRmsWindow = resolvedRms
+        }
         let maxRms = self.maxRmsWindow
-        if shouldLog { self.maxRmsWindow = 0 }
+        if shouldLog {
+            self.maxRmsWindow = 0
+        }
         self.lock.unlock()
 
         if shouldEmitLevel, let onLevel {

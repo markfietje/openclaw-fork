@@ -670,6 +670,29 @@ struct TalkModeManagerTests {
         #expect(parsed.executionMode == .native)
     }
 
+    @Test func `uses client realtime for provider only brain`() {
+        let config: [String: Any] = [
+            "talk": [
+                "realtime": [
+                    "provider": "openai",
+                    "mode": "realtime",
+                    "transport": "webrtc",
+                    "brain": "none",
+                ],
+            ],
+        ]
+
+        let parsed = TalkModeGatewayConfigParser.parse(
+            config: config,
+            defaultProvider: "elevenlabs",
+            defaultModelIdFallback: "eleven_v3",
+            defaultRealtimeModelIdFallback: "gpt-realtime-2",
+            defaultSilenceTimeoutMs: 900)
+
+        #expect(parsed.executionMode == .realtimeWebRTC)
+        #expect(parsed.realtimeBrain == "none")
+    }
+
     @Test func `keeps non open AI realtime default transport on gateway relay`() {
         let config: [String: Any] = [
             "talk": [

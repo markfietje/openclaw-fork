@@ -101,6 +101,7 @@ public struct OpenClawChatView: View {
     private let emptyAssistantIntro: String?
     private let emptyAssistantPrompts: [StarterPrompt]
     private let talkControl: OpenClawChatTalkControl?
+    private let dictationControl: OpenClawChatDictationControl?
     private let voiceNoteControl: OpenClawChatVoiceNoteControl?
     private let speech: OpenClawChatSpeechController?
 
@@ -154,6 +155,7 @@ public struct OpenClawChatView: View {
         emptyAssistantIntro: String? = nil,
         emptyAssistantPrompts: [StarterPrompt] = [],
         talkControl: OpenClawChatTalkControl? = nil,
+        dictationControl: OpenClawChatDictationControl? = nil,
         voiceNoteControl: OpenClawChatVoiceNoteControl? = nil,
         speech: OpenClawChatSpeechController? = nil)
     {
@@ -175,6 +177,7 @@ public struct OpenClawChatView: View {
         self.emptyAssistantIntro = emptyAssistantIntro
         self.emptyAssistantPrompts = emptyAssistantPrompts
         self.talkControl = talkControl
+        self.dictationControl = dictationControl
         self.voiceNoteControl = voiceNoteControl
         self.speech = speech
     }
@@ -240,6 +243,7 @@ public struct OpenClawChatView: View {
                 && !self.viewModel.isSendingAttachmentDraft,
             messagePlaceholder: self.messagePlaceholder,
             talkControl: self.talkControl,
+            dictationControl: self.dictationControl,
             voiceNoteControl: self.voiceNoteControl)
     }
 

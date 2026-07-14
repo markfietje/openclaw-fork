@@ -157,15 +157,15 @@ struct RootTabsPresentationTests {
         #expect(RootTabs.SidebarDestination.gateway.sidebarTitle == "Connection")
     }
 
-    @Test func `phone hub uses root tabs only for native chat agent and gateway`() {
+    @Test func `phone hub keeps Talk inside Control after removing its root tab`() {
         #expect(RootTabs.shouldOpenRootTabFromPhoneHub(.chat))
-        #expect(RootTabs.shouldOpenRootTabFromPhoneHub(.talk))
+        #expect(!RootTabs.shouldOpenRootTabFromPhoneHub(.talk))
         #expect(RootTabs.shouldOpenRootTabFromPhoneHub(.agents))
         #expect(RootTabs.shouldOpenRootTabFromPhoneHub(.gateway))
         #expect(RootTabs.shouldOpenRootTabFromPhoneHub(.settings))
 
         for destination in RootTabs.SidebarDestination.allCases
-            where destination != .chat && destination != .talk && destination != .agents && destination != .gateway &&
+            where destination != .chat && destination != .agents && destination != .gateway &&
             destination != .settings
         {
             #expect(!RootTabs.shouldOpenRootTabFromPhoneHub(destination))

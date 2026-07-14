@@ -3253,8 +3253,59 @@ describe("talk.client.create handler", () => {
 
     expect(mocks.resolveConfiguredRealtimeVoiceProvider).not.toHaveBeenCalled();
     expectRespondError(respond, {
-      message: 'talk.client.create only supports brain="agent-consult"',
+      message: 'talk.client.create only supports brain="agent-consult" or brain="none"',
     });
+  });
+
+  it("creates provider-only client sessions without chat tools", async () => {
+    const createBrowserSession = vi.fn(async (_input: unknown) => ({
+      provider: "openai",
+      transport: "webrtc" as const,
+      clientSecret: "secret",
+    }));
+    mocks.resolveConfiguredRealtimeVoiceProvider.mockReturnValue({
+      provider: {
+        id: "openai",
+        label: "OpenAI Realtime",
+        isConfigured: () => true,
+        createBrowserSession,
+        createBridge: vi.fn(),
+      },
+      providerConfig: { apiKey: "openai-key" },
+    });
+    const respond = vi.fn();
+
+    await expectDefined(
+      talkHandlers["talk.client.create"],
+      'talkHandlers["talk.client.create"] test invariant',
+    )({
+      req: { type: "req", id: "1", method: "talk.client.create" },
+      params: { sessionKey: "main" },
+      client: { connId: "conn-1" } as never,
+      isWebchatConnect: () => false,
+      respond: respond as never,
+      context: {
+        getRuntimeConfig: () =>
+          ({
+            talk: {
+              realtime: {
+                provider: "openai",
+                brain: "none",
+                instructions: "Speak warmly.",
+              },
+            },
+          }) as OpenClawConfig,
+      } as never,
+    });
+
+    const createInput = mockCallArg(createBrowserSession) as Record<string, unknown>;
+    expect(createInput.tools).toStrictEqual([]);
+    expect(createInput.instructions).toContain("Do not call tools");
+    expect(createInput.instructions).toContain(
+      "Do not call tools, delegate to an agent, or send messages to chat",
+    );
+    expect(createInput.instructions).not.toContain("openclaw_agent_consult");
+    expectRespondOk(respond, { provider: "openai", transport: "webrtc" });
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

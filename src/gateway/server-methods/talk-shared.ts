@@ -340,6 +340,13 @@ export function buildRealtimeInstructions(configuredInstructions?: string): stri
   return `${DEFAULT_REALTIME_INSTRUCTIONS}\n\nAdditional realtime instructions:\n${extra}`;
 }
 
+export function buildProviderOnlyRealtimeInstructions(configuredInstructions?: string): string {
+  const base =
+    "You are OpenClaw's private realtime voice interface. Keep spoken replies concise. Do not call tools, delegate to an agent, or send messages to chat.";
+  const extra = normalizeOptionalString(configuredInstructions);
+  return extra ? `${base}\n\nAdditional realtime instructions:\n${extra}` : base;
+}
+
 type RealtimeVoiceLaunchOptions = {
   model?: string;
   voice?: string;

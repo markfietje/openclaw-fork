@@ -115,7 +115,7 @@ extension RootTabs {
             case .chat:
                 .chat
             case .talk:
-                .talk
+                .control
             case .agents:
                 .agent
             case .settings, .gateway:
@@ -209,9 +209,9 @@ extension RootTabs {
 
     static func shouldOpenRootTabFromPhoneHub(_ destination: SidebarDestination) -> Bool {
         switch destination {
-        case .chat, .talk, .agents, .gateway, .settings:
+        case .chat, .agents, .gateway, .settings:
             true
-        case .overview, .activity, .workboard, .skillWorkshop, .instances, .sessions, .files,
+        case .talk, .overview, .activity, .workboard, .skillWorkshop, .instances, .sessions, .files,
              .dreaming,
              .usage,
              .cron, .terminal, .docs:

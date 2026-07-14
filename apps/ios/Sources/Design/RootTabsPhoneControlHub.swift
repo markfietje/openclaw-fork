@@ -92,8 +92,8 @@ struct RootTabsPhoneControlHub: View {
     }
 
     private var chatTalkRow: some View {
-        // Chat and Talk intentionally stay as Control shortcuts even though they own root tabs.
-        // These are the hub's primary actions; the remaining destination list filters root tabs.
+        // Chat remains a root-tab shortcut; Talk now opens in this stack because
+        // realtime voice is no longer duplicated in the bottom tab bar.
         HStack(alignment: .top, spacing: 12) {
             self.prominentDestinationCard(
                 .chat,
@@ -109,7 +109,7 @@ struct RootTabsPhoneControlHub: View {
         subtitle: LocalizedStringKey) -> some View
     {
         Button {
-            self.openPhoneRootDestination(destination)
+            self.applyDestination(destination)
         } label: {
             ProCard(padding: 16, radius: OpenClawProMetric.cardRadius) {
                 VStack(alignment: .leading, spacing: 12) {
@@ -162,8 +162,13 @@ struct RootTabsPhoneControlHub: View {
     @ViewBuilder
     private func detail(for destination: RootTabs.SidebarDestination) -> some View {
         switch destination {
-        case .chat, .talk, .agents:
+        case .chat, .agents:
             EmptyView()
+        case .talk:
+            TalkProTab(
+                ownsNavigationStack: false,
+                openSettings: { self.openGatewayDetail() },
+                openVoiceSettings: { self.navigationPath.append(.settings) })
         case .gateway:
             SettingsProTab(directRoute: .gateway)
         case .overview:
@@ -227,7 +232,7 @@ struct RootTabsPhoneControlHub: View {
                 usesNativeNavigationChrome: true,
                 gatewayAction: { self.openGatewayDetail() })
         case .settings:
-            EmptyView()
+            SettingsProTab(directRoute: .voice)
         }
     }
 

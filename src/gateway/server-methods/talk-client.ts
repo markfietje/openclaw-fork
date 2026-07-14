@@ -22,6 +22,7 @@ import { resolveConfiguredRealtimeVoiceProvider } from "../../talk/provider-reso
 import { startTalkRealtimeAgentConsult } from "../talk-agent-consult.js";
 import { formatForLog } from "../ws-log.js";
 import {
+  buildProviderOnlyRealtimeInstructions,
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
   buildTalkRealtimeConfig,
@@ -80,13 +81,13 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         normalizeOptionalLowercaseString(typedParams.brain) ??
         realtimeConfig.brain ??
         "agent-consult";
-      if (brain !== "agent-consult") {
+      if (brain !== "agent-consult" && brain !== "none") {
         respond(
           false,
           undefined,
           errorShape(
             ErrorCodes.INVALID_REQUEST,
-            `talk.client.create only supports brain="agent-consult"`,
+            `talk.client.create only supports brain="agent-consult" or brain="none"`,
           ),
         );
         return;
@@ -131,8 +132,14 @@ export const talkClientHandlers: GatewayRequestHandlers = {
         const session = await resolution.provider.createBrowserSession({
           cfg: runtimeConfig,
           providerConfig: resolution.providerConfig,
-          instructions: buildRealtimeInstructions(realtimeConfig.instructions),
-          tools: [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
+          instructions:
+            brain === "none"
+              ? buildProviderOnlyRealtimeInstructions(realtimeConfig.instructions)
+              : buildRealtimeInstructions(realtimeConfig.instructions),
+          tools:
+            brain === "none"
+              ? []
+              : [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
           ...launchOptions,
         });
         if (

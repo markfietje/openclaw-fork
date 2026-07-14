@@ -4,7 +4,7 @@ struct TalkRealtimeClientCreateParams: Encodable {
     var mode = "realtime"
     var provider: String?
     var transport = "webrtc"
-    var brain = "agent-consult"
+    var brain: String
     var model: String?
     var voice: String?
 }

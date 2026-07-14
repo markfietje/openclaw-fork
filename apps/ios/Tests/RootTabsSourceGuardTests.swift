@@ -82,24 +82,43 @@ struct RootTabsSourceGuardTests {
         #expect(!drawerContent.contains("NavigationSplitView"))
     }
 
-    @Test func `phone tab bar keeps chat first product order`() throws {
+    @Test func `phone tab bar keeps chat control agent and settings in product order`() throws {
         let source = try String(contentsOf: Self.rootTabsSourceURL(), encoding: .utf8)
         let phoneTabContent = try Self.extract(
             source,
             from: "private var phoneTabContent: some View",
-            to: "private var sidebarSplitContent: some View")
+            to: "extension RootTabs {\n    private func updateCanvasState")
 
         let chatRange = try #require(phoneTabContent.range(of: "ChatProTab("))
-        let talkRange = try #require(phoneTabContent.range(of: "TalkProTab("))
         let controlRange = try #require(phoneTabContent.range(of: "RootTabsPhoneControlHub("))
         let agentRange = try #require(phoneTabContent.range(of: "AgentProTab("))
         let settingsRange = try #require(phoneTabContent.range(of: "SettingsProTab("))
 
-        #expect(chatRange.lowerBound < talkRange.lowerBound)
-        #expect(talkRange.lowerBound < controlRange.lowerBound)
+        #expect(chatRange.lowerBound < controlRange.lowerBound)
         #expect(controlRange.lowerBound < agentRange.lowerBound)
         #expect(agentRange.lowerBound < settingsRange.lowerBound)
-        #expect(phoneTabContent.matches(of: /PhoneTabSettingsHost(?:\([^\n]+\))? \{/).count == 3)
+        #expect(!phoneTabContent.contains("TalkProTab("))
+        #expect(!phoneTabContent.contains(".tag(AppTab.talk)"))
+        #expect(phoneTabContent.contains("UnifiedChatVoiceTabIcon.image("))
+        #expect(phoneTabContent.contains("state: self.phoneChatVoiceIconState"))
+        #expect(!phoneTabContent.contains("micLevel"))
+        #expect(!phoneTabContent.contains("playbackLevel"))
+        #expect(phoneTabContent.contains("self.appModel.talkMode.isEnabled ? \"Chat, voice active\" : \"Chat\""))
+        #expect(!phoneTabContent.contains("Label(\"Chat\", systemImage: \"bubble.left.fill\")"))
+        #expect(phoneTabContent.matches(of: /PhoneTabSettingsHost(?:\([^\n]+\))? \{/).count == 2)
+    }
+
+    @Test func `phone chat keeps one composer voice control without a tab bar accessory`() throws {
+        let rootSource = try String(contentsOf: Self.rootTabsSourceURL(), encoding: .utf8)
+        let chromeSource = try String(contentsOf: Self.rootTabsPhoneChromeSourceURL(), encoding: .utf8)
+        let chatSource = try String(contentsOf: Self.chatProTabSourceURL(), encoding: .utf8)
+
+        #expect(!rootSource.contains("tabViewBottomAccessory"))
+        #expect(!rootSource.contains("PhoneVoiceTabAccessory"))
+        #expect(!chromeSource.contains("PhoneVoiceTabAccessory"))
+        #expect(chatSource.contains("talkControl: viewModel.isAttachmentOwnerPinned ? nil : self.talkControl"))
+        #expect(chatSource.contains("private var talkControl: OpenClawChatTalkControl"))
+        #expect(chatSource.contains("self.appModel.setTalkEnabled(!self.appModel.talkMode.isEnabled)"))
     }
 
     @Test func `sidebar keeps navigation model destination only`() throws {
@@ -374,7 +393,10 @@ struct RootTabsSourceGuardTests {
         #expect(docsSource.contains("if !self.usesNativeNavigationChrome"))
         #expect(overviewSource.contains("OpenClawAdaptiveHeaderRow("))
         #expect(overviewSource.matches(of: /if !self\.usesNativeNavigationChrome/).count == 2)
-        #expect(chatSource.contains(".navigationTitle(self.headerDisplayTitle)"))
+        #expect(chatSource.contains(".navigationTitle(self.showsAgentBadge ? \"\" : self.headerDisplayTitle)"))
+        #expect(chatSource.contains("self.headerAgentIdentity"))
+        #expect(!chatSource.contains("headerAgentModelPicker"))
+        #expect(chatSource.contains(".sharedBackgroundVisibility(.hidden)"))
         #expect(chatSource.contains("OpenClawSidebarRevealButton(action: headerLeadingAction)"))
         #expect(!chatSource.contains("OpenClawAdaptiveHeaderRow("))
         #expect(agentOverviewSource.contains("OpenClawAdaptiveHeaderRow("))
@@ -772,7 +794,7 @@ extension RootTabsSourceGuardTests {
             approvalNotificationsRoute.range(of: "self.navigationPath.append(.notifications)"))
 
         #expect(rootSource.matches(of: /openSettings: \{ self\.selectSidebarDestination\(\.gateway\) \}/).count >= 2)
-        #expect(rootSource.matches(of: /openVoiceSettings: \{ openSettingsRoute\(\.voice\) \}/).count == 1)
+        #expect(rootSource.matches(of: /openVoiceSettings: \{ openSettingsRoute\(\.voice\) \}/).count == 0)
         #expect(rootSource.matches(of: /openVoiceSettings: \{ self\.selectSettingsRoute\(\.voice\) \}/).count == 1)
         #expect(rootSource.matches(of: /gatewayAction: \{ self\.selectSidebarDestination\(\.gateway\) \}/).count == 2)
         #expect(!rootSource.contains("showGatewayActions"))
@@ -786,9 +808,14 @@ extension RootTabsSourceGuardTests {
             .matches(of: /AgentProTab\([\s\S]*?openSettings: \{ self\.selectSidebarDestination\(\.gateway\) \}/)
             .count >= 3)
         #expect(chatSource.contains("let openSettings: (() -> Void)?"))
-        #expect(chatSource.contains("private var connectionStatusButton: some View"))
-        #expect(chatSource.contains(".buttonStyle(.plain)"))
+        #expect(!chatSource.contains("private var connectionStatusButton: some View"))
+        #expect(!chatSource.contains("private var connectionPill: some View"))
+        #expect(chatSource.contains("private var gatewayAvatarStatusDot: some View"))
+        #expect(chatSource.contains(".fill(self.gatewayStatusColor)"))
+        #expect(chatSource.contains("private var showsExpandedGatewayStatus: Bool"))
+        #expect(chatSource.contains("Self.gatewayStatusShouldExpand("))
         #expect(chatSource.contains(".accessibilityIdentifier(\"chat-gateway-status\")"))
+        #expect(chatSource.contains(".accessibilityIdentifier(\"chat-gateway-settings\")"))
         #expect(chatSource.contains("composerChrome: .clean"))
         #expect(docsSource.contains("let gatewayAction: (() -> Void)?"))
         #expect(docsSource.contains(".buttonBorderShape(.capsule)"))
@@ -1280,7 +1307,7 @@ extension RootTabsSourceGuardTests {
         #expect(appModelSource.contains("return IOSGatewayChatTransport("))
         #expect(appModelSource.contains("globalAgentId: self.chatDeliveryAgentId"))
         #expect(appModelSource.contains("ifCurrentRoute: operatorRoute"))
-        #expect(transportSource.matches(of: /ifCurrentRoute: expectedRoute/).count == 3)
+        #expect(transportSource.matches(of: /ifCurrentRoute: expectedRoute/).count == 4)
         #expect(channelsSource.contains("\"clickclack\": SettingsChannelFallbackMetadata"))
         #expect(channelsSource.contains("label: \"ClickClack\""))
         #expect(channelsSource.contains("Self-hosted chat bot routing."))
@@ -1633,6 +1660,13 @@ extension RootTabsSourceGuardTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/Design/ChatProTab.swift")
+    }
+
+    private static func rootTabsPhoneChromeSourceURL() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Design/RootTabsPhoneChrome.swift")
     }
 
     private static func talkProTabSourceURL() -> URL {

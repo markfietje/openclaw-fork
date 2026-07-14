@@ -3,12 +3,13 @@ import Testing
 @testable import OpenClaw
 
 struct RuntimeLocalizationSourceGuardTests {
-    @Test func liveActivityStatePersistsSemanticsAndExternalDetail() throws {
+    @Test func `live activity state persists semantics and external detail`() throws {
         for status in OpenClawActivityAttributes.ContentState.Status.allCases {
             let state = OpenClawActivityAttributes.ContentState(
                 status: status,
                 verbatimDetail: status == .attention ? "Backend supplied detail" : nil,
-                startedAt: Date(timeIntervalSince1970: 1_234))
+                startedAt: Date(timeIntervalSince1970: 1234),
+                voiceSamples: status == .voiceSpeaking ? [12, 96, 240] : nil)
             let data = try JSONEncoder().encode(state)
             let decoded = try JSONDecoder().decode(OpenClawActivityAttributes.ContentState.self, from: data)
 
@@ -16,7 +17,7 @@ struct RuntimeLocalizationSourceGuardTests {
         }
     }
 
-    @Test func liveActivityStateDecodesShippedLegacyPayloads() throws {
+    @Test func `live activity state decodes shipped legacy payloads`() throws {
         let cases: [(LegacyContentState, OpenClawActivityAttributes.ContentState.Status, String?)] = [
             (LegacyContentState(statusText: "Disconnected", isDisconnected: true), .disconnected, nil),
             (LegacyContentState(statusText: "Idle", isIdle: true), .idle, nil),
@@ -40,7 +41,7 @@ struct RuntimeLocalizationSourceGuardTests {
         }
     }
 
-    @Test func runtimeOwnedCopyRemainsLocalizableAtRenderTime() throws {
+    @Test func `runtime owned copy remains localizable at render time`() throws {
         let attributes = try Self.source("Sources/LiveActivity/OpenClawActivityAttributes.swift")
         let manager = try Self.source("Sources/LiveActivity/LiveActivityManager.swift")
         let widget = try Self.source("ActivityWidget/OpenClawLiveActivity.swift")
@@ -133,15 +134,29 @@ struct RuntimeLocalizationSourceGuardTests {
         #expect(!talkManager.contains("gatewayTalkActiveModeTitle = \""))
     }
 
+    @Test func `voice waveform stays on avatar without expanded contour`() throws {
+        let widget = try Self.source("ActivityWidget/OpenClawLiveActivity.swift")
+
+        #expect(!widget.contains("DynamicIslandExpandedRegion(.bottom)"))
+        #expect(!widget.contains("expandedVoiceContour"))
+        #expect(widget.contains(".keylineTint(self.islandKeylineTint(state: state))"))
+        #expect(widget.contains("case .voiceListening, .voiceActive:\n            OpenClawActivityStyle.sea"))
+        #expect(widget.contains("TalkAvatarWaveformView("))
+        #expect(widget.contains("Text(\"LIVE\")"))
+        #expect(!widget.contains("compactVoiceLeading"))
+        #expect(!widget.contains("compactVoiceTrailing"))
+        #expect(!widget.contains("Color.clear\n                .frame(width: 1, height: 1)"))
+    }
+
     private static func source(_ path: String) throws -> String {
         try String(
-            contentsOf: Self.iosRoot.appendingPathComponent(path),
+            contentsOf: self.iosRoot.appendingPathComponent(path),
             encoding: .utf8)
     }
 
     private static func sharedSource(_ path: String) throws -> String {
         try String(
-            contentsOf: Self.iosRoot
+            contentsOf: self.iosRoot
                 .deletingLastPathComponent()
                 .appendingPathComponent("shared/OpenClawKit/Sources")
                 .appendingPathComponent(path),
@@ -157,6 +172,6 @@ struct RuntimeLocalizationSourceGuardTests {
         var isIdle = false
         var isDisconnected = false
         var isConnecting = false
-        var startedAt = Date(timeIntervalSince1970: 1_234)
+        var startedAt = Date(timeIntervalSince1970: 1234)
+        }
     }
-}

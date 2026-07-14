@@ -9,6 +9,73 @@ import UIKit
 #endif
 
 extension OpenClawChatViewModel {
+    public func addAttachments(urls: [URL]) {
+        self.beginAttachmentStaging()
+        Task {
+            defer { self.endAttachmentStaging() }
+            await self.loadAttachments(urls: urls)
+        }
+    }
+
+    public func addImageAttachment(data: Data, fileName: String, mimeType: String) {
+        self.beginAttachmentStaging()
+        Task {
+            defer { self.endAttachmentStaging() }
+            await self.addImageAttachment(url: nil, data: data, fileName: fileName, mimeType: mimeType)
+        }
+    }
+
+    public func addImageAttachment(
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        forSessionKey sessionKey: String) async
+    {
+        guard self.sessionKey == sessionKey else { return }
+        self.beginAttachmentStaging()
+        defer { self.endAttachmentStaging() }
+        await self.addImageAttachment(
+            url: nil,
+            data: data,
+            fileName: fileName,
+            mimeType: mimeType,
+            expectedSessionKey: sessionKey)
+    }
+
+    public func removeAttachment(_ id: OpenClawPendingAttachment.ID) {
+        attachments.removeAll { $0.id == id }
+        applyDeferredExternalStateIfReady()
+    }
+
+    /// True while replacing this model could move an attachment across chats.
+    public var isAttachmentOwnerPinned: Bool {
+        self.blocksAttachmentOwnerChange
+    }
+
+    var blocksAttachmentOwnerChange: Bool {
+        attachmentOwnerIsActive() ||
+            isSendingAttachmentDraft ||
+            attachmentStagingCount > 0 ||
+            !attachments.isEmpty
+    }
+
+    /// Applies external owner changes once recording or staging releases them.
+    public func attachmentOwnerActivityChanged() {
+        applyDeferredExternalStateIfReady()
+    }
+
+    /// File reads and image processing suspend before the attachment exists.
+    /// Keep their original chat owner pinned until staging succeeds or fails.
+    func beginAttachmentStaging() {
+        attachmentStagingCount += 1
+    }
+
+    func endAttachmentStaging() {
+        precondition(attachmentStagingCount > 0)
+        attachmentStagingCount -= 1
+        applyDeferredExternalStateIfReady()
+    }
+
     /// Stages a recorded m4a voice note and removes its temporary file.
     public func addVoiceNoteAttachment(fileURL: URL, durationSeconds: Double) async {
         self.beginAttachmentStaging()
@@ -23,21 +90,21 @@ extension OpenClawChatViewModel {
                 try Data(contentsOf: fileURL)
             }.value
         } catch {
-            self.errorText = String(
+            errorText = String(
                 format: String(localized: "Could not attach voice note: %@"),
                 error.localizedDescription)
             return
         }
 
         guard data.count <= Self.maxAttachmentBytes else {
-            self.errorText = String(localized: "Voice note exceeds the 5 MB attachment limit")
+            errorText = String(localized: "Voice note exceeds the 5 MB attachment limit")
             return
         }
 
         let normalizedDuration = durationSeconds.isFinite
             ? min(max(0, durationSeconds), OpenClawVoiceNoteRecorder.maximumDurationSeconds)
             : 0
-        self.attachments.append(
+        attachments.append(
             OpenClawPendingAttachment(
                 url: nil,
                 data: data,
@@ -49,6 +116,12 @@ extension OpenClawChatViewModel {
 
     func loadAttachments(urls: [URL]) async {
         for url in urls {
+            let hasSecurityScope = url.startAccessingSecurityScopedResource()
+            defer {
+                if hasSecurityScope {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
             do {
                 let data = try await Task.detached { try Data(contentsOf: url) }.value
                 await self.addImageAttachment(
@@ -68,7 +141,14 @@ extension OpenClawChatViewModel {
         return (UTType(filenameExtension: ext) ?? .data).preferredMIMEType
     }
 
-    func addImageAttachment(url: URL?, data: Data, fileName: String, mimeType: String) async {
+    func addImageAttachment(
+        url: URL?,
+        data: Data,
+        fileName: String,
+        mimeType: String,
+        expectedSessionKey: String? = nil) async
+    {
+        guard self.ownsAttachmentSession(expectedSessionKey) else { return }
         let uti: UTType = {
             if let url {
                 return UTType(filenameExtension: url.pathExtension) ?? .data
@@ -76,7 +156,7 @@ extension OpenClawChatViewModel {
             return UTType(mimeType: mimeType) ?? .data
         }()
         guard uti.conforms(to: .image) else {
-            self.errorText = String(localized: "Only image attachments are supported right now")
+            errorText = String(localized: "Only image attachments are supported right now")
             return
         }
 
@@ -86,15 +166,19 @@ extension OpenClawChatViewModel {
                 try ChatImageProcessor.processForUpload(data: data)
             }.value
         } catch {
-            self.errorText = String(
+            guard self.ownsAttachmentSession(expectedSessionKey) else { return }
+            errorText = String(
                 format: String(localized: "Could not process %1$@: %2$@"),
                 fileName,
                 error.localizedDescription)
             return
         }
 
+        // Image processing runs off actor. Revalidate the draft owner before
+        // publishing either the attachment or any session-scoped error state.
+        guard self.ownsAttachmentSession(expectedSessionKey) else { return }
         if processed.count > Self.maxAttachmentBytes {
-            self.errorText = String(
+            errorText = String(
                 format: String(localized: "Attachment %@ exceeds 5 MB limit after resizing"),
                 fileName)
             return
@@ -106,13 +190,17 @@ extension OpenClawChatViewModel {
         }()
 
         let preview = Self.previewImage(data: processed)
-        self.attachments.append(
+        attachments.append(
             OpenClawPendingAttachment(
                 url: url,
                 data: processed,
                 fileName: outputFileName,
                 mimeType: "image/jpeg",
                 preview: preview))
+    }
+
+    private func ownsAttachmentSession(_ expectedSessionKey: String?) -> Bool {
+        expectedSessionKey == nil || expectedSessionKey == sessionKey
     }
 
     static func previewImage(data: Data) -> OpenClawPlatformImage? {

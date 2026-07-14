@@ -214,16 +214,14 @@ final class OpenClawSnapshotUITests: XCTestCase {
             initialDestination: "chat",
             name: "chat-settings-back"))
 
-        let gatewaySettings = try XCTUnwrap(self.app?.buttons["chat-gateway-status"])
-        XCTAssertTrue(gatewaySettings.waitForExistence(timeout: 8))
-        gatewaySettings.tap()
+        try self.openChatGatewaySettings()
         let gatewayNavigationBar = try XCTUnwrap(self.app?.navigationBars["Gateway"])
         XCTAssertTrue(gatewayNavigationBar.waitForExistence(timeout: 5))
         XCTAssertTrue(self.app?.tabBars.buttons["Chat"].isSelected == true)
         self.attachScreenshot(named: "chat-gateway-origin-stack")
 
         gatewayNavigationBar.buttons["BackButton"].tap()
-        XCTAssertTrue(gatewaySettings.waitForExistence(timeout: 5))
+        XCTAssertTrue(self.app?.otherElements["chat-agent-identity"].waitForExistence(timeout: 5) == true)
         XCTAssertTrue(self.app?.tabBars.buttons["Chat"].isSelected == true)
         self.attachScreenshot(named: "chat-after-settings-back")
 
@@ -240,11 +238,11 @@ final class OpenClawSnapshotUITests: XCTestCase {
         voiceSettings.tap()
         let voiceNavigationBar = try XCTUnwrap(self.app?.navigationBars["Voice & Talk"])
         XCTAssertTrue(voiceNavigationBar.waitForExistence(timeout: 5))
-        XCTAssertTrue(self.app?.tabBars.buttons["Talk"].isSelected == true)
+        XCTAssertTrue(self.app?.tabBars.buttons["Control"].isSelected == true)
 
         voiceNavigationBar.buttons["BackButton"].tap()
         XCTAssertTrue(voiceSettings.waitForExistence(timeout: 5))
-        XCTAssertTrue(self.app?.tabBars.buttons["Talk"].isSelected == true)
+        XCTAssertTrue(self.app?.tabBars.buttons["Control"].isSelected == true)
     }
 
     func testVoiceWakeResumesAfterTalkModeToggle() throws {
@@ -323,21 +321,38 @@ final class OpenClawSnapshotUITests: XCTestCase {
         XCTAssertTrue(talkButton.waitForExistence(timeout: 5))
         let attachmentButton = try XCTUnwrap(app?.buttons["chat-attachment-picker"])
         XCTAssertTrue(attachmentButton.waitForExistence(timeout: 5))
+        let dictationButton = try XCTUnwrap(app?.buttons["chat-dictation-control"])
+        XCTAssertTrue(dictationButton.waitForExistence(timeout: 5))
         let composerSurface = try XCTUnwrap(app?.otherElements["chat-composer-surface"])
         XCTAssertTrue(composerSurface.waitForExistence(timeout: 5))
-        let gatewayStatus = try XCTUnwrap(app?.buttons["chat-gateway-status"])
-        XCTAssertTrue(gatewayStatus.waitForExistence(timeout: 5))
+        let agentIdentity = try XCTUnwrap(app?.otherElements["chat-agent-identity"])
+        XCTAssertTrue(agentIdentity.waitForExistence(timeout: 5))
+        XCTAssertEqual(agentIdentity.value as? String, "Collapsed")
+        agentIdentity.tap()
+        self.waitForValue("Expanded", of: agentIdentity)
         let sendButton = try XCTUnwrap(app?.buttons["chat-send-message"])
         XCTAssertFalse(sendButton.exists)
-        XCTAssertLessThanOrEqual(attachmentButton.frame.maxX, composerSurface.frame.minX)
-        XCTAssertLessThanOrEqual(composerSurface.frame.maxX, talkButton.frame.minX)
+        XCTAssertLessThanOrEqual(agentIdentity.frame.maxY, composerSurface.frame.minY)
+        XCTAssertGreaterThanOrEqual(attachmentButton.frame.minX, composerSurface.frame.minX)
+        XCTAssertLessThanOrEqual(attachmentButton.frame.maxX, composerSurface.frame.maxX)
+        XCTAssertGreaterThanOrEqual(dictationButton.frame.minX, composerSurface.frame.minX)
+        XCTAssertLessThanOrEqual(dictationButton.frame.maxX, composerSurface.frame.maxX)
+        XCTAssertGreaterThanOrEqual(talkButton.frame.minX, composerSurface.frame.minX)
+        XCTAssertLessThanOrEqual(talkButton.frame.maxX, composerSurface.frame.maxX)
         XCTAssertGreaterThanOrEqual(attachmentButton.frame.width, 44)
         XCTAssertGreaterThanOrEqual(attachmentButton.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(dictationButton.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(dictationButton.frame.height, 44)
         XCTAssertGreaterThanOrEqual(talkButton.frame.width, 44)
         XCTAssertGreaterThanOrEqual(talkButton.frame.height, 44)
         let compactHeight = textField.frame.height
         XCTAssertLessThanOrEqual(compactHeight, 44)
-        XCTAssertLessThanOrEqual(abs(talkButton.frame.midY - textField.frame.midY), 1)
+        XCTAssertLessThanOrEqual(abs(attachmentButton.frame.midY - dictationButton.frame.midY), 1)
+        XCTAssertLessThanOrEqual(abs(talkButton.frame.midY - dictationButton.frame.midY), 1)
+
+        attachmentButton.tap()
+        XCTAssertFalse(self.app?.buttons["Voice Memo"].exists == true)
+        self.app?.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
         self.attachScreenshot(named: "chat-composer-compact")
 
         textField.tap()
@@ -367,7 +382,7 @@ final class OpenClawSnapshotUITests: XCTestCase {
                 name: "chat-light"),
             appearance: "light")
 
-        XCTAssertTrue(self.app?.buttons["chat-gateway-status"].waitForExistence(timeout: 8) == true)
+        XCTAssertTrue(self.app?.otherElements["chat-agent-identity"].waitForExistence(timeout: 8) == true)
         XCTAssertTrue(self.app?.otherElements["chat-composer-surface"].exists == true)
         self.attachScreenshot(named: "chat-light")
     }
@@ -566,9 +581,7 @@ final class OpenClawSnapshotUITests: XCTestCase {
 
         // Retain an embedded Chat Settings route, then prove contextual routing pops it.
         chatTab.tap()
-        let gatewaySettings = try XCTUnwrap(self.app?.buttons["chat-gateway-status"])
-        XCTAssertTrue(gatewaySettings.waitForExistence(timeout: 5))
-        gatewaySettings.tap()
+        try self.openChatGatewaySettings()
         XCTAssertTrue(self.app?.navigationBars["Gateway"].waitForExistence(timeout: 5) == true)
 
         controlTab.tap()
@@ -912,6 +925,22 @@ final class OpenClawSnapshotUITests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts[replyMarker].waitForExistence(timeout: 60))
         XCTAssertTrue(app.staticTexts["Writing"].waitForNonExistence(timeout: 5))
+    }
+
+    private func openChatGatewaySettings(
+        file: StaticString = #filePath,
+        line: UInt = #line) throws
+    {
+        let actions = try XCTUnwrap(self.app?.buttons["Chat actions"], file: file, line: line)
+        XCTAssertTrue(actions.waitForExistence(timeout: 8), file: file, line: line)
+        actions.tap()
+
+        let gatewaySettings = try XCTUnwrap(
+            self.app?.buttons["chat-gateway-settings"],
+            file: file,
+            line: line)
+        XCTAssertTrue(gatewaySettings.waitForExistence(timeout: 3), file: file, line: line)
+        gatewaySettings.tap()
     }
 
     private func assertDarkAppearanceTextVisible(

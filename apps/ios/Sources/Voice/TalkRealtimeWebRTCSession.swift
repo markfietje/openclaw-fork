@@ -37,6 +37,7 @@ final class TalkRealtimeWebRTCSession: NSObject {
 
     private let gateway: GatewayNodeSession
     private let sessionKey: String
+    private let brain: String
     private weak var delegate: TalkRealtimeWebRTCSessionDelegate?
 
     private var factory: RTCPeerConnectionFactory?
@@ -72,9 +73,15 @@ final class TalkRealtimeWebRTCSession: NSObject {
         let providerStarted: Bool?
     }
 
-    init(gateway: GatewayNodeSession, sessionKey: String, delegate: TalkRealtimeWebRTCSessionDelegate) {
+    init(
+        gateway: GatewayNodeSession,
+        sessionKey: String,
+        brain: String,
+        delegate: TalkRealtimeWebRTCSessionDelegate)
+    {
         self.gateway = gateway
         self.sessionKey = sessionKey
+        self.brain = brain
         self.delegate = delegate
         super.init()
     }
@@ -882,7 +889,11 @@ extension TalkRealtimeWebRTCSession {
     {
         self.trace("gateway talk.client.create start")
         let startedAt = ProcessInfo.processInfo.systemUptime
-        let params = TalkRealtimeClientCreateParams(provider: provider, model: model, voice: voice)
+        let params = TalkRealtimeClientCreateParams(
+            provider: provider,
+            brain: self.brain,
+            model: model,
+            voice: voice)
         let data = try JSONEncoder().encode(params)
         let json = String(data: data, encoding: .utf8)
         let res = try await gateway.request(method: "talk.client.create", paramsJSON: json, timeoutSeconds: 12)

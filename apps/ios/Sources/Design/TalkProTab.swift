@@ -10,6 +10,7 @@ struct TalkProTab: View {
     @AppStorage("talk.background.enabled") private var talkBackgroundEnabled: Bool = false
     @State private var showPermissionPrompt = false
     @State private var showTalkIssueDetails = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let headerLeadingAction: OpenClawSidebarHeaderAction?
     let ownsNavigationStack: Bool
     var openSettings: () -> Void
@@ -112,48 +113,112 @@ struct TalkProTab: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            self.primaryActionBar
+        }
     }
 
     private var heroSection: some View {
         Section {
-            VStack(spacing: 16) {
-                TalkWaveformView(
+            VStack(spacing: 18) {
+                HStack {
+                    Text("OPENCLAW VOICE")
+                        .font(OpenClawType.monoSmall)
+                        .foregroundStyle(OpenClawBrand.carapaceCoral)
+                    Spacer()
+                    Label {
+                        Text(self.state.isEnabled ? "LIVE" : "STANDBY")
+                            .font(OpenClawType.caption2Bold)
+                    } icon: {
+                        Circle()
+                            .fill(self.state.isEnabled ? OpenClawBrand.carapaceSea : Color.secondary)
+                            .frame(width: 6, height: 6)
+                    }
+                    .foregroundStyle(self.state.isEnabled ? OpenClawBrand.carapaceSea : Color.secondary)
+                }
+
+                TalkAvatarWaveformView(
                     phase: self.state.waveformPhase(
                         micLevel: self.appModel.talkMode.micLevel,
                         playbackLevel: self.appModel.talkMode.playbackLevel),
-                    palette: .openClawBrand)
-                    .frame(height: 130)
-                    .accessibilityHidden(true)
+                    palette: .openClawBrand,
+                    diameter: 124,
+                    avatarDiameter: 74)
+                {
+                    Text(self.agentBadge)
+                        .font(OpenClawType.avatar(size: self.agentBadge.count > 2 ? 27 : 38))
+                        .foregroundStyle(.white)
+                        .minimumScaleFactor(0.55)
+                        .lineLimit(1)
+                        .frame(width: 74, height: 74)
+                        .background(Circle().fill(OpenClawBrand.carapaceElevated))
+                }
+                .frame(height: 124)
+                .accessibilityHidden(true)
 
                 VStack(spacing: 4) {
                     Text(self.state.title)
                         .font(OpenClawType.title3SemiBold)
+                        .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
                     self.heroSubtitle
                         .font(OpenClawType.subhead)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.white.opacity(0.72))
                         .multilineTextAlignment(.center)
                 }
-
-                Button(action: self.handlePrimaryAction) {
-                    Label {
-                        Text(self.state.primaryButtonTitle)
-                    } icon: {
-                        Image(systemName: self.state.primaryButtonIcon)
-                    }
-                    .font(OpenClawType.subheadSemiBold)
-                    // Match the icon to the label; otherwise the symbol picks up the tint color.
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(self.state.color)
-                .disabled(self.state.primaryAction == .waiting)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 20)
+            .background {
+                ZStack {
+                    OpenClawBrand.carapaceSurface
+                    LinearGradient(
+                        colors: [
+                            OpenClawBrand.carapaceCoral.opacity(self.state.isEnabled ? 0.10 : 0.04),
+                            .clear,
+                            OpenClawBrand.carapaceSea.opacity(self.state.isEnabled ? 0.07 : 0.02),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing)
+                }
+            }
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(self.state.isEnabled ? OpenClawBrand.carapaceCoral : Color.white.opacity(0.08))
+                    .frame(height: 1)
+            }
+            .animation(self.reduceMotion ? nil : .easeOut(duration: 0.2), value: self.state.isEnabled)
+            .listRowInsets(EdgeInsets())
             .listRowBackground(Color.clear)
+        }
+    }
+
+    /// Voice is a persistent phone-level mode, so its control stays reachable
+    /// beside the bottom navigation instead of scrolling away with diagnostics.
+    private var primaryActionBar: some View {
+        Button(action: self.handlePrimaryAction) {
+            Label {
+                Text(self.state.primaryButtonTitle)
+                    .font(OpenClawType.subheadSemiBold)
+            } icon: {
+                Image(systemName: self.state.primaryButtonIcon)
+            }
+            // Match the icon to the label; otherwise the symbol picks up the tint color.
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(self.state.color)
+        .disabled(self.state.primaryAction == .waiting)
+        .accessibilityIdentifier("talk-primary-control")
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Divider()
         }
     }
 
@@ -163,6 +228,11 @@ struct TalkProTab: View {
             SettingsDetailRow("Session", value: .verbatim(self.appModel.chatSessionKey))
             SettingsDetailRow("Runtime", value: .localized(self.appModel.talkMode.statusText))
         }
+    }
+
+    private var agentBadge: String {
+        ChatProTab.normalizedBadgeEmoji(self.appModel.chatAgentAvatarText)
+            ?? ChatProTab.initialsBadge(for: self.appModel.chatAgentName)
     }
 
     private var voiceModeSection: some View {
@@ -356,9 +426,9 @@ extension TalkWaveformPalette {
     /// system grays so the idle wave tracks light/dark appearance.
     static let openClawBrand = TalkWaveformPalette(
         active: [
+            OpenClawBrand.carapaceCoral,
+            OpenClawBrand.carapaceSea,
             OpenClawBrand.accent,
-            Color(red: 0.95, green: 0.45, blue: 0.30),
-            Color(red: 0.45, green: 0.08, blue: 0.12),
         ],
         inactive: [
             Color(uiColor: .systemGray2),

@@ -108,7 +108,7 @@ const defaultPublicDeprecatedExportsByEntrypointBudget = Object.freeze({
   "approval-runtime": 1,
   "config-runtime": 123,
   "config-contracts": 1,
-  "config-types": 425,
+  "config-types": 427,
   "config-schema": 3,
   "reply-dedupe": 1,
   "inbound-reply-dispatch": 33,
@@ -208,7 +208,7 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
     // The focused HTML entity runtime and quote-aware HTML tokenizer add one public function each.
     publicExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_EXPORTS",
-      10684,
+      10686,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -218,7 +218,7 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_DEPRECATED_EXPORTS",
-      3292,
+      3293,
       env,
     ),
     publicWildcardReexports: readPluginSdkSurfaceBudgetEnv(

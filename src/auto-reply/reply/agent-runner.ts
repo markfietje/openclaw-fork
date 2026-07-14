@@ -1702,8 +1702,7 @@ export async function runReplyAgent(params: {
     const runStartedAt = Date.now();
     await persistRestartRecoveryDeliveryClaim();
     // Adoption marks run start and must never be spool-replayed (would re-run tools).
-    // Suppressed delivery has no recovery state to persist; crashed suppressed runs die
-    // silently. When a delivery context is resolvable, this still runs after its persist.
+    // Suppressed delivery has no recovery state; crashed runs die silently. Resolvable context runs after persist.
     await opts?.onTurnAdopted?.();
     const runOutcome = await traceAgentPhase("reply.run_agent_turn", () =>
       runAgentTurnWithFallback({

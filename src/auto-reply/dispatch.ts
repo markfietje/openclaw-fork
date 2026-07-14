@@ -392,11 +392,10 @@ function buildReplyPayloadSendingBeforeDeliver(
 ): ReplyDispatchBeforeDeliver {
   const finalized = finalizeInboundContext(ctx);
   const hookCtx = deriveInboundMessageHookContext(finalized);
-
   return markReplyDispatchBeforeDeliverDeadlineOwned(
     async (payload: ReplyPayload, info): Promise<ReplyPayload | null> => {
       const runId = runState.runId;
-      const hookedPayload = await runReplyPayloadSendingHook({
+      const hooked = await runReplyPayloadSendingHook({
         payload,
         kind: info.kind,
         channel: finalized.Surface ?? finalized.Provider,
@@ -408,10 +407,8 @@ function buildReplyPayloadSendingBeforeDeliver(
           runId,
         },
       });
-      if (!hookedPayload || !hasOutboundReplyContent(hookedPayload)) {
-        return null;
-      }
-      return runId ? setReplyPayloadMetadata(hookedPayload, { agentRunId: runId }) : hookedPayload;
+      const visible = hooked && hasOutboundReplyContent(hooked) ? hooked : null;
+      return runId && visible ? setReplyPayloadMetadata(visible, { agentRunId: runId }) : visible;
     },
   );
 }

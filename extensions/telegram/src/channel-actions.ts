@@ -206,13 +206,11 @@ function describeTelegramMessageTool({
       visibility: "all-configured",
     });
   }
-  const capabilities: ChannelMessageToolDiscovery["capabilities"] = ["delivery-pin"];
-  if (discovery.buttonsEnabled) {
-    capabilities.unshift("presentation");
-  }
-  if (discovery.isEnabled("editMessage")) {
-    capabilities.push("message-edit");
-  }
+  const capabilities: ChannelMessageToolDiscovery["capabilities"] = [
+    ...(discovery.buttonsEnabled ? (["presentation"] as const) : []),
+    "delivery-pin",
+    ...(discovery.isEnabled("editMessage") ? (["message-edit"] as const) : []),
+  ];
   return {
     actions: Array.from(actions),
     capabilities,

@@ -193,7 +193,7 @@ describe("status footer", () => {
     noteActivity("telegram:chat-1", "🧪".repeat(80));
 
     const sent = await sendIntermediate({ transport, text: "emoji" });
-    expect(sent.text.isWellFormed()).toBe(true);
+    expect(() => encodeURIComponent(sent.text)).not.toThrow();
     expect(sent.text).toContain("…");
   });
 

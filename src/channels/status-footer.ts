@@ -59,6 +59,36 @@ export function noteStatusFooterRunStarted(runId: string, startedAt: number): vo
   }
 }
 
+type StatusFooterRunParams = { opts?: { runId?: string }; runStartedAt?: number };
+type StatusFooterRunParamsWithId<TParams extends StatusFooterRunParams> = Omit<TParams, "opts"> & {
+  opts: NonNullable<TParams["opts"]> & { runId: string };
+};
+
+export async function wrapRunWithStatusFooter<T, TParams extends StatusFooterRunParams>(
+  params: TParams,
+  run: (
+    params: StatusFooterRunParamsWithId<TParams>,
+    commitTerminalOutcome: () => void,
+  ) => Promise<T>,
+  commitTerminalOutcome: () => void,
+): Promise<T> {
+  const runId = params.opts?.runId ?? crypto.randomUUID();
+  const runParams = {
+    ...params,
+    opts: { ...params.opts, runId },
+  } as StatusFooterRunParamsWithId<TParams>;
+  noteStatusFooterRunStarted(runId, params.runStartedAt ?? Date.now());
+  try {
+    return await run(runParams, commitTerminalOutcome);
+  } finally {
+    try {
+      commitTerminalOutcome();
+    } finally {
+      await finalizeStatusFooterRun(runId);
+    }
+  }
+}
+
 function normalizeActivity(line: string): string {
   const normalized = line.replace(/\s+/g, " ").trim();
   // Truncate on code points, not UTF-16 units: a hard cut inside a surrogate
@@ -240,12 +270,6 @@ export async function decorateIntermediate<T>(params: {
       }
     }
   }
-}
-
-export async function stripPrevious(conversationKey: string, runId?: string): Promise<void> {
-  await enqueue(conversationKey, async () => {
-    await stripRecord(conversationKey, runId);
-  });
 }
 
 export async function finalize(conversationKey: string, runId?: string): Promise<void> {

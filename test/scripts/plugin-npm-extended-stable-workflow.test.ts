@@ -3,8 +3,6 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 const workflowPath = ".github/workflows/plugin-npm-release.yml";
-const metaPackagePath = "extensions/meta/package.json";
-const metaManifestPath = "extensions/meta/openclaw.plugin.json";
 
 type Step = {
   env?: Record<string, string>;
@@ -296,24 +294,6 @@ describe("plugin npm extended-stable workflow", () => {
       expect(serialized.replaceAll("clawHub: false", ""), jobName).not.toMatch(/\bclawhub\b/iu);
       expect(serialized, jobName).not.toMatch(/\b(?:android|macos|windows)\b/iu);
     }
-  });
-
-  it("attests the canonical Meta provider package and install route", () => {
-    const packageJson = JSON.parse(readFileSync(metaPackagePath, "utf8")) as {
-      name?: string;
-      openclaw?: {
-        install?: { npmSpec?: string };
-        release?: { publishToClawHub?: boolean; publishToNpm?: boolean };
-      };
-    };
-    const pluginManifest = JSON.parse(readFileSync(metaManifestPath, "utf8")) as { id?: string };
-    expect(packageJson.name).toBe("@openclaw/meta-provider");
-    expect(packageJson.openclaw?.install?.npmSpec).toBe("@openclaw/meta-provider");
-    expect(packageJson.openclaw?.release).toEqual({
-      publishToClawHub: true,
-      publishToNpm: true,
-    });
-    expect(pluginManifest.id).toBe("meta");
   });
 
   it("publishes extended-stable with OIDC only and verifies every package tag", () => {

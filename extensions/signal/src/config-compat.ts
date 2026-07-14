@@ -72,8 +72,18 @@ function requiresDetection(
   parent: Record<string, unknown>,
   apiMode: unknown,
 ): boolean {
-  const httpUrl = optionalString(inherited(entry, parent, "httpUrl"));
-  return (apiMode === undefined || apiMode === "auto") && Boolean(httpUrl);
+  return (apiMode === undefined || apiMode === "auto") && !resolveLegacyAutoStart(entry, parent);
+}
+
+function resolveLegacyAutoStart(
+  entry: Record<string, unknown>,
+  parent: Record<string, unknown>,
+): boolean {
+  const autoStart = inherited(entry, parent, "autoStart");
+  if (typeof autoStart === "boolean") {
+    return autoStart;
+  }
+  return !optionalString(inherited(entry, parent, "httpUrl"));
 }
 
 function buildManagedNativeTransport(
@@ -83,8 +93,21 @@ function buildManagedNativeTransport(
   const value = (key: string) => inherited(entry, parent, key);
   const configPath = optionalString(value("configPath"));
   const cliPath = optionalString(value("cliPath"));
-  const httpHost = optionalString(value("httpHost"));
-  const httpPort = value("httpPort");
+  let httpHost = optionalString(value("httpHost"));
+  let httpPort = value("httpPort");
+  const httpUrl = optionalString(value("httpUrl"));
+  if (httpUrl && (!httpHost || typeof httpPort !== "number")) {
+    const parsed = new URL(normalizeSignalTransportUrl(httpUrl));
+    httpHost ??= parsed.hostname;
+    httpPort =
+      typeof httpPort === "number"
+        ? httpPort
+        : parsed.port
+          ? Number.parseInt(parsed.port, 10)
+          : parsed.protocol === "https:"
+            ? 443
+            : 80;
+  }
   const startupTimeoutMs = value("startupTimeoutMs");
   const receiveMode = value("receiveMode");
   const ignoreStories = value("ignoreStories");
@@ -114,9 +137,9 @@ function resolveLegacyTransportWithoutDetection(params: {
     return { kind: "container", url: baseUrl };
   }
   if (params.apiMode === "native") {
-    return autoStart === false || optionalString(inherited(params.entry, params.parent, "httpUrl"))
-      ? { kind: "external-native", url: baseUrl }
-      : buildManagedNativeTransport(params.entry, params.parent);
+    return resolveLegacyAutoStart(params.entry, params.parent)
+      ? buildManagedNativeTransport(params.entry, params.parent)
+      : { kind: "external-native", url: baseUrl };
   }
   if (requiresDetection(params.entry, params.parent, params.apiMode)) {
     return undefined;

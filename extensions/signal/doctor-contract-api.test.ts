@@ -236,6 +236,44 @@ describe("signal transport compatibility", () => {
     });
   });
 
+  it("detects auto host and port endpoints before choosing a concrete transport", async () => {
+    const detect = vi.fn().mockResolvedValue({
+      kind: "container",
+      url: "http://signal:8181",
+    });
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        apiMode: "auto",
+        autoStart: false,
+        httpHost: "signal",
+        httpPort: 8181,
+      }),
+      detect,
+    });
+
+    expect(detect).toHaveBeenCalledWith({ url: "http://signal:8181" });
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "container",
+      url: "http://signal:8181",
+    });
+  });
+
+  it("keeps explicit native auto-start endpoints managed", async () => {
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        apiMode: "native",
+        autoStart: true,
+        httpUrl: "http://127.0.0.1:8181",
+      }),
+    });
+
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "managed-native",
+      httpHost: "127.0.0.1",
+      httpPort: 8181,
+    });
+  });
+
   it("leaves an unreachable auto endpoint unchanged for a later doctor run", async () => {
     const cfg = signalConfig({ apiMode: "auto", httpUrl: "http://offline:8080" });
     const result = await migrateLegacySignalTransportConfig({

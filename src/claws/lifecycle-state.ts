@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { stableStringify } from "../agents/stable-stringify.js";
 import { pruneAgentConfig } from "../commands/agents.config.js";
-import { loadConfig, transformConfigFileWithRetry } from "../config/config.js";
+import { loadConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { deleteAgentConfigEntry } from "../gateway/server-methods/agents-config-mutations.js";
 import { root as fsSafeRoot, FsSafeError } from "../infra/fs-safe.js";
 import {
   runOpenClawStateWriteTransaction,
@@ -394,24 +395,28 @@ export async function applyClawRemovePlan(
   if (JSON.stringify(plannedPackages) !== JSON.stringify(currentPackages)) {
     throw new ClawRemoveError("remove_changed", "Package ownership changed after remove planning.");
   }
-  const commit: ConfigCommit =
-    options.commitConfig ??
-    (async (transform) => {
-      await transformConfigFileWithRetry({
-        afterWrite: { mode: "auto" },
-        transform: (config) => ({ nextConfig: transform(config) }),
-      });
-    });
   let agentRemoved = false;
-  await commit((config) => {
-    const agents = config.agents?.list ?? [];
-    const agent = agents.find((candidate) => candidate.id === plan.agentId);
-    if (agent && digestAgent(agent) !== record.install.agentConfigDigest) {
-      throw new ClawRemoveError("agent_modified", "Agent config changed during remove.");
-    }
-    agentRemoved = Boolean(agent);
-    return pruneAgentConfig(config, agentId).config;
-  });
+  if (options.commitConfig) {
+    await options.commitConfig((config) => {
+      const agents = config.agents?.list ?? [];
+      const agent = agents.find((candidate) => candidate.id === plan.agentId);
+      if (agent && digestAgent(agent) !== record.install.agentConfigDigest) {
+        throw new ClawRemoveError("agent_modified", "Agent config changed during remove.");
+      }
+      agentRemoved = Boolean(agent);
+      return pruneAgentConfig(config, agentId).config;
+    });
+  } else {
+    await deleteAgentConfigEntry({
+      agentId,
+      validate: (agent) => {
+        if (digestAgent(agent) !== record.install.agentConfigDigest) {
+          throw new ClawRemoveError("agent_modified", "Agent config changed during remove.");
+        }
+      },
+    });
+    agentRemoved = true;
+  }
   const packages = await applyClawPackageRemovals(packageDecisions, {
     deps: options.packageDeps,
   });

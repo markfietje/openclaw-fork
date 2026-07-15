@@ -23,7 +23,7 @@ export const SignalTransportSchema = z.discriminatedUnion("kind", [
       kind: z.literal("managed-native"),
       configPath: z.string().optional(),
       httpHost: z.string().optional(),
-      httpPort: z.number().int().positive().optional(),
+      httpPort: z.number().int().min(1).max(65_535).optional(),
       cliPath: ExecutableTokenSchema.optional(),
       startupTimeoutMs: z.number().int().min(1000).max(120000).optional(),
       receiveMode: z.union([z.literal("on-start"), z.literal("manual")]).optional(),

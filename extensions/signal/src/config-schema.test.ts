@@ -113,6 +113,15 @@ describe("signal groups schema", () => {
     });
   });
 
+  it("rejects managed transport ports outside the TCP range", () => {
+    expectInvalidSignalConfig({
+      transport: {
+        kind: "managed-native",
+        httpPort: 65_536,
+      },
+    });
+  });
+
   it("rejects the retired apiMode shape", () => {
     const issues = expectInvalidSignalConfig({ apiMode: "container" });
 

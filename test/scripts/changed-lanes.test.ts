@@ -1142,11 +1142,19 @@ describe("scripts/changed-lanes", () => {
         OPENCLAW_TESTBOX: "1",
       },
     );
-    expect(testboxArgs.slice(0, 4)).toEqual([
+    expect(testboxArgs.slice(0, 12)).toEqual([
       "crabbox:run",
       "--",
       "--provider",
       "blacksmith-testbox",
+      "--blacksmith-org",
+      "openclaw",
+      "--blacksmith-workflow",
+      ".github/workflows/ci-check-testbox.yml",
+      "--blacksmith-job",
+      "check",
+      "--blacksmith-ref",
+      "main",
     ]);
   });
 

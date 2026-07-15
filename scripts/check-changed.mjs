@@ -215,7 +215,18 @@ function changedCheckDiffRefsReady({ base, head, cwd = process.cwd() }) {
 export function buildChangedCheckCrabboxArgs(argv = [], options = {}, env = process.env) {
   const delegatedArgv = buildDelegatedChangedCheckArgv(argv, options);
   const providerArgs = isTruthyEnvFlag(env.OPENCLAW_TESTBOX)
-    ? ["--provider", "blacksmith-testbox"]
+    ? [
+        "--provider",
+        "blacksmith-testbox",
+        "--blacksmith-org",
+        "openclaw",
+        "--blacksmith-workflow",
+        ".github/workflows/ci-check-testbox.yml",
+        "--blacksmith-job",
+        "check",
+        "--blacksmith-ref",
+        "main",
+      ]
     : [];
   return [
     "crabbox:run",

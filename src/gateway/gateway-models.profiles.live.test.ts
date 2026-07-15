@@ -896,6 +896,13 @@ describe("resolveGatewayLiveProviderTimeoutSeconds", () => {
   });
 });
 
+describe("isGatewayLiveProbeTimeout", () => {
+  it("keeps missing terminal replies out of provider timeout skips", () => {
+    expect(isGatewayLiveProbeTimeout("probe timeout after 90000ms (prompt)")).toBe(true);
+    expect(isGatewayLiveProbeTimeout("terminal timeout after 90000ms (tool-read)")).toBe(false);
+  });
+});
+
 describe("isGatewayLiveModelTimeout", () => {
   it("matches provider-attributed agent wait timeouts", () => {
     expect(
@@ -929,6 +936,23 @@ describe("formatGatewayLiveAgentWaitFailure", () => {
       }).message,
     ).toContain(
       "anthropic prompt: agent.wait timeout for runId=run-1 (timeoutPhase=provider, providerStarted=true, stopReason=rpc)",
+    );
+  });
+});
+
+describe("isGatewayAgentWaitCompletedWithoutReply", () => {
+  it("accepts the malformed completion envelope used by tool-only turns", () => {
+    expect(isGatewayAgentWaitCompletedWithoutReply({ status: "error", error: " completed " })).toBe(
+      true,
+    );
+  });
+
+  it("rejects genuine agent errors and non-error completion envelopes", () => {
+    expect(isGatewayAgentWaitCompletedWithoutReply({ status: "error", error: "aborted" })).toBe(
+      false,
+    );
+    expect(isGatewayAgentWaitCompletedWithoutReply({ status: "ok", error: "completed" })).toBe(
+      false,
     );
   });
 });
@@ -1611,10 +1635,17 @@ function isToolNonceProbeMiss(error: string): boolean {
 
 function isTransientToolReadProbeErrorForLiveModel(error: string): boolean {
   const msg = error.toLowerCase();
+  // Some tool-capable providers complete a tool turn without appending reply text.
+  // Retry here; the existing model policy decides whether exhausted misses may skip.
+  const isCompletedWithoutReply =
+    msg.includes("agent.wait error") && msg.includes("(error=completed)");
+  const isTransientProviderFailure =
+    msg.includes("unknown error occurred") ||
+    (msg.includes("ai service returned an internal error") &&
+      msg.includes("try again in a moment"));
   return (
     msg.includes("tool-read: agent-wait") &&
-    msg.includes("failovererror") &&
-    msg.includes("unknown error occurred")
+    (isCompletedWithoutReply || (msg.includes("failovererror") && isTransientProviderFailure))
   );
 }
 
@@ -1682,7 +1713,30 @@ describe("isTransientToolReadProbeErrorForLiveModel", () => {
     ).toBe(true);
     expect(
       isTransientToolReadProbeErrorForLiveModel(
+        "[all-models] 1/1 openai/gpt-5.5: tool-read: agent-wait: agent.wait error for runId=run-1 (error=FailoverError: The AI service returned an internal error. Please try again in a moment.)",
+      ),
+    ).toBe(true);
+    expect(
+      isTransientToolReadProbeErrorForLiveModel(
         "[all-models] 1/1 google/gemini-3.1-pro-preview: prompt: agent-wait: agent.wait error for runId=run-1 (error=FailoverError: An unknown error occurred)",
+      ),
+    ).toBe(false);
+    expect(
+      isTransientToolReadProbeErrorForLiveModel(
+        "[all-models] 1/1 openai/gpt-5.5: prompt: agent-wait: agent.wait error for runId=run-1 (error=FailoverError: The AI service returned an internal error. Please try again in a moment.)",
+      ),
+    ).toBe(false);
+  });
+
+  it("matches terminal tool-read runs that completed without a reply", () => {
+    expect(
+      isTransientToolReadProbeErrorForLiveModel(
+        "[all-models] 1/1 openrouter/ai21/jamba-large-1.7: tool-read: agent-wait: agent.wait error for runId=run-1 (error=completed)",
+      ),
+    ).toBe(true);
+    expect(
+      isTransientToolReadProbeErrorForLiveModel(
+        "[all-models] 1/1 openrouter/ai21/jamba-large-1.7: prompt: agent-wait: agent.wait error for runId=run-1 (error=completed)",
       ),
     ).toBe(false);
   });
@@ -2142,12 +2196,17 @@ function extractTranscriptMessageText(message: unknown): string {
   return textParts.join("\n").trim();
 }
 
-async function readSessionAssistantTexts(sessionKey: string, modelKey?: string): Promise<string[]> {
+type SessionAssistantEntry = {
+  stopReason?: string;
+  text: string;
+};
+
+async function readSessionMessagesForLiveProbe(sessionKey: string): Promise<unknown[]> {
   const { storePath, entry } = loadSessionEntry(sessionKey);
   if (!entry?.sessionId) {
     return [];
   }
-  const messages = await readSessionMessagesAsync(
+  return await readSessionMessagesAsync(
     {
       sessionEntry: entry,
       sessionId: entry.sessionId,
@@ -2159,7 +2218,30 @@ async function readSessionAssistantTexts(sessionKey: string, modelKey?: string):
       reason: "live model assistant text verification",
     },
   );
-  const assistantTexts: string[] = [];
+}
+
+function sessionMessagesAfterNextUserTurn(
+  messages: readonly unknown[],
+  baselineMessageCount: number,
+  expectedUserText?: string,
+): unknown[] {
+  const nextUserOffset = messages.slice(baselineMessageCount).findIndex((message) => {
+    return (
+      (message as { role?: unknown } | null | undefined)?.role === "user" &&
+      (expectedUserText === undefined || extractTranscriptMessageText(message) === expectedUserText)
+    );
+  });
+  if (nextUserOffset < 0) {
+    return [];
+  }
+  return messages.slice(baselineMessageCount + nextUserOffset + 1);
+}
+
+function sessionAssistantEntriesForLiveProbe(
+  messages: readonly unknown[],
+  modelKey?: string,
+): SessionAssistantEntry[] {
+  const assistantEntries: SessionAssistantEntry[] = [];
   for (const message of messages) {
     if (!message || typeof message !== "object") {
       continue;
@@ -2168,19 +2250,167 @@ async function readSessionAssistantTexts(sessionKey: string, modelKey?: string):
     if (role !== "assistant") {
       continue;
     }
-    assistantTexts.push(
-      maybeStripAssistantScaffoldingForLiveModel(extractTranscriptMessageText(message), modelKey),
-    );
+    const stopReason = (message as { stopReason?: unknown }).stopReason;
+    assistantEntries.push({
+      text: maybeStripAssistantScaffoldingForLiveModel(
+        extractTranscriptMessageText(message),
+        modelKey,
+      ),
+      ...(typeof stopReason === "string" ? { stopReason } : {}),
+    });
   }
-  return assistantTexts;
+  return assistantEntries;
 }
+
+async function readSessionAssistantEntries(
+  sessionKey: string,
+  modelKey?: string,
+  baselineMessageCount?: number,
+  expectedUserText?: string,
+): Promise<SessionAssistantEntry[]> {
+  const messages = await readSessionMessagesForLiveProbe(sessionKey);
+  // Assistant-count cursors can admit a late write from the previous run.
+  // The next matching user entry is the durable boundary that owns this attempt's replies.
+  const scopedMessages =
+    baselineMessageCount === undefined
+      ? messages
+      : sessionMessagesAfterNextUserTurn(messages, baselineMessageCount, expectedUserText);
+  return sessionAssistantEntriesForLiveProbe(scopedMessages, modelKey);
+}
+
+async function readSessionAssistantTexts(
+  sessionKey: string,
+  modelKey?: string,
+  baselineMessageCount?: number,
+  expectedUserText?: string,
+): Promise<string[]> {
+  return (
+    await readSessionAssistantEntries(sessionKey, modelKey, baselineMessageCount, expectedUserText)
+  ).map((entry) => entry.text);
+}
+
+function latestAssistantTextAfterBaseline(
+  assistantTexts: string[],
+  baselineAssistantCount: number,
+): string | undefined {
+  return assistantTexts
+    .slice(baselineAssistantCount)
+    .map((text) => text.trim())
+    .findLast((text) => text.length > 0);
+}
+
+function latestTerminalAssistantTextAfterBaseline(
+  assistantEntries: SessionAssistantEntry[],
+  baselineAssistantCount: number,
+): string | undefined {
+  const latest = assistantEntries.slice(baselineAssistantCount).at(-1);
+  if (!latest || latest.stopReason === "toolUse") {
+    return undefined;
+  }
+  return latest.text.trim() || undefined;
+}
+
+describe("latestAssistantTextAfterBaseline", () => {
+  it("returns the final reply after an intermediate tool preamble", () => {
+    expect(
+      latestAssistantTextAfterBaseline(
+        ["previous reply", "I will read the file.", "nonce-a nonce-b"],
+        1,
+      ),
+    ).toBe("nonce-a nonce-b");
+  });
+
+  it("waits for a terminal reply after a tool preamble", () => {
+    expect(
+      latestTerminalAssistantTextAfterBaseline(
+        [
+          { stopReason: "stop", text: "previous reply" },
+          { stopReason: "toolUse", text: "I will read the file." },
+          { stopReason: "stop", text: "nonce-a nonce-b" },
+        ],
+        1,
+      ),
+    ).toBe("nonce-a nonce-b");
+    expect(
+      latestTerminalAssistantTextAfterBaseline(
+        [
+          { stopReason: "stop", text: "previous reply" },
+          { stopReason: "error", text: "partial reply" },
+          { stopReason: "toolUse", text: "I will read the file." },
+        ],
+        1,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("correlates retry replies after late prior transcript writes", () => {
+    const firstBaselineMessageCount = 1;
+    const firstAttemptMessages: unknown[] = [
+      { role: "user", content: "prior attempt" },
+      { role: "toolResult", content: "stale-a stale-b" },
+      { role: "assistant", stopReason: "stop", content: "stale-a stale-b" },
+      { role: "user", content: "stale retry" },
+      { role: "assistant", stopReason: "stop", content: "stale-a stale-b" },
+      { role: "user", content: "read first-a first-b" },
+      { role: "assistant", stopReason: "toolUse", content: "reading first probe" },
+      { role: "toolResult", content: "first-a first-b" },
+      { role: "assistant", stopReason: "stop", content: "first-a first-b" },
+    ];
+    expect(
+      sessionMessagesAfterNextUserTurn(
+        firstAttemptMessages.slice(0, 5),
+        firstBaselineMessageCount,
+        "read first-a first-b",
+      ),
+    ).toEqual([]);
+    const firstToolUseOnly = sessionAssistantEntriesForLiveProbe(
+      sessionMessagesAfterNextUserTurn(
+        firstAttemptMessages.slice(0, 8),
+        firstBaselineMessageCount,
+        "read first-a first-b",
+      ),
+    );
+    expect(latestTerminalAssistantTextAfterBaseline(firstToolUseOnly, 0)).toBeUndefined();
+    const firstEntries = sessionAssistantEntriesForLiveProbe(
+      sessionMessagesAfterNextUserTurn(
+        firstAttemptMessages,
+        firstBaselineMessageCount,
+        "read first-a first-b",
+      ),
+    );
+    expect(latestTerminalAssistantTextAfterBaseline(firstEntries, 0)).toBe("first-a first-b");
+
+    const secondBaselineMessageCount = firstAttemptMessages.length;
+    const secondAttemptMessages = [
+      ...firstAttemptMessages,
+      { role: "toolResult", content: "first-a first-b" },
+      { role: "assistant", stopReason: "stop", content: "first-a first-b" },
+      { role: "user", content: "stale first retry" },
+      { role: "assistant", stopReason: "stop", content: "first-a first-b" },
+      { role: "user", content: "read second-a second-b" },
+      { role: "assistant", stopReason: "toolUse", content: "reading second probe" },
+      { role: "toolResult", content: "second-a second-b" },
+      { role: "assistant", stopReason: "stop", content: "second-a second-b" },
+    ];
+    const secondEntries = sessionAssistantEntriesForLiveProbe(
+      sessionMessagesAfterNextUserTurn(
+        secondAttemptMessages,
+        secondBaselineMessageCount,
+        "read second-a second-b",
+      ),
+    );
+    expect(latestTerminalAssistantTextAfterBaseline(secondEntries, 0)).toBe("second-a second-b");
+  });
+});
 
 async function waitForSessionAssistantText(params: {
   sessionKey: string;
-  baselineAssistantCount: number;
+  baselineMessageCount: number;
+  expectedUserText: string;
   context: string;
   modelKey?: string;
-  timeoutLabel?: "probe" | "model";
+  terminalOnly?: boolean;
+  timeoutLabel?: "model" | "probe" | "terminal";
   timeoutMs?: number;
 }) {
   const startedAt = Date.now();
@@ -2189,15 +2419,20 @@ async function waitForSessionAssistantText(params: {
   const timeoutMs = params.timeoutMs ?? GATEWAY_LIVE_TRANSCRIPT_TIMEOUT_MS;
   const timeoutLabel = params.timeoutLabel ?? "model";
   while (Date.now() - startedAt < timeoutMs) {
-    const assistantTexts = await readSessionAssistantTexts(params.sessionKey, params.modelKey);
-    if (assistantTexts.length > params.baselineAssistantCount) {
-      const freshText = assistantTexts
-        .slice(params.baselineAssistantCount)
-        .map((text) => text.trim())
-        .findLast((text) => text.length > 0);
-      if (freshText) {
-        return freshText;
-      }
+    const assistantEntries = await readSessionAssistantEntries(
+      params.sessionKey,
+      params.modelKey,
+      params.baselineMessageCount,
+      params.expectedUserText,
+    );
+    const freshText = params.terminalOnly
+      ? latestTerminalAssistantTextAfterBaseline(assistantEntries, 0)
+      : latestAssistantTextAfterBaseline(
+          assistantEntries.map((entry) => entry.text),
+          0,
+        );
+    if (freshText) {
+      return freshText;
     }
     if (Date.now() - lastHeartbeatAt >= GATEWAY_LIVE_HEARTBEAT_MS) {
       lastHeartbeatAt = Date.now();
@@ -2244,11 +2479,21 @@ function formatGatewayLiveAgentWaitFailure(params: {
   );
 }
 
+function isGatewayAgentWaitCompletedWithoutReply(result: unknown): boolean {
+  const value = result as { status?: unknown; error?: unknown } | null | undefined;
+  return (
+    value?.status === "error" &&
+    typeof value.error === "string" &&
+    value.error.trim().toLowerCase() === "completed"
+  );
+}
+
 async function waitForGatewayAgentRun(params: {
   client: GatewayClient;
   runId: string;
   context: string;
   timeoutMs?: number;
+  allowCompletedWithoutReply?: boolean;
 }): Promise<void> {
   const timeoutMs = params.timeoutMs ?? GATEWAY_LIVE_TRANSCRIPT_TIMEOUT_MS;
   const result = await params.client.request(
@@ -2261,7 +2506,10 @@ async function waitForGatewayAgentRun(params: {
       timeoutMs: timeoutMs + 5_000,
     },
   );
-  if ((result as { status?: unknown } | undefined)?.status === "ok") {
+  if (
+    (result as { status?: unknown } | undefined)?.status === "ok" ||
+    (params.allowCompletedWithoutReply && isGatewayAgentWaitCompletedWithoutReply(result))
+  ) {
     return;
   }
   throw formatGatewayLiveAgentWaitFailure({
@@ -2279,15 +2527,14 @@ async function requestGatewayAgentText(params: {
   context: string;
   idempotencyKey: string;
   modelKey?: string;
+  assistantText?: "required" | "optional";
   attachments?: Array<{
     mimeType: string;
     fileName: string;
     content: string;
   }>;
 }) {
-  const baselineAssistantCount = (
-    await readSessionAssistantTexts(params.sessionKey, params.modelKey)
-  ).length;
+  const baselineMessageCount = (await readSessionMessagesForLiveProbe(params.sessionKey)).length;
   const runId = params.idempotencyKey;
   const accepted = await withGatewayLiveProbeTimeout(
     params.client.request("agent", {
@@ -2304,9 +2551,28 @@ async function requestGatewayAgentText(params: {
   if (accepted?.status !== "accepted") {
     throw new Error(`agent status=${String(accepted?.status)}`);
   }
+  if (params.assistantText === "optional") {
+    // Tool-only turns intentionally may not append assistant text. Their
+    // contract is terminal completion; the following turn proves tool state.
+    await waitForGatewayAgentRun({
+      client: params.client,
+      runId,
+      context: `${params.context}: agent-wait`,
+      timeoutMs: GATEWAY_LIVE_AGENT_WAIT_TIMEOUT_MS,
+      allowCompletedWithoutReply: true,
+    });
+    const assistantTexts = await readSessionAssistantTexts(
+      params.sessionKey,
+      params.modelKey,
+      baselineMessageCount,
+      params.message,
+    );
+    return assistantTexts.at(-1) ?? "";
+  }
   const transcriptPromise = waitForSessionAssistantText({
     sessionKey: params.sessionKey,
-    baselineAssistantCount,
+    baselineMessageCount,
+    expectedUserText: params.message,
     context: `${params.context}: transcript-final`,
     modelKey: params.modelKey,
     timeoutLabel: "model",
@@ -2333,7 +2599,16 @@ async function requestGatewayAgentText(params: {
         ? waitResult.error
         : new Error(String(waitResult.error));
     }
-    return first.text;
+    return await waitForSessionAssistantText({
+      sessionKey: params.sessionKey,
+      baselineMessageCount,
+      expectedUserText: params.message,
+      context: `${params.context}: transcript-terminal`,
+      modelKey: params.modelKey,
+      terminalOnly: true,
+      timeoutLabel: "terminal",
+      timeoutMs: GATEWAY_LIVE_PROBE_TIMEOUT_MS,
+    });
   }
   void transcriptPromise.catch(() => undefined);
   if (first.kind === "agent-error") {
@@ -2341,10 +2616,12 @@ async function requestGatewayAgentText(params: {
   }
   return await waitForSessionAssistantText({
     sessionKey: params.sessionKey,
-    baselineAssistantCount,
+    baselineMessageCount,
+    expectedUserText: params.message,
     context: `${params.context}: transcript-after-agent-wait`,
     modelKey: params.modelKey,
-    timeoutLabel: "probe",
+    terminalOnly: true,
+    timeoutLabel: "terminal",
     timeoutMs: GATEWAY_LIVE_PROBE_TIMEOUT_MS,
   });
 }
@@ -3414,6 +3691,7 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
                     message: `Call the tool named \`read\` (or \`Read\`) on the release-validation note "${historyToolProbeFilename}". Do not write any other text.`,
                     thinkingLevel,
                     context: `${progressLabel}: tool-only-regression-first`,
+                    assistantText: "optional",
                   });
                   assertNoReasoningTags({
                     text: firstText,
@@ -3421,7 +3699,6 @@ async function runGatewayModelSuite(params: GatewayModelSuiteParams) {
                     phase: "tool-only",
                     label: params.label,
                   });
-
                   const reply = await requestGatewayAgentText({
                     client,
                     sessionKey,

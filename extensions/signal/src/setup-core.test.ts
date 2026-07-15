@@ -146,6 +146,32 @@ describe("signalSetupAdapter", () => {
     });
   });
 
+  it("resolves an offline legacy auto endpoint through explicit setup selection", () => {
+    const next = signalSetupAdapter.applyAccountConfig?.({
+      cfg: {
+        channels: {
+          signal: {
+            apiMode: "auto",
+            httpUrl: "http://offline:8080",
+            account: "+15555550124",
+          },
+        },
+      } as never,
+      accountId: "default",
+      input: {
+        httpUrl: "http://offline:8080",
+        signalTransport: "container",
+      },
+    });
+
+    expect(next?.channels?.signal?.transport).toEqual({
+      kind: "container",
+      url: "http://offline:8080",
+    });
+    expect(next?.channels?.signal).not.toHaveProperty("apiMode");
+    expect(next?.channels?.signal).not.toHaveProperty("httpUrl");
+  });
+
   it("detects and persists an omitted HTTP transport kind", async () => {
     const input = await prepareSignalSetupInput({
       input: {

@@ -1,5 +1,6 @@
 // Signal tests cover the setup-facing transport contract.
 import { describe, expect, it, vi } from "vitest";
+import { resolveSignalAccount } from "./accounts.js";
 import {
   detectSignalTransport,
   prepareSignalManagedNativeTransport,
@@ -58,6 +59,36 @@ describe("prepareSignalManagedNativeTransport", () => {
       kind: "managed-native",
       httpHost: "127.0.0.1",
       httpPort: 8081,
+    });
+  });
+
+  it("preserves an existing implicit port when adding a lexically earlier account", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          accounts: {
+            work: { account: "+15555550124", transport: { kind: "managed-native" } },
+          },
+        },
+      },
+    } as const;
+
+    expect(resolveSignalAccount({ cfg: cfg as never, accountId: "work" }).transport).toMatchObject({
+      httpPort: 8080,
+    });
+    const transport = prepareSignalManagedNativeTransport({
+      cfg: cfg as never,
+      accountId: "personal",
+    });
+    const next = writeSignalAccountTransport({
+      cfg: cfg as never,
+      accountId: "personal",
+      transport,
+    });
+
+    expect(transport.httpPort).toBe(8081);
+    expect(resolveSignalAccount({ cfg: next, accountId: "work" }).transport).toMatchObject({
+      httpPort: 8080,
     });
   });
 
@@ -182,6 +213,28 @@ describe("prepareSignalManagedNativeTransport", () => {
       url: "http://127.0.0.3:8181",
       httpHost: "127.0.0.3",
       httpPort: 8181,
+    });
+  });
+
+  it("reserves a local HTTPS proxy endpoint independently from the daemon bind", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          transport: {
+            kind: "managed-native",
+            url: "https://127.0.0.1:8080",
+          },
+        },
+      },
+    } as const;
+
+    expect(
+      prepareSignalManagedNativeTransport({ cfg: cfg as never, accountId: "default" }),
+    ).toEqual({
+      kind: "managed-native",
+      url: "https://127.0.0.1:8080",
+      httpHost: "127.0.0.1",
+      httpPort: 8081,
     });
   });
 

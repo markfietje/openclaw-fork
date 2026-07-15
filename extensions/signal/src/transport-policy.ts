@@ -63,12 +63,18 @@ export function isSignalManagedNativeConnectionUrlForBind(
   if (transport.kind !== "managed-native" || !transport.url) {
     return false;
   }
+  const connectionUrl = new URL(transport.url);
+  // signal-cli's daemon bind is plain HTTP. A local HTTPS URL is an independent proxy endpoint,
+  // even when its host and port happen to match the configured daemon bind.
+  if (connectionUrl.protocol !== "http:") {
+    return false;
+  }
   const connectionPort = resolveLocalSignalTransportPort(transport.url);
   const bindPort = transport.httpPort ?? DEFAULT_SIGNAL_MANAGED_NATIVE_PORT;
   if (connectionPort !== bindPort) {
     return false;
   }
-  const connectionHost = new URL(transport.url).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const connectionHost = connectionUrl.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const bindHost = (transport.httpHost ?? DEFAULT_SIGNAL_MANAGED_NATIVE_HOST)
     .toLowerCase()
     .replace(/^\[|\]$/g, "");

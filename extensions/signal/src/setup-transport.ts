@@ -7,10 +7,10 @@ import {
 import type { SignalTransportConfig } from "./account-types.js";
 import { listSignalAccountIds, resolveSignalAccount, resolveSignalTransport } from "./accounts.js";
 import { clearLegacySignalTransportFieldsForAccount } from "./config-compat.js";
-import {
-  type SignalContainerTransportProbe,
-  type SignalNativeTransportProbe,
-  type SignalTransportProbeResult,
+import type {
+  SignalContainerTransportProbe,
+  SignalNativeTransportProbe,
+  SignalTransportProbeResult,
 } from "./transport-detection.js";
 import {
   allocateSignalManagedNativePort,
@@ -94,7 +94,16 @@ export function prepareSignalManagedNativeTransport(params: {
   const existing = configuredTransportForAccount(params.cfg, params.accountId);
   const existingManaged = existing?.kind === "managed-native" ? existing : undefined;
   const preferredPort = params.overrides?.httpPort ?? existingManaged?.httpPort;
+  const prepared: SignalManagedNativeTransport = {
+    kind: "managed-native",
+    ...existingManaged,
+    ...params.overrides,
+    httpHost:
+      params.overrides?.httpHost ?? existingManaged?.httpHost ?? DEFAULT_SIGNAL_MANAGED_NATIVE_HOST,
+  };
   const reservedPorts = new Set<number>();
+  // Resolve existing accounts before adding the target. Persisting only the target's allocated
+  // port reserves the newcomers around established implicit ports, even if account ids reorder.
   for (const accountId of listSignalAccountIds(params.cfg)) {
     if (accountId === params.accountId) {
       continue;
@@ -117,14 +126,21 @@ export function prepareSignalManagedNativeTransport(params: {
     }
   }
 
+  const hasIndependentPreparedConnectionUrl =
+    prepared.url &&
+    (params.overrides?.url !== undefined
+      ? !isSignalManagedNativeConnectionUrlForBind(prepared)
+      : Boolean(
+          existingManaged?.url && !isSignalManagedNativeConnectionUrlForBind(existingManaged),
+        ));
+  if (hasIndependentPreparedConnectionUrl && prepared.url) {
+    const localConnectionPort = resolveLocalSignalTransportPort(prepared.url);
+    if (localConnectionPort !== undefined) {
+      reservedPorts.add(localConnectionPort);
+    }
+  }
+
   const httpPort = allocateSignalManagedNativePort({ reservedPorts, preferredPort });
-  const prepared: SignalManagedNativeTransport = {
-    kind: "managed-native",
-    ...existingManaged,
-    ...params.overrides,
-    httpHost:
-      params.overrides?.httpHost ?? existingManaged?.httpHost ?? DEFAULT_SIGNAL_MANAGED_NATIVE_HOST,
-  };
   // A managed connection URL that points at the daemon's bind is one endpoint.
   // Keep its connection endpoint aligned when setup changes or reallocates the bind.
   return alignManagedConnectionUrlAfterBindChange({

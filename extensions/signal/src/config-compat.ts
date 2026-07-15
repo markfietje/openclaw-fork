@@ -26,7 +26,7 @@ const LEGACY_TRANSPORT_FIELDS = [
 ] as const;
 
 const PENDING_LEGACY_TRANSPORT_WARNING =
-  "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.";
+  '- channels.signal: legacy auto transport is ambiguous while its endpoint is unavailable; bring the endpoint online, or choose the account transport explicitly with "openclaw channels add --channel signal --http-url <url> --signal-transport external-native|container".';
 const PENDING_LEGACY_INVALID_URL_WARNING =
   "- channels.signal: legacy httpUrl is invalid; keep the current config, correct httpUrl, then run openclaw doctor --fix.";
 const PENDING_LEGACY_INVALID_PORT_WARNING =
@@ -270,6 +270,8 @@ async function resolveLegacyTransport(params: {
     }
     return detected;
   } catch {
+    // Shipped auto mode could select either protocol at the same URL. Do not guess while the
+    // endpoint is down; the warning points to the explicit account-owned setup selection path.
     return undefined;
   }
 }
@@ -497,7 +499,6 @@ export async function migrateLegacySignalTransportConfig(params: {
       warnings: [PENDING_LEGACY_TRANSPORT_WARNING],
     };
   }
-
   const transports = allocateMigratedManagedPorts({
     entries,
     transports: await Promise.all(
@@ -517,7 +518,6 @@ export async function migrateLegacySignalTransportConfig(params: {
       warnings: [PENDING_LEGACY_TRANSPORT_WARNING],
     };
   }
-
   const next = applyMigratedSignalTransports({ cfg: params.cfg, entries, transports });
   if (!next) {
     return { config: params.cfg, changes: [] };

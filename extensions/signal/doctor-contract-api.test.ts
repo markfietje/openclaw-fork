@@ -611,7 +611,7 @@ describe("signal transport compatibility", () => {
     ]);
   });
 
-  it("leaves an unreachable auto endpoint unchanged for a later doctor run", async () => {
+  it("keeps an unreachable ambiguous auto endpoint pending with an explicit selection path", async () => {
     const cfg = signalConfig({ apiMode: "auto", httpUrl: "http://offline:8080" });
     const result = await migrateLegacySignalTransportConfig({
       cfg,
@@ -621,7 +621,7 @@ describe("signal transport compatibility", () => {
     expect(result.config).toBe(cfg);
     expect(result.changes).toEqual([]);
     expect(result.warnings).toEqual([
-      "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.",
+      '- channels.signal: legacy auto transport is ambiguous while its endpoint is unavailable; bring the endpoint online, or choose the account transport explicitly with "openclaw channels add --channel signal --http-url <url> --signal-transport external-native|container".',
     ]);
   });
 });

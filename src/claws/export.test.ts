@@ -215,9 +215,9 @@ describe("exportClawAgent", () => {
     });
 
     expect(result.outputDirectory).toBe(join(fixture.root, "exported-home"));
-    await expect(
-      readFile(join(result.outputDirectory, "openclaw.claw.json"), "utf8"),
-    ).resolves.toContain('"schemaVersion": 1');
+    await expect(readFile(join(result.outputDirectory, "CLAW.md"), "utf8")).resolves.toContain(
+      "schemaVersion: 1",
+    );
   });
 
   it("fails closed when a managed file is unavailable", async () => {

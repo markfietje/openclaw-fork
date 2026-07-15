@@ -12,8 +12,7 @@ type PackageJson = {
   openclaw: { claw: string };
 };
 
-type ResolvedClawSource = {
-  source: Omit<ClawSourceIdentity, "integrity">;
+type ResolvedClawSource = Omit<ClawSourceIdentity, "integrity"> & {
   manifestFormatPath: string;
 };
 

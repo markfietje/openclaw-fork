@@ -3,7 +3,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { withTempDir } from "../test-helpers/temp-dir.js";
-import { readPackageManagerSpec, readPackageName, readPackageVersion } from "./package-json.js";
+import {
+  parsePackageBinNames,
+  readPackageBinNames,
+  readPackageManagerSpec,
+  readPackageName,
+  readPackageVersion,
+} from "./package-json.js";
 
 async function expectPackageMeta(params: {
   root: string;
@@ -34,6 +40,31 @@ describe("package-json helpers", () => {
       });
       await expect(readPackageManagerSpec(root)).resolves.toBe("pnpm@10.8.1");
     });
+  });
+
+  it("reads npm string and object bin forms", async () => {
+    expect(parsePackageBinNames({ name: "@openclaw/demo", bin: "cli.mjs" })).toEqual(["demo"]);
+    expect(
+      parsePackageBinNames({
+        name: "openclaw",
+        bin: { zed: "zed.mjs", openclaw: "openclaw.mjs" },
+      }),
+    ).toEqual(["openclaw", "zed"]);
+
+    await withTempDir({ prefix: "openclaw-package-json-bin-" }, async (root) => {
+      await fs.writeFile(
+        path.join(root, "package.json"),
+        JSON.stringify({ name: "openclaw", bin: { openclaw: "openclaw.mjs" } }),
+        "utf8",
+      );
+      await expect(readPackageBinNames(root)).resolves.toEqual(["openclaw"]);
+    });
+  });
+
+  it("rejects unsafe package bin names", () => {
+    expect(() =>
+      parsePackageBinNames({ name: "openclaw", bin: { "../openclaw": "openclaw.mjs" } }),
+    ).toThrow("unsafe bin entry");
   });
 
   it.each([

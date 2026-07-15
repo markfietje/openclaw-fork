@@ -549,6 +549,22 @@ describe("runGlobalPackageUpdateSteps activation", () => {
         if (postinstallStep) {
           return postinstallStep;
         }
+        if (name === "global update registry resolve") {
+          expect(argv[0]).toBe("pnpm");
+          expect(argv.at(-1)).toBe("openclaw@latest");
+          const isolatedGlobalDir = argv[argv.indexOf("--global-dir") + 1];
+          if (!isolatedGlobalDir) {
+            throw new Error("missing isolated pnpm global directory");
+          }
+          await writePackageRoot(path.join(isolatedGlobalDir, "node_modules", "openclaw"), "2.0.0");
+          return {
+            name,
+            command: argv.join(" "),
+            cwd: cwd ?? process.cwd(),
+            durationMs: 1,
+            exitCode: 0,
+          };
+        }
         if (name !== "global update") {
           throw new Error(`unexpected step ${name}`);
         }
@@ -560,8 +576,10 @@ describe("runGlobalPackageUpdateSteps activation", () => {
         expect(normalizedNpmArgv).toContain("i");
         expect(normalizedNpmArgv).toContain("-g");
         expect(normalizedNpmArgv).toContain("--prefix");
-        expect(normalizedNpmArgv).toContain("openclaw@2.0.0");
         expect(normalizedNpmArgv).not.toContain("pnpm");
+        expect(normalizedNpmArgv.find((arg) => arg.startsWith("openclaw@file:"))).toMatch(
+          /^openclaw@file:.*selected-package\.tgz$/u,
+        );
         const prefixIndex = normalizedNpmArgv.indexOf("--prefix");
         const stagePrefix = normalizedNpmArgv[prefixIndex + 1];
         if (!stagePrefix) {
@@ -579,7 +597,7 @@ describe("runGlobalPackageUpdateSteps activation", () => {
 
       const result = await runGlobalPackageUpdateSteps({
         installTarget: createPnpmTarget(globalRoot),
-        installSpec: "openclaw@2.0.0",
+        installSpec: "openclaw@latest",
         packageName: "openclaw",
         packageRoot,
         runCommand: createRootRunner(globalRoot),
@@ -590,6 +608,11 @@ describe("runGlobalPackageUpdateSteps activation", () => {
       expect(result.failedStep).toBeNull();
       expect(result.afterVersion).toBe("2.0.0");
       expect(result.steps.map((step) => step.name)).toEqual([
+        "global update registry resolve",
+        "global update registry version guard",
+        "global update registry runtime guard",
+        "global update registry artifact",
+        "global update pack runtime guard",
         "global update",
         "global install runtime guard",
         "global install postinstall",
@@ -606,22 +629,49 @@ describe("runGlobalPackageUpdateSteps activation", () => {
         const globalDir = path.join(base, "pnpm", "global");
         const globalRoot = path.join(globalDir, "5", "node_modules");
         const packageRoot = path.join(globalRoot, "openclaw");
+        const binDir = path.join(base, "pnpm-bin");
         await writePackageRoot(packageRoot, "1.0.0");
+        await fs.mkdir(binDir, { recursive: true });
 
-        const runStep = vi.fn(async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
-          const postinstallStep = successfulPackagePostinstallStep({ name, argv, cwd });
-          if (postinstallStep) {
-            return postinstallStep;
-          }
-          if (name === "global update registry resolve") {
-            const isolatedGlobalDir = argv[argv.indexOf("--global-dir") + 1];
-            if (!isolatedGlobalDir) {
-              throw new Error("missing isolated pnpm global directory");
+        const runStep = vi.fn(
+          async ({ name, argv, cwd, env }): Promise<PackageUpdateStepResult> => {
+            const postinstallStep = successfulPackagePostinstallStep({ name, argv, cwd });
+            if (postinstallStep) {
+              return postinstallStep;
             }
-            await writePackageRoot(
-              path.join(isolatedGlobalDir, "5", "node_modules", "openclaw"),
-              "2.0.0",
+            if (name === "global update registry resolve") {
+              const isolatedGlobalDir = argv[argv.indexOf("--global-dir") + 1];
+              if (!isolatedGlobalDir) {
+                throw new Error("missing isolated pnpm global directory");
+              }
+              await writePackageRoot(
+                path.join(isolatedGlobalDir, "5", "node_modules", "openclaw"),
+                "2.0.0",
+              );
+              return {
+                name,
+                command: argv.join(" "),
+                cwd: cwd ?? process.cwd(),
+                durationMs: 1,
+                exitCode: 0,
+              };
+            }
+            if (name !== "global update") {
+              throw new Error(`unexpected step ${name}`);
+            }
+            expect(argv.slice(0, -1)).toEqual([
+              "pnpm",
+              "add",
+              "-g",
+              "--global-dir",
+              globalDir,
+              "--ignore-scripts",
+            ]);
+            expect(argv.at(-1)).toMatch(/^openclaw@file:.*selected-package\.tgz$/u);
+            expect(env?.PATH).toBe(
+              `${path.dirname(process.execPath)}${path.delimiter}C:\\pnpm-bin`,
             );
+            await writePackageRoot(packageRoot, "2.0.0", { installGuard: true });
             return {
               name,
               command: argv.join(" "),
@@ -629,34 +679,16 @@ describe("runGlobalPackageUpdateSteps activation", () => {
               durationMs: 1,
               exitCode: 0,
             };
-          }
-          if (name !== "global update") {
-            throw new Error(`unexpected step ${name}`);
-          }
-          expect(argv).toEqual([
-            "pnpm",
-            "add",
-            "-g",
-            "--global-dir",
-            globalDir,
-            "--ignore-scripts",
-            "openclaw@2.0.0",
-          ]);
-          expect(env?.PATH).toBe("C:\\pnpm-bin");
-          await writePackageRoot(packageRoot, "2.0.0", { installGuard: true });
-          return {
-            name,
-            command: argv.join(" "),
-            cwd: cwd ?? process.cwd(),
-            durationMs: 1,
-            exitCode: 0,
-          };
-        });
+          },
+        );
 
         const rootRunner = createRootRunner(globalRoot);
         const runCommand: CommandRunner = async (argv, options) => {
           if (argv[0] === process.execPath && argv[1] === "--version") {
             return { stdout: `${process.version}\n`, stderr: "", code: 0 };
+          }
+          if (argv[0] === "pnpm" && argv[1] === "bin") {
+            return { stdout: `${binDir}\n`, stderr: "", code: 0 };
           }
           return rootRunner(argv, options);
         };
@@ -679,6 +711,8 @@ describe("runGlobalPackageUpdateSteps activation", () => {
           "global update registry resolve",
           "global update registry version guard",
           "global update registry runtime guard",
+          "global update registry artifact",
+          "global update pack runtime guard",
           "global update",
           "global install runtime guard",
           "global install postinstall",

@@ -7,6 +7,7 @@ export function isExplicitPackageInstallSpec(value: string): boolean {
     return false;
   }
   return (
+    isGitInstallSpec(trimmed) ||
     /\.(?:tgz|tar\.gz)$/iu.test(trimmed) ||
     /^(?:\.{1,2}[\\/]|[\\/]|[a-z]:[\\/])/iu.test(trimmed) ||
     trimmed.includes("://") ||
@@ -32,6 +33,7 @@ export function isRegistryPackageInstallSpec(packageName: string, spec: string):
 }
 
 function isHttpGitInstallSpec(value: string): boolean {
+  // The pinned parser owns suffixless hosted forms, including SourceHut.
   if (hostedGitInfo.fromUrl(value) != null) {
     return true;
   }

@@ -72,6 +72,7 @@ export async function writePackageRoot(
       path.join(packageRoot, "package.json"),
       JSON.stringify({
         name: options.packageName ?? "openclaw",
+        bin: { openclaw: "openclaw.mjs" },
         version,
         engines: { node: options.nodeEngine ?? ">=0.0.0" },
         scripts: {

@@ -20,6 +20,7 @@ import { withTempDir } from "../test-helpers/temp-dir.js";
 import { PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "./package-dist-inventory.js";
 import { readPackageVersion } from "./package-json.js";
 import {
+  isRegistryPackageInstallSpec,
   npmPackageMetadataInstallSpec,
   pinGitPackageInstallSpec,
 } from "./package-manager-install-policy.js";
@@ -40,6 +41,22 @@ function expectedPackageRuntimeNpmCommand(): string {
     process.platform === "win32" ? "npm.cmd" : "npm",
   );
 }
+
+describe("package install spec classification", () => {
+  it.each(["openclaw/openclaw", "git@github.com:openclaw/openclaw.git"])(
+    "keeps hashless Git source %s out of registry resolution",
+    (sourceSpec) => {
+      expect(isRegistryPackageInstallSpec("openclaw", sourceSpec)).toBe(false);
+    },
+  );
+
+  it.each(["latest", "2026.7.2", "openclaw@latest"])(
+    "keeps registry target %s in registry resolution",
+    (registrySpec) => {
+      expect(isRegistryPackageInstallSpec("openclaw", registrySpec)).toBe(true);
+    },
+  );
+});
 
 describe("npm Git source metadata", () => {
   it("preserves an explicit failure to resolve npm for the selected Node", async () => {

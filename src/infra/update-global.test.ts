@@ -148,6 +148,15 @@ describe("update global helpers", () => {
     expect(
       resolveGlobalInstallSpec({ packageName: "openclaw", tag: "gitlab:openclaw/openclaw" }),
     ).toBe("gitlab:openclaw/openclaw");
+    expect(resolveGlobalInstallSpec({ packageName: "openclaw", tag: "openclaw/openclaw" })).toBe(
+      "openclaw/openclaw",
+    );
+    expect(
+      resolveGlobalInstallSpec({
+        packageName: "openclaw",
+        tag: "git@github.com:openclaw/openclaw.git",
+      }),
+    ).toBe("git@github.com:openclaw/openclaw.git");
   });
 
   it("identifies package targets that support registry version resolution", () => {
@@ -155,6 +164,10 @@ describe("update global helpers", () => {
     expect(canResolveRegistryVersionForPackageTarget("2026.3.22")).toBe(true);
     expect(canResolveRegistryVersionForPackageTarget("main")).toBe(false);
     expect(canResolveRegistryVersionForPackageTarget("github:openclaw/openclaw#main")).toBe(false);
+    expect(canResolveRegistryVersionForPackageTarget("openclaw/openclaw")).toBe(false);
+    expect(canResolveRegistryVersionForPackageTarget("git@github.com:openclaw/openclaw.git")).toBe(
+      false,
+    );
     expect(canResolveRegistryVersionForPackageTarget("/tmp/openclaw.tgz")).toBe(false);
   });
 
@@ -773,13 +786,7 @@ describe("update global helpers", () => {
         },
         "openclaw@latest",
       ),
-    ).toEqual([
-      "pnpm",
-      "add",
-      "-g",
-      "--ignore-scripts",
-      "openclaw@latest",
-    ]);
+    ).toEqual(["pnpm", "add", "-g", "--ignore-scripts", "openclaw@latest"]);
     expect(globalInstallArgs("pnpm", "github:openclaw/openclaw#release/2026.5.12")).toEqual([
       "pnpm",
       "add",
@@ -794,15 +801,21 @@ describe("update global helpers", () => {
       "--ignore-scripts",
       "openclaw@latest",
     ]);
-    expect(
-      globalInstallArgs("pnpm", "/tmp/openclaw-candidate.tgz", null, null),
-    ).toEqual(["pnpm", "add", "-g", "--ignore-scripts", "/tmp/openclaw-candidate.tgz"]);
-    expect(
-      globalInstallArgs("bun", "/tmp/openclaw-candidate.tgz", null, null),
-    ).toEqual(["bun", "add", "-g", "--ignore-scripts", "/tmp/openclaw-candidate.tgz"]);
-    expect(
-      globalInstallArgs("npm", "/tmp/openclaw-candidate.tgz", null, "/tmp/stage"),
-    ).toEqual([
+    expect(globalInstallArgs("pnpm", "/tmp/openclaw-candidate.tgz", null, null)).toEqual([
+      "pnpm",
+      "add",
+      "-g",
+      "--ignore-scripts",
+      "/tmp/openclaw-candidate.tgz",
+    ]);
+    expect(globalInstallArgs("bun", "/tmp/openclaw-candidate.tgz", null, null)).toEqual([
+      "bun",
+      "add",
+      "-g",
+      "--ignore-scripts",
+      "/tmp/openclaw-candidate.tgz",
+    ]);
+    expect(globalInstallArgs("npm", "/tmp/openclaw-candidate.tgz", null, "/tmp/stage")).toEqual([
       "npm",
       "i",
       "-g",

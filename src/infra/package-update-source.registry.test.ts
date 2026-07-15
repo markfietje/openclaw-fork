@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import * as tar from "tar";
 import { describe, expect, it, vi } from "vitest";
 import { prepareRegistryPackageInstallSpec } from "./package-update-source.js";
 import type { PackageUpdateStepResult } from "./package-update-types.js";
@@ -35,6 +36,8 @@ describe("registry package update resolution", () => {
         }),
         "utf8",
       );
+      await fs.writeFile(path.join(packageRoot, "registry-marker.txt"), "pnpm artifact\n", "utf8");
+      await fs.mkdir(path.join(packageRoot, "node_modules", "dependency"), { recursive: true });
       return {
         name,
         command: argv.join(" "),
@@ -64,12 +67,27 @@ describe("registry package update resolution", () => {
       "global update registry resolve",
       "global update registry version guard",
       "global update registry runtime guard",
+      "global update registry artifact",
     ]);
     expect(runStep).toHaveBeenCalledOnce();
     expect(resolutionGlobalDir).not.toBeNull();
     expect(resolutionBinDir).not.toBeNull();
     await expect(fs.access(resolutionGlobalDir!)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(resolutionBinDir!)).rejects.toMatchObject({ code: "ENOENT" });
+    if (!result.packedArtifact) {
+      throw new Error("expected manager-selected package artifact");
+    }
+    const entries: string[] = [];
+    await tar.t({
+      file: result.packedArtifact.tarballPath,
+      onentry: (entry) => {
+        entries.push(entry.path);
+        entry.resume();
+      },
+    });
+    expect(entries).toContain("package/registry-marker.txt");
+    expect(entries.some((entry) => entry.startsWith("package/node_modules/"))).toBe(false);
+    await fs.rm(result.packedArtifact.cleanupDir, { recursive: true, force: true });
   });
 
   it("isolates Bun's global package and executable directories", async () => {
@@ -95,6 +113,7 @@ describe("registry package update resolution", () => {
         }),
         "utf8",
       );
+      await fs.writeFile(path.join(packageRoot, "registry-marker.txt"), "bun artifact\n", "utf8");
       return {
         name,
         command: argv.join(" "),
@@ -120,9 +139,25 @@ describe("registry package update resolution", () => {
 
     expect(result.failedStep).toBeNull();
     expect(result.installSpec).toBe("openclaw@2026.7.2");
+    expect(result.steps.map((step) => step.name)).toEqual([
+      "global update registry resolve",
+      "global update registry version guard",
+      "global update registry runtime guard",
+      "global update registry artifact",
+    ]);
     expect(resolutionGlobalDir).not.toBeNull();
     expect(resolutionBinDir).not.toBeNull();
     await expect(fs.access(resolutionGlobalDir!)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(resolutionBinDir!)).rejects.toMatchObject({ code: "ENOENT" });
+    if (!result.packedArtifact) {
+      throw new Error("expected manager-selected package artifact");
+    }
+    const extractDir = path.join(result.packedArtifact.cleanupDir, "extract");
+    await fs.mkdir(extractDir);
+    await tar.x({ file: result.packedArtifact.tarballPath, cwd: extractDir });
+    await expect(
+      fs.readFile(path.join(extractDir, "package", "registry-marker.txt"), "utf8"),
+    ).resolves.toBe("bun artifact\n");
+    await fs.rm(result.packedArtifact.cleanupDir, { recursive: true, force: true });
   });
 });

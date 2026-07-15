@@ -1,10 +1,9 @@
-// Prepares source-backed package update specs before global installation.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parse as parsePackageSemver } from "semver";
+import * as tar from "tar";
 import { formatErrorMessage } from "./errors.js";
-import { applyPathPrepend } from "./path-prepend.js";
 import {
   isGitPackageInstallSpec,
   isLocalDirectoryPackageInstallSpec,
@@ -16,6 +15,7 @@ import {
 } from "./package-manager-install-policy.js";
 import { validatePackageNodeEngine } from "./package-update-lifecycle.js";
 import type { PackageUpdateStepResult, PackageUpdateStepRunner } from "./package-update-types.js";
+import { applyPathPrepend } from "./path-prepend.js";
 import type { ResolvedGlobalInstallTarget } from "./update-global.js";
 
 const NPM_PACK_FLAGS = ["--json", "--loglevel=error"] as const;
@@ -105,6 +105,30 @@ async function readResolvedRegistryPackageManifest(packageRoot: string): Promise
   };
 }
 
+async function archiveResolvedRegistryPackage(
+  packageRoot: string,
+  tarballPath: string,
+): Promise<void> {
+  const entries = (await fs.readdir(packageRoot))
+    .filter((entry) => entry.toLowerCase() !== "node_modules")
+    .toSorted();
+  if (!entries.includes("package.json")) {
+    throw new Error("resolved registry package has no package.json artifact");
+  }
+  // The isolated manager already selected and verified these package bytes.
+  // Archive them directly so a second manager cannot re-resolve the version.
+  await tar.c(
+    {
+      cwd: packageRoot,
+      file: tarballPath,
+      gzip: true,
+      portable: true,
+      prefix: "package",
+    },
+    entries,
+  );
+}
+
 function packageMetadataGuardStep(params: {
   name: string;
   command: string;
@@ -136,6 +160,7 @@ export async function prepareRegistryPackageInstallSpec(params: {
   installCwd?: string;
 }): Promise<{
   installSpec: string;
+  packedArtifact: { cleanupDir: string; tarballPath: string } | null;
   steps: PackageUpdateStepResult[];
   failedStep: PackageUpdateStepResult | null;
 }> {
@@ -143,25 +168,32 @@ export async function prepareRegistryPackageInstallSpec(params: {
     params.installTarget.manager === "npm" ||
     !isRegistryPackageInstallSpec(params.packageName, params.installSpec)
   ) {
-    return { installSpec: params.installSpec, steps: [], failedStep: null };
+    return {
+      installSpec: params.installSpec,
+      packedArtifact: null,
+      steps: [],
+      failedStep: null,
+    };
   }
 
   const cwd = params.installCwd ?? process.cwd();
   const steps: PackageUpdateStepResult[] = [];
   const resolutionRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-update-registry-"));
+  let retainResolutionRoot = false;
   try {
     const resolutionGlobalDir = path.join(resolutionRoot, "global");
     const resolutionBinDir = path.join(resolutionRoot, "bin");
+    await fs.mkdir(resolutionGlobalDir, { recursive: true });
     await fs.mkdir(resolutionBinDir, { recursive: true });
     const resolutionEnv = Object.fromEntries(
       Object.entries(params.env ?? process.env).filter(
         (entry): entry is [string, string] => entry[1] !== undefined,
       ),
     );
-    // pnpm requires its configured global bin directory on PATH. Bun also uses
-    // this directory, so neither manager can write a shim into the live bin path.
+    // Both managers need the isolated bin on PATH, preventing live-shim writes.
     applyPathPrepend(resolutionEnv, [resolutionBinDir]);
     if (params.installTarget.manager === "bun") {
+      await fs.writeFile(path.join(resolutionGlobalDir, "package.json"), '{"private":true}\n');
       resolutionEnv.BUN_INSTALL_GLOBAL_DIR = resolutionGlobalDir;
       resolutionEnv.BUN_INSTALL_BIN = resolutionBinDir;
     }
@@ -188,17 +220,20 @@ export async function prepareRegistryPackageInstallSpec(params: {
     });
     steps.push(resolveStep);
     if (resolveStep.exitCode !== 0) {
-      return { installSpec: params.installSpec, steps, failedStep: resolveStep };
+      return {
+        installSpec: params.installSpec,
+        packedArtifact: null,
+        steps,
+        failedStep: resolveStep,
+      };
     }
 
     const versionGuardStartedAt = Date.now();
     let manifest: Awaited<ReturnType<typeof readResolvedRegistryPackageManifest>>;
     let exactInstallSpec: string;
+    let packageRoot: string;
     try {
-      const packageRoot = await findResolvedRegistryPackageRoot(
-        resolutionGlobalDir,
-        params.packageName,
-      );
+      packageRoot = await findResolvedRegistryPackageRoot(resolutionGlobalDir, params.packageName);
       manifest = await readResolvedRegistryPackageManifest(packageRoot);
       if (manifest.name !== params.packageName) {
         throw new Error(
@@ -224,7 +259,12 @@ export async function prepareRegistryPackageInstallSpec(params: {
         error,
       });
       steps.push(failedStep);
-      return { installSpec: params.installSpec, steps, failedStep };
+      return {
+        installSpec: params.installSpec,
+        packedArtifact: null,
+        steps,
+        failedStep,
+      };
     }
 
     const runtimeGuardStartedAt = Date.now();
@@ -248,12 +288,59 @@ export async function prepareRegistryPackageInstallSpec(params: {
         error,
       });
       steps.push(failedStep);
-      return { installSpec: params.installSpec, steps, failedStep };
+      return {
+        installSpec: params.installSpec,
+        packedArtifact: null,
+        steps,
+        failedStep,
+      };
     }
 
-    return { installSpec: exactInstallSpec, steps, failedStep: null };
+    const artifactStartedAt = Date.now();
+    const tarballPath = path.join(resolutionRoot, "selected-package.tgz");
+    try {
+      await archiveResolvedRegistryPackage(packageRoot, tarballPath);
+      await Promise.all([
+        fs.rm(resolutionGlobalDir, { recursive: true, force: true }),
+        fs.rm(resolutionBinDir, { recursive: true, force: true }),
+      ]);
+      steps.push(
+        packageMetadataGuardStep({
+          name: "global update registry artifact",
+          command: `archive isolated ${exactInstallSpec}`,
+          cwd,
+          startedAt: artifactStartedAt,
+          stdoutTail: `preserved package-manager selected artifact for ${exactInstallSpec}`,
+        }),
+      );
+    } catch (error) {
+      const failedStep = packageMetadataGuardStep({
+        name: "global update registry artifact",
+        command: `archive isolated ${exactInstallSpec}`,
+        cwd,
+        startedAt: artifactStartedAt,
+        error,
+      });
+      steps.push(failedStep);
+      return {
+        installSpec: params.installSpec,
+        packedArtifact: null,
+        steps,
+        failedStep,
+      };
+    }
+
+    retainResolutionRoot = true;
+    return {
+      installSpec: exactInstallSpec,
+      packedArtifact: { cleanupDir: resolutionRoot, tarballPath },
+      steps,
+      failedStep: null,
+    };
   } finally {
-    await fs.rm(resolutionRoot, { recursive: true, force: true });
+    if (!retainResolutionRoot) {
+      await fs.rm(resolutionRoot, { recursive: true, force: true });
+    }
   }
 }
 
@@ -312,14 +399,16 @@ export async function preparePackedPackageInstallSpec(params: {
   failedStep: PackageUpdateStepResult | null;
 }> {
   const isGitSource = isGitPackageInstallSpec(params.packageName, params.installSpec);
-  const isNpmSource =
-    params.installTarget.manager === "npm" &&
-    (isGitSource || isLocalDirectoryPackageInstallSpec(params.packageName, params.installSpec));
-  const shouldPack = params.forcePack === true || isNpmSource;
+  const isSource =
+    isGitSource || isLocalDirectoryPackageInstallSpec(params.packageName, params.installSpec);
+  const shouldPack =
+    params.forcePack === true ||
+    isSource ||
+    (params.installTarget.manager !== "npm" &&
+      !isRegistryPackageInstallSpec(params.packageName, params.installSpec));
   if (!shouldPack) {
     return { installSpec: params.installSpec, packDir: null, steps: [], failedStep: null };
   }
-
   const packCommandArgv =
     params.packCommandArgv !== undefined
       ? params.packCommandArgv
@@ -369,7 +458,7 @@ export async function preparePackedPackageInstallSpec(params: {
       timeoutMs: params.timeoutMs,
     });
 
-  if (isNpmSource) {
+  if (isSource) {
     // npm 10 can run prepare during `pack --ignore-scripts`. This metadata probe
     // avoids lifecycle execution, then pins the later Git pack to its resolved SHA.
     // npm 12 honors the explicit false below after Git access approves the source.
@@ -458,7 +547,7 @@ export async function preparePackedPackageInstallSpec(params: {
   const packStep = await runPack(
     "global update pack",
     packInstallSpec,
-    isNpmSource ? NPM_PACK_WITH_SCRIPTS_FLAGS : NPM_PACK_WITHOUT_SCRIPTS_FLAGS,
+    isSource ? NPM_PACK_WITH_SCRIPTS_FLAGS : NPM_PACK_WITHOUT_SCRIPTS_FLAGS,
   );
   steps.push(packStep);
   if (packStep.exitCode !== 0) {

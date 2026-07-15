@@ -13,6 +13,7 @@ import {
 
 async function writeCandidate(params: {
   packageRoot: string;
+  bin?: unknown;
   version?: string;
   engine?: string;
   guard?: boolean;
@@ -40,6 +41,7 @@ async function writeCandidate(params: {
       path.join(params.packageRoot, "package.json"),
       JSON.stringify({
         name: "openclaw",
+        bin: params.bin ?? { openclaw: "openclaw.mjs" },
         version: params.version ?? "2.0.0",
         engines: { node: params.engine ?? ">=0.0.0" },
         scripts: {
@@ -255,6 +257,13 @@ describe("runPackedPackageRuntimeGuard", () => {
       engine: ">=0.0.0",
       writePostinstallFile: false,
       message: "missing scripts/postinstall-bundled-plugins.mjs",
+    },
+    {
+      title: "unsafe bin name",
+      guard: true,
+      engine: ">=0.0.0",
+      bin: { "../openclaw": "openclaw.mjs" },
+      message: "unsafe bin entry",
     },
   ])("rejects a packed candidate with $title", async (testCase) => {
     await withTempDir({ prefix: "openclaw-staged-lifecycle-reject-" }, async (base) => {

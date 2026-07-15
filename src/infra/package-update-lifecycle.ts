@@ -8,6 +8,7 @@ import {
 import { formatErrorMessage } from "./errors.js";
 import { pathExists } from "./fs-safe.js";
 import { PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "./package-dist-inventory.js";
+import { parsePackageBinNames } from "./package-json.js";
 import type { PackageUpdateStepResult, PackageUpdateStepRunner } from "./package-update-types.js";
 import { nodeVersionSatisfiesEngine } from "./runtime-guard.js";
 import { compareValidSemver } from "./semver.js";
@@ -75,6 +76,7 @@ function normalizePackageCliNodeRuntime(runtime: PackageCliNodeRuntime | null): 
 }
 
 type CandidatePackageContract = {
+  binNames: string[];
   version: string | null;
   nodeEngine: string | null;
   preinstall: string | null;
@@ -85,6 +87,8 @@ type CandidatePackageContract = {
 
 function parseCandidatePackageContract(value: string): CandidatePackageContract {
   const manifest = JSON.parse(value) as {
+    bin?: unknown;
+    name?: unknown;
     version?: unknown;
     engines?: { node?: unknown };
     scripts?: Record<string, unknown>;
@@ -94,6 +98,7 @@ function parseCandidatePackageContract(value: string): CandidatePackageContract 
     return typeof scriptValue === "string" ? scriptValue.trim() || null : null;
   };
   return {
+    binNames: parsePackageBinNames(manifest),
     version: typeof manifest.version === "string" ? manifest.version.trim() || null : null,
     nodeEngine:
       typeof manifest.engines?.node === "string" ? manifest.engines.node.trim() || null : null,
@@ -186,6 +191,11 @@ async function readPackedCandidatePackageContract(tarballPath: string): Promise<
     hasPreinstall,
     hasPostinstall,
   };
+}
+
+/** Reads the executable names a guarded packed candidate can rewrite during activation. */
+export async function readPackedPackageBinNames(tarballPath: string): Promise<string[]> {
+  return (await readPackedCandidatePackageContract(tarballPath)).contract.binNames;
 }
 
 async function runPackedPackageContractGuard(params: {

@@ -31,7 +31,7 @@ export function buildOpenClawToolFallbackText(params: {
       "- sessions_search: search past session transcripts",
       "- sessions_send: send to another session",
       "- sessions_spawn: spawn an isolated sub-agent session",
-      "- sessions_yield: end this turn and wait for sub-agent completion events",
+      "- sessions_yield: end this turn without completing the task and await registered continuation",
       "- subagents: list active/recent sub-agent runs",
       '- session_status: show usage/time/model state and answer "what model are we using?"',
     ].join("\n");

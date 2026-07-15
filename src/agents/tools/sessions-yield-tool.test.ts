@@ -10,6 +10,12 @@ type SessionsYieldDetails = {
 };
 
 describe("sessions_yield tool", () => {
+  it("describes yielding as incomplete registered continuation work", () => {
+    const tool = createSessionsYieldTool();
+    expect(tool.description).toContain("without completing the task");
+    expect(tool.description).toContain("background continuation");
+  });
+
   it("returns error when no sessionId is provided", async () => {
     const onYield = vi.fn();
     const tool = createSessionsYieldTool({ onYield });

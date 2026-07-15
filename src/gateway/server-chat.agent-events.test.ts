@@ -4640,6 +4640,48 @@ describe("agent event handler", () => {
       });
     });
 
+    it("marks a yielded final as pending continuation instead of task completion", () => {
+      const { broadcast, handler, chatRunState } = createHarness({
+        resolveSessionKeyForRun: () => "agent:main:main",
+      });
+
+      chatRunState.registry.add("run-yielded", {
+        sessionKey: "agent:main:main",
+        clientRunId: "client-yielded",
+      });
+      handler({
+        runId: "run-yielded",
+        seq: 1,
+        stream: "assistant",
+        ts: Date.now(),
+        data: { text: "Restarting now; I will resume verification afterward." },
+      });
+      handler({
+        runId: "run-yielded",
+        seq: 2,
+        stream: "lifecycle",
+        ts: Date.now(),
+        data: {
+          phase: "end",
+          yielded: true,
+          livenessState: "paused",
+          stopReason: "end_turn",
+        },
+      });
+
+      const finalCall = requireCall(
+        chatBroadcastCalls(broadcast).find(([, payload]) => payload.state === "final"),
+        "yielded final chat call",
+      );
+      expectPayloadFields(finalCall[1], {
+        runId: "client-yielded",
+        sessionKey: "agent:main:main",
+        state: "final",
+        stopReason: "end_turn",
+        yielded: true,
+      });
+    });
+
     it("omits spawnedBy from chat broadcasts for non-subagent sessions", () => {
       vi.mocked(loadGatewaySessionRow).mockReturnValue({
         key: "agent:main:main",

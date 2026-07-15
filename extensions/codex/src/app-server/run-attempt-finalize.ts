@@ -443,11 +443,18 @@ export async function finalizeCodexAttempt(
       ? {
           phase: "error",
           error: formatErrorMessage(finalPromptError),
-          ...buildLifecycleTerminalMeta({ aborted: finalAborted, timedOut: effectiveTimedOut }),
+          ...buildLifecycleTerminalMeta({
+            aborted: finalAborted,
+            timedOut: effectiveTimedOut,
+          }),
         }
       : {
           phase: "end",
-          ...buildLifecycleTerminalMeta({ aborted: finalAborted, timedOut: effectiveTimedOut }),
+          ...buildLifecycleTerminalMeta({
+            aborted: finalAborted,
+            timedOut: effectiveTimedOut,
+            yielded: toolState.yieldDetected,
+          }),
         },
   );
   return {

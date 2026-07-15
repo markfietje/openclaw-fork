@@ -26,6 +26,7 @@ type LifecycleEventLike = Pick<AgentEventPayload, "ts" | "sessionId"> & {
     livenessState?: unknown;
     timeoutPhase?: unknown;
     providerStarted?: unknown;
+    yielded?: unknown;
   };
 };
 
@@ -90,6 +91,14 @@ function resolveTerminalStatus(event: LifecycleEventLike): SessionRunStatus {
     endedAt: event.data?.endedAt ?? event.ts,
   });
   return mapAgentRunTerminalOutcomeToSessionStatus(terminal);
+}
+
+function isPendingContinuationEvent(event: LifecycleEventLike): boolean {
+  return (
+    resolveLifecyclePhase(event) === "end" &&
+    event.data?.yielded === true &&
+    event.data?.livenessState === "paused"
+  );
 }
 
 function resolveLifecycleStartedAt(
@@ -159,9 +168,12 @@ function deriveGatewaySessionLifecycleSnapshot(params: {
   const startedAt = resolveLifecycleStartedAt(existing?.startedAt, params.event);
   const endedAt = resolveLifecycleEndedAt(params.event);
   const updatedAt = endedAt ?? existing?.updatedAt;
+  const status = isPendingContinuationEvent(params.event)
+    ? "running"
+    : resolveTerminalStatus(params.event);
   return {
     updatedAt,
-    status: resolveTerminalStatus(params.event),
+    status,
     startedAt,
     endedAt,
     runtimeMs: resolveRuntimeMs({
@@ -169,7 +181,7 @@ function deriveGatewaySessionLifecycleSnapshot(params: {
       endedAt,
       existingRuntimeMs: existing?.runtimeMs,
     }),
-    abortedLastRun: resolveTerminalStatus(params.event) === "killed",
+    abortedLastRun: status === "killed",
   };
 }
 

@@ -151,6 +151,18 @@ describe("session lifecycle state", () => {
       status: "failed",
       abortedLastRun: false,
     },
+    {
+      name: "error with stale yield metadata",
+      data: {
+        phase: "error",
+        endedAt: 1_800,
+        error: "continuation setup failed",
+        yielded: true,
+        livenessState: "paused",
+      },
+      status: "failed",
+      abortedLastRun: false,
+    },
   ] as const)("persists $name terminal state", async ({ data, status, abortedLastRun }) => {
     const persisted = await persistLifecycle(
       {
@@ -169,6 +181,61 @@ describe("session lifecycle state", () => {
       runtimeMs: 750,
       abortedLastRun,
     });
+  });
+
+  it("keeps a yielded turn pending until its continuation starts", async () => {
+    const yielded = await persistLifecycle(
+      {
+        sessionId: "session-id",
+        updatedAt: 1_000,
+        startedAt: 1_050,
+        status: "running",
+      },
+      {
+        ts: 2_000,
+        sessionId: "session-id",
+        data: {
+          phase: "end",
+          endedAt: 1_800,
+          yielded: true,
+          livenessState: "paused",
+          stopReason: "end_turn",
+        },
+      },
+    );
+
+    expect(yielded).toMatchObject({
+      status: "running",
+      endedAt: 1_800,
+      runtimeMs: 750,
+      abortedLastRun: false,
+    });
+
+    const resumed = await persistLifecycle(yielded, {
+      ts: 2_100,
+      sessionId: "session-id",
+      data: { phase: "start", startedAt: 2_100 },
+    });
+    expect(resumed.status).toBe("running");
+    expect(resumed.endedAt).toBeUndefined();
+  });
+
+  it("does not treat paused liveness without an explicit yield as pending continuation", async () => {
+    const persisted = await persistLifecycle(
+      {
+        sessionId: "session-id",
+        updatedAt: 1_000,
+        startedAt: 1_050,
+        status: "running",
+      },
+      {
+        ts: 2_000,
+        sessionId: "session-id",
+        data: { phase: "end", endedAt: 1_800, livenessState: "paused" },
+      },
+    );
+
+    expect(persisted.status).toBe("done");
   });
 
   it("preserves recovery state for a late interrupted-run event", async () => {

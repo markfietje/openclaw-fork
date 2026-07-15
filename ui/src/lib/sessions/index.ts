@@ -86,7 +86,7 @@ type SessionRefreshOptions = SessionListOptions & {
 export type SessionRunTerminal = {
   sessionKeys: readonly string[];
   runId?: string | null;
-  status: Exclude<SessionRunStatus, "running">;
+  status: SessionRunStatus;
   endedAt: number;
 };
 
@@ -571,7 +571,12 @@ export function reconcileSessionRunTerminal(
     const runtimeMs =
       typeof row.startedAt === "number" ? Math.max(0, endedAt - row.startedAt) : row.runtimeMs;
     const activeRunIds = row.activeRunIds?.length ? [] : row.activeRunIds;
-    const abortedLastRun = terminal.status === "killed" ? true : row.abortedLastRun;
+    const abortedLastRun =
+      terminal.status === "killed"
+        ? true
+        : terminal.status === "running"
+          ? false
+          : row.abortedLastRun;
     if (
       row.hasActiveRun === false &&
       row.status === terminal.status &&

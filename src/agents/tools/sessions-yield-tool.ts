@@ -1,7 +1,7 @@
 /**
  * sessions_yield built-in tool.
  *
- * Ends the current turn after subagent spawning so completion events can resume the session later.
+ * Ends the current turn without completing the task while registered continuation work remains.
  */
 import { Type } from "typebox";
 import type { AnyAgentTool } from "./common.js";
@@ -19,7 +19,8 @@ export function createSessionsYieldTool(opts?: {
   return {
     label: "Yield",
     name: "sessions_yield",
-    description: "End turn after subagent spawn; results arrive next message.",
+    description:
+      "End this turn without completing the task while registered subagent or background continuation work remains; resume on the next event.",
     parameters: SessionsYieldToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;

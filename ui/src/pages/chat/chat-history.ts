@@ -421,6 +421,8 @@ export type ChatEventPayload = {
   deltaText?: string;
   replace?: boolean;
   errorMessage?: string;
+  stopReason?: string;
+  yielded?: boolean;
 };
 
 function setChatError(state: ChatState, error: string | null) {

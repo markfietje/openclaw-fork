@@ -911,6 +911,45 @@ describe("createSessionCapability", () => {
     ).toBe(result);
   });
 
+  it("marks the owned run inactive while keeping yielded continuation pending", () => {
+    const result = sessionsResult(
+      [
+        {
+          key: "agent:main:main",
+          kind: "direct",
+          updatedAt: 1,
+          hasActiveRun: true,
+          activeRunIds: ["run-1"],
+          status: "running",
+          startedAt: 100,
+        },
+      ],
+      1,
+    );
+
+    expect(
+      reconcileSessionRunTerminal(result, {
+        sessionKeys: ["main"],
+        runId: "run-1",
+        status: "running",
+        endedAt: 160,
+      }),
+    ).toEqual({
+      ...result,
+      sessions: [
+        {
+          ...result.sessions[0],
+          activeRunIds: [],
+          hasActiveRun: false,
+          status: "running",
+          endedAt: 160,
+          runtimeMs: 60,
+          abortedLastRun: false,
+        },
+      ],
+    });
+  });
+
   it("refreshes instead of inserting hidden sessions after configured-only lists", async () => {
     const visibleKey = "agent:main:main";
     const hiddenKey = "agent:local:hidden";

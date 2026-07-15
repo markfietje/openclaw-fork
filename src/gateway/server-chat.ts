@@ -765,6 +765,10 @@ export function createAgentEventHandler({
               controlUiVisible: isControlUiVisible,
               firstAssistantTimingEntry: finished,
               abortErrorMessage: readToolValidationErrorSummary(evt.data?.toolErrorSummary),
+              yielded:
+                evt.data?.yielded === true && evt.data?.livenessState === "paused"
+                  ? true
+                  : undefined,
             },
           );
         }
@@ -1046,6 +1050,7 @@ export function createAgentEventHandler({
       controlUiVisible?: boolean;
       firstAssistantTimingEntry?: ChatRunEntry;
       abortErrorMessage?: string;
+      yielded?: true;
     },
   ) => {
     const { text, shouldSuppressSilent } = resolveBufferedChatTextState(clientRunId, sourceRunId, {
@@ -1070,6 +1075,7 @@ export function createAgentEventHandler({
           ? { errorMessage: opts.abortErrorMessage }
           : {}),
         ...(stopReason && { stopReason }),
+        ...(jobState === "done" && opts?.yielded ? { yielded: true as const } : {}),
         message:
           text && !shouldSuppressSilent
             ? {

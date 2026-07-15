@@ -14,6 +14,7 @@ import {
   getOfficialExternalPluginCatalogEntry,
   getOfficialExternalPluginCatalogManifest,
   isOfficialExternalPluginCatalogFeed,
+  listOfficialExternalChannelPackageMetadata,
   listOfficialExternalPluginCatalogEntries,
   loadConfiguredHostedOfficialExternalPluginCatalogEntries,
   resolveOfficialExternalProviderContractPluginIds,
@@ -178,6 +179,17 @@ describe("official external plugin catalog", () => {
       sequence: 1,
     });
     expect(officialExternalPluginCatalog.entries.length).toBeGreaterThan(0);
+  });
+
+  it("exposes trusted external channel setup options before installation", () => {
+    const signal = listOfficialExternalChannelPackageMetadata().find(
+      (channel) => channel.id === "signal",
+    );
+
+    expect(signal?.cliAddOptions).toContainEqual({
+      flags: "--signal-transport <kind>",
+      description: "Signal HTTP transport (external-native or container)",
+    });
   });
 
   it("curates featured external plugins with ClawHub install alternatives", () => {

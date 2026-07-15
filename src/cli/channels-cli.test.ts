@@ -8,9 +8,16 @@ import { registerChannelsCli } from "./channels-cli.js";
 const listBundledPackageChannelMetadataMock = vi.hoisted(() =>
   vi.fn<() => readonly PluginPackageChannel[]>(() => []),
 );
+const listOfficialExternalChannelPackageMetadataMock = vi.hoisted(() =>
+  vi.fn<() => PluginPackageChannel[]>(() => []),
+);
 
 vi.mock("../plugins/bundled-package-channel-metadata.js", () => ({
   listBundledPackageChannelMetadata: listBundledPackageChannelMetadataMock,
+}));
+
+vi.mock("../plugins/official-external-plugin-catalog.js", () => ({
+  listOfficialExternalChannelPackageMetadata: listOfficialExternalChannelPackageMetadataMock,
 }));
 
 function getChannelAddOptionFlags(program: Command): string[] {
@@ -33,11 +40,33 @@ describe("registerChannelsCli", () => {
     await registerChannelsCli(new Command().name("openclaw"));
 
     expect(listBundledPackageChannelMetadataMock).not.toHaveBeenCalled();
+    expect(listOfficialExternalChannelPackageMetadataMock).not.toHaveBeenCalled();
 
     process.argv = ["node", "openclaw", "channels", "add", "--help"];
     await registerChannelsCli(new Command().name("openclaw"));
 
     expect(listBundledPackageChannelMetadataMock).toHaveBeenCalledTimes(1);
+    expect(listOfficialExternalChannelPackageMetadataMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers trusted external channel setup options before plugin installation", async () => {
+    listOfficialExternalChannelPackageMetadataMock.mockReturnValueOnce([
+      {
+        id: "signal",
+        cliAddOptions: [
+          {
+            flags: "--signal-transport <kind>",
+            description: "Signal HTTP transport",
+          },
+        ],
+      },
+    ]);
+    process.argv = ["node", "openclaw", "channels", "add", "--help"];
+    const program = new Command().name("openclaw");
+
+    await registerChannelsCli(program);
+
+    expect(getChannelAddOptionFlags(program)).toContain("--signal-transport <kind>");
   });
 
   it("registers workspace before an external channel plugin is installed", async () => {

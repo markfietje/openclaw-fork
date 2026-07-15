@@ -11,6 +11,7 @@ import type {
   PluginManifestChannelConfig,
   PluginManifestContracts,
   PluginManifestProviderEndpoint,
+  PluginPackageChannel,
   PluginPackageInstall,
 } from "./manifest.js";
 import { BUNDLED_OFFICIAL_EXTERNAL_PLUGIN_CATALOGS } from "./official-external-plugin-bundled-catalogs.js";
@@ -77,11 +78,7 @@ type OfficialExternalPluginCatalogManifest = {
     label?: string;
   };
   catalog?: PluginManifestCatalog;
-  channel?: {
-    id?: string;
-    label?: string;
-    envVars?: readonly string[];
-  };
+  channel?: PluginPackageChannel;
   providers?: readonly OfficialExternalProviderCatalogProvider[];
   /**
    * Mirrors the plugin manifest's providerEndpoints so endpoint classification
@@ -1398,6 +1395,14 @@ export function listOfficialExternalChannelCatalogEntries(): OfficialExternalPlu
   return listOfficialExternalPluginCatalogEntries().filter((entry) =>
     Boolean(getOfficialExternalPluginCatalogManifest(entry)?.channel),
   );
+}
+
+/** Return trusted external channel metadata used by setup surfaces before installation. */
+export function listOfficialExternalChannelPackageMetadata(): PluginPackageChannel[] {
+  return listOfficialExternalChannelCatalogEntries().flatMap((entry) => {
+    const channel = entry[MANIFEST_KEY]?.channel;
+    return channel?.id ? [channel] : [];
+  });
 }
 
 export function listOfficialExternalChannelEnvVars(): Array<{

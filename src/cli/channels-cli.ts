@@ -17,6 +17,8 @@ import { normalizeWindowsArgv } from "./windows-argv.js";
 type ChannelsCommandsModule = typeof import("../commands/channels.js");
 type BundledPackageChannelMetadataModule =
   typeof import("../plugins/bundled-package-channel-metadata.js");
+type OfficialExternalPluginCatalogModule =
+  typeof import("../plugins/official-external-plugin-catalog.js");
 
 const optionNamesRemove = ["channel", "account", "delete"] as const;
 
@@ -30,6 +32,10 @@ const channelsCommandsLoader = createLazyImportLoader<ChannelsCommandsModule>(
 const bundledPackageChannelMetadataLoader =
   createLazyImportLoader<BundledPackageChannelMetadataModule>(
     () => import("../plugins/bundled-package-channel-metadata.js"),
+  );
+const officialExternalPluginCatalogLoader =
+  createLazyImportLoader<OfficialExternalPluginCatalogModule>(
+    () => import("../plugins/official-external-plugin-catalog.js"),
   );
 
 function loadChannelsCommands(): Promise<ChannelsCommandsModule> {
@@ -74,9 +80,17 @@ function shouldRegisterChannelSetupOptions(
 }
 
 async function addChannelSetupOptions(command: Command): Promise<Command> {
-  const { listBundledPackageChannelMetadata } = await bundledPackageChannelMetadataLoader.load();
+  const [{ listBundledPackageChannelMetadata }, { listOfficialExternalChannelPackageMetadata }] =
+    await Promise.all([
+      bundledPackageChannelMetadataLoader.load(),
+      officialExternalPluginCatalogLoader.load(),
+    ]);
   const seenFlags = new Set(command.options.map((option) => option.flags));
-  const channels = listBundledPackageChannelMetadata().toSorted((left, right) => {
+  // External official channels need their owner-declared flags before installation too.
+  const channels = [
+    ...listBundledPackageChannelMetadata(),
+    ...listOfficialExternalChannelPackageMetadata(),
+  ].toSorted((left, right) => {
     const leftOrder = left.order ?? Number.MAX_SAFE_INTEGER;
     const rightOrder = right.order ?? Number.MAX_SAFE_INTEGER;
     return leftOrder === rightOrder

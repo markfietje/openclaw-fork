@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { stableStringify } from "../agents/stable-stringify.js";
 import { pruneAgentConfig } from "../commands/agents.config.js";
@@ -246,27 +246,24 @@ export async function buildClawRemovePlan(
 }
 
 async function removeFile(record: ClawManagedFileStatus): Promise<RemovedWorkspaceFile> {
-  if (record.state === "missing") {
-    return { path: record.path, action: "missing" };
-  }
-  if (record.state === "modified") {
-    return { path: record.path, action: "retainedModified" };
-  }
+  if (record.state === "missing") return { path: record.path, action: "missing" };
+  if (record.state === "modified") return { path: record.path, action: "retainedModified" };
   try {
     const workspace = await fsSafeRoot(record.workspace, {
       hardlinks: "reject",
       maxBytes: MAX_FILE_BYTES,
       symlinks: "reject",
     });
-    if (!(await workspace.exists(record.path))) {
-      return { path: record.path, action: "missing" };
-    }
-    const content = await workspace.readBytes(record.path, { maxBytes: MAX_FILE_BYTES });
+    if (!(await workspace.exists(record.path))) return { path: record.path, action: "missing" };
+    const stagedPath = `${record.path}.openclaw-claw-remove-${randomUUID()}`;
+    await workspace.move(record.path, stagedPath, { overwrite: false });
+    const content = await workspace.readBytes(stagedPath, { maxBytes: MAX_FILE_BYTES });
     const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
     if (digest !== record.contentDigest) {
+      await workspace.move(stagedPath, record.path, { overwrite: false });
       return { path: record.path, action: "retainedModified" };
     }
-    await workspace.remove(record.path);
+    await workspace.remove(stagedPath);
     return { path: record.path, action: "deleted" };
   } catch (error) {
     return {
@@ -276,7 +273,6 @@ async function removeFile(record: ClawManagedFileStatus): Promise<RemovedWorkspa
     };
   }
 }
-
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(
     db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name),

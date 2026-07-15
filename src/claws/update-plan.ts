@@ -26,6 +26,7 @@ export type ClawUpdateAction = {
   blocked: boolean;
   reason: string;
   currentDigest?: string;
+  currentPresent?: boolean;
   desiredDigest?: string;
 };
 
@@ -276,6 +277,7 @@ export async function buildClawUpdatePlan(params: {
                   ? "Managed workspace content already matches the target source."
                   : "Target source changes or restores managed workspace content.",
       ...(current ? { currentDigest: current.contentDigest } : {}),
+      ...(current ? { currentPresent: current.state !== "missing" } : {}),
       desiredDigest: target.digest,
     });
   }
@@ -294,6 +296,7 @@ export async function buildClawUpdatePlan(params: {
         ? "Target removes this file, but local drift must be preserved manually."
         : "Target manifest removes this managed workspace file.",
       currentDigest: current.contentDigest,
+      currentPresent: current.state !== "missing",
     });
   }
 

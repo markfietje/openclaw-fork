@@ -21,7 +21,7 @@ export class ClawPackageInstallError extends Error {
   }
 }
 
-type PackageInstallerDeps = {
+export type PackageInstallerDeps = {
   installSkill?: typeof installSkillFromClawHub;
   installPlugin?: typeof runPluginInstallCommand;
   preflightPlugin?: typeof preflightPluginInstall;

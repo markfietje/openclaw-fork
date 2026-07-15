@@ -507,7 +507,8 @@ thinking: "medium"; // default: "off"
 
 `config.fastMode` overrides fast mode only for the blocking memory sub-agent.
 Use `true`, `false`, or `"auto"`; leave it unset to inherit the normal
-agent, session, and model defaults:
+agent, session, and model defaults. `"auto"` uses the recall model's configured
+`fastAutoOnSeconds` cutoff:
 
 ```json5
 fastMode: true;

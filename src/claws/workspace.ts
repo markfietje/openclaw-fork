@@ -225,6 +225,14 @@ export function readClawWorkspaceFiles(
   options: OpenClawStateDatabaseOptions = {},
 ): PersistedClawWorkspaceFile[] {
   const database = openOpenClawStateDatabase(options);
+  if (
+    options.readOnly &&
+    !database.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'claw_workspace_files'")
+      .get()
+  ) {
+    return [];
+  }
   ensureWorkspaceFileTable(database.db);
   const rows = database.db
     .prepare(

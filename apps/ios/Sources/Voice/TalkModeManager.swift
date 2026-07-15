@@ -938,8 +938,11 @@ final class TalkModeManager: NSObject {
         guard canStartCapture(), self.foregroundPushToTalkAllowed else {
             throw Self.pushToTalkStartCancelledError()
         }
-        if self.isPushToTalkActive, let captureId = activePTTCaptureId {
-            return OpenClawTalkPTTStartPayload(captureId: captureId)
+        if self.isPushToTalkActive, let activePushToTalk {
+            guard activePushToTalk.transcriptionOnly == transcriptionOnly else {
+                throw Self.pushToTalkModeConflictError()
+            }
+            return OpenClawTalkPTTStartPayload(captureId: activePushToTalk.captureId)
         }
         if self.finishingPushToTalk != nil {
             throw Self.pushToTalkBusyError()
@@ -1091,6 +1094,18 @@ final class TalkModeManager: NSObject {
     func endPushToTalk() -> OpenClawTalkPTTStopPayload {
         let captureId = self.activePTTCaptureId ?? UUID().uuidString
         return self.endPushToTalk(captureId: captureId)
+    }
+
+    func endPushToTalk(expectedTranscriptionOnly: Bool) -> OpenClawTalkPTTStopPayload {
+        guard let activePushToTalk,
+              activePushToTalk.transcriptionOnly == expectedTranscriptionOnly
+        else {
+            return OpenClawTalkPTTStopPayload(
+                captureId: UUID().uuidString,
+                transcript: nil,
+                status: "idle")
+        }
+        return self.endPushToTalk(captureId: activePushToTalk.captureId)
     }
 
     func endPushToTalk(captureId: String) -> OpenClawTalkPTTStopPayload {
@@ -1254,6 +1269,18 @@ final class TalkModeManager: NSObject {
         return self.cancelPushToTalk(captureId: captureId)
     }
 
+    func cancelPushToTalk(expectedTranscriptionOnly: Bool) -> OpenClawTalkPTTStopPayload {
+        guard let activePushToTalk,
+              activePushToTalk.transcriptionOnly == expectedTranscriptionOnly
+        else {
+            return OpenClawTalkPTTStopPayload(
+                captureId: UUID().uuidString,
+                transcript: nil,
+                status: "idle")
+        }
+        return self.cancelPushToTalk(captureId: activePushToTalk.captureId)
+    }
+
     func cancelPushToTalk(captureId: String) -> OpenClawTalkPTTStopPayload {
         guard self.activePTTCaptureId == captureId else {
             return OpenClawTalkPTTStopPayload(captureId: captureId, transcript: nil, status: "idle")
@@ -1301,6 +1328,12 @@ final class TalkModeManager: NSObject {
     private static func pushToTalkBusyError() -> NSError {
         NSError(domain: "TalkMode", code: 10, userInfo: [
             NSLocalizedDescriptionKey: "PTT_BUSY: previous push-to-talk turn is still finishing",
+        ])
+    }
+
+    private static func pushToTalkModeConflictError() -> NSError {
+        NSError(domain: "TalkMode", code: 10, userInfo: [
+            NSLocalizedDescriptionKey: "PTT_BUSY: another capture mode owns the microphone",
         ])
     }
 
@@ -3938,7 +3971,7 @@ extension TalkModeManager {
     }
 
     private func ensureTalkConfigLoadedForStart() async {
-        if self.gatewayTalkConfigLoaded || self.gatewayTalkPermissionState.isApprovalRequestInProgress {
+        if self.gatewayTalkConfigLoaded {
             GatewayDiagnostics.log(
                 "talk.timeline config cached permission=\(self.gatewayTalkPermissionState.statusLabel) "
                     + "loadedAt=\(self.talkConfigLoadedAt?.timeIntervalSince1970 ?? 0)")
@@ -4230,8 +4263,8 @@ extension TalkModeManager {
         self.gatewayTalkApiKeyConfigured = false
     }
 
-    func markTalkPermissionUpgradeRequested(requestId: String?) {
-        self.gatewayTalkPermissionState = .upgradeRequested(requestId: requestId)
+    func markTalkPermissionUpgradeRequested() {
+        self.gatewayTalkPermissionState = .upgradeRequested
         self.setStatus(String(localized: "Approval requested"), phase: .idle)
     }
 

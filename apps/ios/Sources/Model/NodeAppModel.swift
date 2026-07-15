@@ -477,6 +477,8 @@ final class NodeAppModel {
     @ObservationIgnored private var credentialHandoffFailureGeneration: UInt64?
     @ObservationIgnored private(set) var gatewayConnectGeneration: UInt64 = 0
     private var forceOperatorTalkPermissionUpgradeRequest = false
+    @ObservationIgnored private var talkPermissionUpgradeTask: Task<Void, Never>?
+    @ObservationIgnored private var talkPermissionUpgradeReconnectTask: Task<Void, Never>?
     private var lastTalkPermissionReconnectAttemptAt: Date?
     private var voiceWakeSyncTask: Task<Void, Never>?
     @ObservationIgnored private var cameraHUDDismissTask: Task<Void, Never>?
@@ -1207,8 +1209,17 @@ final class NodeAppModel {
             self.voiceWake.setSuppressedByTalk(true)
         } else {
             self.voiceWake.setSuppressedByTalk(false)
+            self.cancelTalkPermissionUpgrade(
+                resumeOperatorGateway: self.forceOperatorTalkPermissionUpgradeRequest)
         }
         self.talkMode.setEnabled(enabled)
+        if enabled {
+            Task { [weak self] in
+                guard let self else { return }
+                await self.talkMode.reloadConfig()
+                self.requestTalkPermissionUpgradeIfNeeded()
+            }
+        }
         Task { [weak self] in
             await self?.pushTalkModeToGateway(
                 enabled: enabled,
@@ -1228,12 +1239,13 @@ final class NodeAppModel {
         self.talkMode.applyProviderSelectionChanged()
     }
 
-    func requestTalkPermissionUpgrade() {
+    private func requestTalkPermissionUpgrade() {
         guard let config = activeGatewayConnectConfig else {
             self.talkMode.gatewayTalkPermissionState = .requestFailed("Gateway is not connected")
             self.talkMode.statusText = "Gateway not connected"
             return
         }
+        guard !self.forceOperatorTalkPermissionUpgradeRequest else { return }
         GatewayDiagnostics.log("talk permission upgrade requested")
         self.talkMode.gatewayTalkPermissionState = .requestingUpgrade
         self.talkMode.statusText = "Requesting Talk approval"
@@ -1244,69 +1256,116 @@ final class NodeAppModel {
         self.lastGatewayProblem = nil
         self.nodeGatewayProblem = nil
         self.operatorGatewayProblem = nil
+        self.lastTalkPermissionReconnectAttemptAt = Date()
+        self.restartOperatorGatewayForTalkPermissionUpgrade(config)
+        self.startTalkPermissionUpgradePolling()
+    }
+
+    private func restartOperatorGatewayForTalkPermissionUpgrade(_ config: GatewayConnectConfig) {
         self.operatorGatewayTask?.cancel()
         self.operatorGatewayTask = nil
         let sessionBox = config.tls.map { WebSocketSessionBox(session: GatewayTLSPinningSession(params: $0)) }
-        Task { [weak self] in
+        let routeGeneration = self.gatewayRouteGeneration
+        self.talkPermissionUpgradeReconnectTask?.cancel()
+        self.talkPermissionUpgradeReconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.operatorGateway.disconnect()
-            await MainActor.run {
-                self.startOperatorGatewayLoop(
-                    url: config.url,
-                    stableID: config.effectiveStableID,
-                    token: config.token,
-                    bootstrapToken: config.bootstrapToken,
-                    password: config.password,
-                    nodeOptions: config.nodeOptions,
-                    sessionBox: sessionBox)
+            guard !Task.isCancelled,
+                  self.talkMode.isEnabled,
+                  self.forceOperatorTalkPermissionUpgradeRequest,
+                  self.isCurrentGatewayRoute(
+                      generation: routeGeneration,
+                      stableID: config.effectiveStableID)
+            else { return }
+            self.startOperatorGatewayLoop(
+                url: config.url,
+                stableID: config.effectiveStableID,
+                token: config.token,
+                bootstrapToken: config.bootstrapToken,
+                password: config.password,
+                nodeOptions: config.nodeOptions,
+                sessionBox: sessionBox)
+        }
+    }
+
+    private func requestTalkPermissionUpgradeIfNeeded() {
+        guard self.talkMode.isEnabled,
+              case .missingScope = self.talkMode.gatewayTalkPermissionState
+        else { return }
+        self.requestTalkPermissionUpgrade()
+    }
+
+    private func startTalkPermissionUpgradePolling() {
+        self.talkPermissionUpgradeTask?.cancel()
+        self.talkPermissionUpgradeTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                await self.pollTalkPermissionUpgrade()
+                guard self.talkMode.gatewayTalkPermissionState.isApprovalRequestInProgress else { return }
             }
         }
     }
 
-    func pollTalkPermissionUpgrade() async {
-        guard self.talkMode.gatewayTalkPermissionState.isApprovalRequestInProgress else {
-            await self.talkMode.reloadConfig()
-            await self.talkMode.prefetchRealtimeSessionIfReady(reason: "talk_permission_poll")
-            return
-        }
+    private func cancelTalkPermissionUpgrade(resumeOperatorGateway: Bool = false) {
+        self.forceOperatorTalkPermissionUpgradeRequest = false
+        self.talkPermissionUpgradeTask?.cancel()
+        self.talkPermissionUpgradeTask = nil
+        self.talkPermissionUpgradeReconnectTask?.cancel()
+        self.talkPermissionUpgradeReconnectTask = nil
+        self.lastTalkPermissionReconnectAttemptAt = nil
+        guard resumeOperatorGateway, let config = self.activeGatewayConnectConfig else { return }
 
-        guard let cfg = activeGatewayConnectConfig else {
+        // A scope-upgrade attempt can pause the shared operator reconnect loop for approval.
+        // Cancelling Talk must replace that attempt with the normal stored-auth connection.
+        self.gatewayAutoReconnectEnabled = true
+        self.gatewayPairingPaused = false
+        self.gatewayPairingRequestId = nil
+        self.clearOperatorGatewayConnectionProblemIfCurrent()
+        self.operatorGatewayTask?.cancel()
+        self.operatorGatewayTask = nil
+        let sessionBox = config.tls.map { WebSocketSessionBox(session: GatewayTLSPinningSession(params: $0)) }
+        let routeGeneration = self.gatewayRouteGeneration
+        self.talkPermissionUpgradeReconnectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.operatorGateway.disconnect()
+            guard !Task.isCancelled,
+                  self.isCurrentGatewayRoute(
+                      generation: routeGeneration,
+                      stableID: config.effectiveStableID)
+            else { return }
+            self.startOperatorGatewayLoop(
+                url: config.url,
+                stableID: config.effectiveStableID,
+                token: config.token,
+                bootstrapToken: config.bootstrapToken,
+                password: config.password,
+                nodeOptions: config.nodeOptions,
+                sessionBox: sessionBox)
+        }
+    }
+
+    private func pollTalkPermissionUpgrade() async {
+        guard self.talkMode.gatewayTalkPermissionState.isApprovalRequestInProgress else { return }
+        guard let config = activeGatewayConnectConfig else {
+            self.forceOperatorTalkPermissionUpgradeRequest = false
             self.talkMode.gatewayTalkPermissionState = .requestFailed("Gateway is not connected")
             self.talkMode.statusText = "Gateway not connected"
             return
         }
 
+        GatewayDiagnostics.log("talk permission approval poll reconnect")
         let now = Date()
         if let lastTalkPermissionReconnectAttemptAt,
            now.timeIntervalSince(lastTalkPermissionReconnectAttemptAt) < 6
         {
             return
         }
-        lastTalkPermissionReconnectAttemptAt = now
-
-        GatewayDiagnostics.log("talk permission approval poll reconnect")
+        self.lastTalkPermissionReconnectAttemptAt = now
         self.gatewayAutoReconnectEnabled = true
         self.gatewayPairingPaused = false
         self.gatewayPairingRequestId = nil
-        ensureOperatorReconnectLoopIfNeeded()
-
-        if self.operatorGatewayTask == nil {
-            let sessionBox = cfg.tls.map { WebSocketSessionBox(session: GatewayTLSPinningSession(params: $0)) }
-            startOperatorGatewayLoop(
-                url: cfg.url,
-                stableID: cfg.effectiveStableID,
-                token: cfg.token,
-                bootstrapToken: cfg.bootstrapToken,
-                password: cfg.password,
-                nodeOptions: cfg.nodeOptions,
-                sessionBox: sessionBox)
-        }
-
-        guard await waitForOperatorConnection(timeoutMs: 2500, pollMs: 250) else {
-            return
-        }
-        await self.talkMode.reloadConfig()
-        await self.talkMode.prefetchRealtimeSessionIfReady(reason: "talk_permission_poll_connected")
+        self.restartOperatorGatewayForTalkPermissionUpgrade(config)
     }
 
     func setTalkSpeakerphoneEnabled(_ enabled: Bool) {
@@ -2721,12 +2780,12 @@ final class NodeAppModel {
             // Interrupt commands invalidate suspended preparation before touching
             // capture state, then bypass the preparation queue entirely.
             self.talkPttCommandEpoch &+= 1
-            let payload = self.talkMode.endPushToTalk()
+            let payload = self.talkMode.endPushToTalk(expectedTranscriptionOnly: false)
             let json = try Self.encodePayload(payload)
             return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: json)
         case OpenClawTalkCommand.pttCancel.rawValue:
             self.talkPttCommandEpoch &+= 1
-            let payload = self.talkMode.cancelPushToTalk()
+            let payload = self.talkMode.cancelPushToTalk(expectedTranscriptionOnly: false)
             let json = try Self.encodePayload(payload)
             return BridgeInvokeResponse(id: req.id, ok: true, payloadJSON: json)
         default:
@@ -3728,6 +3787,7 @@ extension NodeAppModel {
         self.lastGatewayProblem = nil
         self.nodeGatewayProblem = nil
         self.operatorGatewayProblem = nil
+        self.cancelTalkPermissionUpgrade()
         // Publish teardown through the shared barrier before returning. A replacement connect
         // must await old loop cleanup instead of racing this synchronous UI action.
         _ = self.beginGatewaySessionReset(chainingAfterExisting: true)
@@ -4190,7 +4250,6 @@ extension NodeAppModel {
         let talkConnectionGeneration = self.operatorTalkConnectionGeneration
         self.setOperatorConnected(true)
         self.clearOperatorGatewayConnectionProblemIfCurrent()
-        self.forceOperatorTalkPermissionUpgradeRequest = false
         GatewayDiagnostics.log(
             "operator gateway connected host=\(url.host ?? "?") scheme=\(url.scheme ?? "?")")
 
@@ -4212,6 +4271,16 @@ extension NodeAppModel {
         guard shouldContinue() else { return }
         await self.talkMode.reloadConfig(shouldApply: shouldContinue)
         guard shouldContinue() else { return }
+        self.requestTalkPermissionUpgradeIfNeeded()
+        if self.forceOperatorTalkPermissionUpgradeRequest {
+            guard !self.talkMode.gatewayTalkPermissionState.requiresTalkPermissionAction else { return }
+            // Completing the forced handshake must also release any approval pause so the
+            // shared operator route keeps reconnecting after this successful connection.
+            self.gatewayAutoReconnectEnabled = true
+            self.gatewayPairingPaused = false
+            self.gatewayPairingRequestId = nil
+            self.cancelTalkPermissionUpgrade()
+        }
         self.admitTalkAfterSessionHydration()
         await self.talkMode.prefetchRealtimeSessionIfReady(
             reason: "operator_connected",
@@ -4440,7 +4509,7 @@ extension NodeAppModel {
                                 self.applyOperatorGatewayConnectionProblem(nextProblem)
                             }
                             if talkPermissionUpgradeRequest, nextProblem.kind == .pairingScopeUpgradeRequired {
-                                self.talkMode.markTalkPermissionUpgradeRequested(requestId: nextProblem.requestId)
+                                self.talkMode.markTalkPermissionUpgradeRequested()
                             }
                         }
                         return nextProblem
@@ -4486,7 +4555,7 @@ extension NodeAppModel {
     private func invalidateNodePushToTalkRoute() {
         self.talkPttCommandEpoch &+= 1
         self.voiceWake.invalidatePendingCommand()
-        _ = self.talkMode.cancelPushToTalk()
+        _ = self.talkMode.cancelPushToTalk(expectedTranscriptionOnly: false)
     }
 
     private func startNodeGatewayLoop(
@@ -10066,6 +10135,14 @@ extension NodeAppModel {
 
 #if DEBUG
 extension NodeAppModel {
+    func _test_setActiveGatewayConnectConfig(_ config: GatewayConnectConfig?) {
+        self.activeGatewayConnectConfig = config
+    }
+
+    func _test_forceTalkPermissionUpgradeRequest() -> Bool {
+        self.forceOperatorTalkPermissionUpgradeRequest
+    }
+
     func _test_handleInvoke(
         _ req: BridgeInvokeRequest,
         gatewayStableID: String? = nil) async -> BridgeInvokeResponse

@@ -76,8 +76,6 @@ final class AppAppearanceModel {
 enum OpenClawBrand {
     // Carapace semantic palette: these tokens are shared by voice surfaces that
     // need the web system's quieter ink/paper hierarchy in native SwiftUI.
-    static let carapaceInk = Color(red: 16 / 255.0, green: 16 / 255.0, blue: 18 / 255.0)
-    static let carapaceSurface = Color(red: 25 / 255.0, green: 25 / 255.0, blue: 28 / 255.0)
     static let carapaceElevated = Color(red: 32 / 255.0, green: 32 / 255.0, blue: 36 / 255.0)
     static let carapaceCoral = Color(red: 245 / 255.0, green: 101 / 255.0, blue: 74 / 255.0)
     static let carapaceSea = Color(red: 79 / 255.0, green: 200 / 255.0, blue: 174 / 255.0)

@@ -15349,17 +15349,17 @@
       "translated": "%@ ontbreekt"
     },
     {
-      "id": "native.apple.08acd077aaacb96f",
+      "id": "native.apple.fd1bb0c5e7d50665",
       "source": "Requesting approval",
       "translated": "Goedkeuring aanvragen"
     },
     {
-      "id": "native.apple.f9bc177bff07a6d4",
+      "id": "native.apple.d26d3cadd2e08dbe",
       "source": "Approval requested",
       "translated": "Goedkeuring aangevraagd"
     },
     {
-      "id": "native.apple.9d92e1e15bf191d9",
+      "id": "native.apple.c9ea3d5d08bf598b",
       "source": "Request failed",
       "translated": "Aanvraag mislukt"
     },
@@ -15692,66 +15692,6 @@
       "id": "native.apple.2970f0510ac6b396",
       "source": "Listening (PTT)",
       "translated": "Luisteren (PTT)"
-    },
-    {
-      "id": "native.apple.0189269b6a863dc2",
-      "source": "Request ID",
-      "translated": "Aanvraag-ID"
-    },
-    {
-      "id": "native.apple.f9d69f27f9d7f4de",
-      "source": "Sending...",
-      "translated": "Verzenden..."
-    },
-    {
-      "id": "native.apple.0c5336129f70faed",
-      "source": "Retry",
-      "translated": "Opnieuw proberen"
-    },
-    {
-      "id": "native.apple.7b23f0a89d3ad411",
-      "source": "Sending approval request",
-      "translated": "Goedkeuringsaanvraag verzenden"
-    },
-    {
-      "id": "native.apple.55db7317a2542e51",
-      "source": "Approval sent",
-      "translated": "Goedkeuring verzonden"
-    },
-    {
-      "id": "native.apple.06330f62ab254a0e",
-      "source": "Could not request approval",
-      "translated": "Kon geen goedkeuring aanvragen"
-    },
-    {
-      "id": "native.apple.6580d3d1cdda682d",
-      "source": "Enable Talk",
-      "translated": "Talk inschakelen"
-    },
-    {
-      "id": "native.apple.abbfc1ba85a230b4",
-      "source": "Sending a new pairing request to your gateway...",
-      "translated": "Een nieuw koppelingsverzoek naar je gateway verzenden..."
-    },
-    {
-      "id": "native.apple.2880deb53ea2fd86",
-      "source": "Approve this request on your gateway. Talk will start automatically when approval lands.",
-      "translated": "Keur dit verzoek goed op je gateway. Talk start automatisch zodra de goedkeuring binnenkomt."
-    },
-    {
-      "id": "native.apple.80faa829f543c03c",
-      "source": "This device needs gateway approval before Talk can use realtime voice. Audio will go directly from this device to the voice provider.",
-      "translated": "This device needs gateway approval before Talk can use realtime voice. Audio will go directly from this device to the voice provider."
-    },
-    {
-      "id": "native.apple.88b0a2e2986fcebf",
-      "source": "Request Again",
-      "translated": "Opnieuw aanvragen"
-    },
-    {
-      "id": "native.apple.5a3faae3472b4b86",
-      "source": "Send Approval Request",
-      "translated": "Goedkeuringsaanvraag verzenden"
     },
     {
       "id": "native.apple.1065cfe92d7c1eb6",

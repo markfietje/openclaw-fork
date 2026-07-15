@@ -5012,14 +5012,6 @@
       ]
     },
     {
-      "locale": "fa",
-      "source": "Retry",
-      "translations": [
-        "تلاش دوباره",
-        "تلاش مجدد"
-      ]
-    },
-    {
       "locale": "hi",
       "source": "Retry",
       "translations": [
@@ -5033,14 +5025,6 @@
       "translations": [
         "Coba Lagi",
         "Coba lagi"
-      ]
-    },
-    {
-      "locale": "pl",
-      "source": "Retry",
-      "translations": [
-        "Ponów",
-        "Ponów próbę"
       ]
     },
     {

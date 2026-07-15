@@ -15349,17 +15349,17 @@
       "translated": "Отсутствует %@"
     },
     {
-      "id": "native.apple.08acd077aaacb96f",
+      "id": "native.apple.fd1bb0c5e7d50665",
       "source": "Requesting approval",
       "translated": "Запрос разрешения"
     },
     {
-      "id": "native.apple.f9bc177bff07a6d4",
+      "id": "native.apple.d26d3cadd2e08dbe",
       "source": "Approval requested",
       "translated": "Разрешение запрошено"
     },
     {
-      "id": "native.apple.9d92e1e15bf191d9",
+      "id": "native.apple.c9ea3d5d08bf598b",
       "source": "Request failed",
       "translated": "Не удалось выполнить запрос"
     },
@@ -15692,66 +15692,6 @@
       "id": "native.apple.2970f0510ac6b396",
       "source": "Listening (PTT)",
       "translated": "Прослушивание (PTT)"
-    },
-    {
-      "id": "native.apple.0189269b6a863dc2",
-      "source": "Request ID",
-      "translated": "ID запроса"
-    },
-    {
-      "id": "native.apple.f9d69f27f9d7f4de",
-      "source": "Sending...",
-      "translated": "Отправка..."
-    },
-    {
-      "id": "native.apple.0c5336129f70faed",
-      "source": "Retry",
-      "translated": "Повторить"
-    },
-    {
-      "id": "native.apple.7b23f0a89d3ad411",
-      "source": "Sending approval request",
-      "translated": "Отправка запроса на подтверждение"
-    },
-    {
-      "id": "native.apple.55db7317a2542e51",
-      "source": "Approval sent",
-      "translated": "Подтверждение отправлено"
-    },
-    {
-      "id": "native.apple.06330f62ab254a0e",
-      "source": "Could not request approval",
-      "translated": "Не удалось запросить подтверждение"
-    },
-    {
-      "id": "native.apple.6580d3d1cdda682d",
-      "source": "Enable Talk",
-      "translated": "Включить Talk"
-    },
-    {
-      "id": "native.apple.abbfc1ba85a230b4",
-      "source": "Sending a new pairing request to your gateway...",
-      "translated": "Отправка нового запроса на сопряжение вашему gateway..."
-    },
-    {
-      "id": "native.apple.2880deb53ea2fd86",
-      "source": "Approve this request on your gateway. Talk will start automatically when approval lands.",
-      "translated": "Подтвердите этот запрос на вашем gateway. Talk запустится автоматически, когда будет получено подтверждение."
-    },
-    {
-      "id": "native.apple.80faa829f543c03c",
-      "source": "This device needs gateway approval before Talk can use realtime voice. Audio will go directly from this device to the voice provider.",
-      "translated": "This device needs gateway approval before Talk can use realtime voice. Audio will go directly from this device to the voice provider."
-    },
-    {
-      "id": "native.apple.88b0a2e2986fcebf",
-      "source": "Request Again",
-      "translated": "Запросить снова"
-    },
-    {
-      "id": "native.apple.5a3faae3472b4b86",
-      "source": "Send Approval Request",
-      "translated": "Отправить запрос на подтверждение"
     },
     {
       "id": "native.apple.1065cfe92d7c1eb6",

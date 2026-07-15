@@ -12,6 +12,7 @@ import {
 } from "../state/openclaw-state-db.js";
 import {
   deleteClawCronRef,
+  markClawCronRefRemoved,
   readClawCronRefs,
   type ClawCronGateway,
   type PersistedClawCronRef,
@@ -251,7 +252,7 @@ export async function buildClawRemovePlan(
     }
   }
   for (const cron of record?.cronJobs ?? []) {
-    if (cron.status !== "complete" || !cron.schedulerJobId) {
+    if (cron.status !== "removed" && (cron.status !== "complete" || !cron.schedulerJobId)) {
       blockers.push({
         code: "cron_cleanup_uncertain",
         message: `Cron declaration ${JSON.stringify(cron.manifestId)} has ${cron.status} ownership state and must be reconciled before removal.`,
@@ -318,7 +319,8 @@ export async function buildClawRemovePlan(
       });
     }
     for (const cron of record.cronJobs) {
-      const blocked = cron.status !== "complete" || !cron.schedulerJobId;
+      const blocked =
+        cron.status !== "removed" && (cron.status !== "complete" || !cron.schedulerJobId);
       actions.push({
         kind: "cronJob",
         id: cron.manifestId,
@@ -532,18 +534,21 @@ export async function applyClawRemovePlan(
   }
   const cronJobs: RemovedCronJob[] = [];
   for (const cron of record.cronJobs) {
-    if (!cron.schedulerJobId || cron.status !== "complete") {
+    if (cron.status !== "removed" && (!cron.schedulerJobId || cron.status !== "complete")) {
       throw new ClawRemoveError(
         "cron_cleanup_uncertain",
         `Cron declaration ${JSON.stringify(cron.manifestId)} is not safely removable.`,
       );
     }
     try {
-      if (!agentRemoved || !options.deleteAgent) {
+      if (cron.status !== "removed" && (!agentRemoved || !options.deleteAgent)) {
         if (!options.cronGateway) {
           throw new Error("Claw cron cleanup requires the gateway-owned cron.remove API.");
         }
-        await options.cronGateway.remove(cron.schedulerJobId);
+        await options.cronGateway.remove(cron.schedulerJobId!);
+      }
+      if (cron.status !== "removed") {
+        markClawCronRefRemoved(plan.agentId, cron.manifestId, options);
       }
       deleteClawCronRef(plan.agentId, cron.manifestId, options);
       cronJobs.push({

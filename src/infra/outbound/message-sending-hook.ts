@@ -2,7 +2,7 @@ import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { NormalizedOutboundPayload } from "./payloads.js";
 
-export type MessageSendingHookResult = {
+type MessageSendingHookResult = {
   cancelled: boolean;
   cancelReason?: string;
   hookMetadata?: Record<string, unknown>;

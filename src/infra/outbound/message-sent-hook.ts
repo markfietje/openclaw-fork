@@ -13,7 +13,7 @@ const log = createSubsystemLogger("outbound/message-sent-hook");
 const messageSentHookOwnedResults = new WeakSet<object>();
 const successfulNativeDeliveries = new WeakMap<object, { messageId?: string }>();
 
-export type MessageSentHookEvent = {
+type MessageSentHookEvent = {
   success: boolean;
   content: string;
   error?: string;

@@ -563,8 +563,9 @@ Decision rules:
   by higher-priority handlers.
 - Automatic channel replies run `reply_payload_sending`, then `message_sending`,
   then channel preparation and native delivery. Each modifying hook runs once
-  per logical payload in a live delivery attempt; durable recovery is a new
-  attempt and can run the hooks again.
+  per logical payload. Durable recovery reuses accepted post-policy payloads
+  and records which payloads completed the modifiers, so it runs modifiers only
+  for payloads that were not prepared before queueing.
 - While either modifying hook family is registered, channel-owned partial and
   progress previews are buffered until the final payload is accepted. This
   prevents unmodified content from appearing before a rewrite or cancellation.

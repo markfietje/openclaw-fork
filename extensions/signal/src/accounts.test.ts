@@ -20,6 +20,30 @@ describe("resolveSignalAccount", () => {
     });
   });
 
+  it("uses a managed native connection URL independently from its daemon bind", () => {
+    const resolved = resolveSignalAccount({
+      cfg: {
+        channels: {
+          signal: {
+            transport: {
+              kind: "managed-native",
+              url: "http://127.0.0.1:8181",
+              httpHost: "0.0.0.0",
+              httpPort: 8181,
+            },
+          },
+        },
+      } as never,
+    });
+
+    expect(resolved.transport).toMatchObject({
+      kind: "managed-native",
+      baseUrl: "http://127.0.0.1:8181",
+      httpHost: "0.0.0.0",
+      httpPort: 8181,
+    });
+  });
+
   it("does not inherit the default account transport into named accounts", () => {
     const cfg = {
       channels: {

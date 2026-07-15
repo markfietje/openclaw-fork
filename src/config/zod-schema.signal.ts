@@ -22,6 +22,7 @@ export const SignalTransportSchema = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("managed-native"),
       configPath: z.string().optional(),
+      url: SignalTransportUrlSchema.optional(),
       httpHost: z.string().optional(),
       httpPort: z.number().int().min(1).max(65_535).optional(),
       cliPath: ExecutableTokenSchema.optional(),

@@ -25,8 +25,6 @@ const LEGACY_TRANSPORT_FIELDS = [
 
 const PENDING_LEGACY_TRANSPORT_WARNING =
   "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.";
-const PENDING_LEGACY_MANAGED_ENDPOINT_WARNING =
-  "- channels.signal: legacy managed transport uses an httpUrl that differs from its daemon bind; keep the current config and align httpUrl with httpHost/httpPort before running openclaw doctor --fix.";
 const PENDING_LEGACY_INVALID_URL_WARNING =
   "- channels.signal: legacy httpUrl is invalid; keep the current config, correct httpUrl, then run openclaw doctor --fix.";
 const PENDING_LEGACY_INVALID_PORT_WARNING =
@@ -46,7 +44,21 @@ function isSignalTransportConfig(value: unknown): value is SignalTransportConfig
     return false;
   }
   if (value.kind === "managed-native") {
-    return value.httpPort === undefined || isValidSignalManagedNativePort(value.httpPort);
+    if (value.httpPort !== undefined && !isValidSignalManagedNativePort(value.httpPort)) {
+      return false;
+    }
+    if (value.url === undefined) {
+      return true;
+    }
+    if (typeof value.url !== "string") {
+      return false;
+    }
+    try {
+      normalizeSignalTransportUrl(value.url);
+      return true;
+    } catch {
+      return false;
+    }
   }
   if (
     (value.kind !== "external-native" && value.kind !== "container") ||
@@ -132,19 +144,16 @@ function resolveLegacyAutoStart(
   return !optionalString(inherited(entry, parent, "httpUrl"));
 }
 
-function hasIndependentManagedEndpoint(
+function resolveManagedConnectionUrl(
   entry: Record<string, unknown>,
   parent: Record<string, unknown>,
-  apiMode: unknown,
-): boolean {
-  if (apiMode === "container" || !resolveLegacyAutoStart(entry, parent)) {
-    return false;
-  }
+): string | undefined {
   const httpUrl = optionalString(inherited(entry, parent, "httpUrl"));
   if (!httpUrl) {
-    return false;
+    return undefined;
   }
-  const endpoint = new URL(normalizeSignalTransportUrl(httpUrl));
+  const normalizedUrl = normalizeSignalTransportUrl(httpUrl);
+  const endpoint = new URL(normalizedUrl);
   const bindHost = (optionalString(inherited(entry, parent, "httpHost")) ?? "127.0.0.1")
     .replace(/^\[|\]$/g, "")
     .toLowerCase();
@@ -156,7 +165,9 @@ function hasIndependentManagedEndpoint(
     : endpoint.protocol === "https:"
       ? 443
       : 80;
-  return endpoint.protocol !== "http:" || endpointHost !== bindHost || endpointPort !== bindPort;
+  const matchesBindEndpoint =
+    endpoint.protocol === "http:" && endpointHost === bindHost && endpointPort === bindPort;
+  return matchesBindEndpoint ? undefined : normalizedUrl;
 }
 
 function buildManagedNativeTransport(
@@ -166,6 +177,7 @@ function buildManagedNativeTransport(
   const value = (key: string) => inherited(entry, parent, key);
   const configPath = optionalString(value("configPath"));
   const cliPath = optionalString(value("cliPath"));
+  const url = resolveManagedConnectionUrl(entry, parent);
   const httpHost = optionalString(value("httpHost"));
   const httpPort = value("httpPort");
   const startupTimeoutMs = value("startupTimeoutMs");
@@ -175,6 +187,7 @@ function buildManagedNativeTransport(
     kind: "managed-native",
     ...(configPath ? { configPath } : {}),
     ...(cliPath ? { cliPath } : {}),
+    ...(url ? { url } : {}),
     ...(httpHost ? { httpHost } : {}),
     ...(typeof httpPort === "number" ? { httpPort } : {}),
     ...(typeof startupTimeoutMs === "number" ? { startupTimeoutMs } : {}),
@@ -419,15 +432,6 @@ export async function migrateLegacySignalTransportConfig(params: {
     };
   }
   if (
-    legacyResolutionEntries.some((entry) => hasIndependentManagedEndpoint(entry, signal, apiMode))
-  ) {
-    return {
-      config: params.cfg,
-      changes: [],
-      warnings: [PENDING_LEGACY_MANAGED_ENDPOINT_WARNING],
-    };
-  }
-  if (
     !params.detect &&
     legacyResolutionEntries.some((entry) => requiresDetection(entry, signal, apiMode))
   ) {
@@ -502,17 +506,6 @@ export function migrateLegacySignalTransportConfigSync(
       config: cfg,
       changes: [],
       warnings: [PENDING_LEGACY_INVALID_PORT_WARNING],
-    };
-  }
-  if (
-    legacyResolutionEntries.some((entry) =>
-      hasIndependentManagedEndpoint(entry, signal, signal.apiMode),
-    )
-  ) {
-    return {
-      config: cfg,
-      changes: [],
-      warnings: [PENDING_LEGACY_MANAGED_ENDPOINT_WARNING],
     };
   }
   const transports = allocateMigratedManagedPorts({

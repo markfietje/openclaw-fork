@@ -130,9 +130,10 @@ export function resolveSignalTransport(
   const httpHost = normalizeOptionalString(transport?.httpHost) ?? "127.0.0.1";
   const httpPort = transport?.httpPort ?? managedNativePort;
   const configPath = normalizeOptionalString(transport?.configPath);
+  const connectionUrl = normalizeOptionalString(transport?.url);
   return {
     kind: "managed-native",
-    baseUrl: `http://${httpHost}:${httpPort}`,
+    baseUrl: connectionUrl ?? `http://${httpHost}:${httpPort}`,
     cliPath: normalizeOptionalString(transport?.cliPath) ?? "signal-cli",
     ...(configPath ? { configPath } : {}),
     httpHost,

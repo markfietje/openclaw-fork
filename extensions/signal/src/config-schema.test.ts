@@ -93,6 +93,7 @@ describe("signal groups schema", () => {
       transport: {
         kind: "managed-native",
         cliPath: "/opt/signal-cli",
+        url: "http://127.0.0.1:8181",
         httpHost: "127.0.0.1",
         httpPort: 8181,
       },

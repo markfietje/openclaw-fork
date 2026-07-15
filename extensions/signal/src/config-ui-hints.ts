@@ -30,6 +30,6 @@ export const signalChannelConfigUiHints = {
   },
   "transport.url": {
     label: "Signal Transport URL",
-    help: "Base URL for an external-native or container transport.",
+    help: "Base URL for an external-native or container transport, or the connection endpoint for a managed-native daemon when it differs from the bind address.",
   },
 } satisfies Record<string, ChannelConfigUiHint>;

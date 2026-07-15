@@ -28,7 +28,9 @@ export type SignalManagedNativeTransport = Extract<
 
 function normalizeTransport(transport: SignalTransportConfig): SignalTransportConfig {
   if (transport.kind === "managed-native") {
-    return transport;
+    return transport.url
+      ? { ...transport, url: normalizeSignalTransportUrl(transport.url) }
+      : transport;
   }
   return { ...transport, url: normalizeSignalTransportUrl(transport.url) };
 }

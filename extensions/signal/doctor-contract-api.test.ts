@@ -388,21 +388,24 @@ describe("signal transport compatibility", () => {
     });
   });
 
-  it("defers managed migration when httpUrl is independent from the daemon bind", async () => {
-    const cfg = signalConfig({
-      apiMode: "native",
-      autoStart: true,
-      httpHost: "127.0.0.1",
-      httpPort: 8181,
-      httpUrl: "https://signal-proxy.example/rpc",
+  it("preserves an independent managed connection URL", async () => {
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        apiMode: "native",
+        autoStart: true,
+        httpHost: "0.0.0.0",
+        httpPort: 8181,
+        httpUrl: "http://127.0.0.1:8181",
+      }),
     });
-    const result = await migrateLegacySignalTransportConfig({ cfg });
 
-    expect(result.config).toBe(cfg);
-    expect(result.changes).toEqual([]);
-    expect(result.warnings).toEqual([
-      "- channels.signal: legacy managed transport uses an httpUrl that differs from its daemon bind; keep the current config and align httpUrl with httpHost/httpPort before running openclaw doctor --fix.",
-    ]);
+    expect(result.warnings).toBeUndefined();
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "managed-native",
+      url: "http://127.0.0.1:8181",
+      httpHost: "0.0.0.0",
+      httpPort: 8181,
+    });
   });
 
   it("defers malformed legacy HTTP URLs instead of aborting doctor", async () => {

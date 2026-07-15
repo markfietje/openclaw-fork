@@ -254,4 +254,24 @@ describe("writeSignalAccountTransport", () => {
       url: "http://container:8080",
     });
   });
+
+  it("normalizes a managed native connection URL", () => {
+    const next = writeSignalAccountTransport({
+      cfg: { channels: { signal: {} } },
+      accountId: "default",
+      transport: {
+        kind: "managed-native",
+        url: "127.0.0.1:8181/",
+        httpHost: "0.0.0.0",
+        httpPort: 8181,
+      },
+    });
+
+    expect(next.channels?.signal?.transport).toEqual({
+      kind: "managed-native",
+      url: "http://127.0.0.1:8181",
+      httpHost: "0.0.0.0",
+      httpPort: 8181,
+    });
+  });
 });

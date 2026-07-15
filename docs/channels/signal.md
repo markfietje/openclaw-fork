@@ -228,11 +228,11 @@ OpenClaw config:
 
 `transport.kind` controls which protocol and process lifecycle OpenClaw uses:
 
-| Value               | Behavior                                                                               |
-| ------------------- | -------------------------------------------------------------------------------------- |
-| `"managed-native"`  | Start native signal-cli and use JSON-RPC at `/api/v1/rpc` plus SSE at `/api/v1/events` |
-| `"external-native"` | Connect to an already-running native signal-cli daemon                                 |
-| `"container"`       | Connect to bbernhard REST at `/v2/send` and WebSocket at `/v1/receive/{account}`       |
+| Value               | Behavior                                                                                                                                                     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `"managed-native"`  | Start native signal-cli and use JSON-RPC at `/api/v1/rpc` plus SSE at `/api/v1/events`; `url` may select a connection endpoint distinct from the daemon bind |
+| `"external-native"` | Connect to an already-running native signal-cli daemon                                                                                                       |
+| `"container"`       | Connect to bbernhard REST at `/v2/send` and WebSocket at `/v1/receive/{account}`                                                                             |
 
 Setup and `openclaw doctor --fix` may probe an existing endpoint once to identify its concrete kind. Runtime operations do not auto-detect or switch protocols.
 
@@ -464,7 +464,7 @@ Provider options:
 - `channels.signal.accountUuid`: optional bot account UUID for native @mention detection and loop protection.
 - `channels.signal.transport`: account-owned transport. Omit it for managed native defaults.
 - `channels.signal.transport.kind`: `managed-native | external-native | container`.
-- `channels.signal.transport.url`: required for `external-native` and `container`.
+- `channels.signal.transport.url`: required for `external-native` and `container`; optional for `managed-native` when its connection endpoint differs from the daemon bind.
 - `channels.signal.transport.cliPath`: managed-native path to `signal-cli`.
 - `channels.signal.transport.configPath`: optional managed-native `signal-cli --config` directory.
 - `channels.signal.transport.httpHost`, `channels.signal.transport.httpPort`: managed-native daemon bind (default `127.0.0.1:8080`).

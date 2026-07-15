@@ -128,6 +128,34 @@ describe("prepareSignalManagedNativeTransport", () => {
     });
   });
 
+  it("keeps an aligned managed connection URL on the allocated bind port", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          account: "+15555550123",
+          transport: { kind: "managed-native", httpPort: 8080 },
+          accounts: {
+            work: {
+              account: "+15555550124",
+              transport: {
+                kind: "managed-native",
+                url: "http://127.0.0.1:8080",
+                httpHost: "0.0.0.0",
+              },
+            },
+          },
+        },
+      },
+    } as const;
+
+    expect(prepareSignalManagedNativeTransport({ cfg: cfg as never, accountId: "work" })).toEqual({
+      kind: "managed-native",
+      url: "http://127.0.0.1:8081",
+      httpHost: "0.0.0.0",
+      httpPort: 8081,
+    });
+  });
+
   it("reserves ports used by enabled local external transports", () => {
     const cfg = {
       channels: {

@@ -14,6 +14,7 @@ import {
 } from "./transport-detection.js";
 import {
   allocateSignalManagedNativePort,
+  assignSignalManagedNativePort,
   DEFAULT_SIGNAL_MANAGED_NATIVE_HOST,
   resolveLocalSignalTransportPort,
 } from "./transport-policy.js";
@@ -84,14 +85,16 @@ export function prepareSignalManagedNativeTransport(params: {
   }
 
   const httpPort = allocateSignalManagedNativePort({ reservedPorts, preferredPort });
-  return {
+  const prepared: SignalManagedNativeTransport = {
     kind: "managed-native",
     ...existingManaged,
     ...params.overrides,
     httpHost:
       params.overrides?.httpHost ?? existingManaged?.httpHost ?? DEFAULT_SIGNAL_MANAGED_NATIVE_HOST,
-    httpPort,
   };
+  // A managed connection URL that points at the daemon's bind is one endpoint.
+  // Keep both ports aligned when setup reallocates the bind around another account.
+  return assignSignalManagedNativePort(prepared, httpPort);
 }
 
 export async function probeSignalTransport(params: {

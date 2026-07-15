@@ -2,6 +2,8 @@
 import type { SignalTransportConfig } from "./account-types.js";
 import { normalizeSignalTransportUrl } from "./transport-url.js";
 
+type SignalManagedNativeTransport = Extract<SignalTransportConfig, { kind: "managed-native" }>;
+
 export const DEFAULT_SIGNAL_MANAGED_NATIVE_PORT = 8080;
 export const DEFAULT_SIGNAL_MANAGED_NATIVE_HOST = "127.0.0.1";
 const SIGNAL_LOOPBACK_HOST_ALIASES = new Set(["localhost", "127.0.0.1", "::1"]);
@@ -85,12 +87,9 @@ export function isSignalManagedNativeConnectionUrlForBind(
 }
 
 export function assignSignalManagedNativePort(
-  transport: SignalTransportConfig,
+  transport: SignalManagedNativeTransport,
   httpPort: number,
-): SignalTransportConfig {
-  if (transport.kind !== "managed-native") {
-    return transport;
-  }
+): SignalManagedNativeTransport {
   if (!isValidSignalManagedNativePort(httpPort)) {
     throw new Error("Signal managed native port must be an integer between 1 and 65535.");
   }

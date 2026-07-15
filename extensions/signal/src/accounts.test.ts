@@ -47,6 +47,28 @@ describe("resolveSignalAccount", () => {
     });
   });
 
+  it("allocates distinct default ports across managed native accounts", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          accounts: {
+            personal: { account: "+15555550123", transport: { kind: "managed-native" } },
+            work: { account: "+15555550124", transport: { kind: "managed-native" } },
+          },
+        },
+      },
+    } as never;
+
+    expect(resolveSignalAccount({ cfg, accountId: "personal" }).transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8080,
+    });
+    expect(resolveSignalAccount({ cfg, accountId: "work" }).transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8081,
+    });
+  });
+
   it("preserves top-level default account when named accounts are configured", () => {
     const cfg = {
       channels: {

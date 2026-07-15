@@ -19,8 +19,11 @@ export function allocateSignalManagedNativePort(params: {
     }
   }
   let port = DEFAULT_SIGNAL_MANAGED_NATIVE_PORT;
-  while (params.reservedPorts.has(port)) {
+  while (port <= 65_535 && params.reservedPorts.has(port)) {
     port += 1;
+  }
+  if (port > 65_535) {
+    throw new Error("No available Signal managed native port remains.");
   }
   return port;
 }

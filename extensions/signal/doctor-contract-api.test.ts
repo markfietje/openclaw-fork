@@ -422,6 +422,39 @@ describe("signal transport compatibility", () => {
     ]);
   });
 
+  it("defers legacy managed ports outside the canonical range", async () => {
+    const cfg = signalConfig({
+      apiMode: "native",
+      autoStart: true,
+      httpPort: 70_000,
+    });
+    const result = await migrateLegacySignalTransportConfig({ cfg });
+
+    expect(result.config).toBe(cfg);
+    expect(result.changes).toEqual([]);
+    expect(result.warnings).toEqual([
+      "- channels.signal: legacy httpPort must be an integer between 1 and 65535; correct httpPort, then run openclaw doctor --fix.",
+    ]);
+  });
+
+  it("keeps canonical transport authoritative over retired malformed URLs", async () => {
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        transport: { kind: "external-native", url: "http://canonical-native:8181" },
+        apiMode: "native",
+        httpUrl: "http://[bad",
+      }),
+    });
+
+    expect(result.warnings).toBeUndefined();
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "external-native",
+      url: "http://canonical-native:8181",
+    });
+    expect(result.config.channels?.signal).not.toHaveProperty("apiMode");
+    expect(result.config.channels?.signal).not.toHaveProperty("httpUrl");
+  });
+
   it("ignores discarded root transport state for named-account migration", async () => {
     const result = await migrateLegacySignalTransportConfig({
       cfg: signalConfig({

@@ -10,6 +10,11 @@ import {
 import type { ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { SignalAccountConfig, SignalTransportConfig } from "./account-types.js";
+import {
+  allocateSignalManagedNativePort,
+  DEFAULT_SIGNAL_MANAGED_NATIVE_PORT,
+  resolveLocalSignalTransportPort,
+} from "./transport-policy.js";
 
 export type ResolvedSignalTransport =
   | {
@@ -66,8 +71,48 @@ function mergeSignalAccountConfig(cfg: OpenClawConfig, accountId: string): Signa
   });
 }
 
+function resolveSignalManagedNativePort(params: {
+  cfg: OpenClawConfig;
+  accountId: string;
+  transport: SignalTransportConfig | undefined;
+}): number {
+  if (params.transport?.kind === "managed-native" && params.transport.httpPort !== undefined) {
+    return params.transport.httpPort;
+  }
+
+  const reservedPorts = new Set<number>();
+  const implicitManagedAccountIds: string[] = [];
+  // Reserve concrete local endpoints first, then assign implicit ports in account order.
+  // Independent account resolution must produce the same collision-free daemon binds.
+  for (const accountId of listSignalAccountIds(params.cfg)) {
+    const transport = mergeSignalAccountConfig(params.cfg, accountId).transport;
+    if (transport?.kind === "external-native" || transport?.kind === "container") {
+      const localPort = resolveLocalSignalTransportPort(transport.url);
+      if (localPort !== undefined) {
+        reservedPorts.add(localPort);
+      }
+      continue;
+    }
+    if (transport?.kind === "managed-native" && transport.httpPort !== undefined) {
+      reservedPorts.add(transport.httpPort);
+      continue;
+    }
+    implicitManagedAccountIds.push(accountId);
+  }
+
+  for (const accountId of implicitManagedAccountIds) {
+    const port = allocateSignalManagedNativePort({ reservedPorts });
+    reservedPorts.add(port);
+    if (accountId === params.accountId) {
+      return port;
+    }
+  }
+  return DEFAULT_SIGNAL_MANAGED_NATIVE_PORT;
+}
+
 export function resolveSignalTransport(
   transport: SignalTransportConfig | undefined,
+  managedNativePort = DEFAULT_SIGNAL_MANAGED_NATIVE_PORT,
 ): ResolvedSignalTransport {
   if (transport?.kind === "external-native" || transport?.kind === "container") {
     return {
@@ -77,7 +122,7 @@ export function resolveSignalTransport(
   }
 
   const httpHost = normalizeOptionalString(transport?.httpHost) ?? "127.0.0.1";
-  const httpPort = transport?.httpPort ?? 8080;
+  const httpPort = transport?.httpPort ?? managedNativePort;
   const configPath = normalizeOptionalString(transport?.configPath);
   return {
     kind: "managed-native",
@@ -105,7 +150,10 @@ export function resolveSignalAccount(params: {
   const merged = mergeSignalAccountConfig(params.cfg, accountId);
   const accountEnabled = merged.enabled !== false;
   const enabled = baseEnabled && accountEnabled;
-  const transport = resolveSignalTransport(merged.transport);
+  const transport = resolveSignalTransport(
+    merged.transport,
+    resolveSignalManagedNativePort({ cfg: params.cfg, accountId, transport: merged.transport }),
+  );
   const baseUrl = transport.baseUrl;
   const configured = Boolean(
     normalizeOptionalString(merged.account) ||

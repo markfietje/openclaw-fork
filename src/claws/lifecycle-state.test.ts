@@ -134,6 +134,30 @@ describe("Claw status and remove", () => {
     await expect(readFile(target, "utf8")).resolves.toBe("operator edit\n");
   });
 
+  it("retains a replacement introduced after planning instead of deleting it", async () => {
+    const current = await addFixture({ withFile: true });
+    const target = join(current.plan.agent.workspace, "SOUL.md");
+    const plan = await buildClawRemovePlan("worker", {
+      env: current.env,
+      config: current.getConfig(),
+    });
+    let config = current.getConfig();
+
+    const result = await applyClawRemovePlan(plan, {
+      env: current.env,
+      config,
+      commitConfig: async (transform) => {
+        config = transform(config);
+        await writeFile(target, "replacement\n", "utf8");
+      },
+    });
+
+    expect(result).toMatchObject({
+      status: "complete",
+      workspaceFiles: [{ path: "SOUL.md", action: "retainedModified" }],
+    });
+    await expect(readFile(target, "utf8")).resolves.toBe("replacement\n");
+  });
   it("keeps the install ledger when workspace cleanup becomes unsafe after config commit", async () => {
     const current = await addFixture({ withFile: true });
     const target = join(current.plan.agent.workspace, "SOUL.md");

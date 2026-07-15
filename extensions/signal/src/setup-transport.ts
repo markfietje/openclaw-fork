@@ -1,4 +1,5 @@
 // Signal setup owns transport discovery and canonical account writes.
+import { normalizeAccountId, resolveAccountEntry } from "openclaw/plugin-sdk/account-resolution";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   DEFAULT_ACCOUNT_ID,
@@ -51,7 +52,7 @@ function configuredTransportForAccount(
   const signal = cfg.channels?.signal;
   return accountId === DEFAULT_ACCOUNT_ID
     ? signal?.transport
-    : signal?.accounts?.[accountId]?.transport;
+    : resolveAccountEntry(signal?.accounts, accountId)?.transport;
 }
 
 function alignManagedConnectionUrlAfterBindChange(params: {
@@ -105,7 +106,7 @@ export function prepareSignalManagedNativeTransport(params: {
   // Resolve existing accounts before adding the target. Persisting only the target's allocated
   // port reserves the newcomers around established implicit ports, even if account ids reorder.
   for (const accountId of listSignalAccountIds(params.cfg)) {
-    if (accountId === params.accountId) {
+    if (normalizeAccountId(accountId) === normalizeAccountId(params.accountId)) {
       continue;
     }
     const account = resolveSignalAccount({ cfg: params.cfg, accountId });

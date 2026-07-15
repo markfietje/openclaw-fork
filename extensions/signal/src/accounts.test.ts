@@ -160,6 +160,27 @@ describe("resolveSignalAccount", () => {
     });
   });
 
+  it("matches case-preserving account keys while allocating implicit ports", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          accounts: {
+            alpha: {
+              account: "+15555550123",
+              transport: { kind: "managed-native", httpPort: 8080 },
+            },
+            Ops: { account: "+15555550124", transport: { kind: "managed-native" } },
+          },
+        },
+      },
+    } as never;
+
+    expect(resolveSignalAccount({ cfg, accountId: "Ops" }).transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8081,
+    });
+  });
+
   it("does not let an unconfigured placeholder consume a managed port", () => {
     const cfg = {
       channels: {

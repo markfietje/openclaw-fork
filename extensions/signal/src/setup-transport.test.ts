@@ -92,6 +92,32 @@ describe("prepareSignalManagedNativeTransport", () => {
     });
   });
 
+  it("preserves managed options behind a case-preserving account key", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          accounts: {
+            Ops: {
+              account: "+15555550124",
+              transport: {
+                kind: "managed-native",
+                cliPath: "/opt/signal-cli",
+                httpPort: 8181,
+              },
+            },
+          },
+        },
+      },
+    } as const;
+
+    expect(prepareSignalManagedNativeTransport({ cfg: cfg as never, accountId: "ops" })).toEqual({
+      kind: "managed-native",
+      cliPath: "/opt/signal-cli",
+      httpHost: "127.0.0.1",
+      httpPort: 8181,
+    });
+  });
+
   it("reserves a configured default account when setup will re-enable the channel", () => {
     const cfg = {
       channels: {

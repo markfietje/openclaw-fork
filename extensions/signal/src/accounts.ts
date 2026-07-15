@@ -133,7 +133,7 @@ function resolveSignalManagedNativePort(params: {
   for (const accountId of implicitManagedAccountIds) {
     const port = allocateSignalManagedNativePort({ reservedPorts });
     reservedPorts.add(port);
-    if (accountId === params.accountId) {
+    if (normalizeAccountId(accountId) === params.accountId) {
       return port;
     }
   }

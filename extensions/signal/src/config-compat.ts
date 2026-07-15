@@ -24,6 +24,8 @@ const LEGACY_TRANSPORT_FIELDS = [
 
 const PENDING_LEGACY_TRANSPORT_WARNING =
   "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.";
+const PENDING_LEGACY_MANAGED_ENDPOINT_WARNING =
+  "- channels.signal: legacy managed transport uses an httpUrl that differs from its daemon bind; keep the current config and align httpUrl with httpHost/httpPort before running openclaw doctor --fix.";
 
 type DetectTransport = (params: {
   url: string;
@@ -89,6 +91,38 @@ function resolveLegacyAutoStart(
   return !optionalString(inherited(entry, parent, "httpUrl"));
 }
 
+function hasIndependentManagedEndpoint(
+  entry: Record<string, unknown>,
+  parent: Record<string, unknown>,
+  apiMode: unknown,
+): boolean {
+  if (apiMode === "container" || !resolveLegacyAutoStart(entry, parent)) {
+    return false;
+  }
+  const httpUrl = optionalString(inherited(entry, parent, "httpUrl"));
+  if (!httpUrl) {
+    return false;
+  }
+  const endpoint = new URL(normalizeSignalTransportUrl(httpUrl));
+  const bindHost = (optionalString(inherited(entry, parent, "httpHost")) ?? "127.0.0.1")
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
+  const rawBindPort = inherited(entry, parent, "httpPort");
+  const bindPort = typeof rawBindPort === "number" ? rawBindPort : 8080;
+  const endpointHost = endpoint.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const endpointPort = endpoint.port
+    ? Number.parseInt(endpoint.port, 10)
+    : endpoint.protocol === "https:"
+      ? 443
+      : 80;
+  return (
+    endpoint.protocol !== "http:" ||
+    endpointHost !== bindHost ||
+    endpointPort !== bindPort ||
+    endpoint.pathname !== "/"
+  );
+}
+
 function buildManagedNativeTransport(
   entry: Record<string, unknown>,
   parent: Record<string, unknown>,
@@ -96,21 +130,8 @@ function buildManagedNativeTransport(
   const value = (key: string) => inherited(entry, parent, key);
   const configPath = optionalString(value("configPath"));
   const cliPath = optionalString(value("cliPath"));
-  let httpHost = optionalString(value("httpHost"));
-  let httpPort = value("httpPort");
-  const httpUrl = optionalString(value("httpUrl"));
-  if (httpUrl && (!httpHost || typeof httpPort !== "number")) {
-    const parsed = new URL(normalizeSignalTransportUrl(httpUrl));
-    httpHost ??= parsed.hostname;
-    httpPort =
-      typeof httpPort === "number"
-        ? httpPort
-        : parsed.port
-          ? Number.parseInt(parsed.port, 10)
-          : parsed.protocol === "https:"
-            ? 443
-            : 80;
-  }
+  const httpHost = optionalString(value("httpHost"));
+  const httpPort = value("httpPort");
   const startupTimeoutMs = value("startupTimeoutMs");
   const receiveMode = value("receiveMode");
   const ignoreStories = value("ignoreStories");
@@ -226,8 +247,15 @@ function allocateMigratedManagedPorts(params: {
 }): Array<SignalTransportConfig | undefined> {
   const reservedPorts = new Set<number>();
   const rootIsAccount = hasRootSignalAccount(params.entries);
+  const sourceAccounts = isRecord(params.entries[0]?.accounts) ? params.entries[0].accounts : {};
+  const accountIds = Object.entries(sourceAccounts)
+    .filter(([, entry]) => isRecord(entry))
+    .map(([accountId]) => accountId);
+  const nestedDefaultOffset = accountIds.indexOf(DEFAULT_ACCOUNT_ID);
+  const canonicalDefaultIndex =
+    nestedDefaultOffset >= 0 ? nestedDefaultOffset + 1 : rootIsAccount ? 0 : undefined;
   for (const [index, transport] of params.transports.entries()) {
-    if (!transport || (index === 0 && !rootIsAccount)) {
+    if (!transport || (index === 0 && canonicalDefaultIndex !== 0)) {
       continue;
     }
     if (transport.kind !== "managed-native") {
@@ -237,19 +265,19 @@ function allocateMigratedManagedPorts(params: {
       }
       continue;
     }
-    if (index === 0 || isRecord(params.entries[index]?.transport)) {
+    if (index === canonicalDefaultIndex || isRecord(params.entries[index]?.transport)) {
       reservedPorts.add(transport.httpPort ?? DEFAULT_SIGNAL_MANAGED_NATIVE_PORT);
     }
   }
   return params.transports.map((transport, index) => {
-    if (!transport || (index === 0 && !rootIsAccount)) {
+    if (!transport || (index === 0 && canonicalDefaultIndex !== 0)) {
       return transport;
     }
     if (transport.kind !== "managed-native") {
       return transport;
     }
     const existingCanonical = isRecord(params.entries[index]?.transport);
-    if (existingCanonical || index === 0) {
+    if (existingCanonical || index === canonicalDefaultIndex) {
       return transport;
     }
     const rawPreferredPort = params.entries[index]?.httpPort;
@@ -315,6 +343,19 @@ export async function migrateLegacySignalTransportConfig(params: {
   }
   const apiMode = signal.apiMode;
   const entries = [signal, ...Object.values(accounts).filter(isRecord)];
+  const rootIsAccount = hasRootSignalAccount(entries);
+  if (
+    entries.some(
+      (entry, index) =>
+        (index > 0 || rootIsAccount) && hasIndependentManagedEndpoint(entry, signal, apiMode),
+    )
+  ) {
+    return {
+      config: params.cfg,
+      changes: [],
+      warnings: [PENDING_LEGACY_MANAGED_ENDPOINT_WARNING],
+    };
+  }
   if (!params.detect && entries.some((entry) => requiresDetection(entry, signal, apiMode))) {
     return {
       config: params.cfg,
@@ -367,6 +408,20 @@ export function migrateLegacySignalTransportConfigSync(
     return { config: cfg, changes: [] };
   }
   const entries = [signal, ...Object.values(accounts).filter(isRecord)];
+  const rootIsAccount = hasRootSignalAccount(entries);
+  if (
+    entries.some(
+      (entry, index) =>
+        (index > 0 || rootIsAccount) &&
+        hasIndependentManagedEndpoint(entry, signal, signal.apiMode),
+    )
+  ) {
+    return {
+      config: cfg,
+      changes: [],
+      warnings: [PENDING_LEGACY_MANAGED_ENDPOINT_WARNING],
+    };
+  }
   const transports = allocateMigratedManagedPorts({
     entries,
     transports: entries.map((entry) =>

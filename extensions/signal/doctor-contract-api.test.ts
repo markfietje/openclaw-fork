@@ -180,6 +180,23 @@ describe("signal transport compatibility", () => {
     expect(result.config.channels?.signal?.accounts?.default).not.toHaveProperty("transport");
   });
 
+  it("preserves the root managed port when accounts.default inherits it", () => {
+    const result = normalizeCompatibilityConfig({
+      cfg: signalConfig({
+        apiMode: "native",
+        account: "+15555550123",
+        httpPort: 8181,
+        accounts: { default: {} },
+      }),
+    });
+
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "managed-native",
+      httpPort: 8181,
+    });
+    expect(result.config.channels?.signal?.accounts?.default).not.toHaveProperty("transport");
+  });
+
   it("keeps attachment suppression account-owned for external transports", () => {
     const result = normalizeCompatibilityConfig({
       cfg: signalConfig({
@@ -324,6 +341,8 @@ describe("signal transport compatibility", () => {
       cfg: signalConfig({
         apiMode: "native",
         autoStart: true,
+        httpHost: "127.0.0.1",
+        httpPort: 8181,
         httpUrl: "http://127.0.0.1:8181",
       }),
     });
@@ -333,6 +352,23 @@ describe("signal transport compatibility", () => {
       httpHost: "127.0.0.1",
       httpPort: 8181,
     });
+  });
+
+  it("defers managed migration when httpUrl is independent from the daemon bind", async () => {
+    const cfg = signalConfig({
+      apiMode: "native",
+      autoStart: true,
+      httpHost: "127.0.0.1",
+      httpPort: 8181,
+      httpUrl: "https://signal-proxy.example/rpc",
+    });
+    const result = await migrateLegacySignalTransportConfig({ cfg });
+
+    expect(result.config).toBe(cfg);
+    expect(result.changes).toEqual([]);
+    expect(result.warnings).toEqual([
+      "- channels.signal: legacy managed transport uses an httpUrl that differs from its daemon bind; keep the current config and align httpUrl with httpHost/httpPort before running openclaw doctor --fix.",
+    ]);
   });
 
   it("leaves an unreachable auto endpoint unchanged for a later doctor run", async () => {

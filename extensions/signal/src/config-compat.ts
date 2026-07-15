@@ -26,6 +26,8 @@ const PENDING_LEGACY_TRANSPORT_WARNING =
   "- channels.signal: legacy auto transport needs a reachable daemon before it can be migrated; start the configured endpoint, then run openclaw doctor --fix.";
 const PENDING_LEGACY_MANAGED_ENDPOINT_WARNING =
   "- channels.signal: legacy managed transport uses an httpUrl that differs from its daemon bind; keep the current config and align httpUrl with httpHost/httpPort before running openclaw doctor --fix.";
+const PENDING_LEGACY_INVALID_URL_WARNING =
+  "- channels.signal: legacy httpUrl is invalid; keep the current config, correct httpUrl, then run openclaw doctor --fix.";
 
 type DetectTransport = (params: {
   url: string;
@@ -70,6 +72,21 @@ function legacyBaseUrl(entry: Record<string, unknown>, parent: Record<string, un
 
 function hasLegacyFields(entry: Record<string, unknown>): boolean {
   return LEGACY_TRANSPORT_FIELDS.some((field) => Object.hasOwn(entry, field));
+}
+
+function hasInvalidLegacyHttpUrl(entries: Record<string, unknown>[]): boolean {
+  return entries.some((entry) => {
+    const httpUrl = optionalString(entry.httpUrl);
+    if (!httpUrl) {
+      return false;
+    }
+    try {
+      normalizeSignalTransportUrl(httpUrl);
+      return false;
+    } catch {
+      return true;
+    }
+  });
 }
 
 function requiresDetection(
@@ -342,6 +359,13 @@ export async function migrateLegacySignalTransportConfig(params: {
   }
   const apiMode = signal.apiMode;
   const entries = [signal, ...Object.values(accounts).filter(isRecord)];
+  if (hasInvalidLegacyHttpUrl(entries)) {
+    return {
+      config: params.cfg,
+      changes: [],
+      warnings: [PENDING_LEGACY_INVALID_URL_WARNING],
+    };
+  }
   const rootIsAccount = hasRootSignalAccount(entries);
   if (
     entries.some(
@@ -407,6 +431,13 @@ export function migrateLegacySignalTransportConfigSync(
     return { config: cfg, changes: [] };
   }
   const entries = [signal, ...Object.values(accounts).filter(isRecord)];
+  if (hasInvalidLegacyHttpUrl(entries)) {
+    return {
+      config: cfg,
+      changes: [],
+      warnings: [PENDING_LEGACY_INVALID_URL_WARNING],
+    };
+  }
   const rootIsAccount = hasRootSignalAccount(entries);
   if (
     entries.some(

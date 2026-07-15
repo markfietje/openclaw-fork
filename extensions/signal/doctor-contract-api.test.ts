@@ -389,6 +389,23 @@ describe("signal transport compatibility", () => {
     ]);
   });
 
+  it("defers malformed legacy HTTP URLs instead of aborting doctor", async () => {
+    const cfg = signalConfig({
+      apiMode: "native",
+      autoStart: true,
+      httpUrl: "http://[bad",
+    });
+
+    expect(() => normalizeCompatibilityConfig({ cfg })).not.toThrow();
+    const result = await migrateLegacySignalTransportConfig({ cfg });
+
+    expect(result.config).toBe(cfg);
+    expect(result.changes).toEqual([]);
+    expect(result.warnings).toEqual([
+      "- channels.signal: legacy httpUrl is invalid; keep the current config, correct httpUrl, then run openclaw doctor --fix.",
+    ]);
+  });
+
   it("leaves an unreachable auto endpoint unchanged for a later doctor run", async () => {
     const cfg = signalConfig({ apiMode: "auto", httpUrl: "http://offline:8080" });
     const result = await migrateLegacySignalTransportConfig({

@@ -114,6 +114,31 @@ describe("resolveSignalAccount", () => {
     });
   });
 
+  it("reserves managed bind and local connection ports for implicit accounts", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          accounts: {
+            proxy: {
+              account: "+15555550123",
+              transport: {
+                kind: "managed-native",
+                url: "http://localhost:8080",
+                httpPort: 8181,
+              },
+            },
+            work: { account: "+15555550124", transport: { kind: "managed-native" } },
+          },
+        },
+      },
+    } as never;
+
+    expect(resolveSignalAccount({ cfg, accountId: "work" }).transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8081,
+    });
+  });
+
   it("preserves top-level default account when named accounts are configured", () => {
     const cfg = {
       channels: {

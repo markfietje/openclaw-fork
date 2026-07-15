@@ -99,8 +99,18 @@ function resolveSignalManagedNativePort(params: {
       }
       continue;
     }
-    if (transport?.kind === "managed-native" && transport.httpPort !== undefined) {
-      reservedPorts.add(transport.httpPort);
+    if (transport?.kind === "managed-native") {
+      if (transport.httpPort !== undefined) {
+        reservedPorts.add(transport.httpPort);
+      } else {
+        implicitManagedAccountIds.push(accountId);
+      }
+      if (transport.url) {
+        const localConnectionPort = resolveLocalSignalTransportPort(transport.url);
+        if (localConnectionPort !== undefined) {
+          reservedPorts.add(localConnectionPort);
+        }
+      }
       continue;
     }
     implicitManagedAccountIds.push(accountId);

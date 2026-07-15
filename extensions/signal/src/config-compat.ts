@@ -130,7 +130,13 @@ function requiresDetection(
   parent: Record<string, unknown>,
   apiMode: unknown,
 ): boolean {
-  return (apiMode === undefined || apiMode === "auto") && !resolveLegacyAutoStart(entry, parent);
+  if (apiMode !== undefined && apiMode !== "auto") {
+    return false;
+  }
+  return (
+    Boolean(optionalString(inherited(entry, parent, "httpUrl"))) ||
+    !resolveLegacyAutoStart(entry, parent)
+  );
 }
 
 function resolveLegacyAutoStart(
@@ -235,10 +241,17 @@ async function resolveLegacyTransport(params: {
   }
   const account = optionalString(inherited(params.entry, params.parent, "account"));
   try {
-    return await params.detect?.({
+    const detected = await params.detect?.({
       url: legacyBaseUrl(params.entry, params.parent),
       ...(account ? { account } : {}),
     });
+    if (
+      detected?.kind === "external-native" &&
+      resolveLegacyAutoStart(params.entry, params.parent)
+    ) {
+      return buildManagedNativeTransport(params.entry, params.parent);
+    }
+    return detected;
   } catch {
     return undefined;
   }
@@ -334,6 +347,12 @@ function allocateMigratedManagedPorts(params: {
         reservedPorts.add(localPort);
       }
       continue;
+    }
+    if (transport.url) {
+      const localConnectionPort = resolveLocalSignalTransportPort(transport.url);
+      if (localConnectionPort !== undefined) {
+        reservedPorts.add(localConnectionPort);
+      }
     }
     if (index === canonicalDefaultIndex || isRecord(params.entries[index]?.transport)) {
       reservedPorts.add(transport.httpPort ?? DEFAULT_SIGNAL_MANAGED_NATIVE_PORT);

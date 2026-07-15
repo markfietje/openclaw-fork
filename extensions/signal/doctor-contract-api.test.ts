@@ -270,6 +270,30 @@ describe("signal transport compatibility", () => {
     });
   });
 
+  it("reserves managed bind and local connection ports during migration", () => {
+    const result = normalizeCompatibilityConfig({
+      cfg: signalConfig({
+        apiMode: "native",
+        autoStart: true,
+        account: "+15555550123",
+        httpHost: "0.0.0.0",
+        httpPort: 8181,
+        httpUrl: "http://localhost:8080",
+        accounts: { work: { account: "+15555550124" } },
+      }),
+    });
+
+    expect(result.config.channels?.signal?.transport).toMatchObject({
+      kind: "managed-native",
+      url: "http://localhost:8080",
+      httpPort: 8181,
+    });
+    expect(result.config.channels?.signal?.accounts?.work?.transport).toMatchObject({
+      kind: "managed-native",
+      httpPort: 8081,
+    });
+  });
+
   it("defers auto endpoint migration until doctor can detect it", () => {
     const cfg = signalConfig({ apiMode: "auto", httpUrl: "http://signal:8080" });
     const result = normalizeCompatibilityConfig({ cfg });
@@ -327,6 +351,52 @@ describe("signal transport compatibility", () => {
     expect(result.config.channels?.signal?.transport).toEqual({
       kind: "container",
       url: "http://signal:8080",
+    });
+  });
+
+  it("detects explicit auto endpoints even when legacy autoStart is true", async () => {
+    const detect = vi.fn().mockResolvedValue({
+      kind: "container",
+      url: "http://signal:8080",
+    });
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        apiMode: "auto",
+        autoStart: true,
+        httpUrl: "http://signal:8080",
+      }),
+      detect,
+    });
+
+    expect(detect).toHaveBeenCalledTimes(1);
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "container",
+      url: "http://signal:8080",
+    });
+  });
+
+  it("keeps an auto-detected native endpoint managed when autoStart is true", async () => {
+    const detect = vi.fn().mockResolvedValue({
+      kind: "external-native",
+      url: "http://127.0.0.1:8181",
+    });
+    const result = await migrateLegacySignalTransportConfig({
+      cfg: signalConfig({
+        apiMode: "auto",
+        autoStart: true,
+        httpUrl: "http://127.0.0.1:8181",
+        httpHost: "0.0.0.0",
+        httpPort: 8181,
+      }),
+      detect,
+    });
+
+    expect(detect).toHaveBeenCalledTimes(1);
+    expect(result.config.channels?.signal?.transport).toEqual({
+      kind: "managed-native",
+      url: "http://127.0.0.1:8181",
+      httpHost: "0.0.0.0",
+      httpPort: 8181,
     });
   });
 

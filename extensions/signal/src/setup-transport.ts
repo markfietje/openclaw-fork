@@ -64,6 +64,10 @@ export function prepareSignalManagedNativeTransport(params: {
     }
     if (account.transport.kind === "managed-native") {
       reservedPorts.add(account.transport.httpPort);
+      const localConnectionPort = resolveLocalSignalTransportPort(account.transport.baseUrl);
+      if (localConnectionPort !== undefined) {
+        reservedPorts.add(localConnectionPort);
+      }
       continue;
     }
     const localPort = resolveLocalSignalTransportPort(account.transport.baseUrl);

@@ -148,6 +148,30 @@ describe("prepareSignalManagedNativeTransport", () => {
     ).toBe(8081);
   });
 
+  it("reserves managed bind and local connection endpoint ports", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          accounts: {
+            proxy: {
+              account: "+15555550123",
+              transport: {
+                kind: "managed-native",
+                url: "http://localhost:8080",
+                httpPort: 8181,
+              },
+            },
+            work: { account: "+15555550124" },
+          },
+        },
+      },
+    } as const;
+
+    expect(
+      prepareSignalManagedNativeTransport({ cfg: cfg as never, accountId: "work" }).httpPort,
+    ).toBe(8081);
+  });
+
   it.each([0, Number.NaN, 65_536])("rejects invalid preferred port %s", (httpPort) => {
     expect(() =>
       prepareSignalManagedNativeTransport({

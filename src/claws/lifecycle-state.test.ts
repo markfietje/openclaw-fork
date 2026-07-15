@@ -7,7 +7,11 @@ import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js
 import { applyClawAddPlan } from "./add.js";
 import { applyClawRemovePlan, buildClawRemovePlan, readClawStatus } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
-import { persistClawInstallRecord, persistClawPackageRef } from "./provenance.js";
+import {
+  persistClawInstallRecord,
+  persistClawPackageRef,
+  readClawPackageRefs,
+} from "./provenance.js";
 import { parseClawManifest } from "./schema.js";
 import type { ClawSourceIdentity } from "./types.js";
 
@@ -207,5 +211,38 @@ describe("Claw status and remove", () => {
     persistClawInstallRecord(second.plan, { env: first.env });
     const plan = await buildClawRemovePlan("@acme/shared", { env: first.env, config: {} });
     expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "claw_ambiguous" }));
+  });
+
+  it("hands Claw-installed plugin ownership to a surviving Claw reference", async () => {
+    const first = await fixture({ id: "worker-a", name: "@acme/first" });
+    const second = await fixture({ id: "worker-b", name: "@acme/second" });
+    persistClawInstallRecord(first.plan, { env: first.env, nowMs: 1 });
+    persistClawInstallRecord(second.plan, { env: first.env, nowMs: 2 });
+    const plugin = { kind: "plugin", source: "clawhub", ref: "audit", version: "1.0.0" } as const;
+    persistClawPackageRef(first.plan, plugin, {
+      env: first.env,
+      nowMs: 1,
+      ownership: "claw-installed",
+    });
+    persistClawPackageRef(second.plan, plugin, {
+      env: first.env,
+      nowMs: 2,
+      ownership: "preexisting",
+    });
+    let config: OpenClawConfig = {
+      agents: { list: [first.plan.agent.config, second.plan.agent.config] },
+    };
+    const remove = await buildClawRemovePlan("worker-a", { env: first.env, config });
+    await applyClawRemovePlan(remove, {
+      env: first.env,
+      config,
+      commitConfig: async (transform) => {
+        config = transform(config);
+      },
+    });
+
+    expect(readClawPackageRefs({ env: first.env, agentId: "worker-b" })).toMatchObject([
+      { ref: "audit", ownership: "claw-installed" },
+    ]);
   });
 });

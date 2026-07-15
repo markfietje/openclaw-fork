@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { preflightPluginInstall } from "./plugin-install-preflight.js";
+import {
+  preflightPluginInstall,
+  resolveInstalledClawHubPlugin,
+} from "./plugin-install-preflight.js";
 
 describe("preflightPluginInstall", () => {
   it("reuses an exact installed version", async () => {
@@ -28,5 +31,38 @@ describe("preflightPluginInstall", () => {
       code: "plugin_version_conflict",
       installedVersion: "1.1.0",
     });
+  });
+});
+
+describe("resolveInstalledClawHubPlugin", () => {
+  it("returns the runtime plugin id for one ClawHub package", async () => {
+    await expect(
+      resolveInstalledClawHubPlugin({
+        clawhubPackage: "@acme/audit",
+        loadInstallRecords: vi.fn().mockResolvedValue({
+          "audit-runtime": {
+            source: "clawhub",
+            clawhubPackage: "@acme/audit",
+            resolvedVersion: "1.2.3",
+          },
+        }),
+      }),
+    ).resolves.toMatchObject({
+      status: "found",
+      pluginId: "audit-runtime",
+      installedVersion: "1.2.3",
+    });
+  });
+
+  it("reports ambiguous package identities instead of choosing one", async () => {
+    await expect(
+      resolveInstalledClawHubPlugin({
+        clawhubPackage: "audit",
+        loadInstallRecords: vi.fn().mockResolvedValue({
+          first: { source: "clawhub", clawhubPackage: "audit", version: "1.0.0" },
+          second: { source: "clawhub", clawhubPackage: "audit", version: "1.0.0" },
+        }),
+      }),
+    ).resolves.toEqual({ status: "ambiguous", pluginIds: ["first", "second"] });
   });
 });

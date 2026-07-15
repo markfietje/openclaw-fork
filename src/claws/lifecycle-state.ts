@@ -10,8 +10,15 @@ import {
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
 import {
+  applyClawPackageRemovals,
+  planClawPackageRemovals,
+  type ClawPackageRemovalResult,
+  type PackageRemovalDeps,
+} from "./package-remove.js";
+import {
   readClawInstallRecords,
   readClawPackageRefs,
+  updateClawInstallRecordStatus,
   type PersistedClawInstall,
   type PersistedClawPackageRef,
 } from "./provenance.js";
@@ -49,7 +56,7 @@ export type ClawStatusResult = {
 export type ClawRemovePlanAction = {
   kind: "agent" | "workspaceFile" | "packageRef" | "installRecord";
   id: string;
-  action: "remove" | "delete" | "retain" | "release";
+  action: "remove" | "delete" | "retain" | "release" | "uninstall";
   target: string;
   blocked: boolean;
   reason?: string;
@@ -77,6 +84,7 @@ export type ClawRemoveResult = {
   agentId: string;
   agentRemoved: boolean;
   workspaceFiles: RemovedWorkspaceFile[];
+  packages: ClawPackageRemovalResult[];
   packageRefsReleased: number;
   error?: { code: string; message: string };
 };
@@ -123,7 +131,10 @@ async function inspectFile(record: PersistedClawWorkspaceFile): Promise<ClawMana
 
 export async function readClawStatus(
   target?: string,
-  options: OpenClawStateDatabaseOptions & { config?: OpenClawConfig } = {},
+  options: OpenClawStateDatabaseOptions & {
+    config?: OpenClawConfig;
+    packageDeps?: PackageRemovalDeps;
+  } = {},
 ): Promise<ClawStatusResult> {
   const config = options.config ?? loadConfig();
   const installs = readClawInstallRecords(options).filter(
@@ -164,7 +175,10 @@ export async function readClawStatus(
 
 export async function buildClawRemovePlan(
   target: string,
-  options: OpenClawStateDatabaseOptions & { config?: OpenClawConfig } = {},
+  options: OpenClawStateDatabaseOptions & {
+    config?: OpenClawConfig;
+    packageDeps?: PackageRemovalDeps;
+  } = {},
 ): Promise<ClawRemovePlan> {
   const status = await readClawStatus(target, options);
   const blockers: ClawRemovePlan["blockers"] = [];
@@ -196,6 +210,10 @@ export async function buildClawRemovePlan(
   }
   const actions: ClawRemovePlanAction[] = [];
   if (record) {
+    const packageDecisions = await planClawPackageRemovals(record.install, record.packages, {
+      ...options,
+      deps: options.packageDeps,
+    });
     actions.push({
       kind: "agent",
       id: record.install.agentId,
@@ -216,13 +234,15 @@ export async function buildClawRemovePlan(
           : {}),
       });
     }
-    for (const pkg of record.packages) {
+    for (const decision of packageDecisions) {
+      const pkg = decision.packageRef;
       actions.push({
         kind: "packageRef",
         id: `${pkg.kind}:${pkg.ref}@${pkg.version}`,
-        action: "release",
+        action: decision.action === "uninstall" ? "uninstall" : "release",
         target: `${pkg.source}:${pkg.ref}@${pkg.version}`,
         blocked: false,
+        ...(decision.reason ? { reason: decision.reason } : {}),
       });
     }
     actions.push({
@@ -246,15 +266,21 @@ export async function buildClawRemovePlan(
 }
 
 async function removeFile(record: ClawManagedFileStatus): Promise<RemovedWorkspaceFile> {
-  if (record.state === "missing") return { path: record.path, action: "missing" };
-  if (record.state === "modified") return { path: record.path, action: "retainedModified" };
+  if (record.state === "missing") {
+    return { path: record.path, action: "missing" };
+  }
+  if (record.state === "modified") {
+    return { path: record.path, action: "retainedModified" };
+  }
   try {
     const workspace = await fsSafeRoot(record.workspace, {
       hardlinks: "reject",
       maxBytes: MAX_FILE_BYTES,
       symlinks: "reject",
     });
-    if (!(await workspace.exists(record.path))) return { path: record.path, action: "missing" };
+    if (!(await workspace.exists(record.path))) {
+      return { path: record.path, action: "missing" };
+    }
     const stagedPath = `${record.path}.openclaw-claw-remove-${randomUUID()}`;
     await workspace.move(record.path, stagedPath, { overwrite: false });
     const content = await workspace.readBytes(stagedPath, { maxBytes: MAX_FILE_BYTES });
@@ -281,6 +307,7 @@ function tableExists(db: DatabaseSync, name: string): boolean {
 function releaseRows(
   agentId: string,
   files: RemovedWorkspaceFile[],
+  packages: PersistedClawPackageRef[],
   complete: boolean,
   options: OpenClawStateDatabaseOptions,
 ): void {
@@ -297,6 +324,29 @@ function releaseRows(
       return;
     }
     if (tableExists(db, "claw_package_refs")) {
+      for (const pkg of packages.filter(
+        (candidate) => candidate.kind === "plugin" && candidate.ownership === "claw-installed",
+      )) {
+        db.prepare(
+          `UPDATE claw_package_refs
+              SET ownership = 'claw-installed'
+            WHERE rowid = (
+              SELECT rowid
+                FROM claw_package_refs
+               WHERE agent_id <> @agent_id
+                 AND package_kind = @package_kind
+                 AND package_source = @package_source
+                 AND package_ref = @package_ref
+               ORDER BY installed_at_ms, agent_id
+               LIMIT 1
+            )`,
+        ).run({
+          agent_id: agentId,
+          package_kind: pkg.kind,
+          package_source: pkg.source,
+          package_ref: pkg.ref,
+        });
+      }
       db.prepare("DELETE FROM claw_package_refs WHERE agent_id = ?").run(agentId);
     }
     if (tableExists(db, "claw_installs")) {
@@ -311,6 +361,7 @@ export async function applyClawRemovePlan(
   options: OpenClawStateDatabaseOptions & {
     config?: OpenClawConfig;
     commitConfig?: ConfigCommit;
+    packageDeps?: PackageRemovalDeps;
   } = {},
 ): Promise<ClawRemoveResult> {
   if (plan.blockers.length > 0 || !plan.agentId) {
@@ -325,6 +376,23 @@ export async function applyClawRemovePlan(
     record.workspaceFiles.some((file) => file.state === "unsafe")
   ) {
     throw new ClawRemoveError("remove_changed", "Claw-owned state changed after remove planning.");
+  }
+  const packageDecisions = await planClawPackageRemovals(record.install, record.packages, {
+    ...options,
+    deps: options.packageDeps,
+  });
+  const plannedPackages = plan.actions
+    .filter((action) => action.kind === "packageRef")
+    .map((action) => `${action.id}:${action.action}`)
+    .toSorted();
+  const currentPackages = packageDecisions
+    .map(
+      (decision) =>
+        `${decision.packageRef.kind}:${decision.packageRef.ref}@${decision.packageRef.version}:${decision.action === "uninstall" ? "uninstall" : "release"}`,
+    )
+    .toSorted();
+  if (JSON.stringify(plannedPackages) !== JSON.stringify(currentPackages)) {
+    throw new ClawRemoveError("remove_changed", "Package ownership changed after remove planning.");
   }
   const commit: ConfigCommit =
     options.commitConfig ??
@@ -344,13 +412,35 @@ export async function applyClawRemovePlan(
     agentRemoved = Boolean(agent);
     return pruneAgentConfig(config, agentId).config;
   });
+  const packages = await applyClawPackageRemovals(packageDecisions, {
+    deps: options.packageDeps,
+  });
+  const packageErrors = packages.filter((pkg) => pkg.action === "error");
+  if (packageErrors.length > 0) {
+    updateClawInstallRecordStatus(agentId, "partial", options);
+    return {
+      schemaVersion: CLAW_REMOVE_RESULT_SCHEMA_VERSION,
+      stability: CLAW_OUTPUT_STABILITY,
+      dryRun: false,
+      status: "partial",
+      agentId: plan.agentId,
+      agentRemoved,
+      workspaceFiles: [],
+      packages,
+      packageRefsReleased: 0,
+      error: {
+        code: "package_cleanup_failed",
+        message: packageErrors.map((pkg) => pkg.reason).join("; "),
+      },
+    };
+  }
   const workspaceFiles: RemovedWorkspaceFile[] = [];
   for (const file of record.workspaceFiles) {
     workspaceFiles.push(await removeFile(file));
   }
   const errors = workspaceFiles.filter((file) => file.action === "error");
   const complete = errors.length === 0;
-  releaseRows(plan.agentId, workspaceFiles, complete, options);
+  releaseRows(plan.agentId, workspaceFiles, record.packages, complete, options);
   return {
     schemaVersion: CLAW_REMOVE_RESULT_SCHEMA_VERSION,
     stability: CLAW_OUTPUT_STABILITY,
@@ -359,6 +449,7 @@ export async function applyClawRemovePlan(
     agentId: plan.agentId,
     agentRemoved,
     workspaceFiles,
+    packages,
     packageRefsReleased: complete ? record.packages.length : 0,
     ...(complete
       ? {}

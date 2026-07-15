@@ -232,7 +232,7 @@ describe("claws lifecycle cli e2e", () => {
       agentRemoved: true,
     });
     const config = JSON.parse(await readFile(join(added.stateDir, "openclaw.json"), "utf8"));
-    expect(config.agents.list).toEqual([]);
+    expect(config.agents).toEqual({});
   });
 
   it("blocks mutation when declared components need later lifecycle slices", async () => {

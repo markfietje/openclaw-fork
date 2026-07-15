@@ -74,6 +74,9 @@ runs:
         set -euo pipefail
         # Store, virtual store, and modules dir must share the sticky disk's
         # filesystem so pnpm keeps hardlinking instead of copying packages.
+        # The install step below symlinks the checkout's node_modules onto
+        # PNPM_CONFIG_MODULES_DIR, so Node resolution from the checkout still
+        # works (same layout crabbox-hydrate.yml uses in production).
         # zizmor: ignore[github-env] static trusted paths defined in this composite action.
         {
           echo "PNPM_CONFIG_STORE_DIR=/var/tmp/openclaw-node-deps/store"

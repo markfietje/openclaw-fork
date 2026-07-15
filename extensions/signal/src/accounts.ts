@@ -59,7 +59,7 @@ function mergeSignalAccountConfig(cfg: OpenClawConfig, accountId: string): Signa
     defaultAccount: _defaultAccount,
     ...shared
   } = channelConfig ?? {};
-  return resolveMergedAccountConfig<SignalAccountConfig>({
+  const merged = resolveMergedAccountConfig<SignalAccountConfig>({
     channelConfig: (accountId === DEFAULT_ACCOUNT_ID ? channelConfig : shared) as
       | SignalAccountConfig
       | undefined,
@@ -69,6 +69,12 @@ function mergeSignalAccountConfig(cfg: OpenClawConfig, accountId: string): Signa
     accountId,
     nestedObjectKeys: ["aliases"],
   });
+  if (accountId === DEFAULT_ACCOUNT_ID && channelConfig?.transport) {
+    // Setup and doctor store the default account transport at the channel root.
+    // A stale nested default copy must not redirect runtime to another daemon.
+    return { ...merged, transport: channelConfig.transport };
+  }
+  return merged;
 }
 
 function resolveSignalManagedNativePort(params: {

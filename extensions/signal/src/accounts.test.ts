@@ -47,6 +47,27 @@ describe("resolveSignalAccount", () => {
     });
   });
 
+  it("keeps the root transport authoritative over accounts.default", () => {
+    const cfg = {
+      channels: {
+        signal: {
+          transport: { kind: "external-native", url: "http://canonical-native:8181" },
+          accounts: {
+            default: {
+              account: "+15555550123",
+              transport: { kind: "container", url: "http://stale-container:8080" },
+            },
+          },
+        },
+      },
+    } as never;
+
+    expect(resolveSignalAccount({ cfg, accountId: "default" }).transport).toEqual({
+      kind: "external-native",
+      baseUrl: "http://canonical-native:8181",
+    });
+  });
+
   it("allocates distinct default ports across managed native accounts", () => {
     const cfg = {
       channels: {

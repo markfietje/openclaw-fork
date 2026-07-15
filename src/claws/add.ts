@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { listAgentIds, resolveAgentWorkspaceDir } from "../agents/agent-scope-config.js";
 import { transformConfigFileWithRetry } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { RuntimeEnv } from "../runtime.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
 import { ClawPackageInstallError, installClawPackages } from "./packages.js";
@@ -101,6 +102,7 @@ export async function applyClawAddPlan(
     persistRecord?: typeof persistClawInstallRecord;
     updateRecord?: typeof updateClawInstallRecordStatus;
     createWorkspaceFiles?: typeof createClawWorkspaceFiles;
+    runtime?: RuntimeEnv;
     installPackages?: typeof installClawPackages;
     nowMs?: number;
   } = {},

@@ -37,6 +37,8 @@ type DetectTransport = (params: {
   account?: string;
 }) => Promise<SignalTransportConfig>;
 
+type ExplicitSignalTransportKind = Exclude<SignalTransportConfig["kind"], "managed-native">;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -223,6 +225,7 @@ function resolveLegacyTransportWithoutDetection(params: {
   entry: Record<string, unknown>;
   parent: Record<string, unknown>;
   apiMode: unknown;
+  ambiguousTransportKind?: ExplicitSignalTransportKind;
 }): SignalTransportConfig | undefined {
   if (isSignalTransportConfig(params.entry.transport)) {
     return params.entry.transport;
@@ -238,7 +241,9 @@ function resolveLegacyTransportWithoutDetection(params: {
       : { kind: "external-native", url: baseUrl };
   }
   if (requiresDetection(params.entry, params.parent, params.apiMode)) {
-    return undefined;
+    return params.ambiguousTransportKind
+      ? { kind: params.ambiguousTransportKind, url: baseUrl }
+      : undefined;
   }
   if (autoStart === false) {
     return { kind: "external-native", url: baseUrl };
@@ -532,6 +537,7 @@ export async function migrateLegacySignalTransportConfig(params: {
 
 export function migrateLegacySignalTransportConfigSync(
   cfg: OpenClawConfig,
+  options?: { ambiguousTransportKind?: ExplicitSignalTransportKind },
 ): ChannelDoctorConfigMutation {
   const signal = cfg.channels?.signal as unknown;
   if (!isRecord(signal)) {
@@ -573,6 +579,9 @@ export function migrateLegacySignalTransportConfigSync(
             entry,
             parent: signal,
             apiMode: signal.apiMode,
+            ...(options?.ambiguousTransportKind
+              ? { ambiguousTransportKind: options.ambiguousTransportKind }
+              : {}),
           }),
     ),
   });

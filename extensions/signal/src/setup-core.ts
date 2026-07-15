@@ -29,6 +29,7 @@ import {
 import { normalizeE164 } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { SignalTransportConfig } from "./account-types.js";
 import { resolveDefaultSignalAccountId, resolveSignalAccount } from "./accounts.js";
+import { migrateLegacySignalTransportConfigSync } from "./config-compat.js";
 import {
   prepareSignalManagedNativeTransport,
   writeSignalAccountTransport,
@@ -354,20 +355,28 @@ export const signalSetupAdapter: ChannelSetupAdapter = {
     await prepareSignalSetupInput({ cfg, accountId, input }),
   applyAccountConfig: (params) => {
     const accountId = normalizeAccountId(params.accountId);
-    const rootTransport = params.cfg.channels?.signal?.transport;
+    // A legacy auto mode was channel-wide, so an explicit protocol choice resolves every
+    // inherited account before the strict writer persists the selected account update.
+    const recoveredCfg = params.input.signalTransport
+      ? migrateLegacySignalTransportConfigSync(params.cfg, {
+          ambiguousTransportKind: params.input.signalTransport,
+        }).config
+      : params.cfg;
+    const rootTransport = recoveredCfg.channels?.signal?.transport;
     const nestedDefaultTransport =
       accountId === DEFAULT_ACCOUNT_ID
-        ? resolveAccountEntry(params.cfg.channels?.signal?.accounts, DEFAULT_ACCOUNT_ID)?.transport
+        ? resolveAccountEntry(recoveredCfg.channels?.signal?.accounts, DEFAULT_ACCOUNT_ID)
+            ?.transport
         : undefined;
     const cfg = nestedDefaultTransport
       ? writeSignalAccountTransport({
-          cfg: params.cfg,
+          cfg: recoveredCfg,
           accountId,
           // The root owns the default account. A nested copy is promoted only when
           // no canonical root exists; otherwise this write merely removes the stale copy.
           transport: rootTransport ?? nestedDefaultTransport,
         })
-      : params.cfg;
+      : recoveredCfg;
     const previousTransport = resolveSignalAccount({
       cfg,
       accountId,

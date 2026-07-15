@@ -172,6 +172,39 @@ describe("signalSetupAdapter", () => {
     expect(next?.channels?.signal).not.toHaveProperty("httpUrl");
   });
 
+  it("atomically recovers every legacy account from an explicit transport selection", () => {
+    const next = signalSetupAdapter.applyAccountConfig?.({
+      cfg: {
+        channels: {
+          signal: {
+            apiMode: "auto",
+            httpUrl: "http://offline:8080",
+            accounts: {
+              work: { account: "+15555550124" },
+              personal: { account: "+15555550125" },
+            },
+          },
+        },
+      } as never,
+      accountId: "work",
+      input: {
+        httpUrl: "http://offline:8080",
+        signalTransport: "container",
+      },
+    });
+
+    expect(next?.channels?.signal).not.toHaveProperty("apiMode");
+    expect(next?.channels?.signal).not.toHaveProperty("httpUrl");
+    expect(next?.channels?.signal?.accounts?.work?.transport).toEqual({
+      kind: "container",
+      url: "http://offline:8080",
+    });
+    expect(next?.channels?.signal?.accounts?.personal?.transport).toEqual({
+      kind: "container",
+      url: "http://offline:8080",
+    });
+  });
+
   it("detects and persists an omitted HTTP transport kind", async () => {
     const input = await prepareSignalSetupInput({
       input: {

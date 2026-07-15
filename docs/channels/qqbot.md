@@ -66,6 +66,7 @@ Minimal config:
       enabled: true,
       appId: "YOUR_APP_ID",
       clientSecret: "YOUR_APP_SECRET",
+      allowFrom: ["openclaw:approval-disabled"],
     },
   },
 }
@@ -103,6 +104,7 @@ File-backed AppSecret:
         provider: "qqbot-client-secret",
         id: "value",
       },
+      allowFrom: ["openclaw:approval-disabled"],
     },
   },
 }
@@ -117,6 +119,7 @@ Env SecretRef AppSecret:
       enabled: true,
       appId: "YOUR_APP_ID",
       clientSecret: { source: "env", provider: "default", id: "QQBOT_CLIENT_SECRET" },
+      allowFrom: ["openclaw:approval-disabled"],
     },
   },
 }
@@ -124,6 +127,9 @@ Env SecretRef AppSecret:
 
 Notes:
 
+- Replace the `openclaw:approval-disabled` sentinel with concrete operator
+  openids to enable native approval actions. Run `/bot-me` in a private chat to
+  see your openid.
 - `openclaw channels add --channel qqbot --token-file ...` sets the AppSecret
   only; `appId` must already be set in config or `QQBOT_APP_ID`.
 - `clientSecret` accepts a plaintext string or a structured SecretRef object.

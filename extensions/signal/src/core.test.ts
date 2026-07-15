@@ -12,11 +12,11 @@ import {
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { listSignalAccountIds } from "./accounts.js";
 import {
   clearSignalApprovalReactionTargetsForTest,
   resolveSignalApprovalReactionTargetWithPersistence,
 } from "./approval-reactions.js";
-import { listSignalAccountIds } from "./accounts.js";
 import { signalPlugin } from "./channel.js";
 import * as clientModule from "./client-adapter.js";
 import {

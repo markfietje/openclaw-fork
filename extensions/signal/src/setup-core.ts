@@ -323,10 +323,7 @@ const signalSetupAdapterBase = createPatchedAccountSetupAdapter({
       if (input.signalTransport && !input.httpUrl) {
         return "Signal --signal-transport requires --http-url.";
       }
-      if (
-        input.httpPort !== undefined &&
-        !isValidSignalManagedNativePort(Number(input.httpPort))
-      ) {
+      if (input.httpPort !== undefined && !isValidSignalManagedNativePort(Number(input.httpPort))) {
         return "Signal --http-port must be an integer between 1 and 65535.";
       }
       if (

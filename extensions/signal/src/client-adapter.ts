@@ -7,11 +7,7 @@
  */
 
 import type { SignalTransportConfig } from "./account-types.js";
-import {
-  containerCheck,
-  containerRpcRequest,
-  streamContainerEvents,
-} from "./client-container.js";
+import { containerCheck, containerRpcRequest, streamContainerEvents } from "./client-container.js";
 import type { SignalRpcOptions } from "./client.js";
 import {
   signalCheck as nativeCheck,

@@ -1,9 +1,9 @@
 // Preinstall Package Manager Warning tests cover preinstall package manager warning script behavior.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createPackageManagerWarningMessage,
   detectLifecyclePackageManager,
@@ -13,8 +13,10 @@ import {
   warnIfNonPnpmLifecycle,
 } from "../../scripts/preinstall-package-manager-warning.mjs";
 import { isSupportedNodeVersion } from "../../src/infra/runtime-guard.js";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const EXPECTED_NODE_ENGINE_RANGE = ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0";
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function requireFirstWarning(warn: ReturnType<typeof vi.fn>): unknown {
   const [call] = warn.mock.calls;
@@ -83,24 +85,20 @@ describe("install runtime enforcement", () => {
   });
 
   it("exits nonzero when the packed entrypoint sees an unsupported runtime", () => {
-    const root = mkdtempSync(join(realpathSync(tmpdir()), "openclaw-preinstall-"));
-    try {
-      const scriptsDir = join(root, "scripts");
-      mkdirSync(scriptsDir);
-      const scriptPath = join(scriptsDir, "preinstall-package-manager-warning.mjs");
-      copyFileSync(
-        new URL("../../scripts/preinstall-package-manager-warning.mjs", import.meta.url),
-        scriptPath,
-      );
-      writeFileSync(join(root, "package.json"), JSON.stringify({ engines: { node: ">=999.0.0" } }));
+    const root = tempDirs.make("openclaw-preinstall-", realpathSync(tmpdir()));
+    const scriptsDir = join(root, "scripts");
+    mkdirSync(scriptsDir);
+    const scriptPath = join(scriptsDir, "preinstall-package-manager-warning.mjs");
+    copyFileSync(
+      new URL("../../scripts/preinstall-package-manager-warning.mjs", import.meta.url),
+      scriptPath,
+    );
+    writeFileSync(join(root, "package.json"), JSON.stringify({ engines: { node: ">=999.0.0" } }));
 
-      const result = spawnSync(process.execPath, [scriptPath], { encoding: "utf8" });
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain("requires Node >=999.0.0");
-      expect(result.stderr).toContain(`detected Node ${process.versions.node}`);
-    } finally {
-      rmSync(root, { force: true, recursive: true });
-    }
+    const result = spawnSync(process.execPath, [scriptPath], { encoding: "utf8" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("requires Node >=999.0.0");
+    expect(result.stderr).toContain(`detected Node ${process.versions.node}`);
   });
 
   it("allows Bun package lifecycle scripts", () => {

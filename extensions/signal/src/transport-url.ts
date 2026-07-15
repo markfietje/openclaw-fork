@@ -4,6 +4,10 @@ export function normalizeSignalTransportUrl(value: string): string {
   if (!trimmed) {
     throw new Error("Signal transport URL is required");
   }
+  const explicitScheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(trimmed)?.[1]?.toLowerCase();
+  if (explicitScheme && explicitScheme !== "http" && explicitScheme !== "https") {
+    throw new Error(`Signal transport URL unsupported protocol: ${explicitScheme}:`);
+  }
   const parsed = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`Signal transport URL unsupported protocol: ${parsed.protocol}`);

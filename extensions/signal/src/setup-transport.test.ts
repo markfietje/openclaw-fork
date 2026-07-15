@@ -178,6 +178,16 @@ describe("probeSignalTransport", () => {
 });
 
 describe("writeSignalAccountTransport", () => {
+  it("rejects explicit non-HTTP endpoint schemes", () => {
+    expect(() =>
+      writeSignalAccountTransport({
+        cfg: {},
+        accountId: "default",
+        transport: { kind: "external-native", url: "ftp://signal.example" },
+      }),
+    ).toThrow("Signal transport URL unsupported protocol: ftp:");
+  });
+
   it("writes the implicit default account without changing named accounts", () => {
     const next = writeSignalAccountTransport({
       cfg: {

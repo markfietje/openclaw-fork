@@ -165,6 +165,7 @@ describe("claws cli", () => {
       agentId: "demo-agent",
       agentRemoved: true,
       workspaceFiles: [],
+      packages: [],
       packageRefsReleased: 1,
     });
   });

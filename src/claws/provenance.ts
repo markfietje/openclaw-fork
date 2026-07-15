@@ -274,6 +274,7 @@ export function updateClawPackageRefStatus(
 
 export function readClawPackageRefs(
   options: OpenClawStateDatabaseOptions & {
+    agentId?: string;
     kind?: ClawPackage["kind"];
     source?: ClawPackage["source"];
     ref?: string;
@@ -285,6 +286,7 @@ export function readClawPackageRefs(
   const conditions: string[] = [];
   const params: Record<string, string> = {};
   for (const [column, value] of [
+    ["agent_id", options.agentId],
     ["package_kind", options.kind],
     ["package_source", options.source],
     ["package_ref", options.ref],

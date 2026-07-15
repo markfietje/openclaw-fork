@@ -115,7 +115,7 @@ export async function applyClawAddPlan(
     runtime?: RuntimeEnv;
     installPackages?: typeof installClawPackages;
     installCronJobs?: typeof installClawCronJobs;
-    cronGateway?: Pick<ClawCronGateway, "add">;
+    cronGateway?: Pick<ClawCronGateway, "add" | "list">;
     nowMs?: number;
   } = {},
 ): Promise<ClawAddResult> {

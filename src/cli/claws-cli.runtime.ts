@@ -29,10 +29,6 @@ import {
 } from "../claws/types.js";
 // Runtime handlers for experimental local Claws commands.
 import { getRuntimeConfig } from "../config/config.js";
-import {
-  loadCronJobsStoreWithConfigJobsReadOnly,
-  resolveCronJobsStorePath,
-} from "../cron/store.js";
 import { defaultRuntime, writeRuntimeJson, type RuntimeEnv } from "../runtime.js";
 import type {
   ClawsAddOptions,
@@ -250,6 +246,8 @@ export async function runClawsAddCommand(
       runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
       cronGateway: {
         add: async (input) => await callGatewayFromCli("cron.add", {}, input),
+        list: async (agentId) =>
+          await callGatewayFromCli("cron.list", {}, { agentId, includeDisabled: true }),
       },
     });
   } catch (error) {
@@ -342,6 +340,12 @@ export async function runClawsRemoveCommand(
   try {
     const result = await applyClawRemovePlan(plan, {
       consentPlanIntegrity: opts.planIntegrity,
+      deleteAgent: async (agentId) => {
+        await callGatewayFromCli("agents.delete", {}, { agentId, deleteFiles: false });
+      },
+      cronGateway: {
+        remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),
+      },
     });
     if (opts.json) {
       writeRuntimeJson(runtime, result);

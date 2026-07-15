@@ -15,6 +15,7 @@ import {
   validateAgentsListParams,
   validateAgentsUpdateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { removeAgentCronJobs } from "../../agents/agent-delete-cron.js";
 import { findOverlappingWorkspaceAgentIds } from "../../agents/agent-delete-safety.js";
 import {
   listAgentIds,
@@ -738,6 +739,8 @@ export const agentsHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "agent delete did not commit"));
       return;
     }
+
+    await removeAgentCronJobs(context.cron, agentId);
 
     // Purge session store entries so orphaned sessions cannot be targeted (#65524).
     await purgeAgentSessionStoreEntries(cfg, agentId);

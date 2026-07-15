@@ -536,6 +536,65 @@
           "envVars": ["QQBOT_APP_ID", "QQBOT_CLIENT_SECRET"],
           "systemImage": "bubble.left.and.bubble.right"
         },
+        "channelSecrets": {
+          "fields": [
+            {
+              "field": "clientSecret",
+              "activationField": "appId",
+              "activationEnv": "QQBOT_APP_ID"
+            }
+          ]
+        },
+        "channelHostConfig": {
+          "schemaAllOf": [
+            {
+              "not": { "required": ["defaultAccount"] },
+              "properties": {
+                "allowFrom": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "allOf": [
+                      { "not": { "const": "*" } },
+                      {
+                        "anyOf": [
+                          { "const": "openclaw:approval-disabled" },
+                          { "type": "string", "pattern": "^[^a-z]*$" }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "accounts": {
+                  "type": "object",
+                  "not": { "required": ["default"] },
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "allowFrom": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "allOf": [
+                            { "not": { "const": "*" } },
+                            {
+                              "anyOf": [
+                                { "const": "openclaw:approval-disabled" },
+                                { "type": "string", "pattern": "^[^a-z]*$" }
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    },
+                    "required": ["allowFrom"]
+                  }
+                }
+              },
+              "required": ["allowFrom"]
+            }
+          ]
+        },
         "channelConfigs": {
           "qqbot": {
             "label": "QQ Bot",

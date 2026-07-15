@@ -6,11 +6,13 @@ import { transformConfigFileWithRetry } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveUserPath } from "../utils.js";
+import { ClawPackageInstallError, installClawPackages } from "./packages.js";
 import {
   persistClawInstallRecord,
   updateClawInstallRecordStatus,
   type PersistedClawInstall,
 } from "./provenance.js";
+import type { PersistedClawPackageRef } from "./provenance.js";
 import { CLAW_OUTPUT_STABILITY, type ClawAddPlan } from "./types.js";
 import {
   ClawWorkspaceWriteError,
@@ -44,6 +46,7 @@ type ClawAddResult = {
   workspaceCreated: boolean;
   configCommitted: boolean;
   workspaceFiles: PersistedClawWorkspaceFile[];
+  packages: PersistedClawPackageRef[];
   installRecord?: PersistedClawInstall;
   error?: {
     code: string;
@@ -54,7 +57,7 @@ type ClawAddResult = {
 
 function hasUnsupportedMutationActions(plan: ClawAddPlan): boolean {
   return plan.actions.some(
-    (action) => !["agent", "workspace", "workspaceFile"].includes(action.kind),
+    (action) => !["agent", "workspace", "workspaceFile", "package"].includes(action.kind),
   );
 }
 
@@ -66,6 +69,7 @@ export async function applyClawAddPlan(
     persistRecord?: typeof persistClawInstallRecord;
     updateRecord?: typeof updateClawInstallRecordStatus;
     createWorkspaceFiles?: typeof createClawWorkspaceFiles;
+    installPackages?: typeof installClawPackages;
     nowMs?: number;
   } = {},
 ): Promise<ClawAddResult> {
@@ -179,6 +183,7 @@ export async function applyClawAddPlan(
       workspaceCreated: true,
       configCommitted: true,
       workspaceFiles: workspaceError.createdFiles,
+      packages: [],
       installRecord: {
         ...installRecord,
         status: "partial",
@@ -193,6 +198,47 @@ export async function applyClawAddPlan(
   }
 
   try {
+    const installPackages = options.installPackages ?? installClawPackages;
+    let packages: PersistedClawPackageRef[] = [];
+    try {
+      packages = await installPackages(plan, options);
+    } catch (error) {
+      const packageError =
+        error instanceof ClawPackageInstallError
+          ? error
+          : new ClawPackageInstallError(
+              "package_install_failed",
+              error instanceof Error ? error.message : String(error),
+              packages,
+            );
+      (options.updateRecord ?? updateClawInstallRecordStatus)(
+        plan.agent.finalId,
+        "partial",
+        options,
+      );
+      return {
+        schemaVersion: CLAW_ADD_RESULT_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        dryRun: false,
+        mutationAllowed: true,
+        status: "partial",
+        claw: plan.claw,
+        agent: plan.agent,
+        workspaceCreated: true,
+        configCommitted: true,
+        workspaceFiles,
+        packages: packageError.installedPackages,
+        installRecord: {
+          ...installRecord,
+          status: "partial",
+          updatedAtMs: options.nowMs ?? Date.now(),
+        },
+        error: {
+          code: packageError.code,
+          message: packageError.message,
+        },
+      };
+    }
     (options.updateRecord ?? updateClawInstallRecordStatus)(
       plan.agent.finalId,
       "complete",
@@ -209,6 +255,7 @@ export async function applyClawAddPlan(
       agent: plan.agent,
       workspaceCreated: true,
       configCommitted: true,
+      packages,
       workspaceFiles,
       installRecord: {
         ...installRecord,
@@ -227,6 +274,7 @@ export async function applyClawAddPlan(
       claw: plan.claw,
       agent: plan.agent,
       workspaceCreated: true,
+      packages: [],
       configCommitted: true,
       workspaceFiles,
       error: { code: "provenance_failed", message: (error as Error).message },

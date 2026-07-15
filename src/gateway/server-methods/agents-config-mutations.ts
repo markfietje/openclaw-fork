@@ -9,6 +9,7 @@ import {
 } from "../../commands/agents.config.js";
 import { mutateConfigFileWithRetry } from "../../config/config.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions.js";
+import type { AgentConfig } from "../../config/types.agents.js";
 import type { IdentityConfig } from "../../config/types.base.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
@@ -94,7 +95,10 @@ export async function updateAgentConfigEntry(params: {
 }
 
 /** Removes an agent entry and returns filesystem roots the caller should clean up. */
-export async function deleteAgentConfigEntry(params: { agentId: string }): Promise<{
+export async function deleteAgentConfigEntry(params: {
+  agentId: string;
+  validate?: (agent: AgentConfig) => void;
+}): Promise<{
   nextConfig: OpenClawConfig;
   result: AgentDeleteMutationResult | undefined;
 }> {
@@ -104,6 +108,8 @@ export async function deleteAgentConfigEntry(params: { agentId: string }): Promi
       if (!isConfiguredAgent(draft, params.agentId)) {
         throw new AgentConfigPreconditionError("not-found", params.agentId);
       }
+      const agent = listAgentEntries(draft).find((candidate) => candidate.id === params.agentId)!;
+      params.validate?.(agent);
       const workspaceDir = resolveAgentWorkspaceDir(draft, params.agentId);
       const agentDir = resolveAgentDir(draft, params.agentId);
       const sessionsDir = resolveSessionTranscriptsDirForAgent(params.agentId);

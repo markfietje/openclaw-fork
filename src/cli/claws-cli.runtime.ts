@@ -310,6 +310,11 @@ export async function runClawsRemoveCommand(
     } else {
       logExperimentalWarning(runtime);
       runtime.log(`Remove actions: ${plan.actions.length}`);
+      for (const action of plan.actions.filter((candidate) => candidate.kind === "packageRef")) {
+        runtime.log(
+          `  Package ${action.target}: ${action.action}${action.reason ? ` (${action.reason})` : ""}`,
+        );
+      }
       if (plan.blockers.length > 0) {
         runtime.error(plan.blockers.map((blocker) => blocker.message).join("\n"));
       }
@@ -327,6 +332,11 @@ export async function runClawsRemoveCommand(
       logExperimentalWarning(runtime);
       runtime.log(`Removed agent: ${result.agentId}`);
       runtime.log(`Status: ${result.status}`);
+      for (const pkg of result.packages) {
+        runtime.log(
+          `  Package ${pkg.kind}:${pkg.ref}@${pkg.version}: ${pkg.action}${pkg.reason ? ` (${pkg.reason})` : ""}`,
+        );
+      }
       runtime.log(`Package references released: ${result.packageRefsReleased}`);
     }
     if (result.status !== "complete") {

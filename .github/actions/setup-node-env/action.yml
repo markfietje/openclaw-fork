@@ -82,6 +82,10 @@ runs:
           echo "PNPM_CONFIG_STORE_DIR=/var/tmp/openclaw-node-deps/store"
           echo "PNPM_CONFIG_MODULES_DIR=/var/tmp/openclaw-node-deps/node_modules"
           echo "PNPM_CONFIG_VIRTUAL_STORE_DIR=/var/tmp/openclaw-node-deps/virtual-store"
+          # Later steps run `pnpm exec` without the relocation flags; without
+          # this, pnpm's verify-deps-before-run sees the relocated layout as
+          # drift and re-installs everything mid-step (hydrate does the same).
+          echo "npm_config_verify_deps_before_run=false"
           # The cold install (once per lockfile) links ~1200 packages into the
           # relocated modules dir; unthrottled linking EMFILEs pnpm there
           # (crabbox-hydrate throttles to 1 for the same reason). Warm jobs do

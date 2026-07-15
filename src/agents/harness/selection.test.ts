@@ -423,7 +423,9 @@ describe("runAgentHarnessAttempt", () => {
       expect(receivedPrivateAuthority).toBe(false);
       expect(hostScopeActive).toBe(true);
       expect(toolNames).toEqual(["openclaw"]);
-      expect(createOpenClawCodingTools().some((tool) => tool.name === "openclaw")).toBe(false);
+      // The normal read-only OpenClaw tool remains available; only the
+      // host-injected system-agent authority must expire with the run.
+      expect(createOpenClawCodingTools().some((tool) => tool.name === "openclaw")).toBe(true);
       expect(isHostScopedAgentToolActive("openclaw")).toBe(false);
     },
   );
@@ -549,7 +551,9 @@ describe("runAgentHarnessAttempt", () => {
 
     expect(result.sessionIdUsed).toBe("openclaw");
     expect(toolNames).toEqual(["openclaw"]);
-    expect(createOpenClawCodingTools().some((tool) => tool.name === "openclaw")).toBe(false);
+    // The normal read-only OpenClaw tool remains available; only the
+    // host-injected system-agent authority must expire with the run.
+    expect(createOpenClawCodingTools().some((tool) => tool.name === "openclaw")).toBe(true);
     expect(isHostScopedAgentToolActive("openclaw")).toBe(false);
   });
 

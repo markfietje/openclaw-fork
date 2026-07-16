@@ -5,7 +5,7 @@ export const CLAW_ADD_PLAN_SCHEMA_VERSION = "openclaw.clawAddPlan.v1" as const;
 export const CLAW_INSPECT_RESULT_SCHEMA_VERSION = "openclaw.clawInspect.v1" as const;
 export const CLAW_OUTPUT_STABILITY = "experimental" as const;
 
-export type ClawDiagnosticLevel = "error" | "warning";
+type ClawDiagnosticLevel = "error" | "warning";
 
 export type ClawDiagnostic = {
   level: ClawDiagnosticLevel;
@@ -15,7 +15,7 @@ export type ClawDiagnostic = {
   message: string;
 };
 
-export type ClawAgent = {
+type ClawAgent = {
   id: string;
   name?: string;
   description?: string;
@@ -64,19 +64,19 @@ export const CLAW_BOOTSTRAP_FILE_NAMES = [
   "HEARTBEAT.md",
 ] as const;
 
-export type ClawBootstrapFileName = (typeof CLAW_BOOTSTRAP_FILE_NAMES)[number];
+type ClawBootstrapFileName = (typeof CLAW_BOOTSTRAP_FILE_NAMES)[number];
 
-export type ClawWorkspaceFile = {
+type ClawWorkspaceFile = {
   source: string;
   path: string;
 };
 
-export type ClawWorkspace = {
+type ClawWorkspace = {
   bootstrapFiles: Partial<Record<ClawBootstrapFileName, { source: string }>>;
   files: ClawWorkspaceFile[];
 };
 
-export type ClawPackage = {
+type ClawPackage = {
   kind: "skill" | "plugin";
   source: "clawhub";
   ref: string;
@@ -92,22 +92,22 @@ type ClawMcpServerCommon = {
   connectTimeout?: number;
 };
 
-export type ClawStdioMcpServer = ClawMcpServerCommon & {
+type ClawStdioMcpServer = ClawMcpServerCommon & {
   command: string;
   transport?: "stdio";
   args?: string[];
   env?: Record<string, string>;
 };
 
-export type ClawRemoteMcpServer = ClawMcpServerCommon & {
+type ClawRemoteMcpServer = ClawMcpServerCommon & {
   url: string;
   transport: "sse" | "streamable-http";
   auth?: "oauth";
 };
 
-export type ClawMcpServer = ClawStdioMcpServer | ClawRemoteMcpServer;
+type ClawMcpServer = ClawStdioMcpServer | ClawRemoteMcpServer;
 
-export type ClawCronJob = {
+type ClawCronJob = {
   id: string;
   name?: string;
   schedule: {

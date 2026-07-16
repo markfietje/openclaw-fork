@@ -2,9 +2,9 @@
 import {
   AVATAR_MAX_BYTES,
   AVATAR_MAX_DATA_URL_CHARS,
-  isAvatarImageDataUrl,
-  isSupportedLocalAvatarExtension,
-} from "../shared/avatar-policy.js";
+  isRenderableAvatarImageDataUrl,
+} from "../shared/avatar-limits.js";
+import { isSupportedLocalAvatarExtension } from "../shared/avatar-policy.js";
 
 const EXACT_VERSION_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
@@ -59,7 +59,7 @@ export function conflictsWithClawPath(targets: Set<string>, candidate: string): 
 }
 
 export function isPortableClawAvatar(value: string): boolean {
-  if (isAvatarImageDataUrl(value)) {
+  if (isRenderableAvatarImageDataUrl(value)) {
     if (value.length > AVATAR_MAX_DATA_URL_CHARS) {
       return false;
     }
@@ -111,6 +111,9 @@ function packageManagerArtifact(command: string, args: string[]): string | undef
   }
   for (let index = start; index < args.length; index += 1) {
     const value = args[index];
+    if (!value) {
+      continue;
+    }
     if (value === "-p" || value === "--package") {
       return args[index + 1];
     }

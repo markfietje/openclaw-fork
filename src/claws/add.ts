@@ -37,6 +37,7 @@ export type ClawAddResult = {
   stability: typeof CLAW_OUTPUT_STABILITY;
   dryRun: false;
   mutationAllowed: true;
+  planIntegrity: string;
   status: "complete" | "partial";
   claw: ClawAddPlan["claw"];
   agent: ClawAddPlan["agent"];
@@ -60,6 +61,7 @@ function hasUnsupportedMutationActions(plan: ClawAddPlan): boolean {
 export async function applyClawAddPlan(
   plan: ClawAddPlan,
   options: OpenClawStateDatabaseOptions & {
+    consentPlanIntegrity?: string;
     commitConfig?: ConfigCommit;
     persistRecord?: typeof persistClawInstallRecord;
     updateRecord?: typeof updateClawInstallRecordStatus;
@@ -76,6 +78,12 @@ export async function applyClawAddPlan(
       "This build can add agent settings and workspace files; declared packages, MCP servers, or cron jobs require later lifecycle slices.",
     );
   }
+  if (options.consentPlanIntegrity !== plan.planIntegrity) {
+    throw new ClawAddMutationError(
+      "plan_integrity_mismatch",
+      "Consent does not match the current Claw add plan; run add --dry-run again.",
+    );
+  }
 
   const persistRecord = options.persistRecord ?? persistClawInstallRecord;
   let installRecord: PersistedClawInstall;
@@ -90,6 +98,7 @@ export async function applyClawAddPlan(
   try {
     await mkdir(workspace);
   } catch (error) {
+    (options.updateRecord ?? updateClawInstallRecordStatus)(plan.agent.finalId, "partial", options);
     throw new ClawAddMutationError(
       "workspace_collision",
       `Could not create new workspace ${JSON.stringify(workspace)}: ${(error as Error).message}`,
@@ -192,6 +201,7 @@ export async function applyClawAddPlan(
       stability: CLAW_OUTPUT_STABILITY,
       dryRun: false,
       mutationAllowed: true,
+      planIntegrity: plan.planIntegrity,
       status: "complete",
       claw: plan.claw,
       agent: plan.agent,
@@ -210,6 +220,7 @@ export async function applyClawAddPlan(
       stability: CLAW_OUTPUT_STABILITY,
       dryRun: false,
       mutationAllowed: true,
+      planIntegrity: plan.planIntegrity,
       status: "partial",
       claw: plan.claw,
       agent: plan.agent,

@@ -75,6 +75,12 @@ flow:
     - name: builds the medium game artifact
       actions:
         - call: reset
+        - call: readSessionTranscriptSummary
+          saveAs: transcriptBefore
+          args:
+            - ref: env
+            - agent:qa:medium-game-codex
+            - allowEmpty: true
         - call: runAgentPrompt
           saveAs: turn
           args:
@@ -101,9 +107,11 @@ flow:
           args:
             - ref: env
             - agent:qa:medium-game-codex
+            - afterEventCursor:
+                expr: transcriptBefore.eventCursor
         - set: assistantMirror
           value:
-            expr: "transcript.assistantMirrors?.find((mirror) => mirror.identity.endsWith(':assistant') && mirror.text === outbound.text)"
+            expr: "transcript.assistantMirrors?.findLast((mirror) => mirror.identity.endsWith(':assistant') && mirror.text === outbound.text)"
         - assert:
             expr: "assistantMirror?.identity"
             message: missing Codex App Server assistant mirror for visible reply

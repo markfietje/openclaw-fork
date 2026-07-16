@@ -73,6 +73,12 @@ flow:
     - name: builds the medium game artifact
       actions:
         - call: reset
+        - call: readSessionTranscriptSummary
+          saveAs: transcriptBefore
+          args:
+            - ref: env
+            - agent:qa:medium-game-openclaw
+            - allowEmpty: true
         - call: runAgentPrompt
           saveAs: turn
           args:
@@ -99,6 +105,8 @@ flow:
           args:
             - ref: env
             - agent:qa:medium-game-openclaw
+            - afterEventCursor:
+                expr: transcriptBefore.eventCursor
         - assert:
             expr: "(transcript.successfulToolCallCounts.update_plan ?? 0) > 0"
             message: missing OpenClaw update_plan signal

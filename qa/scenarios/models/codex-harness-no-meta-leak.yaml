@@ -72,6 +72,12 @@ flow:
     - name: keeps codex coordination chatter out of the visible reply
       actions:
         - call: reset
+        - call: readSessionTranscriptSummary
+          saveAs: transcriptBefore
+          args:
+            - ref: env
+            - agent:qa:codex-meta-leak
+            - allowEmpty: true
         - call: runAgentPrompt
           saveAs: turn
           args:
@@ -98,9 +104,11 @@ flow:
           args:
             - ref: env
             - agent:qa:codex-meta-leak
+            - afterEventCursor:
+                expr: transcriptBefore.eventCursor
         - set: assistantMirror
           value:
-            expr: "transcript.assistantMirrors?.find((mirror) => mirror.identity.endsWith(':assistant') && mirror.text === outbound.text)"
+            expr: "transcript.assistantMirrors?.findLast((mirror) => mirror.identity.endsWith(':assistant') && mirror.text === outbound.text)"
         - assert:
             expr: "assistantMirror?.identity"
             message: missing Codex App Server assistant mirror identity

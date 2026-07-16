@@ -48,6 +48,7 @@ const SESSION_STORE_FTS_SETTLE_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] a
 type QaSessionTranscriptSummary = {
   assistantMirrors?: Array<{ identity: string; text: string }>;
   assistantToolCallCounts: Record<string, number>;
+  eventCursor: number;
   successfulToolCallCounts: Record<string, number>;
   finalText: string;
   hasDirectReplySelfMessage: boolean;
@@ -56,6 +57,11 @@ type QaSessionTranscriptSummary = {
   lastAssistantStopReason?: string;
   lastAssistantToolNames?: string[];
   lastMessageRole?: string;
+};
+
+type QaSessionTranscriptSummaryOptions = {
+  afterEventCursor?: number;
+  allowEmpty?: boolean;
 };
 
 function isSessionStoreLockTimeout(error: unknown) {
@@ -106,6 +112,7 @@ function readAssistantToolCalls(message: Record<string, unknown>): Array<{
 function summarizeSessionTranscriptEvents(
   events: unknown[],
   sessionKey: string,
+  eventCursor = events.length,
 ): QaSessionTranscriptSummary {
   const scanner = createDirectReplyTranscriptSentinelScanner();
   const assistantMirrors: Array<{ identity: string; text: string }> = [];
@@ -179,6 +186,7 @@ function summarizeSessionTranscriptEvents(
   return {
     ...(assistantMirrors.length > 0 ? { assistantMirrors } : {}),
     assistantToolCallCounts,
+    eventCursor,
     successfulToolCallCounts,
     finalText,
     hasDirectReplySelfMessage: scanner.findings().length > 0,
@@ -187,6 +195,16 @@ function summarizeSessionTranscriptEvents(
     ...(lastAssistantStopReason ? { lastAssistantStopReason } : {}),
     ...(lastAssistantToolNames.length > 0 ? { lastAssistantToolNames } : {}),
     ...(lastMessageRole ? { lastMessageRole } : {}),
+  };
+}
+
+function emptySessionTranscriptSummary(eventCursor: number): QaSessionTranscriptSummary {
+  return {
+    assistantToolCallCounts: {},
+    eventCursor,
+    successfulToolCallCounts: {},
+    finalText: "",
+    hasDirectReplySelfMessage: false,
   };
 }
 
@@ -364,6 +382,7 @@ async function readRawQaSessionStore(
 async function readSessionTranscriptSummary(
   env: Pick<QaSuiteRuntimeEnv, "gateway">,
   sessionKey: string,
+  options: QaSessionTranscriptSummaryOptions = {},
 ): Promise<QaSessionTranscriptSummary> {
   const normalizedSessionKey = sessionKey.trim();
   if (!normalizedSessionKey) {
@@ -373,17 +392,32 @@ async function readSessionTranscriptSummary(
   const entry = store[normalizedSessionKey];
   const sessionId = readNonEmptyString(entry?.sessionId);
   if (!sessionId) {
+    if (options.allowEmpty === true) {
+      return emptySessionTranscriptSummary(0);
+    }
     throw new Error(`session transcript entry not found for ${normalizedSessionKey}`);
   }
-  return summarizeSessionTranscriptEvents(
-    loadTranscriptEventsSync({
-      agentId: "qa",
-      env: qaSessionRuntimeEnv(env.gateway.tempRoot),
-      sessionId,
-      sessionKey: normalizedSessionKey,
-    }),
-    normalizedSessionKey,
-  );
+  const events = loadTranscriptEventsSync({
+    agentId: "qa",
+    env: qaSessionRuntimeEnv(env.gateway.tempRoot),
+    sessionId,
+    sessionKey: normalizedSessionKey,
+  });
+  const afterEventCursor = options.afterEventCursor ?? 0;
+  if (
+    !Number.isSafeInteger(afterEventCursor) ||
+    afterEventCursor < 0 ||
+    afterEventCursor > events.length
+  ) {
+    throw new Error(
+      `invalid session transcript event cursor ${afterEventCursor} for ${normalizedSessionKey} with ${events.length} event(s)`,
+    );
+  }
+  const selectedEvents = events.slice(afterEventCursor);
+  if (selectedEvents.length === 0 && options.allowEmpty === true) {
+    return emptySessionTranscriptSummary(events.length);
+  }
+  return summarizeSessionTranscriptEvents(selectedEvents, normalizedSessionKey, events.length);
 }
 
 export {

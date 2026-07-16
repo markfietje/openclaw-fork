@@ -137,17 +137,6 @@ describe("qa scenario catalog", () => {
   it("loads scenario-specific execution config from per-scenario YAML", () => {
     const discovery = readQaScenarioById("source-docs-discovery-report");
     const discoveryConfig = readQaScenarioExecutionConfig("source-docs-discovery-report");
-    const codexLeak = requireFlowScenario(readQaScenarioById("codex-harness-no-meta-leak"));
-    const codexLeakConfig = readQaScenarioExecutionConfig("codex-harness-no-meta-leak") as
-      | {
-          harnessRuntime?: string;
-          expectedReply?: string;
-          internalMarker?: string;
-          forbiddenReplySubstrings?: string[];
-          requiredProviderMode?: string;
-          requiredProvider?: string;
-        }
-      | undefined;
     const fallbackConfig = readQaScenarioExecutionConfig("memory-failure-fallback");
     const bundledSkill = readQaScenarioById("bundled-plugin-skill-runtime");
     const bundledSkillConfig = readQaScenarioExecutionConfig("bundled-plugin-skill-runtime") as
@@ -161,25 +150,6 @@ describe("qa scenario catalog", () => {
     expect((discoveryConfig?.requiredFiles as string[] | undefined)?.[0]).toBe(
       "repo/qa/scenarios/index.yaml",
     );
-    expect(codexLeak.title).toBe("Codex harness no meta leak");
-    expect(codexLeak.plugins).toEqual(["codex"]);
-    expect(codexLeakConfig?.requiredProviderMode).toBe("live-frontier");
-    expect(codexLeakConfig?.requiredProvider).toBe("openai");
-    expect(codexLeakConfig?.harnessRuntime).toBe("codex");
-    expect(codexLeak.execution.runtime).toBe("codex");
-    expect(JSON.stringify(codexLeak.execution.flow)).toContain("OPENCLAW_QA_FORCE_RUNTIME");
-    expect(JSON.stringify(codexLeak.execution.flow)).not.toContain("agentRuntime");
-    expect(JSON.stringify(codexLeak.execution.flow)).not.toContain("embeddedHarness");
-    expect(codexLeakConfig?.expectedReply).toBe("QA_LEAK_OK");
-    expect(codexLeakConfig?.internalMarker).toBe("QA_INTERNAL_PLAN_DO_NOT_SEND");
-    expect(codexLeakConfig?.forbiddenReplySubstrings).toContain("checking thread context");
-    expect(JSON.stringify(codexLeak.execution.flow)).toContain("assistantMirrors");
-    expect(JSON.stringify(codexLeak.execution.flow)).toContain("internalMirrors");
-    expect(JSON.stringify(codexLeak.execution.flow)).toContain("mirror.text === outbound.text");
-    expect(JSON.stringify(codexLeak.execution.flow)).toContain(
-      "mirror.identity.startsWith(appServerTurn + ':')",
-    );
-    expect(JSON.stringify(codexLeak.execution.flow)).not.toContain("env.providerMode");
     expect(fallbackConfig?.gracefulFallbackAny as string[] | undefined).toContain(
       "will not reveal",
     );
@@ -203,42 +173,6 @@ describe("qa scenario catalog", () => {
     expect(staleLinks.execution.isolationReason).toContain("gateway session");
     expect(kitchenSink.execution.suiteIsolation).toBe("isolated");
     expect(kitchenSink.execution.isolationReason).toContain("plugin/channel/tool config");
-  });
-
-  it("requires runtime-specific planning evidence from both medium game scenarios", () => {
-    const codex = requireFlowScenario(readQaScenarioById("medium-game-plan-codex-harness"));
-    const openclaw = requireFlowScenario(readQaScenarioById("medium-game-plan-openclaw-harness"));
-    const codexConfig = codex.execution.config as
-      | { harnessRuntime?: string; requiredProviderMode?: string; requiredProvider?: string }
-      | undefined;
-    const openclawConfig = openclaw.execution.config as
-      | { harnessRuntime?: string; requiredProviderMode?: string; requiredProvider?: string }
-      | undefined;
-
-    expect(codexConfig).toMatchObject({
-      harnessRuntime: "codex",
-      requiredProviderMode: "live-frontier",
-      requiredProvider: "openai",
-    });
-    expect(codex.plugins).toEqual(["codex"]);
-    expect(codex.execution.runtime).toBe("codex");
-    expect(openclawConfig).toMatchObject({
-      harnessRuntime: "openclaw",
-      requiredProviderMode: "live-frontier",
-      requiredProvider: "openai",
-    });
-    expect(openclaw.execution.runtime).toBe("openclaw");
-    expect(JSON.stringify(codex.execution.flow)).toContain("assistantMirrors");
-    expect(JSON.stringify(codex.execution.flow)).toContain("appServerTurn");
-    expect(JSON.stringify(codex.execution.flow)).toContain("mirror.text === outbound.text");
-    expect(JSON.stringify(codex.execution.flow)).toContain(
-      "mirror.identity === appServerTurn + ':plan'",
-    );
-    expect(JSON.stringify(openclaw.execution.flow)).toContain(
-      "successfulToolCallCounts.update_plan",
-    );
-    expect(JSON.stringify(codex.execution.flow)).not.toContain("env.providerMode");
-    expect(JSON.stringify(openclaw.execution.flow)).not.toContain("env.providerMode");
   });
 
   it("requires explicit suite isolation for gateway state restart scenarios", () => {

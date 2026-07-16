@@ -284,6 +284,10 @@ function createLegacyStateMigrationDetectionResult(params?: {
       sourcePath: "/tmp/state/commitments/commitments.json",
       hasLegacy: false,
     },
+    auditLogs: {
+      sources: [],
+      hasLegacy: false,
+    },
     managedOutgoingImages: {
       sourceDir: "/tmp/state/media/outgoing/records",
       hasLegacy: false,

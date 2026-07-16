@@ -146,6 +146,9 @@ export type MemoryPluginPublicArtifact = {
   absolutePath: string;
   agentIds: string[];
   contentType: MemoryPluginPublicArtifactContentType;
+  content?: string;
+  updatedAtMs?: number;
+  sizeBytes?: number;
 };
 
 export type MemoryPluginPublicArtifactsProvider = {

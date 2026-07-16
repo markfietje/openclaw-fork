@@ -526,6 +526,7 @@ export async function runClawsUpdateCommand(
         config,
         sourceMcpServers: listedMcpServers.mcpServers,
         consentPlanIntegrity: opts.planIntegrity,
+        packagePreflight: preflightClawPackage,
         cronGateway: {
           add: async (input) => await callGatewayFromCli("cron.add", {}, input),
           remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),

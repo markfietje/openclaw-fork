@@ -104,6 +104,7 @@ export async function installClawPackages(
     deps?: PackageInstallerDeps;
     runtime?: RuntimeEnv;
     nowMs?: number;
+    onExternalMutation?: (pkg: ClawPackage) => void;
   } = {},
 ): Promise<PersistedClawPackageRef[]> {
   const deps = options.deps ?? {};
@@ -173,6 +174,7 @@ export async function installClawPackages(
       installedPackages.push(packageRef);
 
       if (pkg.kind === "skill") {
+        options.onExternalMutation?.(pkg);
         const result = await installSkill({
           workspaceDir: plan.agent.workspace,
           slug: pkg.ref,
@@ -187,6 +189,7 @@ export async function installClawPackages(
           throw new Error(result.error);
         }
       } else {
+        options.onExternalMutation?.(pkg);
         await installPlugin({
           raw: `clawhub:${pkg.ref}@${pkg.version}`,
           opts: {},

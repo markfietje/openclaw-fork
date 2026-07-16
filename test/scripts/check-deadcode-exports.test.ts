@@ -85,7 +85,7 @@ describe("check-deadcode-exports", () => {
     ["extensions/discord", ["configured-state.ts!", "timeouts.ts!"]],
     ["extensions/qa-lab", ["cli.ts!", "model-selection.ts!"]],
   ] as const)("models the %s facades loaded by basename", (workspace, entries) => {
-    expect(knipConfig.workspaces[workspace].entry).toEqual(expect.arrayContaining(entries));
+    expect(knipConfig.workspaces[workspace].entry).toEqual(expect.arrayContaining([...entries]));
   });
 
   it.each([

@@ -107,6 +107,10 @@ export function inspectSlackAccount(params: {
     Boolean(normalizeOptionalString(merged.relay?.url)) &&
     hasConfiguredSecretInput(merged.relay?.authToken) &&
     Boolean(normalizeOptionalString(merged.relay?.gatewayId));
+  const identityConfigured =
+    merged.identityMode === "user"
+      ? merged.userTokenReadOnly === false && (configUser.status !== "missing" || Boolean(envUser))
+      : configBot.status !== "missing" || Boolean(envBot);
   const botTokenSource: SlackTokenSource = configBot.token
     ? "config"
     : configBot.status === "configured_unavailable"
@@ -178,12 +182,12 @@ export function inspectSlackAccount(params: {
           ? "available"
           : "missing",
     configured: isHttpMode
-      ? (configBot.status !== "missing" || Boolean(envBot)) &&
-        configSigningSecret.status !== "missing"
+      ? identityConfigured &&
+        configSigningSecret.status !== "missing" &&
+        (merged.identityMode !== "user" || configApp.status !== "missing" || Boolean(envApp))
       : isRelayMode
-        ? (configBot.status !== "missing" || Boolean(envBot)) && relayConfigured
-        : (configBot.status !== "missing" || Boolean(envBot)) &&
-          (configApp.status !== "missing" || Boolean(envApp)),
+        ? merged.identityMode !== "user" && identityConfigured && relayConfigured
+        : identityConfigured && (configApp.status !== "missing" || Boolean(envApp)),
     config: merged,
     groupPolicy: merged.groupPolicy,
     textChunkLimit: merged.textChunkLimit,

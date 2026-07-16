@@ -48,6 +48,11 @@ export function resolveSlackOperationToken(
 ): string | undefined {
   const userToken = normalizeOptionalString(account.userToken);
   const botToken = normalizeOptionalString(account.botToken);
+  if (account.config.identityMode === "user") {
+    return operation === "write" && account.config.userTokenReadOnly !== false
+      ? undefined
+      : userToken;
+  }
   if (operation === "read") {
     return userToken ?? botToken;
   }
@@ -57,10 +62,14 @@ export function resolveSlackOperationToken(
 const { listAccountIds, resolveDefaultAccountId } = createAccountListHelpers("slack", {
   hasImplicitDefaultAccount: (cfg) => {
     const slack = cfg.channels?.slack;
-    const hasBotToken =
-      hasConfiguredAccountValue(slack?.botToken) ||
-      hasConfiguredAccountValue(process.env.SLACK_BOT_TOKEN);
-    if (!hasBotToken) {
+    const hasIdentityToken =
+      slack?.identityMode === "user"
+        ? slack.userTokenReadOnly === false &&
+          (hasConfiguredAccountValue(slack.userToken) ||
+            hasConfiguredAccountValue(process.env.SLACK_USER_TOKEN))
+        : hasConfiguredAccountValue(slack?.botToken) ||
+          hasConfiguredAccountValue(process.env.SLACK_BOT_TOKEN);
+    if (!hasIdentityToken) {
       return false;
     }
     if (slack?.mode === "http") {
@@ -226,7 +235,7 @@ export function resolveSlackAccount(params: {
   const mode = merged.mode ?? "socket";
   const baseAllowEnv = accountId === DEFAULT_ACCOUNT_ID;
   const botActive = enabled;
-  const appActive = enabled && mode === "socket";
+  const appActive = enabled && (mode === "socket" || merged.identityMode === "user");
   const userActive = enabled;
   const envBot =
     botActive && baseAllowEnv ? resolveSlackBotToken(process.env.SLACK_BOT_TOKEN) : undefined;

@@ -80,6 +80,57 @@ describe("probeSlack", () => {
     );
   });
 
+  it("accepts a user-token auth identity when user identity mode is explicit", async () => {
+    authTestMock.mockResolvedValue({
+      ok: true,
+      user_id: "UUSER",
+      user: "agent-user",
+      team_id: "T123",
+      team: "Workspace",
+    });
+
+    const result = await probeSlack("xoxp-user-token", 2500, {
+      accountId: "work",
+      identityMode: "user",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      bot: { id: "UUSER", name: "agent-user" },
+      team: { id: "T123", name: "Workspace" },
+    });
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("rejects a bot-token auth identity when user identity mode is explicit", async () => {
+    authTestMock.mockResolvedValue({
+      ok: true,
+      user_id: "UBOT",
+      bot_id: "BBOT",
+      team_id: "T123",
+    });
+
+    await expect(
+      probeSlack("xoxb-test", 2500, { accountId: "work", identityMode: "user" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: 200,
+      error: "auth.test returned bot_id for a user identity token",
+    });
+  });
+
+  it("rejects a user identity without auth.test user_id", async () => {
+    authTestMock.mockResolvedValue({ ok: true, team_id: "T123" });
+
+    await expect(
+      probeSlack("xoxp-test", 2500, { accountId: "work", identityMode: "user" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: 200,
+      error: "auth.test returned no user_id",
+    });
+  });
+
   it("keeps optional auth metadata fields undefined when Slack omits them", async () => {
     vi.spyOn(Date, "now").mockReturnValueOnce(200).mockReturnValueOnce(235);
     authTestMock.mockResolvedValue({ ok: true });

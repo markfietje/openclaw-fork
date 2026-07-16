@@ -70,7 +70,11 @@ function isSlackApprovalTransportEnabled(params: {
   accountId?: string | null;
 }): boolean {
   const account = resolveSlackAccount(params);
-  return account.config.enterpriseOrgInstall !== true && isSlackPluginAccountConfigured(account);
+  return (
+    account.config.enterpriseOrgInstall !== true &&
+    account.config.identityMode !== "user" &&
+    isSlackPluginAccountConfigured(account)
+  );
 }
 
 function resolveSlackNativeApprovalConfig(params: {
@@ -380,6 +384,9 @@ function isSlackNativeApprovalClientEnabled(params: {
   accountId?: string | null;
   approvalKind: SlackApprovalKind;
 }): boolean {
+  if (resolveSlackAccount(params).config.identityMode === "user") {
+    return false;
+  }
   if (params.approvalKind === "exec") {
     return isSlackExecApprovalClientEnabled(params);
   }
@@ -408,6 +415,9 @@ export function shouldHandleSlackNativeApprovalRequest(params: {
   approvalKind?: SlackApprovalKind;
   request: SlackNativeApprovalRequest;
 }): boolean {
+  if (resolveSlackAccount(params).config.identityMode === "user") {
+    return false;
+  }
   const approvalKind = params.approvalKind ?? resolveSlackApprovalKind(params.request);
   if (approvalKind === "plugin") {
     return (

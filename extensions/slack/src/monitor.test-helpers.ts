@@ -63,6 +63,11 @@ export const getSlackTestState = (): SlackTestState => slackTestState;
 
 type SlackClient = {
   auth: { test: Mock<(...args: unknown[]) => Promise<Record<string, unknown>>> };
+  apps: {
+    event: {
+      authorizations: { list: Mock<(...args: unknown[]) => Promise<Record<string, unknown>>> };
+    };
+  };
   conversations: {
     info: Mock<(...args: unknown[]) => Promise<Record<string, unknown>>>;
     replies: Mock<(...args: unknown[]) => Promise<Record<string, unknown>>>;
@@ -100,6 +105,9 @@ function ensureSlackTestRuntime(): {
   if (!globalState["__slackClient"]) {
     globalState["__slackClient"] = {
       auth: { test: vi.fn().mockResolvedValue({ user_id: "bot-user", bot_id: "bot-id" }) },
+      apps: {
+        event: { authorizations: { list: vi.fn().mockResolvedValue({ authorizations: [] }) } },
+      },
       conversations: {
         info: vi.fn().mockResolvedValue({
           channel: { name: "dm", is_im: true },
@@ -254,6 +262,7 @@ export function resetSlackTestState(config: Record<string, unknown> = defaultSla
     team_id: "T_TEST",
     is_enterprise_install: false,
   });
+  client.apps.event.authorizations.list.mockReset().mockResolvedValue({ authorizations: [] });
   client.conversations.info.mockReset().mockResolvedValue({
     channel: { name: "dm", is_im: true },
   });

@@ -82,17 +82,21 @@ export const slackChannelConfigUiHints = {
     label: "Slack Bot Token",
     help: "Slack bot token used for standard chat actions in the configured workspace. Keep this credential scoped and rotate if workspace app permissions change.",
   },
+  identityMode: {
+    label: "Slack Identity Mode",
+    help: 'Select "bot" for the Slack app identity or "user" to receive user-level events and post as the configured Slack user. User mode requires a writable user token and does not support relay or org-wide installs.',
+  },
   appToken: {
     label: "Slack App Token",
     help: "Slack app-level token used for Socket Mode connections and event transport when enabled. Use least-privilege app scopes and store this token as a secret.",
   },
   userToken: {
     label: "Slack User Token",
-    help: "Optional Slack user token for workflows requiring user-context API access beyond bot permissions. Use sparingly and audit scopes because this token can carry broader authority.",
+    help: 'Slack user token for supplemental reads, or the active identity when identityMode="user". Use a dedicated account and audit scopes because this token can carry broader authority.',
   },
   userTokenReadOnly: {
     label: "Slack User Token Read Only",
-    help: "When true, treat configured Slack user token usage as read-only helper behavior where possible. Keep enabled if you only need supplemental reads without user-context writes.",
+    help: 'When true, restrict the Slack user token to reads. Set false explicitly for identityMode="user" so replies and actions can post as that user.',
   },
   "capabilities.interactiveReplies": {
     label: "Slack Interactive Replies",

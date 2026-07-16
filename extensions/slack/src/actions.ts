@@ -4,7 +4,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { requireRuntimeConfig } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { z } from "zod";
-import { resolveSlackAccount } from "./accounts.js";
+import { resolveSlackAccount, resolveSlackOperationToken } from "./accounts.js";
 import type { SlackAuthoredTextPlacement } from "./authored-text.js";
 import { buildSlackBlocksFallbackText } from "./blocks-fallback.js";
 import { validateSlackBlocksArray } from "./blocks-input.js";
@@ -71,14 +71,14 @@ function resolveToken(explicit?: string, accountId?: string, cfg?: OpenClawConfi
   }
   const resolvedCfg = requireRuntimeConfig(cfg, "Slack actions");
   const account = resolveSlackAccount({ cfg: resolvedCfg, accountId });
-  const token = resolveSlackBotToken(account.botToken ?? undefined);
+  const token = resolveSlackOperationToken(account, "write");
   if (!token) {
     logVerbose(
-      `slack actions: missing bot token for account=${account.accountId} explicit=${Boolean(
+      `slack actions: missing write token for account=${account.accountId} explicit=${Boolean(
         explicit,
       )} source=${account.botTokenSource ?? "unknown"}`,
     );
-    throw new Error("SLACK_BOT_TOKEN or channels.slack.botToken is required for Slack actions");
+    throw new Error("Slack write token is required for Slack actions");
   }
   return token;
 }

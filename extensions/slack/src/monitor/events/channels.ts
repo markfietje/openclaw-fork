@@ -54,7 +54,7 @@ export function registerSlackChannelEvents(params: {
     "channel_created",
     async ({ event, body }: SlackEventMiddlewareArgs<"channel_created">) => {
       try {
-        if (ctx.shouldDropMismatchedSlackEvent(body)) {
+        if (await ctx.shouldDropMismatchedSlackEvent(body)) {
           return;
         }
         trackEvent?.();
@@ -75,7 +75,7 @@ export function registerSlackChannelEvents(params: {
     "channel_rename",
     async ({ event, body }: SlackEventMiddlewareArgs<"channel_rename">) => {
       try {
-        if (ctx.shouldDropMismatchedSlackEvent(body)) {
+        if (await ctx.shouldDropMismatchedSlackEvent(body)) {
           return;
         }
         trackEvent?.();
@@ -96,7 +96,7 @@ export function registerSlackChannelEvents(params: {
     "channel_id_changed",
     async ({ event, body }: SlackEventMiddlewareArgs<"channel_id_changed">) => {
       try {
-        if (ctx.shouldDropMismatchedSlackEvent(body)) {
+        if (await ctx.shouldDropMismatchedSlackEvent(body)) {
           return;
         }
         trackEvent?.();

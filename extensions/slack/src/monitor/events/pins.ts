@@ -19,7 +19,7 @@ async function handleSlackPinEvent(params: {
   const { ctx, trackEvent, body, event, action, contextKeySuffix, errorLabel } = params;
 
   try {
-    if (ctx.shouldDropMismatchedSlackEvent(body)) {
+    if (await ctx.shouldDropMismatchedSlackEvent(body)) {
       return;
     }
     trackEvent?.();

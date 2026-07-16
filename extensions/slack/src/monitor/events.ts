@@ -30,11 +30,13 @@ export function registerSlackMonitorEvents(params: {
   registerSlackMemberEvents({ ctx: params.ctx, trackEvent: params.trackEvent });
   registerSlackChannelEvents({ ctx: params.ctx, trackEvent: params.trackEvent });
   registerSlackPinEvents({ ctx: params.ctx, trackEvent: params.trackEvent });
-  registerSlackHomeEvents({
-    ctx: params.ctx,
-    slashCommandName: params.appHomeSlashCommandName,
-    trackEvent: params.trackEvent,
-  });
-  registerSlackInteractionEvents({ ctx: params.ctx, trackEvent: params.trackEvent });
-  registerSlackAssistantEvents({ ctx: params.ctx, trackEvent: params.trackEvent });
+  if (params.account.config.identityMode !== "user") {
+    registerSlackInteractionEvents({ ctx: params.ctx, trackEvent: params.trackEvent });
+    registerSlackHomeEvents({
+      ctx: params.ctx,
+      slashCommandName: params.appHomeSlashCommandName,
+      trackEvent: params.trackEvent,
+    });
+    registerSlackAssistantEvents({ ctx: params.ctx, trackEvent: params.trackEvent });
+  }
 }

@@ -161,6 +161,8 @@ export type SlackAccountConfig = {
   name?: string;
   /** Slack connection mode (socket|http|relay). Default: socket. */
   mode?: "socket" | "http" | "relay";
+  /** Slack identity used for inbound events and writes. Default: bot. */
+  identityMode?: "bot" | "user";
   /**
    * Treat this account as one Slack Enterprise Grid org-wide installation.
    * The declaration is verified against auth.test during monitor startup.
@@ -190,7 +192,7 @@ export type SlackAccountConfig = {
   botToken?: SecretInput;
   appToken?: SecretInput;
   userToken?: SecretInput;
-  /** If true, restrict user token to read operations only. Default: true. */
+  /** If true, restrict user token to read operations only. Default: true. User identity mode requires false. */
   userTokenReadOnly?: boolean;
   /** Allow bot-authored messages to trigger replies (default: false). Set to "mentions" to only allow bot messages that @mention this bot. */
   allowBots?: boolean | "mentions";

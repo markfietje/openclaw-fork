@@ -52,7 +52,7 @@ export function registerSlackHomeEvents(params: {
     "app_home_opened",
     async ({ event, body }: SlackEventMiddlewareArgs<"app_home_opened">) => {
       try {
-        if (ctx.shouldDropMismatchedSlackEvent(body)) {
+        if (await ctx.shouldDropMismatchedSlackEvent(body)) {
           return;
         }
         trackEvent?.();

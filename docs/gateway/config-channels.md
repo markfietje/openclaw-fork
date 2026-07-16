@@ -440,6 +440,7 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
         serverPingTimeout: 30000,
         pingPongLoggingEnabled: false,
       },
+      identityMode: "bot", // bot | user
       dmPolicy: "pairing",
       allowFrom: ["U123", "U456", "*"],
       dm: { enabled: true, groupEnabled: false, groupChannels: ["G123"] },
@@ -501,6 +502,7 @@ WhatsApp runs through the gateway's web channel (Baileys Web). It starts automat
 
 - **Socket mode** requires both `botToken` and `appToken` (`SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` for default account env fallback).
 - **HTTP mode** requires `botToken` plus `signingSecret` (at root or per-account).
+- `identityMode: "user"` receives user-level events and posts as the configured Slack member. It requires `userTokenReadOnly: false`, `userToken` plus an app-level `appToken` with `authorizations:read`, and `signingSecret` for HTTP mode; Socket Mode also needs `connections:write` on the app token. Use a dedicated member account and stable DM allowlists. Relay, org-wide installs, native streaming/assistant UI, interactive replies, native commands/approvals, and durable deferred delivery are unavailable in user mode. See [User identity mode](/channels/slack#user-identity-mode) for the minimal user-event manifest and scopes.
 - `enterpriseOrgInstall: true` opts an account into the Slack Enterprise Grid
   org-wide event path. Startup verifies the bot token with `auth.test` and
   fails when the configured mode does not match Slack's installation identity.

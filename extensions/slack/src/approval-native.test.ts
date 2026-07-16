@@ -172,6 +172,38 @@ describe("slack native approval adapter", () => {
     });
   });
 
+  it("disables native approval delivery for user identity accounts", () => {
+    const cfg = buildConfig({
+      identityMode: "user",
+      userToken: "xoxp-agent",
+      userTokenReadOnly: false,
+    });
+    const request = createExecApprovalRequest();
+
+    expect(
+      slackApprovalCapability.nativeRuntime?.availability.isConfigured({
+        cfg,
+        accountId: "default",
+      }),
+    ).toBe(false);
+    expect(
+      slackApprovalCapability.nativeRuntime?.availability.shouldHandle({
+        cfg,
+        accountId: "default",
+        approvalKind: "exec",
+        request,
+      }),
+    ).toBe(false);
+    expect(
+      slackApprovalCapability.native?.describeDeliveryCapabilities({
+        cfg,
+        accountId: "default",
+        approvalKind: "exec",
+        request,
+      }).enabled,
+    ).toBe(false);
+  });
+
   it("describes the correct Slack exec-approval setup path", () => {
     const text = slackApprovalCapability.describeExecApprovalSetup?.({
       channel: "slack",

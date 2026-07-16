@@ -6,6 +6,7 @@ import type { SlackMessageEvent } from "../types.js";
 
 export type MonitorSlackOpts = {
   botToken?: string;
+  userToken?: string;
   appToken?: string;
   accountId?: string;
   mode?: "socket" | "http" | "relay";

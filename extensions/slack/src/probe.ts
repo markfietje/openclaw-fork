@@ -16,7 +16,7 @@ export type SlackProbe = BaseProbeResult & {
 export async function probeSlack(
   token: string,
   timeoutMs = 2500,
-  opts?: { accountId?: string | null },
+  opts?: { accountId?: string | null; identityMode?: "bot" | "user" },
 ): Promise<SlackProbe> {
   const client = createSlackWebClient(token);
   const start = Date.now();
@@ -30,10 +30,24 @@ export async function probeSlack(
         elapsedMs: Date.now() - start,
       };
     }
-    const warning = formatSlackBotTokenIdentityWarning({
-      auth: result,
-      accountId: opts?.accountId,
-    });
+    if (opts?.identityMode === "user" && (result.bot_id || !result.user_id)) {
+      const reason = result.bot_id
+        ? "auth.test returned bot_id for a user identity token"
+        : "auth.test returned no user_id";
+      return {
+        ok: false,
+        status: 200,
+        error: reason,
+        elapsedMs: Date.now() - start,
+      };
+    }
+    const warning =
+      opts?.identityMode === "user"
+        ? undefined
+        : formatSlackBotTokenIdentityWarning({
+            auth: result,
+            accountId: opts?.accountId,
+          });
     return {
       ok: true,
       status: 200,

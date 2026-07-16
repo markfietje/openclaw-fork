@@ -417,7 +417,7 @@ export function registerModalLifecycleHandler(params: {
       return;
     }
     await ack();
-    if (params.ctx.shouldDropMismatchedSlackEvent?.(body)) {
+    if (await params.ctx.shouldDropMismatchedSlackEvent?.(body)) {
       params.ctx.runtime.log?.(
         `slack:interaction drop ${params.interactionType} payload (mismatched app/team)`,
       );

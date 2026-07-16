@@ -11,6 +11,8 @@ function createTestContext(params?: {
   groupDmEnabled?: boolean;
   groupDmChannels?: string[];
   appClient?: App["client"];
+  userAuthorizationId?: string;
+  userAuthorizationAppToken?: string;
 }) {
   return createSlackMonitorContext({
     cfg: {
@@ -22,6 +24,8 @@ function createTestContext(params?: {
     app: { client: params?.appClient ?? {} } as App,
     runtime: {} as RuntimeEnv,
     botUserId: "U_BOT",
+    userAuthorizationId: params?.userAuthorizationId,
+    userAuthorizationAppToken: params?.userAuthorizationAppToken,
     botId: "B_BOT",
     teamId: "T_EXPECTED",
     apiAppId: "A_EXPECTED",
@@ -58,36 +62,123 @@ function createTestContext(params?: {
 }
 
 describe("createSlackMonitorContext shouldDropMismatchedSlackEvent", () => {
-  it("drops mismatched top-level app/team identifiers", () => {
+  it("drops mismatched top-level app/team identifiers", async () => {
     const ctx = createTestContext();
     expect(
-      ctx.shouldDropMismatchedSlackEvent({
+      await ctx.shouldDropMismatchedSlackEvent({
         api_app_id: "A_WRONG",
         team_id: "T_EXPECTED",
       }),
     ).toBe(true);
     expect(
-      ctx.shouldDropMismatchedSlackEvent({
+      await ctx.shouldDropMismatchedSlackEvent({
         api_app_id: "A_EXPECTED",
         team_id: "T_WRONG",
       }),
     ).toBe(true);
   });
 
-  it("drops mismatched nested team.id payloads used by interaction bodies", () => {
+  it("drops mismatched nested team.id payloads used by interaction bodies", async () => {
     const ctx = createTestContext();
     expect(
-      ctx.shouldDropMismatchedSlackEvent({
+      await ctx.shouldDropMismatchedSlackEvent({
         api_app_id: "A_EXPECTED",
         team: { id: "T_WRONG" },
       }),
     ).toBe(true);
     expect(
-      ctx.shouldDropMismatchedSlackEvent({
+      await ctx.shouldDropMismatchedSlackEvent({
         api_app_id: "A_EXPECTED",
         team: { id: "T_EXPECTED" },
       }),
     ).toBe(false);
+  });
+
+  it("requires the matching non-bot authorization for user identity events", async () => {
+    const ctx = createTestContext({ userAuthorizationId: "U_AGENT" });
+    const base = { api_app_id: "A_EXPECTED", team_id: "T_EXPECTED" };
+
+    expect(await ctx.shouldDropMismatchedSlackEvent(undefined)).toBe(true);
+    expect(await ctx.shouldDropMismatchedSlackEvent(base)).toBe(true);
+    expect(
+      await ctx.shouldDropMismatchedSlackEvent({
+        ...base,
+        authorizations: [{ is_bot: true, user_id: "U_AGENT", team_id: "T_EXPECTED" }],
+      }),
+    ).toBe(true);
+    expect(
+      await ctx.shouldDropMismatchedSlackEvent({
+        ...base,
+        authorizations: [{ is_bot: false, user_id: "U_OTHER", team_id: "T_EXPECTED" }],
+      }),
+    ).toBe(true);
+    expect(
+      await ctx.shouldDropMismatchedSlackEvent({
+        ...base,
+        authorizations: [{ is_bot: false, user_id: "U_AGENT", team_id: "T_OTHER" }],
+      }),
+    ).toBe(true);
+    expect(
+      await ctx.shouldDropMismatchedSlackEvent({
+        ...base,
+        authorizations: [{ is_bot: false, user_id: "U_AGENT", team_id: "T_EXPECTED" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("resolves a truncated authorization list before dropping a user event", async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce({
+        authorizations: [{ is_bot: true, user_id: "U_BOT", team_id: "T_EXPECTED" }],
+        response_metadata: { next_cursor: "cursor-2" },
+      })
+      .mockResolvedValueOnce({
+        authorizations: [{ is_bot: false, user_id: "U_AGENT", team_id: "T_EXPECTED" }],
+      });
+    const ctx = createTestContext({
+      userAuthorizationId: "U_AGENT",
+      userAuthorizationAppToken: "xapp-test",
+      appClient: { apps: { event: { authorizations: { list } } } } as unknown as App["client"],
+    });
+
+    expect(
+      await ctx.shouldDropMismatchedSlackEvent({
+        api_app_id: "A_EXPECTED",
+        team_id: "T_EXPECTED",
+        event_context: "EC123",
+        authorizations: [{ is_bot: true, user_id: "U_BOT", team_id: "T_EXPECTED" }],
+      }),
+    ).toBe(false);
+    expect(list).toHaveBeenNthCalledWith(1, {
+      token: "xapp-test",
+      event_context: "EC123",
+      limit: 100,
+    });
+    expect(list).toHaveBeenNthCalledWith(2, {
+      token: "xapp-test",
+      event_context: "EC123",
+      limit: 100,
+      cursor: "cursor-2",
+    });
+  });
+
+  it("fails closed when user authorization lookup cannot complete", async () => {
+    const list = vi.fn().mockRejectedValueOnce(new Error("missing_scope"));
+    const ctx = createTestContext({
+      userAuthorizationId: "U_AGENT",
+      userAuthorizationAppToken: "xapp-test",
+      appClient: { apps: { event: { authorizations: { list } } } } as unknown as App["client"],
+    });
+
+    expect(
+      await ctx.shouldDropMismatchedSlackEvent({
+        api_app_id: "A_EXPECTED",
+        team_id: "T_EXPECTED",
+        event_context: "EC123",
+        authorizations: [{ is_bot: true, user_id: "U_BOT", team_id: "T_EXPECTED" }],
+      }),
+    ).toBe(true);
   });
 });
 
@@ -100,6 +191,30 @@ describe("createSlackMonitorContext isChannelAllowed", () => {
 
     expect(ctx.isChannelAllowed({ channelId: "G456", channelType: "mpim" })).toBe(true);
     expect(ctx.isChannelAllowed({ channelId: "G999", channelType: "mpim" })).toBe(false);
+  });
+});
+
+describe("createSlackMonitorContext user identity bot-only gates", () => {
+  it("skips assistant thread status and prompts for user identity sessions", async () => {
+    const setStatus = vi.fn();
+    const setSuggestedPrompts = vi.fn();
+    const ctx = createTestContext({
+      userAuthorizationId: "U_AGENT",
+      appClient: {
+        assistant: { threads: { setStatus, setSuggestedPrompts } },
+      } as unknown as App["client"],
+    });
+
+    await ctx.setSlackThreadStatus({ channelId: "D1", threadTs: "1.0", status: "typing" });
+    const prompts = await ctx.setSlackAssistantSuggestedPrompts({
+      channelId: "D1",
+      threadTs: "1.0",
+      prompts: [{ title: "Help", message: "help" }],
+    });
+
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(setSuggestedPrompts).not.toHaveBeenCalled();
+    expect(prompts).toBe(false);
   });
 });
 

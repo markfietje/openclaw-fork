@@ -39,7 +39,21 @@ describe("resolveSlackOperationToken", () => {
       hasBotToken: false,
       expected: undefined,
     },
-  ])("$name", ({ userTokenReadOnly, operation, hasBotToken = true, expected }) => {
+    {
+      name: "uses the user token for writes in explicit user identity mode",
+      identityMode: "user" as const,
+      userTokenReadOnly: false,
+      operation: "write" as const,
+      expected: "xoxp-user",
+    },
+    {
+      name: "does not fall back to a bot token for read-only user identity writes",
+      identityMode: "user" as const,
+      userTokenReadOnly: true,
+      operation: "write" as const,
+      expected: undefined,
+    },
+  ])("$name", ({ identityMode, userTokenReadOnly, operation, hasBotToken = true, expected }) => {
     const account = resolveSlackAccount({
       cfg: {
         channels: {
@@ -48,6 +62,7 @@ describe("resolveSlackOperationToken", () => {
               work: {
                 ...(hasBotToken ? { botToken: "xoxb-bot" } : {}),
                 userToken: "xoxp-user",
+                ...(identityMode ? { identityMode } : {}),
                 userTokenReadOnly,
               },
             },
@@ -127,6 +142,25 @@ describe("resolveSlackAccount allowFrom precedence", () => {
     expect(listSlackAccountIds(cfg)).toEqual(["work"]);
     expect(resolveDefaultSlackAccountId(cfg)).toBe("work");
     expect(listEnabledSlackAccounts(cfg).map((account) => account.accountId)).toEqual(["work"]);
+  });
+
+  it("synthesizes the writable user identity default account without a bot token", () => {
+    const cfg = {
+      channels: {
+        slack: {
+          identityMode: "user",
+          appToken: "xapp-dflt",
+          userToken: "xoxp-dflt",
+          userTokenReadOnly: false,
+          accounts: {
+            work: { botToken: "xoxb-work", appToken: "xapp-work" },
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    expect(listSlackAccountIds(cfg)).toEqual(["default", "work"]);
+    expect(resolveDefaultSlackAccountId(cfg)).toBe("default");
   });
 
   it("prefers accounts.default.allowFrom over top-level for default account", () => {

@@ -674,7 +674,10 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
 
   const slackStreaming = resolveSlackStreamingConfig({
     streaming: account.config.streaming,
-    nativeStreaming: resolveChannelStreamingNativeTransport(account.config),
+    nativeStreaming:
+      account.config.identityMode === "user"
+        ? false
+        : resolveChannelStreamingNativeTransport(account.config),
   });
   const streamThreadHint =
     forcedReplyThreadTs ??

@@ -98,7 +98,7 @@ export function registerSlackReactionEvents(params: {
   ctx.app.event(
     "reaction_added",
     async ({ event, body }: SlackEventMiddlewareArgs<"reaction_added">) => {
-      if (ctx.shouldDropMismatchedSlackEvent(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent(body)) {
         return;
       }
       await handleReactionEvent(event as SlackReactionEvent, "added");
@@ -108,7 +108,7 @@ export function registerSlackReactionEvents(params: {
   ctx.app.event(
     "reaction_removed",
     async ({ event, body }: SlackEventMiddlewareArgs<"reaction_removed">) => {
-      if (ctx.shouldDropMismatchedSlackEvent(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent(body)) {
         return;
       }
       await handleReactionEvent(event as SlackReactionEvent, "removed");

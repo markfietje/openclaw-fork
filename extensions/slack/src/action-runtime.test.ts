@@ -1626,6 +1626,22 @@ describe("handleSlackAction", () => {
     expect(token).toBe("xoxp-user");
   });
 
+  it("prefers the user token for writes in explicit user identity mode", async () => {
+    const token = await resolveSendToken(
+      slackConfig({
+        accounts: {
+          default: {
+            identityMode: "user",
+            botToken: "xoxb-bot",
+            userToken: "xoxp-user",
+            userTokenReadOnly: false,
+          },
+        },
+      }),
+    );
+    expect(token).toBe("xoxp-user");
+  });
+
   it("returns all emojis when no limit is provided", async () => {
     listSlackEmojis.mockResolvedValueOnce({
       ok: true,

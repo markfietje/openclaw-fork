@@ -42,6 +42,7 @@ import {
   formatSlackBotTokenIdentityWarning,
   resolveSlackAppToken,
   resolveSlackBotToken,
+  resolveSlackUserToken,
 } from "../token.js";
 import { normalizeAllowList } from "./allow-list.js";
 import { resolveSlackSlashCommandConfig } from "./commands.js";
@@ -225,7 +226,23 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const mainKey = normalizeMainKey(sessionCfg?.mainKey);
 
   const slackMode = opts.mode ?? account.config.mode ?? "socket";
+  const identityMode = account.config.identityMode ?? "bot";
   const enterpriseOrgInstall = account.config.enterpriseOrgInstall === true;
+  if (identityMode === "user" && enterpriseOrgInstall) {
+    throw new Error(
+      `Slack user identity account "${account.accountId}" does not support enterpriseOrgInstall=true`,
+    );
+  }
+  if (identityMode === "user" && slackMode === "relay") {
+    throw new Error(
+      `Slack user identity account "${account.accountId}" does not support relay mode`,
+    );
+  }
+  if (identityMode === "user" && account.config.userTokenReadOnly !== false) {
+    throw new Error(
+      `Slack user identity account "${account.accountId}" requires userTokenReadOnly=false`,
+    );
+  }
   if (enterpriseOrgInstall && slackMode === "relay") {
     throw new Error(
       `Slack Enterprise Grid org account "${account.accountId}" requires direct socket or HTTP delivery; relay mode is unsupported`,
@@ -246,6 +263,8 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     path: `channels.slack.accounts.${account.accountId}.signingSecret`,
   });
   const botToken = resolveSlackBotToken(opts.botToken ?? account.botToken);
+  const userToken = resolveSlackUserToken(opts.userToken ?? account.userToken);
+  const identityToken = identityMode === "user" ? userToken : botToken;
   const appToken = resolveSlackAppToken(opts.appToken ?? account.appToken);
   const relayConfig =
     slackMode === "relay"
@@ -254,13 +273,17 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
           accountId: account.accountId,
         })
       : undefined;
-  if (!botToken || (slackMode === "socket" && !appToken)) {
+  if (!identityToken || ((slackMode === "socket" || identityMode === "user") && !appToken)) {
+    const tokenField = identityMode === "user" ? "userToken" : "botToken";
+    const tokenEnv = identityMode === "user" ? "SLACK_USER_TOKEN" : "SLACK_BOT_TOKEN";
     const missing =
       slackMode === "http"
-        ? `Slack bot token missing for account "${account.accountId}" (set channels.slack.accounts.${account.accountId}.botToken or SLACK_BOT_TOKEN for default).`
+        ? identityMode === "user"
+          ? `Slack ${tokenField} + app tokens missing for account "${account.accountId}" (set channels.slack.accounts.${account.accountId}.${tokenField}/appToken or ${tokenEnv}/SLACK_APP_TOKEN for default).`
+          : `Slack ${tokenField} missing for account "${account.accountId}" (set channels.slack.accounts.${account.accountId}.${tokenField} or ${tokenEnv} for default).`
         : slackMode === "relay"
           ? `Slack bot token missing for account "${account.accountId}" (set channels.slack.accounts.${account.accountId}.botToken or SLACK_BOT_TOKEN for default).`
-          : `Slack bot + app tokens missing for account "${account.accountId}" (set channels.slack.accounts.${account.accountId}.botToken/appToken or SLACK_BOT_TOKEN/SLACK_APP_TOKEN for default).`;
+          : `Slack ${tokenField} + app tokens missing for account "${account.accountId}" (set channels.slack.accounts.${account.accountId}.${tokenField}/appToken or ${tokenEnv}/SLACK_APP_TOKEN for default).`;
     throw new Error(missing);
   }
   if (slackMode === "http" && !signingSecret) {
@@ -300,7 +323,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     log: (message) => runtime.log?.(warn(message)),
   });
 
-  const resolveToken = account.userToken || botToken;
+  const resolveToken = userToken || identityToken;
   const useAccessGroups = cfg.commands?.useAccessGroups !== false;
   const reactionMode = slackCfg.reactionNotifications ?? "own";
   const reactionAllowlist = slackCfg.reactionAllowlist ?? [];
@@ -321,7 +344,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const { app, receiver, socketModeLogger } = createSlackBoltApp({
     interop: await getSlackBoltInterop(),
     slackMode,
-    botToken,
+    botToken: identityToken,
     appToken: slackMode === "socket" ? (appToken ?? undefined) : undefined,
     signingSecret: slackMode === "http" ? (signingSecret ?? undefined) : undefined,
     slackWebhookPath,
@@ -385,14 +408,21 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     const auth = await app.client.auth.test();
     const authUserId = normalizeOptionalString(auth.user_id) ?? "";
     botId = normalizeOptionalString((auth as { bot_id?: string }).bot_id) ?? "";
-    // Slack documents bot_id only for bot-token identities. Never treat the user behind a
-    // user token as the bot mention target; required-mention channels must fail closed instead.
-    botUserId = botId ? authUserId : "";
+    // User mode deliberately adopts the authenticated user as the mention/self target;
+    // bot mode must still fail closed when its configured token is actually a user token.
+    botUserId = identityMode === "user" ? authUserId : botId ? authUserId : "";
     authTestIdentity = auth;
-    authIdentityWarning = formatSlackBotTokenIdentityWarning({
-      auth,
-      accountId: account.accountId,
-    });
+    authIdentityWarning =
+      identityMode === "user"
+        ? undefined
+        : formatSlackBotTokenIdentityWarning({
+            auth,
+            accountId: account.accountId,
+          });
+    if (identityMode === "user" && botId) {
+      authTestFailed = true;
+      authTestError = "auth.test returned bot_id for a user identity token";
+    }
     if (!authUserId && !enterpriseOrgInstall) {
       authTestFailed = true;
       authTestError = "auth.test returned no user_id";
@@ -400,6 +430,11 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   } catch (err) {
     authTestFailed = true;
     authTestError = err instanceof Error ? err.message : String(err);
+  }
+  if (identityMode === "user" && authTestFailed) {
+    throw new Error(
+      `Slack user identity auth.test failed for account "${account.accountId}" (${authTestError ?? "unknown error"})`,
+    );
   }
   const installationIdentity = resolveSlackInstallationIdentity({
     enterpriseOrgInstall,
@@ -432,18 +467,20 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
 
   if (apiAppId && expectedApiAppIdFromAppToken && apiAppId !== expectedApiAppIdFromAppToken) {
     runtime.error?.(
-      `slack token mismatch: bot token app_id=${apiAppId} but app token looks like app_id=${expectedApiAppIdFromAppToken}`,
+      `slack token mismatch: ${identityMode} token app_id=${apiAppId} but app token looks like app_id=${expectedApiAppIdFromAppToken}`,
     );
   }
 
   const ctx = createSlackMonitorContext({
     cfg,
     accountId: account.accountId,
-    botToken,
+    botToken: identityToken,
     app,
     runtime,
     channelRuntime: opts.channelRuntime,
     botUserId,
+    userAuthorizationId: identityMode === "user" ? botUserId : undefined,
+    userAuthorizationAppToken: identityMode === "user" ? appToken : undefined,
     botId,
     teamId,
     apiAppId,
@@ -487,6 +524,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const handleSlackMessage = createSlackMessageHandler({ ctx, account, trackEvent });
   if (
     installationIdentity.kind !== "enterprise" &&
+    identityMode !== "user" &&
     isSlackAnyNativeApprovalClientEnabled({
       cfg,
       accountId: account.accountId,
@@ -507,7 +545,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
 
   // Resolve command registration first so App Home never advertises an inactive single command.
   const commandRegistration =
-    installationIdentity.kind === "enterprise"
+    installationIdentity.kind === "enterprise" || identityMode === "user"
       ? ({ mode: "disabled" } as const)
       : await registerSlackMonitorSlashCommands({ ctx, account, trackEvent });
   const appHomeSlashCommandName =

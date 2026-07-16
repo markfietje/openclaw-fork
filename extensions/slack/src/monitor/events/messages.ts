@@ -201,7 +201,7 @@ export function registerSlackMessageEvents(params: {
       if (eventScope === null) {
         return;
       }
-      if (ctx.shouldDropMismatchedSlackEvent(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent(body)) {
         return;
       }
 
@@ -293,7 +293,7 @@ export function registerSlackMessageEvents(params: {
         if (eventScope === null) {
           return;
         }
-        if (ctx.shouldDropMismatchedSlackEvent(body)) {
+        if (await ctx.shouldDropMismatchedSlackEvent(body)) {
           return;
         }
 

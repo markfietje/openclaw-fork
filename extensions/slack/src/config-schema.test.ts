@@ -122,6 +122,59 @@ describe("slack config schema", () => {
     });
   });
 
+  it("accepts explicit user identity mode and inherited writable user-token config", () => {
+    expectSlackConfigValid({
+      identityMode: "user",
+      userToken: "xoxp-any",
+      userTokenReadOnly: false,
+      appToken: "xapp-any",
+    });
+    expectSlackConfigValid({
+      identityMode: "user",
+      userTokenReadOnly: false,
+      appToken: "xapp-any",
+      accounts: {
+        work: { userToken: "xoxp-work" },
+      },
+    });
+  });
+
+  it("rejects unsafe or unsupported user identity combinations", () => {
+    expectSlackConfigIssue(
+      { identityMode: "user", userToken: "xoxp-any", appToken: "xapp-any" },
+      "userTokenReadOnly",
+    );
+    expectSlackConfigIssue(
+      {
+        identityMode: "user",
+        userToken: "xoxp-any",
+        userTokenReadOnly: false,
+        mode: "relay",
+        relay: { url: "wss://router.example.com/gateway/ws", authToken: "secret", gatewayId: "g" },
+      },
+      "identityMode",
+    );
+    expectSlackConfigIssue(
+      {
+        identityMode: "user",
+        userToken: "xoxp-any",
+        userTokenReadOnly: false,
+        enterpriseOrgInstall: true,
+      },
+      "identityMode",
+    );
+    expectSlackConfigIssue({ identityMode: "human" }, "identityMode");
+    expectSlackConfigIssue(
+      {
+        identityMode: "user",
+        userToken: "xoxp-default",
+        appToken: "xapp-default",
+        accounts: { work: { botToken: "xoxb-work", appToken: "xapp-work" } },
+      },
+      "userTokenReadOnly",
+    );
+  });
+
   it("accepts Socket Mode ping/pong transport tuning", () => {
     expectSlackConfigValid({
       mode: "socket",
@@ -239,6 +292,16 @@ describe("slack config schema", () => {
   it("accepts HTTP mode when signing secret is configured", () => {
     expectSlackConfigValid({
       mode: "http",
+      signingSecret: "secret",
+    });
+  });
+
+  it("accepts user identity in HTTP mode", () => {
+    expectSlackConfigValid({
+      mode: "http",
+      identityMode: "user",
+      userToken: "xoxp-any",
+      userTokenReadOnly: false,
       signingSecret: "secret",
     });
   });

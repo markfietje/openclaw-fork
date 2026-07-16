@@ -848,6 +848,13 @@ export async function reconcileSlackUnknownSend(
     cfg,
     accountId: ctx.accountId ?? undefined,
   });
+  if (account.config.identityMode === "user") {
+    return {
+      status: "unresolved",
+      error: "Slack user identity cannot reconcile sends because message metadata is app-only",
+      retryable: false,
+    };
+  }
   const deliveryId = createSlackDeliveryMetadataId(ctx.queueId);
   if (!deliveryId) {
     return {
@@ -991,8 +998,9 @@ export async function sendMessageSlack(
     : resolveToken({
         explicit: opts.token,
         accountId: account.accountId,
-        fallbackToken: account.botToken,
-        fallbackSource: account.botTokenSource,
+        fallbackToken: resolveSlackOperationToken(account, "write"),
+        fallbackSource:
+          account.config.identityMode === "user" ? account.userTokenSource : account.botTokenSource,
       });
   const recipient = enterpriseDelivery ? parseEnterpriseEventRecipient(to) : parseRecipient(to);
   const queueKey = createSlackSendQueueKey({
@@ -1004,7 +1012,9 @@ export async function sendMessageSlack(
   });
   const queuedOpts = enterpriseDelivery
     ? Object.freeze({ ...opts, client: enterpriseDelivery.client })
-    : opts;
+    : account.config.identityMode === "user"
+      ? Object.freeze({ ...opts, metadata: undefined, deliveryQueueId: undefined })
+      : opts;
   const result = await runQueuedSlackSend(queueKey, () =>
     sendMessageSlackQueued({
       trimmedMessage,
@@ -1062,10 +1072,12 @@ async function sendMessageSlackQueuedInner(params: {
   const client = enterpriseDelivery?.client ?? opts.client ?? getSlackWriteClient(token);
   const identity = enterpriseDelivery
     ? normalizeSlackSendIdentity(opts.identity)
-    : resolveSlackSendIdentity({
-        accountId: account.accountId,
-        explicit: opts.identity,
-      });
+    : account.config.identityMode === "user"
+      ? undefined
+      : resolveSlackSendIdentity({
+          accountId: account.accountId,
+          explicit: opts.identity,
+        });
   if (opts.replyBroadcast && opts.mediaUrl) {
     throw new Error("Slack replyBroadcast is only supported for text or block thread replies.");
   }
@@ -1077,13 +1089,14 @@ async function sendMessageSlackQueuedInner(params: {
       };
   // Durable signatures bind the concrete provider channel, so user-targeted
   // sends must resolve U... to the resulting D... conversation first.
-  const directUserPostChannelId = opts.deliveryQueueId
-    ? undefined
-    : resolveDirectUserPostChannelId({
-        recipient,
-        hasMedia: Boolean(opts.mediaUrl),
-        ...(opts.threadTs ? { threadTs: opts.threadTs } : {}),
-      });
+  const directUserPostChannelId =
+    opts.deliveryQueueId || account.config.identityMode === "user"
+      ? undefined
+      : resolveDirectUserPostChannelId({
+          recipient,
+          hasMedia: Boolean(opts.mediaUrl),
+          ...(opts.threadTs ? { threadTs: opts.threadTs } : {}),
+        });
   const { channelId } = directUserPostChannelId
     ? { channelId: directUserPostChannelId }
     : await resolveChannelId(client, recipient, {

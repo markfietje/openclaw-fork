@@ -203,7 +203,10 @@ export function isSlackInteractiveRepliesEnabled(params: {
     cfg: params.cfg,
     accountId: params.accountId ?? resolveDefaultSlackAccountId(params.cfg),
   });
-  return resolveInteractiveRepliesFromCapabilities(account.config.capabilities);
+  return (
+    account.config.identityMode !== "user" &&
+    resolveInteractiveRepliesFromCapabilities(account.config.capabilities)
+  );
 }
 
 /**

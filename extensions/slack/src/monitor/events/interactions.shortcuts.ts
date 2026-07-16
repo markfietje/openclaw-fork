@@ -20,7 +20,7 @@ async function handleSlackShortcut(params: {
 }): Promise<void> {
   const { ack, body } = params.args;
   await ack();
-  if (params.ctx.shouldDropMismatchedSlackEvent?.(body)) {
+  if (await params.ctx.shouldDropMismatchedSlackEvent?.(body)) {
     params.ctx.runtime.log?.("slack:interaction drop shortcut payload (mismatched app/team)");
     return;
   }

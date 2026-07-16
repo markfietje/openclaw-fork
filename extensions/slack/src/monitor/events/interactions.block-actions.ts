@@ -1037,7 +1037,7 @@ async function handleSlackBlockAction(params: {
 }): Promise<void> {
   const { ack, body, action, respond } = params.args;
   await ack();
-  if (params.ctx.shouldDropMismatchedSlackEvent?.(body)) {
+  if (await params.ctx.shouldDropMismatchedSlackEvent?.(body)) {
     params.ctx.runtime.log?.("slack:interaction drop block action payload (mismatched app/team)");
     return;
   }

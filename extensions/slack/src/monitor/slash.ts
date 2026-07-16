@@ -418,7 +418,7 @@ export async function registerSlackMonitorSlashCommands(params: {
     const respond = responseBudget.respond;
     const cfg = getRuntimeConfigSnapshot() ?? ctx.cfg;
     try {
-      if (ctx.shouldDropMismatchedSlackEvent?.(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent?.(body)) {
         await ack();
         runtime.log?.(
           `slack: drop slash command from user=${command.user_id ?? "unknown"} channel=${command.channel_id ?? "unknown"} (mismatched app/team)`,
@@ -936,7 +936,7 @@ export async function registerSlackMonitorSlashCommands(params: {
       return;
     }
     appWithOptions.options(SLACK_COMMAND_ARG_ACTION_ID, async ({ ack, body }) => {
-      if (ctx.shouldDropMismatchedSlackEvent?.(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent?.(body)) {
         await ack({ options: [] });
         runtime.log?.("slack: drop slash arg options payload (mismatched app/team)");
         return;
@@ -1012,7 +1012,7 @@ export async function registerSlackMonitorSlashCommands(params: {
       ).respond;
       const action = args.action as { value?: string; selected_option?: { value?: string } };
       await ack();
-      if (ctx.shouldDropMismatchedSlackEvent?.(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent?.(body)) {
         runtime.log?.("slack: drop slash arg action payload (mismatched app/team)");
         return;
       }

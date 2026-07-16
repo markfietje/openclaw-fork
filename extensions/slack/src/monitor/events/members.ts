@@ -19,7 +19,7 @@ export function registerSlackMemberEvents(params: {
     body: unknown;
   }) => {
     try {
-      if (ctx.shouldDropMismatchedSlackEvent(paramsLocal.body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent(paramsLocal.body)) {
         return;
       }
       trackEvent?.();

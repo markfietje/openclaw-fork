@@ -1102,8 +1102,9 @@ The default manifest enables the Slack App Home **Home** tab and subscribes to `
 
 ## Token model
 
-- `botToken` + `appToken` are required for Socket Mode.
-- HTTP mode requires `botToken` + `signingSecret`.
+- `identityMode` selects the active Slack identity and defaults to `"bot"`.
+- Bot identity uses `botToken` + `appToken` for Socket Mode, or `botToken` + `signingSecret` for HTTP mode.
+- User identity uses `userToken` + `appToken` for Socket Mode, or `userToken` + `appToken` + `signingSecret` for HTTP mode, and requires `userTokenReadOnly: false`.
 - Relay mode requires `botToken` plus `relay.url`, `relay.authToken`, and `relay.gatewayId`; it does not use an app token or signing secret.
 - `botToken`, `appToken`, `signingSecret`, `relay.authToken`, and `userToken` accept plaintext
   strings or SecretRef objects.
@@ -1119,12 +1120,62 @@ Status snapshot behavior:
 - `configured_unavailable` means the account is configured through SecretRef
   or another non-inline secret source, but the current command/runtime path
   could not resolve the actual value.
-- In HTTP mode, `signingSecretStatus` is included; in Socket Mode, the
-  required pair is `botTokenStatus` + `appTokenStatus`.
+- In HTTP mode, `signingSecretStatus` is included. The required identity status is `botTokenStatus` in bot mode and `userTokenStatus` in user mode; Socket Mode and user identity mode also require `appTokenStatus`.
 
 <Tip>
-For actions/directory reads, user token can be preferred when configured. For writes, bot token remains preferred; user-token writes are only allowed when `userTokenReadOnly: false` and bot token is unavailable.
+In bot mode, actions/directory reads can prefer a configured user token. Writes still prefer the bot token; user-token writes are only allowed when `userTokenReadOnly: false` and the bot token is unavailable. In user mode, reads and writes consistently use the configured user token.
 </Tip>
+
+## User identity mode
+
+Use a dedicated Slack member account when the agent should appear as a regular user, receive ordinary DMs and group DMs, and reply without an app badge. This is an explicit trust boundary: the token acts with that member's workspace access, so keep the account narrowly provisioned and use stable sender allowlists.
+
+```json5
+{
+  channels: {
+    slack: {
+      enabled: true,
+      mode: "socket",
+      identityMode: "user",
+      appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      userToken: { source: "env", provider: "default", id: "SLACK_USER_TOKEN" },
+      userTokenReadOnly: false,
+      dmPolicy: "allowlist",
+      allowFrom: ["U12345678"],
+      dm: { enabled: true, groupEnabled: true },
+      groupPolicy: "allowlist",
+      streaming: { mode: "partial", nativeTransport: false },
+    },
+  },
+}
+```
+
+For HTTP mode, keep `appToken`, add `signingSecret`, and configure the webhook path. Generate the app-level token with `authorizations:read`; Socket Mode also needs `connections:write`. The authorization scope lets OpenClaw resolve the full installation list when Slack truncates an event's inline `authorizations` field. A bot token may coexist for another account, but it is never the active token for a user-identity account.
+
+Add user scopes and user events to the Slack app manifest, then reinstall the app as the dedicated member account. A minimal DM/group-DM fragment is:
+
+```yaml
+oauth_config:
+  scopes:
+    user:
+      - chat:write
+      - im:history
+      - im:read
+      - im:write
+      - mpim:history
+      - mpim:read
+      - mpim:write
+      - users:read
+settings:
+  event_subscriptions:
+    user_events:
+      - message.im
+      - message.mpim
+```
+
+Add the corresponding `channels:*`, `groups:*`, `files:*`, `reactions:*`, or `pins:*` user scopes only when those features are required. Avoid subscribing to `message.channels` or `message.groups` unless channel-wide ingestion is intentional. Every inbound user event must carry a matching non-bot authorization for the authenticated user and workspace; events for another installation are dropped.
+
+User identity mode supports normal posts, edits, reactions, media, DM history, and post-and-edit previews. Slack-native streaming, assistant thread status/App Home, interactive replies, native commands and approvals, relay, org-wide installs, and durable deferred delivery are unavailable because those paths require an app/bot identity, interactive app callbacks, or app-authored message metadata.
 
 ## Actions and gates
 
@@ -1801,7 +1852,7 @@ Primary reference: [Configuration reference - Slack](/gateway/config-channels#sl
 
 <Accordion title="High-signal Slack fields">
 
-- mode/auth: `mode`, `enterpriseOrgInstall`, `botToken`, `appToken`, `signingSecret`, `webhookPath`, `accounts.*`
+- mode/auth: `mode`, `identityMode`, `enterpriseOrgInstall`, `botToken`, `appToken`, `signingSecret`, `webhookPath`, `accounts.*`
 - DM access: `dm.enabled`, `dmPolicy`, `allowFrom` (legacy: `dm.policy`, `dm.allowFrom`), `dm.groupEnabled`, `dm.groupChannels`
 - compatibility toggle: `dangerouslyAllowNameMatching` (break-glass; keep off unless needed)
 - channel access: `groupPolicy`, `channels.*`, `channels.*.users`, `channels.*.requireMention`

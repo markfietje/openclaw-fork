@@ -951,6 +951,7 @@ const SlackAccountSchema = z
   .object({
     name: z.string().optional(),
     mode: z.enum(["socket", "http", "relay"]).optional(),
+    identityMode: z.enum(["bot", "user"]).optional(),
     enterpriseOrgInstall: z.boolean().optional(),
     socketMode: SlackSocketModeSchema.optional(),
     relay: SlackRelaySchema.optional(),
@@ -974,7 +975,7 @@ const SlackAccountSchema = z
     botToken: SecretInputSchema.optional().register(sensitive),
     appToken: SecretInputSchema.optional().register(sensitive),
     userToken: SecretInputSchema.optional().register(sensitive),
-    userTokenReadOnly: z.boolean().optional().default(true),
+    userTokenReadOnly: z.boolean().optional(),
     allowBots: z.union([z.boolean(), z.literal("mentions")]).optional(),
     botLoopProtection: BotLoopProtectionSchema.optional(),
     dangerouslyAllowNameMatching: z.boolean().optional(),
@@ -1038,6 +1039,8 @@ const SlackAccountSchema = z
 
 export const SlackConfigSchema = SlackAccountSchema.safeExtend({
   mode: z.enum(["socket", "http", "relay"]).optional().default("socket"),
+  identityMode: z.enum(["bot", "user"]).optional().default("bot"),
+  userTokenReadOnly: z.boolean().optional().default(true),
   signingSecret: SecretInputSchema.optional().register(sensitive),
   webhookPath: z.string().optional().default("/slack/events"),
   groupPolicy: GroupPolicySchema.optional().default("allowlist"),
@@ -1095,6 +1098,45 @@ export const SlackConfigSchema = SlackAccountSchema.safeExtend({
   };
 
   const baseMode = value.mode ?? "socket";
+  const validateUserIdentity = (params: {
+    identityMode: "bot" | "user" | undefined;
+    mode: "socket" | "http" | "relay";
+    enterpriseOrgInstall: boolean | undefined;
+    userTokenReadOnly: boolean | undefined;
+    path: (string | number)[];
+  }) => {
+    if (params.identityMode !== "user") {
+      return;
+    }
+    if (params.userTokenReadOnly !== false) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'channels.slack.identityMode="user" requires userTokenReadOnly=false',
+        path: [...params.path, "userTokenReadOnly"],
+      });
+    }
+    if (params.mode === "relay") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'channels.slack.identityMode="user" does not support relay mode',
+        path: [...params.path, "identityMode"],
+      });
+    }
+    if (params.enterpriseOrgInstall === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'channels.slack.identityMode="user" does not support enterpriseOrgInstall=true',
+        path: [...params.path, "identityMode"],
+      });
+    }
+  };
+  validateUserIdentity({
+    identityMode: value.identityMode,
+    mode: baseMode,
+    enterpriseOrgInstall: value.enterpriseOrgInstall,
+    userTokenReadOnly: value.userTokenReadOnly,
+    path: [],
+  });
   if (!value.accounts) {
     if (baseMode === "relay") {
       requireRelayConfig(value.relay, ["relay"]);
@@ -1110,6 +1152,13 @@ export const SlackConfigSchema = SlackAccountSchema.safeExtend({
       continue;
     }
     const accountMode = account.mode ?? baseMode;
+    validateUserIdentity({
+      identityMode: account.identityMode ?? value.identityMode,
+      mode: accountMode,
+      enterpriseOrgInstall: account.enterpriseOrgInstall ?? value.enterpriseOrgInstall,
+      userTokenReadOnly: account.userTokenReadOnly ?? value.userTokenReadOnly,
+      path: ["accounts", accountId],
+    });
     const effectiveRelay = {
       ...value.relay,
       ...account.relay,

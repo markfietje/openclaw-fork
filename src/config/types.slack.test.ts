@@ -6,6 +6,7 @@ const slackSecretRefConfig = {
   channels: {
     slack: {
       mode: "relay",
+      identityMode: "bot",
       botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
       appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
       signingSecret: { source: "env", provider: "default", id: "SLACK_SIGNING_SECRET" },
@@ -18,7 +19,9 @@ const slackSecretRefConfig = {
       accounts: {
         ops: {
           mode: "http",
+          identityMode: "user",
           botToken: { source: "env", provider: "default", id: "SLACK_OPS_BOT_TOKEN" },
+          userTokenReadOnly: false,
           signingSecret: {
             source: "env",
             provider: "default",

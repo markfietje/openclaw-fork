@@ -119,6 +119,7 @@ export type SlackMonitorContext = {
   channelRuntime?: ChannelRuntimeSurface;
 
   botUserId: string;
+  userAuthorizationId?: string;
   botId?: string;
   teamId: string;
   apiAppId: string;
@@ -165,7 +166,7 @@ export type SlackMonitorContext = {
     ts?: string,
     eventScope?: SlackEventScope,
   ) => void;
-  shouldDropMismatchedSlackEvent: (body: unknown) => boolean;
+  shouldDropMismatchedSlackEvent: (body: unknown) => boolean | Promise<boolean>;
   resolveSlackSystemEventSessionKey: (params: {
     channelId?: string | null;
     channelType?: string | null;
@@ -229,6 +230,8 @@ export function createSlackMonitorContext(params: {
   channelRuntime?: ChannelRuntimeSurface;
 
   botUserId: string;
+  userAuthorizationId?: string;
+  userAuthorizationAppToken?: string;
   botId?: string;
   teamId: string;
   apiAppId: string;
@@ -572,7 +575,7 @@ export function createSlackMonitorContext(params: {
     loadingMessages?: string[];
     eventScope?: SlackEventScope;
   }) => {
-    if (!p.threadTs) {
+    if (!p.threadTs || params.userAuthorizationId) {
       return;
     }
     try {
@@ -601,7 +604,7 @@ export function createSlackMonitorContext(params: {
       }))
       .filter((prompt) => prompt.title && prompt.message)
       .slice(0, 4);
-    if (prompts.length === 0) {
+    if (prompts.length === 0 || params.userAuthorizationId) {
       return false;
     }
     try {
@@ -710,14 +713,16 @@ export function createSlackMonitorContext(params: {
     return true;
   };
 
-  const shouldDropMismatchedSlackEvent = (body: unknown) => {
+  const shouldDropMismatchedSlackEvent = async (body: unknown) => {
     if (!body || typeof body !== "object") {
-      return false;
+      return Boolean(params.userAuthorizationId);
     }
     const raw = body as {
       api_app_id?: unknown;
       team_id?: unknown;
       team?: { id?: unknown };
+      authorizations?: unknown;
+      event_context?: unknown;
     };
     const incomingApiAppId = typeof raw.api_app_id === "string" ? raw.api_app_id : "";
     const incomingTeamId =
@@ -737,6 +742,50 @@ export function createSlackMonitorContext(params: {
       logVerbose(`slack: drop event with team_id=${incomingTeamId} (expected ${params.teamId})`);
       return true;
     }
+    if (params.userAuthorizationId) {
+      const hasMatchingUserAuthorization = (entries: unknown[]) =>
+        entries.some((entry) => {
+          if (!entry || typeof entry !== "object") {
+            return false;
+          }
+          const authorization = entry as { is_bot?: unknown; team_id?: unknown; user_id?: unknown };
+          return (
+            authorization.is_bot === false &&
+            authorization.user_id === params.userAuthorizationId &&
+            (!params.teamId || !authorization.team_id || authorization.team_id === params.teamId)
+          );
+        });
+      const authorizations = Array.isArray(raw.authorizations) ? raw.authorizations : [];
+      if (hasMatchingUserAuthorization(authorizations)) {
+        return false;
+      }
+
+      const eventContext = normalizeOptionalString(raw.event_context);
+      if (eventContext && params.userAuthorizationAppToken) {
+        try {
+          let cursor: string | undefined;
+          do {
+            const response = await params.app.client.apps.event.authorizations.list({
+              token: params.userAuthorizationAppToken,
+              event_context: eventContext,
+              limit: 100,
+              ...(cursor ? { cursor } : {}),
+            });
+            if (
+              Array.isArray(response.authorizations) &&
+              hasMatchingUserAuthorization(response.authorizations)
+            ) {
+              return false;
+            }
+            cursor = normalizeOptionalString(response.response_metadata?.next_cursor);
+          } while (cursor);
+        } catch (err) {
+          logVerbose(`slack: user authorization lookup failed: ${formatSlackError(err)}`);
+        }
+      }
+      logVerbose(`slack: drop event without user authorization for ${params.userAuthorizationId}`);
+      return true;
+    }
     return false;
   };
 
@@ -748,6 +797,7 @@ export function createSlackMonitorContext(params: {
     runtime: params.runtime,
     channelRuntime: params.channelRuntime,
     botUserId: params.botUserId,
+    userAuthorizationId: params.userAuthorizationId,
     botId: params.botId,
     teamId: params.teamId,
     apiAppId: params.apiAppId,

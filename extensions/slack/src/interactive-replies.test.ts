@@ -1,6 +1,9 @@
 // Slack tests cover interactive replies plugin behavior.
 import { describe, expect, it } from "vitest";
-import { compileSlackInteractiveReplies } from "./interactive-replies.js";
+import {
+  compileSlackInteractiveReplies,
+  isSlackInteractiveRepliesEnabled,
+} from "./interactive-replies.js";
 
 describe("compileSlackInteractiveReplies", () => {
   it("compiles inline Slack button directives into shared interactive blocks", () => {
@@ -190,5 +193,24 @@ describe("compileSlackInteractiveReplies", () => {
         },
       ],
     });
+  });
+});
+
+describe("isSlackInteractiveRepliesEnabled", () => {
+  it("disables interaction directives for user identity accounts", () => {
+    expect(
+      isSlackInteractiveRepliesEnabled({
+        cfg: {
+          channels: {
+            slack: {
+              identityMode: "user",
+              userToken: "xoxp-agent",
+              userTokenReadOnly: false,
+              capabilities: { interactiveReplies: true },
+            },
+          },
+        },
+      }),
+    ).toBe(false);
   });
 });

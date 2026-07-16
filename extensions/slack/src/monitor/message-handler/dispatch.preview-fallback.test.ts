@@ -877,9 +877,9 @@ vi.mock("../../stream-mode.js", () => ({
     rendered: incoming,
     source: incoming,
   }),
-  resolveSlackStreamingConfig: () => ({
+  resolveSlackStreamingConfig: (params: { nativeStreaming?: boolean }) => ({
     mode: mockedSlackStreamingMode,
-    nativeStreaming: mockedNativeStreaming,
+    nativeStreaming: params.nativeStreaming ?? mockedNativeStreaming,
     draftMode: mockedSlackDraftMode,
   }),
 }));
@@ -1344,6 +1344,17 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     });
     expect(createSlackDraftStreamMock).not.toHaveBeenCalled();
     expect(deliverRepliesMock).not.toHaveBeenCalled();
+  });
+
+  it("disables bot-only native Slack streaming for user identity sessions", async () => {
+    mockedNativeStreaming = true;
+
+    await dispatchPreparedSlackMessage(
+      createPreparedSlackMessage({ accountConfig: { identityMode: "user" } }),
+    );
+
+    expect(startSlackStreamMock).not.toHaveBeenCalled();
+    expect(createSlackDraftStreamMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not create a Slack thread for top-level messages when replyToMode is off", async () => {

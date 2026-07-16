@@ -151,7 +151,7 @@ export function registerSlackAssistantEvents(params: {
 
   slackApp.event("assistant_thread_started", async ({ event, body }) => {
     try {
-      if (ctx.shouldDropMismatchedSlackEvent(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent(body)) {
         return;
       }
       trackEvent?.();
@@ -178,7 +178,7 @@ export function registerSlackAssistantEvents(params: {
 
   slackApp.event("assistant_thread_context_changed", async ({ event, body }) => {
     try {
-      if (ctx.shouldDropMismatchedSlackEvent(body)) {
+      if (await ctx.shouldDropMismatchedSlackEvent(body)) {
         return;
       }
       trackEvent?.();

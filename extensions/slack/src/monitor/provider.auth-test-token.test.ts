@@ -2,6 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getSlackClient,
+  getSlackHandlerOrThrow,
+  getSlackHandlers,
   getSlackTestState,
   resetSlackTestState,
   runSlackMessageOnce,
@@ -29,6 +31,202 @@ describe("auth.test boot call", () => {
     if (firstArg != null) {
       expect(firstArg).not.toHaveProperty("token");
     }
+  });
+
+  it("accepts an authorized user event and replies with the configured user token", async () => {
+    resetSlackTestState({
+      channels: {
+        slack: {
+          identityMode: "user",
+          appToken: "xapp-test",
+          userToken: "xoxp-agent",
+          userTokenReadOnly: false,
+          dm: { enabled: true, policy: "open", allowFrom: ["*"] },
+          groupPolicy: "open",
+          streaming: { mode: "off" },
+        },
+      },
+    });
+    const runtimeLog = vi.fn();
+    const client = getSlackClient();
+    client.auth.test.mockResolvedValueOnce({
+      app_id: "A1",
+      user_id: "UAGENT",
+      user: "agent-user",
+      team_id: "T1",
+      is_enterprise_install: false,
+    });
+    const { replyMock, sendMock } = getSlackTestState();
+    replyMock.mockResolvedValue({ text: "hello" });
+
+    const monitor = startSlackMonitor(monitorSlackProvider, {
+      runtime: { log: runtimeLog, error: vi.fn(), exit: vi.fn() },
+    });
+    const handler = await getSlackHandlerOrThrow("message");
+    await handler({
+      body: {
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: [{ is_bot: false, user_id: "UAGENT", team_id: "T1" }],
+      },
+      event: {
+        type: "message",
+        user: "USENDER",
+        text: "hello",
+        ts: "100.000",
+        channel: "D1",
+        channel_type: "im",
+      },
+    });
+    await stopSlackMonitor(monitor);
+
+    expect(replyMock).toHaveBeenCalledTimes(1);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(sendMock.mock.calls[0]?.[2]).toMatchObject({ token: "xoxp-agent" });
+    expect(runtimeLog).not.toHaveBeenCalledWith(
+      expect.stringContaining("replace it with a Bot User"),
+    );
+    expect(getSlackHandlers().has("app_home_opened")).toBe(false);
+    expect(getSlackHandlers().has("assistant_thread_started")).toBe(false);
+  });
+
+  it("drops user identity events without the matching user authorization", async () => {
+    resetSlackTestState({
+      channels: {
+        slack: {
+          identityMode: "user",
+          appToken: "xapp-test",
+          userToken: "xoxp-agent",
+          userTokenReadOnly: false,
+          dm: { enabled: true, policy: "open", allowFrom: ["*"] },
+          groupPolicy: "open",
+        },
+      },
+    });
+    getSlackClient().auth.test.mockResolvedValueOnce({
+      app_id: "A1",
+      user_id: "UAGENT",
+      team_id: "T1",
+      is_enterprise_install: false,
+    });
+    const { replyMock, sendMock } = getSlackTestState();
+    replyMock.mockResolvedValue({ text: "unexpected" });
+
+    await runSlackMessageOnce(monitorSlackProvider, {
+      body: {
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: [{ is_bot: true, user_id: "UAGENT", team_id: "T1" }],
+      },
+      event: {
+        type: "message",
+        user: "USENDER",
+        text: "hello",
+        ts: "100.000",
+        channel: "D1",
+        channel_type: "im",
+      },
+    });
+
+    expect(replyMock).not.toHaveBeenCalled();
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a user event whose inline authorization was truncated to another installation", async () => {
+    resetSlackTestState({
+      channels: {
+        slack: {
+          identityMode: "user",
+          appToken: "xapp-test",
+          userToken: "xoxp-agent",
+          userTokenReadOnly: false,
+          dm: { enabled: true, policy: "open", allowFrom: ["*"] },
+          groupPolicy: "open",
+          streaming: { mode: "off" },
+        },
+      },
+    });
+    const client = getSlackClient();
+    client.auth.test.mockResolvedValueOnce({
+      app_id: "A1",
+      user_id: "UAGENT",
+      team_id: "T1",
+      is_enterprise_install: false,
+    });
+    client.apps.event.authorizations.list.mockResolvedValueOnce({
+      authorizations: [{ is_bot: false, user_id: "UAGENT", team_id: "T1" }],
+    });
+    const { replyMock, sendMock } = getSlackTestState();
+    replyMock.mockResolvedValue({ text: "hello" });
+
+    await runSlackMessageOnce(monitorSlackProvider, {
+      body: {
+        api_app_id: "A1",
+        team_id: "T1",
+        event_context: "EC123",
+        authorizations: [{ is_bot: true, user_id: "UBOT", team_id: "T1" }],
+      },
+      event: {
+        type: "message",
+        user: "USENDER",
+        text: "hello",
+        ts: "101.000",
+        channel: "D1",
+        channel_type: "im",
+      },
+    });
+
+    expect(client.apps.event.authorizations.list).toHaveBeenCalledWith({
+      token: "app-token",
+      event_context: "EC123",
+      limit: 100,
+    });
+    expect(replyMock).toHaveBeenCalledTimes(1);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires an app token for user identity HTTP mode authorization lookups", async () => {
+    resetSlackTestState({
+      channels: {
+        slack: {
+          mode: "http",
+          identityMode: "user",
+          userToken: "xoxp-agent",
+          userTokenReadOnly: false,
+          signingSecret: "secret-http",
+        },
+      },
+    });
+
+    const monitor = startSlackMonitor(monitorSlackProvider, { appToken: "" });
+
+    await expect(monitor.run).rejects.toThrow("Slack userToken + app tokens missing");
+  });
+
+  it("fails user identity startup when auth.test resolves a bot token", async () => {
+    resetSlackTestState({
+      channels: {
+        slack: {
+          identityMode: "user",
+          appToken: "xapp-test",
+          userToken: "xoxb-wrong",
+          userTokenReadOnly: false,
+        },
+      },
+    });
+    getSlackClient().auth.test.mockResolvedValueOnce({
+      app_id: "A1",
+      user_id: "UBOT",
+      bot_id: "BBOT",
+      team_id: "T1",
+      is_enterprise_install: false,
+    });
+
+    const monitor = startSlackMonitor(monitorSlackProvider);
+
+    await expect(monitor.run).rejects.toThrow(
+      "auth.test returned bot_id for a user identity token",
+    );
   });
 
   it("warns when auth.test returns a user id without bot_id", async () => {

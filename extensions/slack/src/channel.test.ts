@@ -508,6 +508,30 @@ describe("slackPlugin status", () => {
     });
   });
 
+  it("probes the user token for an explicit user identity account", async () => {
+    setSlackRuntime(null as never);
+    const probeSpy = vi.spyOn(probeModule, "probeSlack").mockResolvedValueOnce({ ok: true });
+    const cfg = {
+      channels: {
+        slack: {
+          identityMode: "user",
+          appToken: "xapp-test",
+          botToken: "xoxb-test",
+          userToken: "xoxp-test",
+          userTokenReadOnly: false,
+        },
+      },
+    } as OpenClawConfig;
+    const account = slackPlugin.config.resolveAccount(cfg, "default");
+
+    await slackPlugin.status!.probeAccount!({ account, timeoutMs: 2500, cfg });
+
+    expect(probeSpy).toHaveBeenCalledWith("xoxp-test", 2500, {
+      accountId: "default",
+      identityMode: "user",
+    });
+  });
+
   it("renders Slack probe token warnings in capabilities output", () => {
     const lines = slackPlugin.status?.formatCapabilitiesProbe?.({
       probe: {
@@ -1594,6 +1618,66 @@ describe("slackPlugin config", () => {
 
     expect(configured).toBe(true);
     expect(snapshot?.configured).toBe(true);
+  });
+
+  it("treats socket user identity accounts with a writable user token as configured", async () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        slack: {
+          mode: "socket",
+          identityMode: "user",
+          userToken: "xoxp-socket",
+          userTokenReadOnly: false,
+          appToken: "xapp-socket",
+        },
+      },
+    };
+
+    const { configured, snapshot } = await getSlackConfiguredState(cfg);
+
+    expect(configured).toBe(true);
+    expect(snapshot?.configured).toBe(true);
+  });
+
+  it("keeps read-only user identity accounts unconfigured", async () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        slack: {
+          mode: "socket",
+          identityMode: "user",
+          userToken: "xoxp-socket",
+          appToken: "xapp-socket",
+        },
+      },
+    };
+
+    const { configured, snapshot } = await getSlackConfiguredState(cfg);
+
+    expect(configured).toBe(false);
+    expect(snapshot?.configured).toBe(false);
+  });
+
+  it("requires an app token for HTTP user identity accounts", async () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        slack: {
+          mode: "http",
+          identityMode: "user",
+          userToken: "xoxp-http",
+          userTokenReadOnly: false,
+          signingSecret: "secret-http",
+        },
+      },
+    };
+
+    const missing = await getSlackConfiguredState(cfg);
+    expect(missing.configured).toBe(false);
+    expect(missing.snapshot?.configured).toBe(false);
+
+    cfg.channels!.slack!.appToken = "xapp-http";
+    const configured = await getSlackConfiguredState(cfg);
+    expect(configured.configured).toBe(true);
+    expect(configured.snapshot?.configured).toBe(true);
   });
 
   it("keeps socket mode requiring app token", async () => {

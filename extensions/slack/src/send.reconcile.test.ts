@@ -109,6 +109,58 @@ describe("reconcileSlackUnknownSend", () => {
     slackClientMocks.getSlackWriteClient.mockReset();
   });
 
+  it("opens a regular DM and strips app-only metadata for user identity sends", async () => {
+    const client = createSlackReconcileTestClient();
+    const userCfg = {
+      channels: {
+        slack: {
+          identityMode: "user",
+          userToken: "xoxp-user",
+          userTokenReadOnly: false,
+        },
+      },
+    } as OpenClawConfig;
+
+    await sendMessageSlack("user:U123", "hello", {
+      cfg: userCfg,
+      client,
+      deliveryQueueId: "queue-1",
+      metadata: { event_type: "assistant_thread_context", event_payload: { team_id: "T1" } },
+      identity: { username: "custom-name", iconEmoji: ":robot_face:" },
+    });
+
+    expect(client.conversations.open).toHaveBeenCalledWith({ users: "U123" });
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "D123", text: "hello" }),
+    );
+    const request = client.chat.postMessage.mock.calls[0]?.[0] as ChatPostMessageArguments;
+    expect(request.metadata).toBeUndefined();
+    expect(request).not.toHaveProperty("username");
+    expect(request).not.toHaveProperty("icon_emoji");
+  });
+
+  it("fails closed for user identity unknown-send reconciliation", async () => {
+    const userCfg = {
+      channels: {
+        slack: {
+          identityMode: "user",
+          userToken: "xoxp-user",
+          userTokenReadOnly: false,
+        },
+      },
+    } as OpenClawConfig;
+    const client = createSlackReconcileTestClient();
+
+    await expect(
+      reconcileSlackUnknownSend(createUnknownSendContext({ cfg: userCfg }), { client }),
+    ).resolves.toEqual({
+      status: "unresolved",
+      error: "Slack user identity cannot reconcile sends because message metadata is app-only",
+      retryable: false,
+    });
+    expect(client.conversations.history).not.toHaveBeenCalled();
+  });
+
   it("attaches an opaque durable id and reconciles the exact posted message", async () => {
     const client = createSlackReconcileTestClient();
     const metadata = await postWithDeliveryMetadata({ client });

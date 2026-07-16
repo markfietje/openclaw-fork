@@ -219,6 +219,9 @@ async function setSlackHeartbeatThreadStatus(params: {
   }
   const account = resolveSlackAccount({ cfg: params.cfg, accountId: params.accountId });
   assertSlackDirectSendAllowed(account);
+  if (account.config.identityMode === "user") {
+    return;
+  }
   const botToken = normalizeOptionalString(account.botToken);
   if (!botToken) {
     return;
@@ -601,12 +604,20 @@ const slackMessageAdapter = {
     admitDeferredDelivery: ({ cfg, accountId }) => {
       const effectiveAccountId =
         normalizeOptionalString(accountId) ?? resolveDefaultSlackAccountId(cfg);
-      return mergeSlackAccountConfig(cfg, effectiveAccountId).enterpriseOrgInstall === true
-        ? {
-            status: "permanent_rejection" as const,
-            reason: "unsupported_enterprise_slack_delivery",
-          }
-        : { status: "allowed" as const };
+      const accountConfig = mergeSlackAccountConfig(cfg, effectiveAccountId);
+      if (accountConfig.enterpriseOrgInstall === true) {
+        return {
+          status: "permanent_rejection" as const,
+          reason: "unsupported_enterprise_slack_delivery",
+        };
+      }
+      if (accountConfig.identityMode === "user") {
+        return {
+          status: "permanent_rejection" as const,
+          reason: "unsupported_slack_user_identity_deferred_delivery",
+        };
+      }
+      return { status: "allowed" as const };
     },
     reconcileUnknownSendKinds: { text: true },
     reconcileUnknownSend: async (ctx) =>
@@ -798,14 +809,18 @@ export const slackPlugin: ChannelPlugin<ResolvedSlackAccount, SlackProbe> = crea
         });
       },
       probeAccount: async ({ account, timeoutMs }) => {
-        const token = account.botToken?.trim();
-        if (!token) {
+        const credential =
+          account.config.identityMode === "user"
+            ? account.userToken?.trim()
+            : account.botToken?.trim();
+        if (!credential) {
           return { ok: false, error: "missing token" };
         }
         return await (
           await loadSlackProbeModule()
-        ).probeSlack(token, timeoutMs, {
+        ).probeSlack(credential, timeoutMs, {
           accountId: account.accountId,
+          ...(account.config.identityMode ? { identityMode: account.config.identityMode } : {}),
         });
       },
       formatCapabilitiesProbe: ({ probe }) => {
@@ -843,15 +858,18 @@ export const slackPlugin: ChannelPlugin<ResolvedSlackAccount, SlackProbe> = crea
       },
       resolveAccountSnapshot: ({ account }) => {
         const mode = account.config.mode ?? "socket";
+        const identityTokenStatus =
+          account.config.identityMode === "user" ? "userTokenStatus" : "botTokenStatus";
         const credentialConfigured =
           mode === "http"
             ? resolveConfiguredFromRequiredCredentialStatuses(account, [
-                "botTokenStatus",
+                identityTokenStatus,
                 "signingSecretStatus",
+                ...(account.config.identityMode === "user" ? (["appTokenStatus"] as const) : []),
               ])
             : mode === "socket"
               ? resolveConfiguredFromRequiredCredentialStatuses(account, [
-                  "botTokenStatus",
+                  identityTokenStatus,
                   "appTokenStatus",
                 ])
               : undefined;
@@ -871,10 +889,12 @@ export const slackPlugin: ChannelPlugin<ResolvedSlackAccount, SlackProbe> = crea
       startAccount: async (ctx) => {
         const account = ctx.account;
         const botToken = account.botToken?.trim();
+        const userToken = account.userToken?.trim();
         const appToken = account.appToken?.trim();
         ctx.log?.info(`[${account.accountId}] starting provider`);
         return (await loadSlackMonitorModule()).monitorSlackProvider({
           botToken: botToken ?? "",
+          userToken: userToken ?? "",
           appToken: appToken ?? "",
           accountId: account.accountId,
           config: ctx.cfg,

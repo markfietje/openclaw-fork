@@ -17,7 +17,12 @@ export type ClawsAddOptions = {
 };
 
 export type ClawsStatusOptions = { json?: boolean };
-export type ClawsRemoveOptions = { dryRun?: boolean; yes?: boolean; json?: boolean };
+export type ClawsRemoveOptions = {
+  dryRun?: boolean;
+  yes?: boolean;
+  planIntegrity?: string;
+  json?: boolean;
+};
 
 export function registerClawsCli(program: Command) {
   if (!isExperimentalClawsEnabled()) {
@@ -66,6 +71,7 @@ export function registerClawsCli(program: Command) {
     .argument("<claw-or-agent>", "Installed package name or final agent id")
     .option("--dry-run", "Preview removal without mutating state", false)
     .option("--yes", "Confirm removal", false)
+    .option("--plan-integrity <digest>", "Bind consent to an exact removal plan")
     .option("--json", "Print JSON", false)
     .action(async (target: string, opts: ClawsRemoveOptions) => {
       const { runClawsRemoveCommand } = await import("./claws-cli.runtime.js");

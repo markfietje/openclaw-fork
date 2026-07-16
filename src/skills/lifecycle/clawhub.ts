@@ -30,6 +30,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { pathExists } from "../../infra/fs-safe.js";
 import { withExtractedArchiveRoot } from "../../infra/install-flow.js";
 import { readJsonIfExists, tryReadJson, writeJson } from "../../infra/json-files.js";
+import { markClawPackageIndependentlyOwned } from "../../state/claw-package-adoption.js";
 import {
   CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
   installExtractedSkillRoot,
@@ -242,6 +243,7 @@ type ClawHubInstallParams = {
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
   logger?: Logger;
   config?: OpenClawConfig;
+  clawManaged?: boolean;
 };
 
 type ClawHubOfficialFlagContainer = {
@@ -1505,6 +1507,15 @@ async function performClawHubSkillInstall(
         ...(verification ? { verification } : {}),
       };
       await writeClawHubSkillsLockfile(params.workspaceDir, lock);
+      if (!params.clawManaged) {
+        markClawPackageIndependentlyOwned({
+          kind: "skill",
+          source: "clawhub",
+          ref: params.slug,
+          version,
+          workspace: params.workspaceDir,
+        });
+      }
       await reportClawHubSkillInstallTelemetry({
         baseUrl: params.baseUrl,
         slug: params.slug,
@@ -1602,6 +1613,7 @@ export async function installSkillFromClawHub(params: {
   onClawHubRisk?: (request: ClawHubRiskAcknowledgementRequest) => boolean | Promise<boolean>;
   logger?: Logger;
   config?: OpenClawConfig;
+  clawManaged?: boolean;
 }): Promise<InstallClawHubSkillResult> {
   return await installRequestedSkillFromClawHub(params);
 }

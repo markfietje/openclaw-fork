@@ -9,6 +9,7 @@ export type ClawHubSkillUninstallPlan = {
   workspaceDir: string;
   slug: string;
   version: string;
+  installedAt: number;
   targetDir: string;
   skillFilePath: string;
   skillFileSha256: string;
@@ -90,6 +91,7 @@ export async function planClawHubSkillUninstall(params: {
       workspaceDir: params.workspaceDir,
       slug,
       version: link.installedVersion,
+      installedAt: link.installedAt,
       targetDir,
       skillFilePath: link.skillFile.path,
       skillFileSha256: link.skillFile.sha256,

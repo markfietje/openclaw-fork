@@ -4,6 +4,7 @@ import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import {
   persistClawPackageRef,
+  readClawPackageRefs,
   updateClawPackageRefStatus,
   type PersistedClawPackageRef,
 } from "./provenance.js";
@@ -25,6 +26,7 @@ type PackageInstallerDeps = {
   preflightPlugin?: typeof preflightPluginInstall;
   persistPackageRef?: typeof persistClawPackageRef;
   completePackageRef?: typeof updateClawPackageRefStatus;
+  readPackageRefs?: typeof readClawPackageRefs;
 };
 
 type PlannedClawPackage = ClawPackage & { ownerAction: "install" | "reuse" };
@@ -107,6 +109,7 @@ export async function installClawPackages(
   const preflightPlugin = deps.preflightPlugin ?? preflightPluginInstall;
   const persistPackageRef = deps.persistPackageRef ?? persistClawPackageRef;
   const completePackageRef = deps.completePackageRef ?? updateClawPackageRefStatus;
+  const readPackageRefs = deps.readPackageRefs ?? readClawPackageRefs;
   const runtime = options.runtime ?? defaultRuntime;
   const installedPackages: PersistedClawPackageRef[] = [];
 
@@ -141,11 +144,23 @@ export async function installClawPackages(
         );
       }
       if (preflight.action === "reuse") {
+        const existingRefs = readPackageRefs({
+          ...options,
+          kind: pkg.kind,
+          source: pkg.source,
+          ref: pkg.ref,
+          version: pkg.version,
+        });
+        const ownership =
+          existingRefs.length > 0 &&
+          existingRefs.every((candidate) => candidate.ownership === "claw-installed")
+            ? "claw-installed"
+            : "independently-owned";
         installedPackages.push(
           persistPackageRef(plan, pkg, {
             ...options,
             status: "complete",
-            ownership: "independently-owned",
+            ownership,
           }),
         );
         continue;

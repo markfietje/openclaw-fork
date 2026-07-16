@@ -327,6 +327,12 @@ export async function buildClawRemovePlan(
         action: blocked ? "retain" : "remove",
         target: cron.schedulerJobId ?? cron.declarationKey,
         blocked,
+        details: {
+          expectedStatus: cron.status,
+          declarationKey: cron.declarationKey,
+          schedulerJobId: cron.schedulerJobId,
+          job: cron.job,
+        },
         ...(blocked ? { reason: `Cron ownership state is ${cron.status}.` } : {}),
       });
     }
@@ -487,51 +493,6 @@ export async function applyClawRemovePlan(
   if (JSON.stringify(plannedPackages) !== JSON.stringify(currentPackages)) {
     throw new ClawRemoveError("remove_changed", "Package ownership changed after remove planning.");
   }
-  let agentRemoved = false;
-  if (record.agentState === "present" && options.deleteAgent) {
-    try {
-      await options.deleteAgent(agentId);
-      agentRemoved = true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      updateClawInstallRecordStatus(agentId, "partial", options);
-      return {
-        schemaVersion: CLAW_REMOVE_RESULT_SCHEMA_VERSION,
-        stability: CLAW_OUTPUT_STABILITY,
-        dryRun: false,
-        status: "partial",
-        agentId,
-        agentRemoved: false,
-        workspaceFiles: [],
-        packages: [],
-        cronJobs: [],
-        packageRefsReleased: 0,
-        error: { code: "agent_cleanup_failed", message },
-      };
-    }
-  } else if (record.agentState === "present") {
-    if (options.commitConfig) {
-      await options.commitConfig((config) => {
-        const agents = config.agents?.list ?? [];
-        const agent = agents.find((candidate) => candidate.id === plan.agentId);
-        if (agent && digestAgent(agent) !== record.install.agentConfigDigest) {
-          throw new ClawRemoveError("agent_modified", "Agent config changed during remove.");
-        }
-        agentRemoved = Boolean(agent);
-        return pruneAgentConfig(config, agentId).config;
-      });
-    } else {
-      await deleteAgentConfigEntry({
-        agentId,
-        validate: (agent) => {
-          if (digestAgent(agent) !== record.install.agentConfigDigest) {
-            throw new ClawRemoveError("agent_modified", "Agent config changed during remove.");
-          }
-        },
-      });
-      agentRemoved = true;
-    }
-  }
   const cronJobs: RemovedCronJob[] = [];
   for (const cron of record.cronJobs) {
     if (cron.status !== "removed" && (!cron.schedulerJobId || cron.status !== "complete")) {
@@ -541,7 +502,7 @@ export async function applyClawRemovePlan(
       );
     }
     try {
-      if (cron.status !== "removed" && (!agentRemoved || !options.deleteAgent)) {
+      if (cron.status !== "removed") {
         if (!options.cronGateway) {
           throw new Error("Claw cron cleanup requires the gateway-owned cron.remove API.");
         }
@@ -571,13 +532,58 @@ export async function applyClawRemovePlan(
         dryRun: false,
         status: "partial",
         agentId: plan.agentId,
-        agentRemoved,
+        agentRemoved: false,
         workspaceFiles: [],
         packages: [],
         cronJobs,
         packageRefsReleased: 0,
         error: { code: "cron_cleanup_failed", message },
       };
+    }
+  }
+  let agentRemoved = false;
+  if (record.agentState === "present" && options.deleteAgent) {
+    try {
+      await options.deleteAgent(agentId);
+      agentRemoved = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      updateClawInstallRecordStatus(agentId, "partial", options);
+      return {
+        schemaVersion: CLAW_REMOVE_RESULT_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        dryRun: false,
+        status: "partial",
+        agentId,
+        agentRemoved: false,
+        workspaceFiles: [],
+        packages: [],
+        cronJobs,
+        packageRefsReleased: 0,
+        error: { code: "agent_cleanup_failed", message },
+      };
+    }
+  } else if (record.agentState === "present") {
+    if (options.commitConfig) {
+      await options.commitConfig((config) => {
+        const agents = config.agents?.list ?? [];
+        const agent = agents.find((candidate) => candidate.id === plan.agentId);
+        if (agent && digestAgent(agent) !== record.install.agentConfigDigest) {
+          throw new ClawRemoveError("agent_modified", "Agent config changed during remove.");
+        }
+        agentRemoved = Boolean(agent);
+        return pruneAgentConfig(config, agentId).config;
+      });
+    } else {
+      await deleteAgentConfigEntry({
+        agentId,
+        validate: (agent) => {
+          if (digestAgent(agent) !== record.install.agentConfigDigest) {
+            throw new ClawRemoveError("agent_modified", "Agent config changed during remove.");
+          }
+        },
+      });
+      agentRemoved = true;
     }
   }
   const packages = await applyClawPackageRemovals(packageDecisions, {

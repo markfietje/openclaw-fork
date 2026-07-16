@@ -208,7 +208,8 @@ function gatewayInput(plan: ClawAddPlan, ref: PersistedClawCronRef): Record<stri
       expr: job.schedule.cron,
       ...(job.schedule.timezone ? { tz: job.schedule.timezone } : {}),
     },
-    sessionTarget: job.session === "main" ? "session:main" : job.session,
+    sessionTarget:
+      job.session === "main" ? `session:agent:${plan.agent.finalId}:main` : job.session,
     wakeMode: "now",
     payload: { kind: "agentTurn", message: job.message },
     delivery: job.delivery

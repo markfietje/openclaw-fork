@@ -1354,4 +1354,17 @@ CREATE TABLE IF NOT EXISTS claw_installs (
   status TEXT NOT NULL,
   added_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS claw_workspace_files (
+  agent_id TEXT NOT NULL,
+  target_path TEXT NOT NULL,
+  schema_version TEXT NOT NULL,
+  workspace TEXT NOT NULL,
+  source_path TEXT NOT NULL,
+  content_digest TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, target_path)
 );\n`;

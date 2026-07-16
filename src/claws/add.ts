@@ -159,6 +159,7 @@ export async function applyClawAddPlan(
               {
                 level: "error",
                 code: "workspace_file_io_error",
+                phase: "mutation",
                 path: "$.workspace",
                 message: error instanceof Error ? error.message : String(error),
               },
@@ -171,6 +172,7 @@ export async function applyClawAddPlan(
       stability: CLAW_OUTPUT_STABILITY,
       dryRun: false,
       mutationAllowed: true,
+      planIntegrity: plan.planIntegrity,
       status: "partial",
       claw: plan.claw,
       agent: plan.agent,

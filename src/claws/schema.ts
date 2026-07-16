@@ -1,7 +1,19 @@
 // Strict parser for grouped Claw schema version 1 manifests.
 import { z } from "zod";
-import { HeartbeatSchema } from "../config/zod-schema.agent-runtime.js";
+import { parseDurationMs } from "../cli/parse-duration.js";
 import { computeNextRunAtMs } from "../cron/schedule.js";
+import { isDangerousHostEnvVarName } from "../infra/host-env-security.js";
+import { isAvatarImageDataUrl } from "../shared/avatar-policy.js";
+import {
+  conflictsWithClawPath,
+  isCanonicalClawHubPackageName,
+  isClawPackageManagerArtifactPinned,
+  isExactSemVer,
+  isPortableClawAvatar,
+  isSafeClawRelativePath,
+  isValidClawTimezone,
+  portableClawPathKey,
+} from "./schema-portability.js";
 import {
   CLAW_BOOTSTRAP_FILE_NAMES,
   CLAW_SCHEMA_VERSION,
@@ -15,21 +27,17 @@ const agentId = nonEmptyString.regex(
   /^[a-z][a-z0-9_-]{0,63}$/,
   "Agent id must start with a lowercase letter and contain only lowercase letters, digits, underscores, or hyphens.",
 );
-const exactVersion = nonEmptyString.regex(
-  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/,
+const exactVersion = nonEmptyString.refine(
+  isExactSemVer,
   "Package version must be an exact semantic version.",
 );
+const clawHubPackageName = nonEmptyString.refine(
+  isCanonicalClawHubPackageName,
+  "ClawHub package references must use their canonical lowercase name.",
+);
+const portableEnvKey = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-function isSafeRelativePath(value: string): boolean {
-  const normalized = value.replaceAll("\\", "/");
-  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) {
-    return false;
-  }
-  const segments = normalized.split("/");
-  return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
-}
-
-const packageRelativePath = nonEmptyString.refine(isSafeRelativePath, {
+const packageRelativePath = nonEmptyString.refine(isSafeClawRelativePath, {
   message: "Path must be package-relative and must not contain traversal segments.",
 });
 
@@ -38,7 +46,12 @@ const identitySchema = z
     name: optionalString,
     theme: optionalString,
     emoji: optionalString,
-    avatar: optionalString,
+    avatar: nonEmptyString
+      .refine(isPortableClawAvatar, {
+        message:
+          "Avatar must be a bounded image data URL or managed workspace-relative image path.",
+      })
+      .optional(),
   })
   .strict();
 
@@ -67,7 +80,35 @@ const agentSchema = z
       })
       .strict()
       .optional(),
-    heartbeat: HeartbeatSchema,
+    heartbeat: z
+      .object({
+        every: nonEmptyString
+          .refine((value) => {
+            try {
+              parseDurationMs(value, { defaultUnit: "m" });
+              return true;
+            } catch {
+              return false;
+            }
+          }, "Invalid heartbeat duration.")
+          .optional(),
+        activeHours: z
+          .object({
+            start: nonEmptyString.regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).optional(),
+            end: nonEmptyString.regex(/^(?:(?:[01]\d|2[0-3]):[0-5]\d|24:00)$/).optional(),
+            timezone: nonEmptyString
+              .refine(isValidClawTimezone, "Invalid IANA timezone.")
+              .optional(),
+          })
+          .strict()
+          .optional(),
+        lightContext: z.boolean().optional(),
+        isolatedSession: z.boolean().optional(),
+        skipWhenBusy: z.boolean().optional(),
+        timeoutSeconds: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
     humanDelay: z
       .object({
         mode: z.enum(["off", "natural", "custom"]).optional(),
@@ -108,7 +149,7 @@ const packageSchema = z
   .object({
     kind: z.enum(["skill", "plugin"]),
     source: z.literal("clawhub"),
-    ref: nonEmptyString,
+    ref: clawHubPackageName,
     version: exactVersion,
   })
   .strict();
@@ -123,12 +164,27 @@ const mcpToolFilterSchema = z
     include: z.array(nonEmptyString).min(1).optional(),
     exclude: z.array(nonEmptyString).min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((filter, ctx) => {
+    for (const field of ["include", "exclude"] as const) {
+      const seen = new Set<string>();
+      for (const [index, value] of (filter[field] ?? []).entries()) {
+        if (seen.has(value)) {
+          ctx.addIssue({
+            code: "custom",
+            path: [field, index],
+            message: "Tool filter entries must be unique.",
+          });
+        }
+        seen.add(value);
+      }
+    }
+  });
 
 const mcpServerCommonShape = {
   toolFilter: mcpToolFilterSchema.optional(),
-  timeout: z.number().positive().optional(),
-  connectTimeout: z.number().positive().optional(),
+  timeout: z.number().finite().positive().optional(),
+  connectTimeout: z.number().finite().positive().optional(),
 };
 
 const stdioMcpServerSchema = z
@@ -136,23 +192,60 @@ const stdioMcpServerSchema = z
     command: nonEmptyString,
     transport: z.literal("stdio").optional(),
     args: z.array(nonEmptyString).optional(),
-    env: z.record(nonEmptyString, environmentReference).optional(),
+    env: z
+      .record(
+        nonEmptyString.regex(portableEnvKey, "Invalid portable environment key."),
+        environmentReference,
+      )
+      .optional(),
     ...mcpServerCommonShape,
   })
-  .strict();
+  .strict()
+  .superRefine((server, ctx) => {
+    if (isClawPackageManagerArtifactPinned(server.command, server.args ?? []) === false) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["args"],
+        message: "Package-manager MCP commands must select one exact immutable package version.",
+      });
+    }
+    for (const key of Object.keys(server.env ?? {})) {
+      if (isDangerousHostEnvVarName(key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["env", key],
+          message: "Environment key is blocked by the spawned-process safety policy.",
+        });
+      }
+    }
+  });
 
 const remoteMcpServerSchema = z
   .object({
-    url: nonEmptyString
-      .url()
-      .refine((value) => value.startsWith("https://") || value.startsWith("http://"), {
-        message: "Remote MCP URLs must use http or https.",
-      }),
+    url: nonEmptyString.url(),
     transport: z.enum(["sse", "streamable-http"]),
     auth: z.literal("oauth").optional(),
     ...mcpServerCommonShape,
   })
-  .strict();
+  .strict()
+  .superRefine((server, ctx) => {
+    const url = new URL(server.url);
+    const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["url"],
+        message: "Remote MCP URLs must use HTTPS, except HTTP on an exact loopback host.",
+      });
+    }
+    if (url.username || url.password || url.hash) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["url"],
+        message: "Remote MCP URLs must not contain user information or fragments.",
+      });
+    }
+  });
 
 const mcpServerSchema = z.union([stdioMcpServerSchema, remoteMcpServerSchema]);
 
@@ -160,8 +253,8 @@ const cronJobSchema = z
   .object({
     id: agentId,
     name: optionalString,
-    schedule: z.object({ cron: nonEmptyString, timezone: optionalString }).strict(),
-    session: z.enum(["main", "isolated", "current"]),
+    schedule: z.object({ cron: nonEmptyString, timezone: nonEmptyString }).strict(),
+    session: z.enum(["main", "isolated"]),
     message: nonEmptyString,
     delivery: z
       .object({
@@ -173,6 +266,23 @@ const cronJobSchema = z
   })
   .strict()
   .superRefine((job, ctx) => {
+    if (job.schedule.cron.trim().split(/\s+/).length !== 5) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["schedule", "cron"],
+        message: "Cron schedule must use exactly five fields.",
+      });
+    }
+    if (
+      (job.delivery?.mode === "none" && job.delivery.channel !== undefined) ||
+      (job.delivery?.mode === "announce" && job.delivery.channel !== "last")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["delivery"],
+        message: 'Delivery must be { mode: "none" } or { mode: "announce", channel: "last" }.',
+      });
+    }
     try {
       computeNextRunAtMs(
         { kind: "cron", expr: job.schedule.cron, tz: job.schedule.timezone },
@@ -207,23 +317,24 @@ const manifestSchema = z
     const workspaceTargets = new Set<string>();
     for (const name of CLAW_BOOTSTRAP_FILE_NAMES) {
       if (manifest.workspace.bootstrapFiles[name]) {
-        workspaceTargets.add(name);
+        workspaceTargets.add(portableClawPathKey(name));
       }
     }
     manifest.workspace.files.forEach((file, index) => {
-      if (workspaceTargets.has(file.path)) {
+      const destinationKey = portableClawPathKey(file.path);
+      if (conflictsWithClawPath(workspaceTargets, destinationKey)) {
         ctx.addIssue({
           code: "custom",
           path: ["workspace", "files", index, "path"],
           message: `Workspace destination ${JSON.stringify(file.path)} is declared more than once.`,
         });
       }
-      workspaceTargets.add(file.path);
+      workspaceTargets.add(destinationKey);
     });
 
     const packageKeys = new Set<string>();
     manifest.packages.forEach((pkg, index) => {
-      const key = `${pkg.kind}:${pkg.source}:${pkg.ref}`;
+      const key = `${pkg.kind}:${pkg.source}:${pkg.ref.toLowerCase()}`;
       if (packageKeys.has(key)) {
         ctx.addIssue({
           code: "custom",
@@ -233,6 +344,18 @@ const manifestSchema = z
       }
       packageKeys.add(key);
     });
+
+    const managedPaths = new Set(
+      manifest.workspace.files.map((file) => portableClawPathKey(file.path)),
+    );
+    const avatar = manifest.agent.identity?.avatar;
+    if (avatar && !isAvatarImageDataUrl(avatar) && !managedPaths.has(portableClawPathKey(avatar))) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["agent", "identity", "avatar"],
+        message: "Workspace-relative avatar must match a workspace.files destination.",
+      });
+    }
 
     const cronIds = new Set<string>();
     manifest.cronJobs.forEach((job, index) => {
@@ -260,6 +383,7 @@ function diagnosticsFromZodError(error: z.ZodError): ClawDiagnostic[] {
   return error.issues.map((issue) => ({
     level: "error",
     code: "invalid_manifest",
+    phase: "schema",
     path: formatIssuePath(issue.path),
     message: issue.message,
   }));

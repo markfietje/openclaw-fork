@@ -6,16 +6,20 @@ import type { ClawAddPlan, ClawPackage } from "./types.js";
 function plan(packages: ClawPackage[]): ClawAddPlan {
   return {
     schemaVersion: "openclaw.clawAddPlan.v1",
+    manifestSchemaVersion: 1,
     stability: "experimental",
     dryRun: true,
     mutationAllowed: false,
+    planIntegrity: "sha256:plan",
     claw: {
       kind: "package",
       name: "incident-claw",
       version: "1.0.0",
       packageRoot: "/tmp/claw",
       manifestPath: "/tmp/claw/claw.json",
+      integrityKind: "artifact",
       integrity: "sha256:claw",
+      byteLength: 100,
     },
     agent: {
       requestedId: "incident",
@@ -40,6 +44,7 @@ function plan(packages: ClawPackage[]): ClawAddPlan {
       details: pkg,
       blocked: false,
     })),
+    readiness: { ready: true, requirements: [] },
     blockers: [],
     diagnostics: [],
   };

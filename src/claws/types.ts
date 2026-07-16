@@ -10,6 +10,7 @@ export type ClawDiagnosticLevel = "error" | "warning";
 export type ClawDiagnostic = {
   level: ClawDiagnosticLevel;
   code: string;
+  phase: "parse" | "schema" | "policy" | "plan" | "mutation";
   path: string;
   message: string;
 };
@@ -111,9 +112,9 @@ export type ClawCronJob = {
   name?: string;
   schedule: {
     cron: string;
-    timezone?: string;
+    timezone: string;
   };
-  session: "main" | "isolated" | "current";
+  session: "main" | "isolated";
   message: string;
   delivery?: {
     mode: "none" | "announce";
@@ -136,7 +137,9 @@ export type ClawSourceIdentity = {
   version: string;
   packageRoot: string;
   manifestPath: string;
+  integrityKind: "artifact" | "development-snapshot";
   integrity: string;
+  byteLength: number;
 };
 
 export type ClawReadResult =
@@ -163,11 +166,17 @@ export type ClawAddPlanAction = {
   reason?: string;
 };
 
+export type ClawLocalPrerequisite =
+  | { kind: "environment"; mcpServer: string; name: string }
+  | { kind: "oauth"; mcpServer: string };
+
 export type ClawAddPlan = {
   schemaVersion: typeof CLAW_ADD_PLAN_SCHEMA_VERSION;
+  manifestSchemaVersion: typeof CLAW_SCHEMA_VERSION;
   stability: typeof CLAW_OUTPUT_STABILITY;
   dryRun: true;
   mutationAllowed: false;
+  planIntegrity: string;
   claw: ClawSourceIdentity;
   agent: {
     requestedId: string;
@@ -185,6 +194,10 @@ export type ClawAddPlan = {
     blockedActions: number;
   };
   actions: ClawAddPlanAction[];
+  readiness: {
+    ready: boolean;
+    requirements: ClawLocalPrerequisite[];
+  };
   blockers: ClawDiagnostic[];
   diagnostics: ClawDiagnostic[];
 };

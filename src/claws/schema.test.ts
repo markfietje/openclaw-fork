@@ -34,7 +34,7 @@ const baseManifest = {
   mcpServers: {
     github: {
       command: "npx",
-      args: ["-y", "@acme/github-mcp"],
+      args: ["--yes", "@acme/github-mcp@3.4.1"],
       env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
       toolFilter: { include: ["issues_list"], exclude: ["repository_delete"] },
       timeout: 30,
@@ -72,7 +72,9 @@ async function createPlanSource(): Promise<{ source: ClawSourceIdentity; workspa
       version: "1.0.0",
       packageRoot: root,
       manifestPath: join(root, "openclaw.claw.json"),
+      integrityKind: "development-snapshot",
       integrity: "sha256:test",
+      byteLength: 0,
     },
     workspace: join(root, "new-workspace"),
   };
@@ -251,7 +253,12 @@ describe("parseClawManifest", () => {
 
     const cron = parseClawManifest({
       ...baseManifest,
-      cronJobs: [{ ...baseManifest.cronJobs[0], schedule: { cron: "not a cron expression" } }],
+      cronJobs: [
+        {
+          ...baseManifest.cronJobs[0],
+          schedule: { cron: "not a cron expression", timezone: "UTC" },
+        },
+      ],
     });
     expect(cron.ok).toBe(false);
     expect(cron.diagnostics).toContainEqual(
@@ -288,8 +295,10 @@ describe("readClawManifestFile", () => {
       kind: "package",
       name: "@acme/github-triage",
       version: "3.2.1",
+      integrityKind: "development-snapshot",
     });
     expect(result.source.integrity).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(result.source.byteLength).toBeGreaterThan(0);
   });
 
   it("synthesizes explicit development identity for a standalone manifest", async () => {
@@ -356,7 +365,12 @@ describe("buildClawAddPlan", () => {
       stability: "experimental",
       dryRun: true,
       mutationAllowed: false,
+      planIntegrity: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       agent: { requestedId: "github-triage", finalId: "github-triage", workspace },
+      readiness: {
+        ready: false,
+        requirements: [{ kind: "environment", mcpServer: "github", name: "GITHUB_TOKEN" }],
+      },
       summary: {
         totalActions: 8,
         agentActions: 1,
@@ -421,5 +435,27 @@ describe("buildClawAddPlan", () => {
     expect(plan.actions.find((action) => action.kind === "cronJob")?.target).toContain(
       "agent=triage-two",
     );
+  });
+
+  it("binds plan integrity to the source and planned mutations", async () => {
+    const { source, workspace } = await createPlanSource();
+    const first = await buildClawAddPlan({
+      manifest: requireManifest(),
+      source,
+      context: { workspace },
+    });
+    const repeated = await buildClawAddPlan({
+      manifest: requireManifest(),
+      source,
+      context: { workspace },
+    });
+    const changed = await buildClawAddPlan({
+      manifest: requireManifest(),
+      source: { ...source, integrity: "sha256:changed" },
+      context: { workspace },
+    });
+
+    expect(repeated.planIntegrity).toBe(first.planIntegrity);
+    expect(changed.planIntegrity).not.toBe(first.planIntegrity);
   });
 });

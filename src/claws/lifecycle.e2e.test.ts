@@ -75,7 +75,7 @@ describe("claws lifecycle cli e2e", () => {
     });
   });
 
-  it("fails closed in dry-run when package preflight is not available", async () => {
+  it("builds a complete read-only plan with deferred package blockers", async () => {
     const result = await runOpenClaw(["claws", "add", manifestPath, "--dry-run", "--json"], {
       expectFailure: true,
     });
@@ -96,10 +96,12 @@ describe("claws lifecycle cli e2e", () => {
         cronJobActions: 1,
         blockedActions: 2,
       },
-      blockers: expect.arrayContaining([
-        expect.objectContaining({ code: "package_install_unavailable" }),
-      ]),
+      blockers: [
+        { code: "package_install_unavailable", phase: "plan" },
+        { code: "package_install_unavailable", phase: "plan" },
+      ],
     });
+    expect(result.code).toBe(1);
   });
 
   it("creates exactly one agent and root install record after explicit consent", async () => {

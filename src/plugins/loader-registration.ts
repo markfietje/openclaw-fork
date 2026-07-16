@@ -8,7 +8,7 @@ import type { PluginRecord, PluginRegistry } from "./registry.js";
 import { validateJsonSchemaValue } from "./schema-validator.js";
 import type { OpenClawPluginDefinition, PluginRegistrationMode } from "./types.js";
 
-export class PluginLoadFailureError extends Error {
+class PluginLoadFailureError extends Error {
   readonly pluginIds: string[];
   readonly registry: PluginRegistry;
 

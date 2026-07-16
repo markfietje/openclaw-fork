@@ -485,6 +485,7 @@ final class NodeAppModel {
     private var forceOperatorTalkPermissionUpgradeRequest = false
     @ObservationIgnored private var talkPermissionUpgradeTask: Task<Void, Never>?
     @ObservationIgnored private var talkPermissionUpgradeReconnectTask: Task<Void, Never>?
+    private var talkPermissionUpgradeReconnectGeneration: UInt64 = 0
     private var lastTalkPermissionReconnectAttemptAt: Date?
     private var voiceWakeSyncTask: Task<Void, Never>?
     @ObservationIgnored private var cameraHUDDismissTask: Task<Void, Never>?
@@ -1274,9 +1275,12 @@ final class NodeAppModel {
         self.operatorGatewayTask = nil
         let sessionBox = config.tls.map { WebSocketSessionBox(session: GatewayTLSPinningSession(params: $0)) }
         let routeGeneration = self.gatewayRouteGeneration
+        self.talkPermissionUpgradeReconnectGeneration &+= 1
+        let reconnectGeneration = self.talkPermissionUpgradeReconnectGeneration
         self.talkPermissionUpgradeReconnectTask?.cancel()
         self.talkPermissionUpgradeReconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.finishTalkPermissionUpgradeReconnect(generation: reconnectGeneration) }
             await self.operatorGateway.disconnect()
             guard !Task.isCancelled,
                   self.talkMode.isEnabled,
@@ -1319,6 +1323,7 @@ final class NodeAppModel {
         self.forceOperatorTalkPermissionUpgradeRequest = false
         self.talkPermissionUpgradeTask?.cancel()
         self.talkPermissionUpgradeTask = nil
+        self.talkPermissionUpgradeReconnectGeneration &+= 1
         self.talkPermissionUpgradeReconnectTask?.cancel()
         self.talkPermissionUpgradeReconnectTask = nil
         self.lastTalkPermissionReconnectAttemptAt = nil
@@ -1334,8 +1339,11 @@ final class NodeAppModel {
         self.operatorGatewayTask = nil
         let sessionBox = config.tls.map { WebSocketSessionBox(session: GatewayTLSPinningSession(params: $0)) }
         let routeGeneration = self.gatewayRouteGeneration
+        self.talkPermissionUpgradeReconnectGeneration &+= 1
+        let reconnectGeneration = self.talkPermissionUpgradeReconnectGeneration
         self.talkPermissionUpgradeReconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.finishTalkPermissionUpgradeReconnect(generation: reconnectGeneration) }
             await self.operatorGateway.disconnect()
             guard !Task.isCancelled,
                   self.isCurrentGatewayRoute(
@@ -1364,18 +1372,36 @@ final class NodeAppModel {
             return
         }
 
-        GatewayDiagnostics.log("talk permission approval poll reconnect")
         let now = Date()
         if let lastTalkPermissionReconnectAttemptAt,
            now.timeIntervalSince(lastTalkPermissionReconnectAttemptAt) < 6
         {
             return
         }
+        // The operator loop owns handshake retries. Polling only revives a loop
+        // that paused for approval; it must never impose a timeout on an active attempt.
+        guard Self.shouldRestartTalkPermissionUpgradePoll(
+            hasOperatorGatewayTask: self.operatorGatewayTask != nil,
+            hasReconnectTask: self.talkPermissionUpgradeReconnectTask != nil)
+        else { return }
+        GatewayDiagnostics.log("talk permission approval poll reconnect")
         self.lastTalkPermissionReconnectAttemptAt = now
         self.gatewayAutoReconnectEnabled = true
         self.gatewayPairingPaused = false
         self.gatewayPairingRequestId = nil
         self.restartOperatorGatewayForTalkPermissionUpgrade(config)
+    }
+
+    nonisolated static func shouldRestartTalkPermissionUpgradePoll(
+        hasOperatorGatewayTask: Bool,
+        hasReconnectTask: Bool) -> Bool
+    {
+        !hasOperatorGatewayTask && !hasReconnectTask
+    }
+
+    private func finishTalkPermissionUpgradeReconnect(generation: UInt64) {
+        guard self.talkPermissionUpgradeReconnectGeneration == generation else { return }
+        self.talkPermissionUpgradeReconnectTask = nil
     }
 
     func setTalkSpeakerphoneEnabled(_ enabled: Bool) {

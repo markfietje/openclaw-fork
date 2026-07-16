@@ -52,7 +52,9 @@ async function makePlan(params?: {
     version: "1.0.0",
     packageRoot: root,
     manifestPath: join(root, "openclaw.claw.json"),
+    integrityKind: "development-snapshot",
     integrity: "sha256:manifest",
+    byteLength: 0,
   };
   const plan = await buildClawAddPlan({
     manifest: parsed.manifest,
@@ -86,8 +88,11 @@ describe("createClawWorkspaceFiles", () => {
         schemaVersion: "openclaw.clawWorkspaceFileRecord.v1",
         agentId: "workspace-agent",
         path: "AGENTS.md",
+        sourcePath: "content/AGENTS.md",
         contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        status: "complete",
         createdAtMs: 10,
+        updatedAtMs: 10,
       }),
       expect.objectContaining({
         agentId: "workspace-agent",
@@ -186,6 +191,7 @@ describe("workspace files in the consented add lifecycle", () => {
     let config: OpenClawConfig = {};
 
     const result = await applyClawAddPlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: stateEnv(root),
       nowMs: 30,
       commitConfig: async (transform) => {
@@ -217,6 +223,7 @@ describe("workspace files in the consented add lifecycle", () => {
     let config: OpenClawConfig = {};
 
     const result = await applyClawAddPlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: stateEnv(root),
       nowMs: 40,
       commitConfig: async (transform) => {

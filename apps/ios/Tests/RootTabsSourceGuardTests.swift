@@ -1,7 +1,18 @@
 import Foundation
+import SwiftUI
 import Testing
+@testable import OpenClaw
 
 struct RootTabsSourceGuardTests {
+    @Test func `unified chat voice tab icon cache follows appearance`() {
+        let light = UnifiedChatVoiceTabIcon.CacheKey(state: .active, colorScheme: .light)
+        let sameLight = UnifiedChatVoiceTabIcon.CacheKey(state: .active, colorScheme: .light)
+        let dark = UnifiedChatVoiceTabIcon.CacheKey(state: .active, colorScheme: .dark)
+
+        #expect(light == sameLight)
+        #expect(light != dark)
+    }
+
     @Test func `app applies initial scene phase before gateway admission`() throws {
         let source = try String(contentsOf: Self.openClawAppSourceURL(), encoding: .utf8)
         let startupTask = try Self.extract(

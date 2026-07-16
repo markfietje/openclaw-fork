@@ -8,6 +8,7 @@ struct RootTabs: View {
     @Environment(VoiceWakeManager.self) private var voiceWake
     @Environment(GatewayConnectionController.self) private var gatewayController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.rootTabsUserInterfaceIdiomOverride) private var userInterfaceIdiomOverride
     @Environment(\.scenePhase) private var scenePhase
@@ -924,7 +925,8 @@ extension RootTabs {
                         .font(OpenClawType.caption)
                 } icon: {
                     UnifiedChatVoiceTabIcon.image(
-                        state: self.phoneChatVoiceIconState)
+                        state: self.phoneChatVoiceIconState,
+                        colorScheme: self.colorScheme)
                 }
                 .accessibilityLabel(
                     self.appModel.talkMode.isEnabled ? "Chat, voice active" : "Chat")

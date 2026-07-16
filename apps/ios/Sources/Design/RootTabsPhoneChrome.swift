@@ -13,14 +13,22 @@ enum UnifiedChatVoiceTabIcon {
         }
     }
 
+    struct CacheKey: Hashable {
+        let state: State
+        let colorScheme: ColorScheme
+    }
+
     private static let canvasSize = CGSize(width: 30, height: 30)
-    @MainActor private static var imageCache: [State: UIImage] = [:]
+    @MainActor private static var imageCache: [CacheKey: UIImage] = [:]
 
     @MainActor
-    static func image(state: State) -> Image {
-        let rendered = self.imageCache[state] ?? {
-            let image = self.renderedImage(state: state)
-            self.imageCache[state] = image
+    static func image(state: State, colorScheme: ColorScheme) -> Image {
+        // Voice-active icons render the adaptive brand color into bitmap pixels;
+        // appearance must therefore participate in cache identity.
+        let cacheKey = CacheKey(state: state, colorScheme: colorScheme)
+        let rendered = self.imageCache[cacheKey] ?? {
+            let image = self.renderedImage(state: state, colorScheme: colorScheme)
+            self.imageCache[cacheKey] = image
             return image
         }()
         return Image(uiImage: rendered)
@@ -28,8 +36,10 @@ enum UnifiedChatVoiceTabIcon {
     }
 
     @MainActor
-    private static func renderedImage(state: State) -> UIImage {
-        let format = UIGraphicsImageRendererFormat()
+    private static func renderedImage(state: State, colorScheme: ColorScheme) -> UIImage {
+        let userInterfaceStyle: UIUserInterfaceStyle = colorScheme == .dark ? .dark : .light
+        let traits = UITraitCollection(userInterfaceStyle: userInterfaceStyle)
+        let format = UIGraphicsImageRendererFormat(for: traits)
         format.opaque = false
         format.scale = UIScreen.main.scale
         let renderer = UIGraphicsImageRenderer(size: self.canvasSize, format: format)
@@ -38,7 +48,9 @@ enum UnifiedChatVoiceTabIcon {
             guard let bubble = UIImage(systemName: "bubble.left.fill", withConfiguration: symbolConfig) else {
                 return
             }
-            let fill = state.isVoiceActive ? UIColor(OpenClawBrand.accent) : UIColor.black
+            let fill = state.isVoiceActive
+                ? UIColor(OpenClawBrand.accent).resolvedColor(with: traits)
+                : UIColor.black
             let tintedBubble = bubble.withTintColor(fill, renderingMode: .alwaysOriginal)
             let bubbleRect = CGRect(
                 x: (self.canvasSize.width - tintedBubble.size.width) / 2,

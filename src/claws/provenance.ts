@@ -15,9 +15,12 @@ export type ClawInstallStatus = "pending" | "complete" | "partial";
 export type PersistedClawInstall = {
   schemaVersion: typeof CLAW_INSTALL_RECORD_SCHEMA_VERSION;
   claw: ClawAddPlan["claw"];
+  manifestSchemaVersion: ClawAddPlan["manifestSchemaVersion"];
+  planIntegrity: string;
   agentId: string;
   workspace: string;
   agentConfigDigest: string;
+  agentOwnedPaths: string[];
   status: ClawInstallStatus;
   addedAtMs: number;
   updatedAtMs: number;
@@ -30,10 +33,15 @@ type InstallRow = {
   claw_version: string;
   package_root: string;
   manifest_path: string;
+  integrity_kind: "artifact" | "development-snapshot";
   integrity: string;
+  source_byte_length: number | bigint;
+  manifest_schema_version: number | bigint;
+  plan_integrity: string;
   agent_id: string;
   workspace: string;
   agent_config_digest: string;
+  agent_owned_paths_json: string;
   status: ClawInstallStatus;
   added_at_ms: number | bigint;
   updated_at_ms: number | bigint;
@@ -52,11 +60,16 @@ function rowToInstall(row: InstallRow): PersistedClawInstall {
       version: row.claw_version,
       packageRoot: row.package_root,
       manifestPath: row.manifest_path,
+      integrityKind: row.integrity_kind,
       integrity: row.integrity,
+      byteLength: Number(row.source_byte_length),
     },
+    manifestSchemaVersion: Number(row.manifest_schema_version) as 1,
+    planIntegrity: row.plan_integrity,
     agentId: row.agent_id,
     workspace: row.workspace,
     agentConfigDigest: row.agent_config_digest,
+    agentOwnedPaths: JSON.parse(row.agent_owned_paths_json) as string[],
     status: row.status,
     addedAtMs: Number(row.added_at_ms),
     updatedAtMs: Number(row.updated_at_ms),
@@ -70,15 +83,22 @@ export function persistClawInstallRecord(
   const nowMs = options.nowMs ?? Date.now();
   const status = options.status ?? "complete";
   const agentConfigDigest = digestAgentConfig(plan);
+  const agentOwnedPaths = plan.actions
+    .filter((action) => action.kind === "agent")
+    .map((action) => action.target);
   runOpenClawStateWriteTransaction(({ db }) => {
     db.prepare(
       `INSERT INTO claw_installs (
          agent_id, schema_version, source_kind, claw_name, claw_version,
-         package_root, manifest_path, integrity, workspace, agent_config_digest,
+         package_root, manifest_path, integrity_kind, integrity, source_byte_length,
+         manifest_schema_version, plan_integrity, workspace, agent_config_digest,
+         agent_owned_paths_json,
          status, added_at_ms, updated_at_ms
        ) VALUES (
          @agent_id, @schema_version, @source_kind, @claw_name, @claw_version,
-         @package_root, @manifest_path, @integrity, @workspace, @agent_config_digest,
+         @package_root, @manifest_path, @integrity_kind, @integrity, @source_byte_length,
+         @manifest_schema_version, @plan_integrity, @workspace, @agent_config_digest,
+         @agent_owned_paths_json,
          @status, @added_at_ms, @updated_at_ms
        )`,
     ).run({
@@ -89,9 +109,14 @@ export function persistClawInstallRecord(
       claw_version: plan.claw.version,
       package_root: plan.claw.packageRoot,
       manifest_path: plan.claw.manifestPath,
+      integrity_kind: plan.claw.integrityKind,
       integrity: plan.claw.integrity,
+      source_byte_length: plan.claw.byteLength,
+      manifest_schema_version: plan.manifestSchemaVersion,
+      plan_integrity: plan.planIntegrity,
       workspace: plan.agent.workspace,
       agent_config_digest: agentConfigDigest,
+      agent_owned_paths_json: JSON.stringify(agentOwnedPaths),
       status,
       added_at_ms: nowMs,
       updated_at_ms: nowMs,
@@ -100,9 +125,12 @@ export function persistClawInstallRecord(
   return {
     schemaVersion: CLAW_INSTALL_RECORD_SCHEMA_VERSION,
     claw: plan.claw,
+    manifestSchemaVersion: plan.manifestSchemaVersion,
+    planIntegrity: plan.planIntegrity,
     agentId: plan.agent.finalId,
     workspace: plan.agent.workspace,
     agentConfigDigest,
+    agentOwnedPaths,
     status,
     addedAtMs: nowMs,
     updatedAtMs: nowMs,
@@ -131,7 +159,9 @@ export function readClawInstallRecord(
   const row = database.db
     .prepare(
       `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
-              manifest_path, integrity, agent_id, workspace, agent_config_digest,
+              manifest_path, integrity_kind, integrity, source_byte_length,
+              manifest_schema_version, plan_integrity, agent_id, workspace,
+              agent_config_digest, agent_owned_paths_json,
               status, added_at_ms, updated_at_ms
          FROM claw_installs
         WHERE agent_id = ?`,
@@ -147,8 +177,9 @@ export function readClawInstallRecords(
   const rows = database.db
     .prepare(
       `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
-              manifest_path, integrity, agent_id, workspace, agent_config_digest,
-              status, added_at_ms, updated_at_ms
+              manifest_path, integrity_kind, integrity, source_byte_length,
+              manifest_schema_version, plan_integrity, agent_id, workspace,
+              agent_config_digest, agent_owned_paths_json, status, added_at_ms, updated_at_ms
          FROM claw_installs
         ORDER BY agent_id`,
     )
@@ -156,8 +187,8 @@ export function readClawInstallRecords(
   return rows.map(rowToInstall);
 }
 export const CLAW_PACKAGE_REF_SCHEMA_VERSION = "openclaw.clawPackageRef.v1" as const;
-export type ClawPackageRefStatus = "pending" | "complete";
-export type ClawPackageOwnership = "claw-installed" | "preexisting";
+export type ClawPackageRefStatus = "pending" | "complete" | "failed";
+export type ClawPackageOwnership = "claw-installed" | "independently-owned";
 
 export type PersistedClawPackageRef = {
   schemaVersion: typeof CLAW_PACKAGE_REF_SCHEMA_VERSION;
@@ -170,6 +201,7 @@ export type PersistedClawPackageRef = {
   status: ClawPackageRefStatus;
   ownership: ClawPackageOwnership;
   installedAtMs: number;
+  updatedAtMs: number;
 };
 
 type PackageRefRow = {
@@ -183,6 +215,7 @@ type PackageRefRow = {
   package_status: ClawPackageRefStatus;
   ownership: ClawPackageOwnership;
   installed_at_ms: number | bigint;
+  updated_at_ms: number | bigint;
 };
 
 function rowToPackageRef(row: PackageRefRow): PersistedClawPackageRef {
@@ -197,6 +230,7 @@ function rowToPackageRef(row: PackageRefRow): PersistedClawPackageRef {
     status: row.package_status,
     ownership: row.ownership,
     installedAtMs: Number(row.installed_at_ms),
+    updatedAtMs: Number(row.updated_at_ms),
   };
 }
 
@@ -209,6 +243,7 @@ export function persistClawPackageRef(
     ownership?: ClawPackageOwnership;
   } = {},
 ): PersistedClawPackageRef {
+  const nowMs = options.nowMs ?? Date.now();
   const record: PersistedClawPackageRef = {
     schemaVersion: CLAW_PACKAGE_REF_SCHEMA_VERSION,
     agentId: plan.agent.finalId,
@@ -219,16 +254,19 @@ export function persistClawPackageRef(
     version: pkg.version,
     status: options.status ?? "complete",
     ownership: options.ownership ?? "claw-installed",
-    installedAtMs: options.nowMs ?? Date.now(),
+    installedAtMs: nowMs,
+    updatedAtMs: nowMs,
   };
   runOpenClawStateWriteTransaction(({ db }) => {
     db.prepare(
       `INSERT INTO claw_package_refs (
          agent_id, package_kind, package_source, package_ref, package_version,
-         schema_version, claw_name, package_status, ownership, installed_at_ms
+         schema_version, claw_name, package_status, ownership, installed_at_ms,
+         updated_at_ms
        ) VALUES (
          @agent_id, @package_kind, @package_source, @package_ref, @package_version,
-         @schema_version, @claw_name, @package_status, @ownership, @installed_at_ms
+         @schema_version, @claw_name, @package_status, @ownership, @installed_at_ms,
+         @updated_at_ms
        )`,
     ).run({
       agent_id: record.agentId,
@@ -241,6 +279,7 @@ export function persistClawPackageRef(
       package_status: record.status,
       ownership: record.ownership,
       installed_at_ms: record.installedAtMs,
+      updated_at_ms: record.updatedAtMs,
     });
   }, options);
   return record;
@@ -249,12 +288,13 @@ export function persistClawPackageRef(
 export function updateClawPackageRefStatus(
   ref: PersistedClawPackageRef,
   status: ClawPackageRefStatus,
-  options: OpenClawStateDatabaseOptions = {},
+  options: OpenClawStateDatabaseOptions & { nowMs?: number } = {},
 ): PersistedClawPackageRef {
+  const nowMs = options.nowMs ?? Date.now();
   runOpenClawStateWriteTransaction(({ db }) => {
     db.prepare(
       `UPDATE claw_package_refs
-          SET package_status = @package_status
+          SET package_status = @package_status, updated_at_ms = @updated_at_ms
         WHERE agent_id = @agent_id
           AND package_kind = @package_kind
           AND package_source = @package_source
@@ -267,9 +307,10 @@ export function updateClawPackageRefStatus(
       package_ref: ref.ref,
       package_version: ref.version,
       package_status: status,
+      updated_at_ms: nowMs,
     });
   }, options);
-  return { ...ref, status };
+  return { ...ref, status, updatedAtMs: nowMs };
 }
 
 export function readClawPackageRefs(
@@ -302,7 +343,8 @@ export function readClawPackageRefs(
   const rows = database.db
     .prepare(
       `SELECT schema_version, agent_id, claw_name, package_kind, package_source,
-              package_ref, package_version, package_status, ownership, installed_at_ms
+              package_ref, package_version, package_status, ownership, installed_at_ms,
+              updated_at_ms
          FROM claw_package_refs${where}
         ORDER BY agent_id, package_kind, package_ref`,
     )

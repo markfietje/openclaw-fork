@@ -222,12 +222,17 @@ export interface ClawInstalls {
   added_at_ms: number;
   agent_config_digest: string;
   agent_id: string | null;
+  agent_owned_paths_json: string;
   claw_name: string;
   claw_version: string;
   integrity: string;
+  integrity_kind: string;
   manifest_path: string;
+  manifest_schema_version: number;
   package_root: string;
+  plan_integrity: string;
   schema_version: string;
+  source_byte_length: number;
   source_kind: string;
   status: string;
   updated_at_ms: number;
@@ -240,6 +245,7 @@ export interface ClawMcpServerRefs {
   created_at_ms: number;
   error: string | null;
   name: string;
+  ownership: string;
   schema_version: string;
   status: string;
   updated_at_ms: number;
@@ -256,6 +262,19 @@ export interface ClawPackageRefs {
   package_status: string;
   package_version: string;
   schema_version: string;
+  updated_at_ms: number;
+}
+
+export interface ClawWorkspaceFiles {
+  agent_id: string;
+  content_digest: string;
+  created_at_ms: number;
+  schema_version: string;
+  source_path: string;
+  status: string;
+  target_path: string;
+  updated_at_ms: number;
+  workspace: string;
 }
 
 export interface ClawhubPromotionClaims {
@@ -1100,6 +1119,7 @@ export interface DB {
   claw_installs: ClawInstalls;
   claw_mcp_server_refs: ClawMcpServerRefs;
   claw_package_refs: ClawPackageRefs;
+  claw_workspace_files: ClawWorkspaceFiles;
   clawhub_promotion_claims: ClawhubPromotionClaims;
   clawhub_promotions_feed_state: ClawhubPromotionsFeedState;
   command_log_entries: CommandLogEntries;

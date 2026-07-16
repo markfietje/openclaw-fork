@@ -1,7 +1,6 @@
 // Creates Claw-owned bootstrap and supporting files inside the new agent workspace.
 import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { DatabaseSync } from "node:sqlite";
 import { root as fsSafeRoot, FsSafeError } from "../infra/fs-safe.js";
 import {
   openOpenClawStateDatabase,
@@ -22,7 +21,9 @@ export type PersistedClawWorkspaceFile = {
   path: string;
   sourcePath: string;
   contentDigest: string;
+  status: "pending" | "complete" | "failed";
   createdAtMs: number;
+  updatedAtMs: number;
 };
 
 type WorkspaceFileRow = {
@@ -32,7 +33,9 @@ type WorkspaceFileRow = {
   target_path: string;
   source_path: string;
   content_digest: string;
+  status: "pending" | "complete" | "failed";
   created_at_ms: number | bigint;
+  updated_at_ms: number | bigint;
 };
 
 export class ClawWorkspaceWriteError extends Error {
@@ -45,25 +48,11 @@ export class ClawWorkspaceWriteError extends Error {
   }
 }
 
-function ensureWorkspaceFileTable(db: DatabaseSync): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS claw_workspace_files (
-      agent_id TEXT NOT NULL,
-      target_path TEXT NOT NULL,
-      schema_version TEXT NOT NULL,
-      workspace TEXT NOT NULL,
-      source_path TEXT NOT NULL,
-      content_digest TEXT NOT NULL,
-      created_at_ms INTEGER NOT NULL,
-      PRIMARY KEY (agent_id, target_path)
-    );
-  `);
-}
-
 function diagnostic(action: ClawAddPlanAction, code: string, message: string): ClawDiagnostic {
   return {
     level: "error",
     code,
+    phase: "mutation",
     path: `$.workspace[${JSON.stringify(action.id)}]`,
     message,
   };
@@ -86,14 +75,13 @@ function persistWorkspaceFile(
   options: OpenClawStateDatabaseOptions,
 ): void {
   runOpenClawStateWriteTransaction(({ db }) => {
-    ensureWorkspaceFileTable(db);
     db.prepare(
       `INSERT INTO claw_workspace_files (
          agent_id, target_path, schema_version, workspace, source_path,
-         content_digest, created_at_ms
+         content_digest, status, created_at_ms, updated_at_ms
        ) VALUES (
          @agent_id, @target_path, @schema_version, @workspace, @source_path,
-         @content_digest, @created_at_ms
+         @content_digest, @status, @created_at_ms, @updated_at_ms
        )`,
     ).run({
       agent_id: record.agentId,
@@ -102,7 +90,27 @@ function persistWorkspaceFile(
       workspace: record.workspace,
       source_path: record.sourcePath,
       content_digest: record.contentDigest,
+      status: record.status,
       created_at_ms: record.createdAtMs,
+      updated_at_ms: record.updatedAtMs,
+    });
+  }, options);
+}
+
+function updateWorkspaceFileStatus(
+  record: PersistedClawWorkspaceFile,
+  options: OpenClawStateDatabaseOptions,
+): void {
+  runOpenClawStateWriteTransaction(({ db }) => {
+    db.prepare(
+      `UPDATE claw_workspace_files
+          SET status = @status, updated_at_ms = @updated_at_ms
+        WHERE agent_id = @agent_id AND target_path = @target_path`,
+    ).run({
+      agent_id: record.agentId,
+      target_path: record.path,
+      status: record.status,
+      updated_at_ms: record.updatedAtMs,
     });
   }, options);
 }
@@ -193,18 +201,37 @@ export async function createClawWorkspaceFiles(
           createdFiles,
         );
       }
-      await workspace.write(targetRelative, content, { mkdir: true, overwrite: false });
       const record: PersistedClawWorkspaceFile = {
         schemaVersion: CLAW_WORKSPACE_FILE_RECORD_SCHEMA_VERSION,
         agentId: plan.agent.finalId,
         workspace: workspace.rootReal,
-        path: targetRelative,
-        sourcePath,
+        path: targetRelative.replaceAll(sep, "/"),
+        sourcePath: sourceRelative.replaceAll(sep, "/"),
         contentDigest: digest,
+        status: "pending",
         createdAtMs: nowMs,
+        updatedAtMs: nowMs,
       };
       persistWorkspaceFile(record, options);
-      createdFiles.push(record);
+      let wroteFile = false;
+      try {
+        await workspace.write(targetRelative, content, { mkdir: true, overwrite: false });
+        wroteFile = true;
+        record.status = "complete";
+        updateWorkspaceFileStatus(record, options);
+        createdFiles.push(record);
+      } catch (error) {
+        record.status = "failed";
+        if (wroteFile) {
+          createdFiles.push(record);
+        }
+        try {
+          updateWorkspaceFileStatus(record, options);
+        } catch {
+          // A pending row intentionally remains as evidence of uncertain owner state.
+        }
+        throw error;
+      }
     } catch (error) {
       if (error instanceof ClawWorkspaceWriteError) {
         throw error;
@@ -237,7 +264,7 @@ export function readClawWorkspaceFiles(
   const rows = database.db
     .prepare(
       `SELECT schema_version, agent_id, workspace, target_path, source_path,
-              content_digest, created_at_ms
+              content_digest, status, created_at_ms, updated_at_ms
          FROM claw_workspace_files
         WHERE agent_id = ?
         ORDER BY target_path`,
@@ -250,6 +277,8 @@ export function readClawWorkspaceFiles(
     path: row.target_path,
     sourcePath: row.source_path,
     contentDigest: row.content_digest,
+    status: row.status,
     createdAtMs: Number(row.created_at_ms),
+    updatedAtMs: Number(row.updated_at_ms),
   }));
 }

@@ -1,13 +1,14 @@
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { applyClawAddPlan } from "./add.js";
 import { markClawCronRefRemoved } from "./cron.js";
 import { applyClawRemovePlan, buildClawRemovePlan, readClawStatus } from "./lifecycle-state.js";
 import { buildClawAddPlan } from "./lifecycle.js";
+import { installClawMcpServers } from "./mcp.js";
 import {
   persistClawInstallRecord,
   persistClawPackageRef,
@@ -19,7 +20,13 @@ import type { ClawSourceIdentity } from "./types.js";
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
 async function fixture(
-  params: { id?: string; name?: string; withFile?: boolean; withCron?: boolean } = {},
+  params: {
+    id?: string;
+    name?: string;
+    withFile?: boolean;
+    withCron?: boolean;
+    withMcp?: boolean;
+  } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "openclaw-claw-remove-"));
   if (params.withFile) {
@@ -29,11 +36,20 @@ async function fixture(
     schemaVersion: 1,
     agent: { id: params.id ?? "worker", name: "Worker" },
     workspace: params.withFile ? { bootstrapFiles: { "SOUL.md": { source: "SOUL.md" } } } : {},
+    mcpServers: params.withMcp
+      ? {
+          docs: {
+            command: "uvx",
+            args: ["docs-mcp"],
+            env: { DOCS_TOKEN: "${DOCS_TOKEN}" },
+          },
+        }
+      : {},
     cronJobs: params.withCron
       ? [
           {
             id: "daily-report",
-            schedule: { cron: "0 9 * * *" },
+            schedule: { cron: "0 9 * * *", timezone: "UTC" },
             session: "isolated",
             message: "Prepare report",
           },
@@ -49,7 +65,9 @@ async function fixture(
     version: "1.0.0",
     packageRoot: root,
     manifestPath: join(root, "openclaw.claw.json"),
+    integrityKind: "artifact",
     integrity: "sha256:manifest",
+    byteLength: 100,
   };
   const plan = await buildClawAddPlan({
     manifest: parsed.manifest,
@@ -59,15 +77,19 @@ async function fixture(
   return { root, plan, env: { OPENCLAW_STATE_DIR: join(root, "state") } };
 }
 
-async function addFixture(params: { withFile?: boolean; withCron?: boolean } = {}) {
+async function addFixture(
+  params: { withFile?: boolean; withCron?: boolean; withMcp?: boolean } = {},
+) {
   const current = await fixture(params);
   let config: OpenClawConfig = {};
   await applyClawAddPlan(current.plan, {
+    consentPlanIntegrity: current.plan.planIntegrity,
     env: current.env,
     commitConfig: async (transform) => {
       config = transform(config);
     },
     cronGateway: { add: async () => ({ id: "scheduler-daily" }) },
+    ...(params.withMcp ? { installMcpServers: async () => [] } : {}),
   });
   return { ...current, getConfig: () => config };
 }
@@ -85,13 +107,20 @@ describe("Claw status and remove", () => {
       config: current.getConfig(),
     });
     expect(status).toMatchObject({
-      summary: { claws: 1, partial: 0, missingAgents: 0, driftedFiles: 0, packageRefs: 1 },
+      summary: {
+        claws: 1,
+        partial: 0,
+        missingAgents: 0,
+        driftedFiles: 0,
+        packageRefs: 1,
+        missingPackages: 1,
+      },
       records: [
         {
           install: { agentId: "worker", claw: { name: "@acme/worker" } },
           agentState: "present",
           workspaceFiles: [{ path: "SOUL.md", state: "unchanged" }],
-          packages: [{ kind: "plugin", ref: "audit" }],
+          packages: [{ kind: "plugin", ref: "audit", state: "missing" }],
         },
       ],
     });
@@ -110,6 +139,7 @@ describe("Claw status and remove", () => {
     });
     let config = current.getConfig();
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -129,7 +159,7 @@ describe("Claw status and remove", () => {
     });
   });
 
-  it("removes scheduler-owned cron jobs after agent config", async () => {
+  it("removes scheduler-owned cron jobs before agent config", async () => {
     const current = await addFixture({ withCron: true });
     const plan = await buildClawRemovePlan("worker", {
       env: current.env,
@@ -146,6 +176,7 @@ describe("Claw status and remove", () => {
     let config = current.getConfig();
     const order: string[] = [];
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       cronGateway: {
@@ -159,13 +190,29 @@ describe("Claw status and remove", () => {
         config = transform(config);
       },
     });
-    expect(order).toEqual(["config", "cron:scheduler-daily"]);
+    expect(order).toEqual(["cron:scheduler-daily", "config"]);
     expect(result).toMatchObject({
       status: "complete",
       cronJobs: [
         { manifestId: "daily-report", schedulerJobId: "scheduler-daily", action: "removed" },
       ],
     });
+  });
+
+  it("fails removal planning when source MCP config cannot be read", async () => {
+    const current = await addFixture({ withCron: true });
+
+    await expect(
+      buildClawRemovePlan("worker", {
+        env: current.env,
+        config: current.getConfig(),
+        listMcpServers: async () => ({
+          ok: false,
+          path: "config",
+          error: "Config file is invalid.",
+        }),
+      }),
+    ).rejects.toMatchObject({ code: "mcp_config_unavailable" });
   });
 
   it("delegates agent and cron teardown to the canonical agent lifecycle", async () => {
@@ -177,6 +224,7 @@ describe("Claw status and remove", () => {
     const calls: string[] = [];
 
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config: current.getConfig(),
       deleteAgent: async (agentId) => {
@@ -190,11 +238,42 @@ describe("Claw status and remove", () => {
       },
     });
 
-    expect(calls).toEqual(["agent:worker"]);
+    expect(calls).toEqual(["cron:scheduler-daily", "agent:worker"]);
     expect(result).toMatchObject({
       status: "complete",
       agentRemoved: true,
       cronJobs: [{ manifestId: "daily-report", action: "removed" }],
+    });
+  });
+
+  it("retains the agent when recurring work cannot be disabled", async () => {
+    const current = await addFixture({ withCron: true });
+    const plan = await buildClawRemovePlan("worker", {
+      env: current.env,
+      config: current.getConfig(),
+    });
+    const deletedAgents: string[] = [];
+
+    const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
+      env: current.env,
+      config: current.getConfig(),
+      deleteAgent: async (agentId) => {
+        deletedAgents.push(agentId);
+      },
+      cronGateway: {
+        remove: async () => {
+          throw new Error("scheduler unavailable");
+        },
+      },
+    });
+
+    expect(deletedAgents).toEqual([]);
+    expect(result).toMatchObject({
+      status: "partial",
+      agentRemoved: false,
+      error: { code: "cron_cleanup_failed", message: "scheduler unavailable" },
+      cronJobs: [{ manifestId: "daily-report", action: "error" }],
     });
   });
 
@@ -209,6 +288,7 @@ describe("Claw status and remove", () => {
     const remoteRemovals: string[] = [];
 
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -242,6 +322,7 @@ describe("Claw status and remove", () => {
     );
     let config = current.getConfig();
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -262,6 +343,7 @@ describe("Claw status and remove", () => {
     let config = current.getConfig();
 
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -286,6 +368,7 @@ describe("Claw status and remove", () => {
     let config = current.getConfig();
 
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -313,9 +396,29 @@ describe("Claw status and remove", () => {
     config.agents!.list![0] = { ...config.agents!.list![0], name: "Operator edit" };
     const plan = await buildClawRemovePlan("worker", { env: current.env, config });
     expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "agent_modified" }));
-    await expect(applyClawRemovePlan(plan, { env: current.env, config })).rejects.toMatchObject({
+    await expect(
+      applyClawRemovePlan(plan, {
+        env: current.env,
+        config,
+        consentPlanIntegrity: plan.planIntegrity,
+      }),
+    ).rejects.toMatchObject({
       code: "remove_blocked",
     });
+  });
+
+  it("rejects removal consent for a different plan identity", async () => {
+    const current = await addFixture();
+    const config = current.getConfig();
+    const plan = await buildClawRemovePlan("worker", { env: current.env, config });
+
+    await expect(
+      applyClawRemovePlan(plan, {
+        env: current.env,
+        config,
+        consentPlanIntegrity: "sha256:stale",
+      }),
+    ).rejects.toMatchObject({ code: "plan_integrity_mismatch" });
   });
 
   it("requires an agent id when a package identity has multiple installs", async () => {
@@ -327,7 +430,7 @@ describe("Claw status and remove", () => {
     expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "claw_ambiguous" }));
   });
 
-  it("hands Claw-installed plugin ownership to a surviving Claw reference", async () => {
+  it("keeps Claw-installed plugin origin on every surviving Claw reference", async () => {
     const first = await fixture({ id: "worker-a", name: "@acme/first" });
     const second = await fixture({ id: "worker-b", name: "@acme/second" });
     persistClawInstallRecord(first.plan, { env: first.env, nowMs: 1 });
@@ -341,13 +444,14 @@ describe("Claw status and remove", () => {
     persistClawPackageRef(second.plan, plugin, {
       env: first.env,
       nowMs: 2,
-      ownership: "preexisting",
+      ownership: "claw-installed",
     });
     let config: OpenClawConfig = {
       agents: { list: [first.plan.agent.config, second.plan.agent.config] },
     };
     const remove = await buildClawRemovePlan("worker-a", { env: first.env, config });
     await applyClawRemovePlan(remove, {
+      consentPlanIntegrity: remove.planIntegrity,
       env: first.env,
       config,
       commitConfig: async (transform) => {
@@ -358,5 +462,101 @@ describe("Claw status and remove", () => {
     expect(readClawPackageRefs({ env: first.env, agentId: "worker-b" })).toMatchObject([
       { ref: "audit", ownership: "claw-installed" },
     ]);
+  });
+
+  it("releases an exact pre-existing MCP server without deleting it", async () => {
+    const current = await addFixture({ withMcp: true });
+    const server = {
+      command: "uvx",
+      args: ["docs-mcp"],
+      env: { DOCS_TOKEN: "${DOCS_TOKEN}" },
+    };
+    await installClawMcpServers(current.plan, {
+      env: current.env,
+      setMcpServer: vi.fn(),
+      listMcpServers: vi.fn().mockResolvedValue({
+        ok: true,
+        path: "config",
+        config: {},
+        mcpServers: { docs: server },
+      }),
+    });
+    let config: OpenClawConfig = {
+      ...current.getConfig(),
+      mcp: { servers: { docs: server } },
+    };
+    const plan = await buildClawRemovePlan("worker", { env: current.env, config });
+    expect(plan.actions).toContainEqual(
+      expect.objectContaining({ kind: "mcpServer", id: "docs", action: "release" }),
+    );
+    const unsetMcpServer = vi.fn();
+    const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
+      env: current.env,
+      config,
+      unsetMcpServer,
+      commitConfig: async (transform) => {
+        config = transform(config);
+      },
+    });
+
+    expect(unsetMcpServer).not.toHaveBeenCalled();
+    expect(result.mcpServers).toEqual([{ name: "docs", action: "released" }]);
+    expect(config.mcp?.servers?.docs).toEqual(server);
+  });
+
+  it("deletes the final unchanged Claw-created MCP server", async () => {
+    const current = await addFixture({ withMcp: true });
+    const sourceServer = {
+      command: "uvx",
+      args: ["docs-mcp"],
+      env: { DOCS_TOKEN: "${DOCS_TOKEN}" },
+    };
+    await installClawMcpServers(current.plan, {
+      env: current.env,
+      setMcpServer: vi.fn().mockResolvedValue({ ok: true, path: "config", config: {} }),
+      listMcpServers: vi.fn().mockResolvedValue({
+        ok: true,
+        path: "config",
+        config: {},
+        mcpServers: {},
+      }),
+    });
+    let config: OpenClawConfig = {
+      ...current.getConfig(),
+      mcp: {
+        servers: {
+          docs: {
+            ...sourceServer,
+            env: { DOCS_TOKEN: "resolved-secret-must-not-affect-removal" },
+          },
+        },
+      },
+    };
+    const sourceMcpServers = { docs: sourceServer };
+    const plan = await buildClawRemovePlan("worker", {
+      env: current.env,
+      config,
+      sourceMcpServers,
+    });
+    expect(plan.actions).toContainEqual(
+      expect.objectContaining({ kind: "mcpServer", id: "docs", action: "remove" }),
+    );
+    const unsetMcpServer = vi
+      .fn()
+      .mockResolvedValue({ ok: true, path: "config", config: {}, mcpServers: {}, removed: true });
+    const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
+      env: current.env,
+      config,
+      sourceMcpServers,
+      unsetMcpServer,
+      commitConfig: async (transform) => {
+        config = transform(config);
+      },
+    });
+
+    expect(unsetMcpServer).toHaveBeenCalledWith({ name: "docs", expectedServer: sourceServer });
+    expect(result.mcpServers).toEqual([{ name: "docs", action: "removed" }]);
   });
 });

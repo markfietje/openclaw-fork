@@ -2,7 +2,7 @@
   "id": "firecrawl",
   "name": "FireCrawl",
   "description": "Search the web and scrape clean, structured page content with FireCrawl.",
-  "icon": "https://avatars.githubusercontent.com/u/135057108?v=4",
+  "icon": "https://www.firecrawl.dev/brand/firecrawl-logo.png",
   "activation": {
     "onStartup": false
   },

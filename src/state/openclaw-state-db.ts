@@ -756,6 +756,9 @@ function backfillDeliveryQueueEntriesFromEntryJson(db: DatabaseSync): void {
 }
 
 function ensureAdditiveStateColumns(db: DatabaseSync): void {
+  if (ensureColumn(db, "claw_package_refs", "updated_at_ms INTEGER NOT NULL DEFAULT 0")) {
+    db.exec(`UPDATE claw_package_refs SET updated_at_ms = installed_at_ms;`);
+  }
   ensureColumn(db, "device_pairing_pending", "refreshed_at_ms INTEGER");
   ensureColumn(db, "device_pairing_paired", "approved_via TEXT");
   ensureColumn(db, "device_pairing_paired", "operator_label TEXT");
@@ -984,6 +987,12 @@ export function openExistingOpenClawStateDatabaseReadOnly(
   }
   const sqlite = requireNodeSqlite();
   const db = new sqlite.DatabaseSync(pathname, { readOnly: true });
+  try {
+    assertSupportedSchemaVersion(db, pathname);
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   return {
     db,
     path: pathname,

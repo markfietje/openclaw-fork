@@ -137,7 +137,10 @@ function readPortableAvatar(params: {
   if (!source) {
     return {};
   }
-  if (isAvatarHttpUrl(source) || isAvatarDataUrl(source)) {
+  if (isAvatarHttpUrl(source)) {
+    return {};
+  }
+  if (isAvatarDataUrl(source)) {
     return { source };
   }
   const opened = openLocalAgentAvatarFile({
@@ -205,7 +208,10 @@ function portableMcpServer(server: Record<string, unknown>): ClawMcpServer {
 export async function exportClawAgent(
   agentId: string,
   outputDirectory: string,
-  options: OpenClawStateDatabaseOptions & { config: OpenClawConfig },
+  options: OpenClawStateDatabaseOptions & {
+    config: OpenClawConfig;
+    sourceMcpServers: Record<string, Record<string, unknown>>;
+  },
 ): Promise<ClawExportResult> {
   const status = await readClawStatus(agentId, options);
   const record = status.records.find((candidate) => candidate.install.agentId === agentId);
@@ -282,7 +288,7 @@ export async function exportClawAgent(
       files.push({ source, path: file.path });
     }
   }
-  const configuredMcpServers = normalizeConfiguredMcpServers(options.config.mcp?.servers);
+  const configuredMcpServers = normalizeConfiguredMcpServers(options.sourceMcpServers);
   const manifest: ClawManifest = {
     schemaVersion: CLAW_SCHEMA_VERSION,
     agent: portableAgent(agent, avatar.source),
@@ -332,21 +338,9 @@ export async function exportClawAgent(
       await output.write(path, file.content, { mkdir: true, overwrite: false });
       filesWritten.push(path);
     }
-    const exactRecordedState =
-      record.install.status === "complete" &&
-      record.agentState === "present" &&
-      record.workspaceFiles.every((file) => file.state === "unchanged") &&
-      record.packages.every((pkg) => pkg.status === "complete") &&
-      (!agent.identity?.avatar?.trim() || Boolean(avatar.source)) &&
-      (!avatar.sidecar || managedPaths.has(avatar.sidecar.path));
-    const preservePackageName = exactRecordedState && record.install.claw.kind === "package";
     const packageJson = {
-      name: preservePackageName
-        ? record.install.claw.name
-        : `openclaw-claw-${record.install.agentId}`,
-      version: exactRecordedState
-        ? record.install.claw.version
-        : derivativePackageVersion(manifest, contents),
+      name: `openclaw-claw-${record.install.agentId}`,
+      version: derivativePackageVersion(manifest, contents),
       type: "module",
       openclaw: { claw: "CLAW.md" },
     };

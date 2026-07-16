@@ -211,7 +211,7 @@ export function clawCronGatewayInput(
       expr: job.schedule.cron,
       ...(job.schedule.timezone ? { tz: job.schedule.timezone } : {}),
     },
-    sessionTarget: job.session === "main" ? "session:main" : job.session,
+    sessionTarget: job.session === "main" ? `session:agent:${agentId}:main` : job.session,
     wakeMode: "now",
     payload: { kind: "agentTurn", message: job.message },
     delivery: job.delivery
@@ -306,6 +306,14 @@ export function readClawCronRefs(
   options: OpenClawStateDatabaseOptions = {},
 ): PersistedClawCronRef[] {
   const database = openOpenClawStateDatabase(options);
+  if (
+    options.readOnly &&
+    !database.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'claw_cron_refs'")
+      .get()
+  ) {
+    return [];
+  }
   const rows = database.db
     .prepare(
       `SELECT schema_version, agent_id, manifest_id, declaration_key, scheduler_job_id,

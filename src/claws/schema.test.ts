@@ -1,5 +1,4 @@
 // Tests for the grouped Claw manifest and read-only add plan.
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +34,7 @@ const baseManifest = {
   mcpServers: {
     github: {
       command: "npx",
-      args: ["-y", "@acme/github-mcp"],
+      args: ["--yes", "@acme/github-mcp@3.4.1"],
       env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
       toolFilter: { include: ["issues_list"], exclude: ["repository_delete"] },
       timeout: 30,
@@ -73,7 +72,9 @@ async function createPlanSource(): Promise<{ source: ClawSourceIdentity; workspa
       version: "1.0.0",
       packageRoot: root,
       manifestPath: join(root, "openclaw.claw.json"),
+      integrityKind: "development-snapshot",
       integrity: "sha256:test",
+      byteLength: 0,
     },
     workspace: join(root, "new-workspace"),
   };
@@ -252,7 +253,12 @@ describe("parseClawManifest", () => {
 
     const cron = parseClawManifest({
       ...baseManifest,
-      cronJobs: [{ ...baseManifest.cronJobs[0], schedule: { cron: "not a cron expression" } }],
+      cronJobs: [
+        {
+          ...baseManifest.cronJobs[0],
+          schedule: { cron: "not a cron expression", timezone: "UTC" },
+        },
+      ],
     });
     expect(cron.ok).toBe(false);
     expect(cron.diagnostics).toContainEqual(
@@ -289,8 +295,10 @@ describe("readClawManifestFile", () => {
       kind: "package",
       name: "@acme/github-triage",
       version: "3.2.1",
+      integrityKind: "development-snapshot",
     });
     expect(result.source.integrity).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(result.source.byteLength).toBeGreaterThan(0);
   });
 
   it("reads a human-authored CLAW.md package through the same manifest schema", async () => {
@@ -335,7 +343,7 @@ describe("readClawManifestFile", () => {
     expect(result.source).not.toHaveProperty("manifestFormatPath");
   });
 
-  it("accepts a UTF-8 BOM before CLAW.md frontmatter and hashes the original bytes", async () => {
+  it("accepts a UTF-8 BOM and includes its bytes in snapshot integrity", async () => {
     const root = await mkdtemp(join(tmpdir(), "openclaw-claw-markdown-bom-"));
     await writeFile(
       join(root, "package.json"),
@@ -368,9 +376,18 @@ describe("readClawManifestFile", () => {
       throw new Error("expected BOM-prefixed CLAW.md to parse");
     }
     expect(result.manifest.agent.id).toBe("triage");
-    expect(result.source.integrity).toBe(
-      `sha256:${createHash("sha256").update(raw).digest("hex")}`,
-    );
+    expect(result.source).toMatchObject({
+      integrityKind: "development-snapshot",
+      byteLength: expect.any(Number),
+    });
+
+    await writeFile(join(root, "CLAW.md"), raw.slice(1), "utf8");
+    const withoutBom = await readClawManifestFile(root);
+    expect(withoutBom.ok).toBe(true);
+    if (!withoutBom.ok) {
+      throw new Error("expected CLAW.md without BOM to parse");
+    }
+    expect(withoutBom.source.integrity).not.toBe(result.source.integrity);
   });
 
   it("rejects CLAW.md without YAML frontmatter", async () => {
@@ -514,10 +531,16 @@ describe("buildClawAddPlan", () => {
 
     expect(plan).toMatchObject({
       schemaVersion: "openclaw.clawAddPlan.v1",
+      manifestSchemaVersion: 1,
       stability: "experimental",
       dryRun: true,
       mutationAllowed: false,
+      planIntegrity: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       agent: { requestedId: "github-triage", finalId: "github-triage", workspace },
+      readiness: {
+        ready: false,
+        requirements: [{ kind: "environment", mcpServer: "github", name: "GITHUB_TOKEN" }],
+      },
       summary: {
         totalActions: 8,
         agentActions: 1,
@@ -567,6 +590,29 @@ describe("buildClawAddPlan", () => {
     expect(plan.summary.blockedActions).toBe(7);
   });
 
+  it("plans reuse for an exact existing MCP server", async () => {
+    const { source, workspace } = await createPlanSource();
+    const manifest = requireManifest();
+    const plan = await buildClawAddPlan({
+      manifest,
+      source,
+      context: {
+        workspace,
+        existingMcpServers: { github: manifest.mcpServers.github! },
+      },
+    });
+
+    expect(plan.blockers.map((item) => item.code)).not.toContain("mcp_server_collision");
+    expect(plan.actions).toContainEqual(
+      expect.objectContaining({
+        kind: "mcpServer",
+        id: "github",
+        blocked: false,
+        details: expect.objectContaining({ expectedState: "present-exact" }),
+      }),
+    );
+  });
+
   it("uses an explicit unused agent id for every derived action", async () => {
     const { source, workspace } = await createPlanSource();
     const plan = await buildClawAddPlan({
@@ -582,21 +628,25 @@ describe("buildClawAddPlan", () => {
     );
   });
 
-  it("blocks current-session cron jobs because apply has no caller session", async () => {
+  it("binds plan integrity to the source and planned mutations", async () => {
     const { source, workspace } = await createPlanSource();
-    const manifest = requireManifest();
-    manifest.cronJobs[0] = { ...manifest.cronJobs[0], session: "current" };
+    const first = await buildClawAddPlan({
+      manifest: requireManifest(),
+      source,
+      context: { workspace },
+    });
+    const repeated = await buildClawAddPlan({
+      manifest: requireManifest(),
+      source,
+      context: { workspace },
+    });
+    const changed = await buildClawAddPlan({
+      manifest: requireManifest(),
+      source: { ...source, integrity: "sha256:changed" },
+      context: { workspace },
+    });
 
-    const plan = await buildClawAddPlan({ manifest, source, context: { workspace } });
-
-    expect(plan.blockers).toContainEqual(
-      expect.objectContaining({
-        code: "cron_current_session_unavailable",
-        path: "$.cronJobs.weekday-triage.session",
-      }),
-    );
-    expect(plan.actions).toContainEqual(
-      expect.objectContaining({ kind: "cronJob", id: "weekday-triage", blocked: true }),
-    );
+    expect(repeated.planIntegrity).toBe(first.planIntegrity);
+    expect(changed.planIntegrity).not.toBe(first.planIntegrity);
   });
 });

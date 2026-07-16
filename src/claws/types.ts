@@ -172,6 +172,7 @@ export type ClawLocalPrerequisite =
 
 export type ClawAddPlan = {
   schemaVersion: typeof CLAW_ADD_PLAN_SCHEMA_VERSION;
+  manifestSchemaVersion: typeof CLAW_SCHEMA_VERSION;
   stability: typeof CLAW_OUTPUT_STABILITY;
   dryRun: true;
   mutationAllowed: false;

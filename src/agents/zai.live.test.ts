@@ -16,7 +16,7 @@ const ZAI_LIVE_TIMEOUT_MS = 45_000;
 const ZAI_GLOBAL_BASE_URL = "https://api.z.ai/api/paas/v4";
 const ZAI_CODING_GLOBAL_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
 
-const describeLive = LIVE && !CODING_LIVE && ZAI_KEY ? describe : describe.skip;
+const describeLive = LIVE && !CODING_LIVE && ZAI_KEY ? describe.only : describe.skip;
 const describeCodingLive = CODING_LIVE && ZAI_KEY ? describe : describe.skip;
 
 async function expectModelReturnsAssistantText(

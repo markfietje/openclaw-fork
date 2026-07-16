@@ -66,6 +66,14 @@
     "!dist/plugin-sdk/test-env.d.ts",
     "!dist/plugin-sdk/test-fixtures.js",
     "!dist/plugin-sdk/test-fixtures.d.ts",
+    "!dist/plugin-sdk/test-live.js",
+    "!dist/plugin-sdk/test-live.d.ts",
+    "!dist/plugin-sdk/test-live-auth.js",
+    "!dist/plugin-sdk/test-live-auth.d.ts",
+    "!dist/plugin-sdk/test-media-generation.js",
+    "!dist/plugin-sdk/test-media-generation.d.ts",
+    "!dist/plugin-sdk/test-media-understanding.js",
+    "!dist/plugin-sdk/test-media-understanding.d.ts",
     "!dist/plugin-sdk/test-node-mocks.js",
     "!dist/plugin-sdk/test-node-mocks.d.ts",
     "!dist/plugin-sdk/test-utils.js",
@@ -564,6 +572,10 @@
     "./plugin-sdk/speech-core": {
       "types": "./dist/plugin-sdk/speech-core.d.ts",
       "default": "./dist/plugin-sdk/speech-core.js"
+    },
+    "./plugin-sdk/speech-settings": {
+      "types": "./dist/plugin-sdk/speech-settings.d.ts",
+      "default": "./dist/plugin-sdk/speech-settings.js"
     },
     "./plugin-sdk/tts-runtime": {
       "types": "./dist/plugin-sdk/tts-runtime.d.ts",

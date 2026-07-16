@@ -36,7 +36,9 @@ async function fixture(params: { id?: string; name?: string; withFile?: boolean 
     version: "1.0.0",
     packageRoot: root,
     manifestPath: join(root, "openclaw.claw.json"),
+    integrityKind: "artifact",
     integrity: "sha256:manifest",
+    byteLength: 100,
   };
   const plan = await buildClawAddPlan({
     manifest: parsed.manifest,
@@ -50,6 +52,7 @@ async function addFixture(params: { withFile?: boolean } = {}) {
   const current = await fixture(params);
   let config: OpenClawConfig = {};
   await applyClawAddPlan(current.plan, {
+    consentPlanIntegrity: current.plan.planIntegrity,
     env: current.env,
     commitConfig: async (transform) => {
       config = transform(config);
@@ -71,13 +74,20 @@ describe("Claw status and remove", () => {
       config: current.getConfig(),
     });
     expect(status).toMatchObject({
-      summary: { claws: 1, partial: 0, missingAgents: 0, driftedFiles: 0, packageRefs: 1 },
+      summary: {
+        claws: 1,
+        partial: 0,
+        missingAgents: 0,
+        driftedFiles: 0,
+        packageRefs: 1,
+        missingPackages: 1,
+      },
       records: [
         {
           install: { agentId: "worker", claw: { name: "@acme/worker" } },
           agentState: "present",
           workspaceFiles: [{ path: "SOUL.md", state: "unchanged" }],
-          packages: [{ kind: "plugin", ref: "audit" }],
+          packages: [{ kind: "plugin", ref: "audit", state: "missing" }],
         },
       ],
     });
@@ -96,6 +106,7 @@ describe("Claw status and remove", () => {
     });
     let config = current.getConfig();
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -128,6 +139,7 @@ describe("Claw status and remove", () => {
     );
     let config = current.getConfig();
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -148,6 +160,7 @@ describe("Claw status and remove", () => {
     let config = current.getConfig();
 
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -172,6 +185,7 @@ describe("Claw status and remove", () => {
     let config = current.getConfig();
 
     const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: current.env,
       config,
       commitConfig: async (transform) => {
@@ -199,9 +213,29 @@ describe("Claw status and remove", () => {
     config.agents!.list![0] = { ...config.agents!.list![0], name: "Operator edit" };
     const plan = await buildClawRemovePlan("worker", { env: current.env, config });
     expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "agent_modified" }));
-    await expect(applyClawRemovePlan(plan, { env: current.env, config })).rejects.toMatchObject({
+    await expect(
+      applyClawRemovePlan(plan, {
+        env: current.env,
+        config,
+        consentPlanIntegrity: plan.planIntegrity,
+      }),
+    ).rejects.toMatchObject({
       code: "remove_blocked",
     });
+  });
+
+  it("rejects removal consent for a different plan identity", async () => {
+    const current = await addFixture();
+    const config = current.getConfig();
+    const plan = await buildClawRemovePlan("worker", { env: current.env, config });
+
+    await expect(
+      applyClawRemovePlan(plan, {
+        env: current.env,
+        config,
+        consentPlanIntegrity: "sha256:stale",
+      }),
+    ).rejects.toMatchObject({ code: "plan_integrity_mismatch" });
   });
 
   it("requires an agent id when a package identity has multiple installs", async () => {
@@ -213,7 +247,7 @@ describe("Claw status and remove", () => {
     expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "claw_ambiguous" }));
   });
 
-  it("hands Claw-installed plugin ownership to a surviving Claw reference", async () => {
+  it("keeps Claw-installed plugin origin on every surviving Claw reference", async () => {
     const first = await fixture({ id: "worker-a", name: "@acme/first" });
     const second = await fixture({ id: "worker-b", name: "@acme/second" });
     persistClawInstallRecord(first.plan, { env: first.env, nowMs: 1 });
@@ -227,13 +261,14 @@ describe("Claw status and remove", () => {
     persistClawPackageRef(second.plan, plugin, {
       env: first.env,
       nowMs: 2,
-      ownership: "preexisting",
+      ownership: "claw-installed",
     });
     let config: OpenClawConfig = {
       agents: { list: [first.plan.agent.config, second.plan.agent.config] },
     };
     const remove = await buildClawRemovePlan("worker-a", { env: first.env, config });
     await applyClawRemovePlan(remove, {
+      consentPlanIntegrity: remove.planIntegrity,
       env: first.env,
       config,
       commitConfig: async (transform) => {

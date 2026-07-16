@@ -10,13 +10,19 @@ export type ClawsInspectOptions = {
 export type ClawsAddOptions = {
   dryRun?: boolean;
   yes?: boolean;
+  planIntegrity?: string;
   json?: boolean;
   agentId?: string;
   workspace?: string;
 };
 
 export type ClawsStatusOptions = { json?: boolean };
-export type ClawsRemoveOptions = { dryRun?: boolean; yes?: boolean; json?: boolean };
+export type ClawsRemoveOptions = {
+  dryRun?: boolean;
+  yes?: boolean;
+  planIntegrity?: string;
+  json?: boolean;
+};
 export type ClawsExportOptions = { out: string; json?: boolean };
 
 export function registerClawsCli(program: Command) {
@@ -41,6 +47,7 @@ export function registerClawsCli(program: Command) {
     .argument("<source>", "Path to a Claw package directory or grouped manifest")
     .option("--dry-run", "Preview all actions without mutating state", false)
     .option("--yes", "Confirm creation of the new agent and workspace", false)
+    .option("--plan-integrity <digest>", "Bind consent to an exact dry-run plan")
     .option("--agent-id <id>", "Override the requested id with an unused local agent id")
     .option("--workspace <path>", "Override the derived new workspace path")
     .option("--json", "Print JSON", false)
@@ -65,6 +72,7 @@ export function registerClawsCli(program: Command) {
     .argument("<claw-or-agent>", "Installed package name or final agent id")
     .option("--dry-run", "Preview removal without mutating state", false)
     .option("--yes", "Confirm removal", false)
+    .option("--plan-integrity <digest>", "Bind consent to an exact removal plan")
     .option("--json", "Print JSON", false)
     .action(async (target: string, opts: ClawsRemoveOptions) => {
       const { runClawsRemoveCommand } = await import("./claws-cli.runtime.js");

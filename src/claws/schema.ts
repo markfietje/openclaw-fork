@@ -3,7 +3,7 @@ import { z } from "zod";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import { computeNextRunAtMs } from "../cron/schedule.js";
 import { isDangerousHostEnvVarName } from "../infra/host-env-security.js";
-import { isAvatarImageDataUrl } from "../shared/avatar-policy.js";
+import { isRenderableAvatarImageDataUrl } from "../shared/avatar-limits.js";
 import {
   conflictsWithClawPath,
   isCanonicalClawHubPackageName,
@@ -349,7 +349,11 @@ const manifestSchema = z
       manifest.workspace.files.map((file) => portableClawPathKey(file.path)),
     );
     const avatar = manifest.agent.identity?.avatar;
-    if (avatar && !isAvatarImageDataUrl(avatar) && !managedPaths.has(portableClawPathKey(avatar))) {
+    if (
+      avatar &&
+      !isRenderableAvatarImageDataUrl(avatar) &&
+      !managedPaths.has(portableClawPathKey(avatar))
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["agent", "identity", "avatar"],
@@ -400,5 +404,3 @@ export function parseClawManifest(
   }
   return { ok: true, manifest: parsed.data as ClawManifest, diagnostics: [] };
 }
-
-export { CLAW_SCHEMA_VERSION };

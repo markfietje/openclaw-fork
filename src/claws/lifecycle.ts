@@ -20,7 +20,7 @@ import {
 const MAX_MANAGED_FILE_BYTES = 1024 * 1024;
 const AGENT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
-export type ClawAddPlanContext = {
+type ClawAddPlanContext = {
   agentId?: string;
   workspace?: string;
   existingAgentIds?: Iterable<string>;
@@ -262,8 +262,7 @@ export async function buildClawAddPlan(params: {
   }
 
   const existingMcpServerNames = new Set(context.existingMcpServerNames ?? []);
-  for (const name of Object.keys(params.manifest.mcpServers)) {
-    const server = params.manifest.mcpServers[name];
+  for (const [name, server] of Object.entries(params.manifest.mcpServers)) {
     const blocked = existingMcpServerNames.has(name);
     if (blocked) {
       blockers.push(

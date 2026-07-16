@@ -9,7 +9,7 @@ import {
   type ClawAddPlan,
 } from "../claws/types.js";
 // Runtime handlers for experimental local Claws commands.
-import { loadConfig } from "../config/config.js";
+import { getRuntimeConfig } from "../config/config.js";
 import {
   loadCronJobsStoreWithConfigJobsReadOnly,
   resolveCronJobsStorePath,
@@ -131,7 +131,7 @@ export async function runClawsAddCommand(
     return;
   }
 
-  const config = loadConfig();
+  const config = getRuntimeConfig();
   const existingAgentIds = listAgentIds(config);
   const cronStore = await loadCronJobsStoreWithConfigJobsReadOnly(
     resolveCronJobsStorePath(config.cron?.store),

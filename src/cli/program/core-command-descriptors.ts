@@ -129,7 +129,7 @@ const coreCliCommandCatalog = defineCommandDescriptorCatalog([
 ] as const satisfies ReadonlyArray<CoreCliCommandDescriptor>);
 
 /** Static root-command descriptors for the core CLI surface. */
-export const CORE_CLI_COMMAND_DESCRIPTORS = coreCliCommandCatalog.descriptors;
+const CORE_CLI_COMMAND_DESCRIPTORS = coreCliCommandCatalog.descriptors;
 
 function visibleCoreCliCommandDescriptors(): ReadonlyArray<CoreCliCommandDescriptor> {
   return isExperimentalClawsEnabled()

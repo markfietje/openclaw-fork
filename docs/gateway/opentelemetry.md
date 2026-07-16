@@ -215,6 +215,14 @@ claude-code` and identify OpenClaw's CLI boundary through
 - `paired-node-cli` - one-shot Claude Code execution delegated to a paired
   node.
 
+OpenClaw gives Claude CLI turns the same ownership hierarchy used by other
+agent runtimes: `openclaw.harness.run` (`openclaw.harness.id = claude-cli`)
+contains `openclaw.run`, which contains the Claude `openclaw.model.call`
+span. The harness and run spans are synthetic OpenClaw turn boundaries, not
+Claude Code internal phases. One-shot and managed stdio turns use the same
+hierarchy; a real fresh-session retry creates another model-call child inside
+the same OpenClaw run.
+
 The span starts when OpenClaw admits the prepared CLI turn and ends only after
 that turn succeeds or fails. For managed sessions, an interim success result
 does not end the span while Claude reports result-holding background agents or

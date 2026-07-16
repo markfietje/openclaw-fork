@@ -82,6 +82,7 @@ type ClaudeLiveTurn = {
   toolEventCount: number;
   streamingParser: ReturnType<typeof createCliJsonlStreamingParser>;
   onCliOutput?: (chunk: string, stream: "stderr" | "stdout") => void;
+  onPhase?: (phase: "send" | "resolve") => void;
   execPermission: ClaudeLiveExecPermission;
   resolve: (output: CliOutput) => void;
   reject: (error: unknown) => void;
@@ -1110,6 +1111,7 @@ function handleClaudeLiveLine(session: ClaudeLiveSession, line: string): void {
   if (parsed.type !== "result") {
     return;
   }
+  turn.onPhase?.("resolve");
   const raw = turn.rawLines.join("\n");
   // Reuse the parser that classified pre-tool text as commentary. Reparsing the
   // transcript loses that boundary when Claude's terminal result is empty.
@@ -1140,6 +1142,8 @@ function handleClaudeLiveLine(session: ClaudeLiveSession, line: string): void {
   // outstanding subagent/workflow tasks: keep the turn open for the final
   // post-drain result. Other listed types (e.g. local_bash) do not hold it.
   if (session.outstandingBackgroundTaskIds.size > 0) {
+    // An interim result is not terminal; background work returns the run to send.
+    turn.onPhase?.("send");
     emitClaudeLiveProgress(turn, "cli_live:result_deferred_background_tasks");
     return;
   }
@@ -1379,6 +1383,7 @@ function createTurn(params: {
   onAssistantMessage?: (message: unknown) => void;
   onUsage?: (usage: CliUsage, terminal: boolean) => void;
   onCliOutput?: (chunk: string, stream: "stderr" | "stdout") => void;
+  onPhase?: (phase: "send" | "resolve") => void;
   session: ClaudeLiveSession;
   execPermission: ClaudeLiveExecPermission;
   resolve: (output: CliOutput) => void;
@@ -1428,6 +1433,7 @@ function createTurn(params: {
       onUsage: params.onUsage,
     }),
     onCliOutput: params.onCliOutput,
+    onPhase: params.onPhase,
     execPermission: params.execPermission,
     resolve: params.resolve,
     reject: params.reject,
@@ -1518,6 +1524,7 @@ export async function runClaudeLiveSessionTurn(params: {
   onUsage?: (usage: CliUsage, terminal: boolean) => void;
   onCliOutput?: (chunk: string, stream: "stderr" | "stdout") => void;
   onRequestPayload?: (payload: string) => void;
+  onPhase?: (phase: "send" | "resolve") => void;
   cleanup: () => Promise<void>;
 }): Promise<ClaudeLiveRunResult> {
   const key = buildClaudeLiveKey(params.context);
@@ -1745,6 +1752,7 @@ export async function runClaudeLiveSessionTurn(params: {
       onAssistantMessage: params.onAssistantMessage,
       onUsage: params.onUsage,
       onCliOutput: params.onCliOutput,
+      onPhase: params.onPhase,
       session: liveSession,
       execPermission,
       resolve,

@@ -386,10 +386,15 @@ if (process.env.VITEST || process.env.NODE_ENV === "test") {
   };
 }
 
+export type ExecutePreparedCliRunOptions = {
+  onPhase?: (phase: "send" | "resolve" | "cleanup") => void;
+};
+
 /** Executes a prepared CLI run context and returns normalized CLI output. */
 export async function executePreparedCliRun(
   context: PreparedCliRunContext,
   cliSessionIdToUse?: string,
+  options?: ExecutePreparedCliRunOptions,
 ): Promise<CliOutput> {
   const params = context.params;
   if (params.abortSignal?.aborted) {
@@ -1593,7 +1598,9 @@ export async function executePreparedCliRun(
             onUsage: claudeModelCallDiagnostics?.observeUsage,
             onCliOutput: claudeModelCallDiagnostics?.observeCliOutput,
             onRequestPayload: claudeModelCallDiagnostics?.observeRequestPayload,
+            onPhase: options?.onPhase,
           });
+          options?.onPhase?.("resolve");
           const rawText = liveResult.output.text;
           runOutput = {
             ...liveResult.output,
@@ -1740,13 +1747,14 @@ export async function executePreparedCliRun(
               params.abortSignal?.removeEventListener("abort", abortManagedRun);
             }
           }
-          streamingParser?.finish();
           if (
             (params.abortSignal?.aborted || nodeRunAbortSignal?.aborted) &&
             result.reason === "manual-cancel"
           ) {
             throw createCliAbortError();
           }
+          options?.onPhase?.("resolve");
+          streamingParser?.finish();
           const streamingParserErrorText =
             outputMode === "jsonl" ? (streamingParser?.getErrorText() ?? null) : null;
           if (streamingParserErrorText) {
@@ -1844,6 +1852,7 @@ export async function executePreparedCliRun(
           }
 
           if (result.exitCode !== 0 || result.reason !== "exit") {
+            options?.onPhase?.("send");
             if (result.reason === "no-output-timeout" || result.noOutputTimedOut) {
               const timeoutReason = `CLI produced no output for ${Math.round(noOutputTimeoutMs / 1000)}s and was terminated.`;
               cliBackendLog.warn(
@@ -2157,6 +2166,7 @@ export async function executePreparedCliRun(
     }
   }
   if (outerCleanupError !== undefined) {
+    options?.onPhase?.("cleanup");
     claudeModelCallDiagnostics?.emitError(outerCleanupError);
     throw outerCleanupError;
   }

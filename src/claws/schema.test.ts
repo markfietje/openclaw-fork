@@ -362,6 +362,7 @@ describe("buildClawAddPlan", () => {
 
     expect(plan).toMatchObject({
       schemaVersion: "openclaw.clawAddPlan.v1",
+      manifestSchemaVersion: 1,
       stability: "experimental",
       dryRun: true,
       mutationAllowed: false,

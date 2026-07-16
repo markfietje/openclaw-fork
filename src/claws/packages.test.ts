@@ -107,7 +107,15 @@ describe("installClawPackages", () => {
 
     await installClawPackages(
       plan([{ kind: "plugin", source: "clawhub", ref: "@owner/audit", version: "2.0.1" }], "reuse"),
-      { deps: { installPlugin, preflightPlugin, persistPackageRef, completePackageRef } },
+      {
+        deps: {
+          installPlugin,
+          preflightPlugin,
+          persistPackageRef,
+          completePackageRef,
+          readPackageRefs: vi.fn().mockReturnValue([]),
+        },
+      },
     );
 
     expect(installPlugin).not.toHaveBeenCalled();
@@ -115,6 +123,30 @@ describe("installClawPackages", () => {
       expect.anything(),
       expect.anything(),
       expect.objectContaining({ status: "complete", ownership: "independently-owned" }),
+    );
+  });
+
+  it("inherits Claw-installed origin when another Claw already owns the plugin", async () => {
+    const persistPackageRef = vi.fn().mockReturnValue({ kind: "plugin" });
+    const existing = { ownership: "claw-installed" } as PersistedClawPackageRef;
+
+    await installClawPackages(
+      plan([{ kind: "plugin", source: "clawhub", ref: "@owner/audit", version: "2.0.1" }], "reuse"),
+      {
+        deps: {
+          installPlugin: vi.fn(),
+          preflightPlugin: vi.fn().mockResolvedValue({ ok: true, action: "reuse" }),
+          persistPackageRef,
+          completePackageRef,
+          readPackageRefs: vi.fn().mockReturnValue([existing]),
+        },
+      },
+    );
+
+    expect(persistPackageRef).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ ownership: "claw-installed" }),
     );
   });
 

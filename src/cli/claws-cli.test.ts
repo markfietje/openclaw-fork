@@ -146,6 +146,7 @@ describe("claws cli", () => {
       schemaVersion: "openclaw.clawRemovePlan.v1",
       dryRun: true,
       mutationAllowed: false,
+      planIntegrity: "sha256:remove-plan",
       target: "demo-agent",
       agentId: "demo-agent",
       actions: [
@@ -365,13 +366,34 @@ describe("claws cli", () => {
   });
 
   it("applies remove only after explicit consent", async () => {
-    await runCli(["claws", "remove", "demo-agent", "--yes", "--json"]);
+    await runCli([
+      "claws",
+      "remove",
+      "demo-agent",
+      "--yes",
+      "--plan-integrity",
+      "sha256:remove-plan",
+      "--json",
+    ]);
 
-    expect(mocks.applyClawRemovePlan).toHaveBeenCalledOnce();
+    expect(mocks.applyClawRemovePlan).toHaveBeenCalledWith(
+      expect.objectContaining({ planIntegrity: "sha256:remove-plan" }),
+      { consentPlanIntegrity: "sha256:remove-plan" },
+    );
     expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
       schemaVersion: "openclaw.clawRemoveResult.v1",
       status: "complete",
       agentId: "demo-agent",
+    });
+  });
+
+  it("requires the exact dry-run identity with remove consent", async () => {
+    await runCli(["claws", "remove", "demo-agent", "--yes", "--json"]);
+
+    expect(mocks.buildClawRemovePlan).not.toHaveBeenCalled();
+    expect(JSON.parse(mocks.logs[0] ?? "{}")).toMatchObject({
+      schemaVersion: "openclaw.clawRemovePlan.v1",
+      error: { code: "plan_integrity_required" },
     });
   });
 

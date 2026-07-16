@@ -8,6 +8,7 @@ import { assertExperimentalClawsEnabled } from "../claws/experimental.js";
 import {
   applyClawRemovePlan,
   buildClawRemovePlan,
+  CLAW_REMOVE_PLAN_SCHEMA_VERSION,
   CLAW_REMOVE_RESULT_SCHEMA_VERSION,
   ClawRemoveError,
   readClawStatus,
@@ -89,13 +90,20 @@ function failNonDryRun(opts: ClawsAddOptions, runtime: RuntimeEnv): boolean {
 }
 
 function requireRemoveConsent(opts: ClawsRemoveOptions, runtime: RuntimeEnv): boolean {
-  if (opts.dryRun || opts.yes) {
+  if (opts.dryRun || (opts.yes && opts.planIntegrity)) {
     return false;
   }
-  const message =
-    "Claw remove requires explicit consent; pass --dry-run to preview or --yes to remove owned state.";
+  const code = opts.yes ? "plan_integrity_required" : "consent_required";
+  const message = opts.yes
+    ? "Claw remove consent must include --plan-integrity from the exact dry-run plan."
+    : "Claw remove requires explicit consent; pass --dry-run to preview or --yes with --plan-integrity to remove owned state.";
   if (opts.json) {
-    writeRuntimeJson(runtime, { ok: false, error: { code: "consent_required", message } });
+    writeRuntimeJson(runtime, {
+      schemaVersion: CLAW_REMOVE_PLAN_SCHEMA_VERSION,
+      stability: CLAW_OUTPUT_STABILITY,
+      ok: false,
+      error: { code, message },
+    });
   } else {
     runtime.error(message);
   }
@@ -310,6 +318,7 @@ export async function runClawsRemoveCommand(
     } else {
       logExperimentalWarning(runtime);
       runtime.log(`Remove actions: ${plan.actions.length}`);
+      runtime.log(`Plan integrity: ${plan.planIntegrity}`);
       for (const action of plan.actions.filter((candidate) => candidate.kind === "packageRef")) {
         runtime.log(
           `  Package ${action.target}: ${action.action}${action.reason ? ` (${action.reason})` : ""}`,
@@ -325,7 +334,9 @@ export async function runClawsRemoveCommand(
     return;
   }
   try {
-    const result = await applyClawRemovePlan(plan);
+    const result = await applyClawRemovePlan(plan, {
+      consentPlanIntegrity: opts.planIntegrity,
+    });
     if (opts.json) {
       writeRuntimeJson(runtime, result);
     } else {

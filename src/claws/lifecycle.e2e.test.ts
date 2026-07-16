@@ -195,13 +195,26 @@ describe("claws lifecycle cli e2e", () => {
   });
 
   it("reports and removes a Claw-created agent through plan-first lifecycle commands", async () => {
-    const added = await runOpenClaw([
+    const addPreview = await runOpenClaw([
       "claws",
       "add",
       "src/claws/fixtures/workspace-agent.claw.json",
-      "--yes",
+      "--dry-run",
       "--json",
     ]);
+    const addPlan = parseJson(addPreview.stdout) as { planIntegrity: string };
+    const added = await runOpenClaw(
+      [
+        "claws",
+        "add",
+        "src/claws/fixtures/workspace-agent.claw.json",
+        "--yes",
+        "--plan-integrity",
+        addPlan.planIntegrity,
+        "--json",
+      ],
+      { stateDir: addPreview.stateDir },
+    );
     const status = await runOpenClaw(["claws", "status", "workspace-agent", "--json"], {
       stateDir: added.stateDir,
     });
@@ -215,16 +228,26 @@ describe("claws lifecycle cli e2e", () => {
       ["claws", "remove", "workspace-agent", "--dry-run", "--json"],
       { stateDir: added.stateDir },
     );
-    expect(parseJson(preview.stdout)).toMatchObject({
+    const removePlan = parseJson(preview.stdout) as { planIntegrity: string };
+    expect(removePlan).toMatchObject({
       schemaVersion: "openclaw.clawRemovePlan.v1",
       mutationAllowed: false,
       agentId: "workspace-agent",
       blockers: [],
     });
 
-    const removed = await runOpenClaw(["claws", "remove", "workspace-agent", "--yes", "--json"], {
-      stateDir: added.stateDir,
-    });
+    const removed = await runOpenClaw(
+      [
+        "claws",
+        "remove",
+        "workspace-agent",
+        "--yes",
+        "--plan-integrity",
+        removePlan.planIntegrity,
+        "--json",
+      ],
+      { stateDir: added.stateDir },
+    );
     expect(parseJson(removed.stdout)).toMatchObject({
       schemaVersion: "openclaw.clawRemoveResult.v1",
       status: "complete",

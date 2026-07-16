@@ -1,9 +1,10 @@
 // Local package and development-manifest reader for Claws.
 import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { isCanonicalClawHubPackageName, isExactSemVer } from "./schema-portability.js";
 import { parseClawManifest } from "./schema.js";
-import type { ClawDiagnostic, ClawReadResult, ClawSourceIdentity } from "./types.js";
+import type { ClawDiagnostic, ClawManifest, ClawReadResult, ClawSourceIdentity } from "./types.js";
 
 type PackageJson = {
   name: string;
@@ -11,15 +12,101 @@ type PackageJson = {
   openclaw: { claw: string };
 };
 
-const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+type ResolvedClawSource = Omit<ClawSourceIdentity, "integrity" | "integrityKind" | "byteLength">;
 
 function fileDiagnostic(code: string, message: string, path = "$"): ClawDiagnostic {
-  return { level: "error", code, path, message };
+  return { level: "error", code, phase: "parse", path, message };
 }
 
 function isContained(root: string, candidate: string): boolean {
   const child = relative(root, candidate);
   return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+}
+
+function updateSnapshotHash(
+  hash: ReturnType<typeof createHash>,
+  label: string,
+  bytes: Buffer,
+): void {
+  hash.update(`${Buffer.byteLength(label, "utf8")}:${label}:${bytes.byteLength}:`, "utf8");
+  hash.update(bytes);
+}
+
+async function buildDevelopmentSnapshot(params: {
+  source: ResolvedClawSource;
+  manifest: ClawManifest;
+  manifestRaw: string;
+}): Promise<
+  { ok: true; integrity: string; byteLength: number } | { ok: false; diagnostics: ClawDiagnostic[] }
+> {
+  const hash = createHash("sha256");
+  let byteLength = 0;
+  const add = (label: string, bytes: Buffer) => {
+    updateSnapshotHash(hash, label, bytes);
+    byteLength += bytes.byteLength;
+  };
+  add("canonical-source", Buffer.from(params.source.manifestPath, "utf8"));
+  add("manifest", Buffer.from(params.manifestRaw, "utf8"));
+
+  if (params.source.kind === "package") {
+    const packageJson = await readFile(resolve(params.source.packageRoot, "package.json")).catch(
+      () => undefined,
+    );
+    if (!packageJson) {
+      return {
+        ok: false,
+        diagnostics: [fileDiagnostic("package_read_failed", "Could not snapshot package.json.")],
+      };
+    }
+    add("package.json", packageJson);
+  }
+
+  const declaredSources = [
+    ...Object.values(params.manifest.workspace.bootstrapFiles)
+      .filter((entry): entry is { source: string } => entry !== undefined)
+      .map((entry) => entry.source),
+    ...params.manifest.workspace.files.map((entry) => entry.source),
+  ].toSorted((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+
+  for (const sourcePath of declaredSources) {
+    const requested = resolve(params.source.packageRoot, sourcePath);
+    const [requestedStat, sourceRealPath] = await Promise.all([
+      lstat(requested).catch(() => undefined),
+      realpath(requested).catch(() => undefined),
+    ]);
+    if (
+      !requestedStat ||
+      !sourceRealPath ||
+      !isContained(params.source.packageRoot, sourceRealPath)
+    ) {
+      return {
+        ok: false,
+        diagnostics: [
+          fileDiagnostic(
+            "workspace_source_invalid",
+            `Workspace source ${JSON.stringify(sourcePath)} must resolve inside the Claw source.`,
+            "$.workspace",
+          ),
+        ],
+      };
+    }
+    const sourceStat = await stat(sourceRealPath);
+    if (!sourceStat.isFile() || requestedStat.isSymbolicLink() || sourceStat.nlink > 1) {
+      return {
+        ok: false,
+        diagnostics: [
+          fileDiagnostic(
+            "workspace_source_unsafe",
+            `Workspace source ${JSON.stringify(sourcePath)} must be a regular, non-linked file.`,
+            "$.workspace",
+          ),
+        ],
+      };
+    }
+    add(`workspace:${sourcePath.replaceAll("\\", "/")}`, await readFile(sourceRealPath));
+  }
+
+  return { ok: true, integrity: `sha256:${hash.digest("hex")}`, byteLength };
 }
 
 function parsePackageJson(value: unknown): PackageJson | undefined {
@@ -34,9 +121,9 @@ function parsePackageJson(value: unknown): PackageJson | undefined {
   const claw = (openclaw as Record<string, unknown>).claw;
   if (
     typeof record.name !== "string" ||
-    record.name.trim() === "" ||
+    !isCanonicalClawHubPackageName(record.name) ||
     typeof record.version !== "string" ||
-    !EXACT_VERSION_PATTERN.test(record.version.trim()) ||
+    !isExactSemVer(record.version) ||
     typeof claw !== "string" ||
     claw.trim() === ""
   ) {
@@ -75,8 +162,7 @@ async function readJson(
 async function resolvePackageSource(
   packageRoot: string,
 ): Promise<
-  | { ok: true; source: Omit<ClawSourceIdentity, "integrity"> }
-  | { ok: false; diagnostics: ClawDiagnostic[] }
+  { ok: true; source: ResolvedClawSource } | { ok: false; diagnostics: ClawDiagnostic[] }
 > {
   const packageRootReal = await realpath(packageRoot).catch(() => undefined);
   if (!packageRootReal) {
@@ -139,8 +225,7 @@ async function resolvePackageSource(
 async function resolveSource(
   path: string,
 ): Promise<
-  | { ok: true; source: Omit<ClawSourceIdentity, "integrity"> }
-  | { ok: false; diagnostics: ClawDiagnostic[] }
+  { ok: true; source: ResolvedClawSource } | { ok: false; diagnostics: ClawDiagnostic[] }
 > {
   const inputPath = resolve(path);
   const inputStat = await stat(inputPath).catch(() => undefined);
@@ -189,9 +274,19 @@ export async function readClawManifestFile(path: string): Promise<ClawReadResult
   if (!parsed.ok) {
     return parsed;
   }
+  const snapshot = await buildDevelopmentSnapshot({
+    source: sourceResult.source,
+    manifest: parsed.manifest,
+    manifestRaw: manifestResult.raw,
+  });
+  if (!snapshot.ok) {
+    return snapshot;
+  }
   const source: ClawSourceIdentity = {
     ...sourceResult.source,
-    integrity: `sha256:${createHash("sha256").update(manifestResult.raw).digest("hex")}`,
+    integrityKind: "development-snapshot",
+    integrity: snapshot.integrity,
+    byteLength: snapshot.byteLength,
   };
   return { ok: true, manifest: parsed.manifest, source, diagnostics: parsed.diagnostics };
 }

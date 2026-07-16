@@ -148,7 +148,7 @@ function summarizeSessionTranscriptEvents(
     if (text) {
       finalText = text;
     }
-    const openClawMeta = isRecord(message.__openclaw) ? message.__openclaw : undefined;
+    const openClawMeta = isRecord(message["__openclaw"]) ? message["__openclaw"] : undefined;
     const mirrorIdentity = readNonEmptyString(openClawMeta?.mirrorIdentity);
     if (mirrorIdentity && text) {
       assistantMirrors.push({ identity: mirrorIdentity, text });

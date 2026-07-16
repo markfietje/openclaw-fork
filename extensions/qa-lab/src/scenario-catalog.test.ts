@@ -137,7 +137,7 @@ describe("qa scenario catalog", () => {
   it("loads scenario-specific execution config from per-scenario YAML", () => {
     const discovery = readQaScenarioById("source-docs-discovery-report");
     const discoveryConfig = readQaScenarioExecutionConfig("source-docs-discovery-report");
-    const codexLeak = readQaScenarioById("codex-harness-no-meta-leak");
+    const codexLeak = requireFlowScenario(readQaScenarioById("codex-harness-no-meta-leak"));
     const codexLeakConfig = readQaScenarioExecutionConfig("codex-harness-no-meta-leak") as
       | {
           harnessRuntime?: string;
@@ -206,8 +206,8 @@ describe("qa scenario catalog", () => {
   });
 
   it("requires runtime-specific planning evidence from both medium game scenarios", () => {
-    const codex = readQaScenarioById("medium-game-plan-codex-harness");
-    const openclaw = readQaScenarioById("medium-game-plan-openclaw-harness");
+    const codex = requireFlowScenario(readQaScenarioById("medium-game-plan-codex-harness"));
+    const openclaw = requireFlowScenario(readQaScenarioById("medium-game-plan-openclaw-harness"));
     const codexConfig = codex.execution.config as
       | { harnessRuntime?: string; requiredProviderMode?: string; requiredProvider?: string }
       | undefined;

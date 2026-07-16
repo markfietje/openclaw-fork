@@ -297,11 +297,15 @@ export function loadRuntimePluginCandidate(
     registrationPlan.loadSetupEntry && runtimeSetupEntry
       ? runtimeSetupEntry
       : runtimeCandidateEntry;
+  // `resolvePluginRuntimeArtifact` canonicalizes source/root together. Keep that
+  // pair intact or staged dist-runtime aliases can fail this boundary check.
   const rejectHardlinks = shouldRejectHardlinkedPluginFiles({
     origin: candidate.origin,
     rootDir: candidate.rootDir,
     env: context.env,
   });
+  // The artifact resolver canonicalizes both source and root from staging-only
+  // dist-runtime paths before this boundary check and module import.
   const opened = openRootFileSync({
     absolutePath: loadEntry.source,
     rootPath: loadEntry.rootDir,

@@ -334,6 +334,7 @@ export async function buildClawAddPlan(params: {
   const planIntegrity = `sha256:${createHash("sha256")
     .update(
       stableStringify({
+        manifestSchemaVersion: params.manifest.schemaVersion,
         clawIntegrity: source.integrity,
         finalId,
         workspace,
@@ -345,6 +346,7 @@ export async function buildClawAddPlan(params: {
 
   return {
     schemaVersion: CLAW_ADD_PLAN_SCHEMA_VERSION,
+    manifestSchemaVersion: params.manifest.schemaVersion,
     stability: CLAW_OUTPUT_STABILITY,
     dryRun: true,
     mutationAllowed: false,

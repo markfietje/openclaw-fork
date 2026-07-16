@@ -35,7 +35,13 @@ import { createReplyDispatcherWithTyping } from "openclaw/plugin-sdk/reply-runti
 import { settleReplyDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveInboundLastRouteSessionKey } from "openclaw/plugin-sdk/routing";
 import { getRuntimeConfig, type OpenClawConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
-import { danger, logVerbose, shouldLogVerbose, warn } from "openclaw/plugin-sdk/runtime-env";
+import {
+  danger,
+  logVerbose,
+  shouldLogVerbose,
+  type RuntimeEnv,
+  warn,
+} from "openclaw/plugin-sdk/runtime-env";
 import {
   resolveOpenProviderRuntimeGroupPolicy,
   resolveDefaultGroupPolicy,
@@ -123,29 +129,36 @@ const APPROVAL_REACTION_POLL_INTERVAL_MS = 2_000;
 const APPROVAL_REACTION_DISCOVERY_INTERVAL_MS = 60_000;
 const IMESSAGE_TYPING_KEEPALIVE_INTERVAL_MS = 8_000;
 const IMESSAGE_TYPING_KEEPALIVE_MAX_DURATION_MS = 10 * 60_000;
-const IMESSAGE_SPLIT_SEND_COMPAT_DEBOUNCE_MS = 7_000;
 type IMessageTypingController = Parameters<NonNullable<GetReplyOptions["onTypingController"]>>[0];
+type ProbeIMessageForTransportReady = typeof probeIMessage;
 
 function resolveConfiguredIMessageTypingMode(cfg: OpenClawConfig) {
   return cfg.session?.typingMode ?? cfg.agents?.defaults?.typingMode;
 }
 
-function resolveIMessageSplitSendCompatDebounceMs(
-  cfg: OpenClawConfig,
-  coalesceSameSenderDms: boolean,
-): number | undefined {
-  if (!coalesceSameSenderDms) {
-    return undefined;
-  }
-  const inbound = cfg.messages?.inbound;
-  const channelOverride = inbound?.byChannel?.imessage;
-  if (typeof channelOverride === "number" && Number.isFinite(channelOverride)) {
-    return undefined;
-  }
-  if (typeof inbound?.debounceMs === "number" && Number.isFinite(inbound.debounceMs)) {
-    return undefined;
-  }
-  return IMESSAGE_SPLIT_SEND_COMPAT_DEBOUNCE_MS;
+function createIMessageTransportReadyCheck({
+  probeTimeoutMs,
+  cliPath,
+  dbPath,
+  runtime,
+  probe = probeIMessage,
+}: {
+  probeTimeoutMs: number;
+  cliPath: string;
+  dbPath?: string;
+  runtime: RuntimeEnv;
+  probe?: ProbeIMessageForTransportReady;
+}) {
+  return async () => {
+    const result = await probe(probeTimeoutMs, { cliPath, dbPath, runtime });
+    if (result.ok) {
+      return { ok: true } as const;
+    }
+    if (result.fatal) {
+      throw new Error(result.error ?? "imsg rpc unavailable");
+    }
+    return { ok: false, error: result.error ?? "unreachable" } as const;
+  };
 }
 
 function isIMessagePluginPayloadAttachment(attachment: {
@@ -565,8 +578,6 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         : recoveryCursorRowid
       : recoveryBoundaryRowid;
 
-  const coalesceSameSenderDms = imessageCfg.coalesceSameSenderDms === true;
-  const debounceMsOverride = resolveIMessageSplitSendCompatDebounceMs(cfg, coalesceSameSenderDms);
   // Session capability latch: flips true once any inbound row from this imsg
   // build carries balloon metadata. The coalesce flush gate needs a build-level
   // signal because imsg omits `balloon_bundle_id` for plain rows.
@@ -689,7 +700,6 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
   }>({
     cfg,
     channel: "imessage",
-    debounceMsOverride,
     buildKey: (entry) => {
       const msg = entry.message;
       const sender = msg.sender?.trim();
@@ -701,10 +711,6 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
           ? `chat:${msg.chat_id}`
           : (msg.chat_guid ?? msg.chat_identifier ?? "unknown");
 
-      if (coalesceSameSenderDms && msg.is_group !== true) {
-        return `imessage:${accountInfo.accountId}:dm:${conversationId}:${sender}`;
-      }
-
       return `imessage:${accountInfo.accountId}:${conversationId}:${sender}`;
     },
     shouldDebounce: (entry) => {
@@ -715,12 +721,6 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       // From-me messages are cached, not processed — never debounce.
       if (msg.is_from_me === true) {
         return false;
-      }
-
-      // Opt-in DM coalescing holds rows long enough for Apple's command+URL
-      // split-send to arrive. Group chats keep instant per-message dispatch.
-      if (coalesceSameSenderDms) {
-        return msg.is_group !== true;
       }
 
       // General same-sender inbound debounce: text-only, no control commands,
@@ -1622,16 +1622,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     pollIntervalMs: 500,
     abortSignal: opts.abortSignal,
     runtime,
-    check: async () => {
-      const probe = await probeIMessage(probeTimeoutMs, { cliPath, dbPath, runtime });
-      if (probe.ok) {
-        return { ok: true };
-      }
-      if (probe.fatal) {
-        throw new Error(probe.error ?? "imsg rpc unavailable");
-      }
-      return { ok: false, error: probe.error ?? "unreachable" };
-    },
+    check: createIMessageTransportReadyCheck({ probeTimeoutMs, cliPath, dbPath, runtime }),
   });
 
   if (opts.abortSignal?.aborted) {

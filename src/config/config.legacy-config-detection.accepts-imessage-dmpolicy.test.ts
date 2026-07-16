@@ -1,6 +1,7 @@
 // Regresses accepted legacy iMessage dmPolicy config detection.
 import { describe, expect, it } from "vitest";
 import { expectSchemaConfigValue } from "./legacy-config-detection.test-support.js";
+import { validateConfigObjectRaw } from "./validation.js";
 import { BindingsSchema } from "./zod-schema.agents.js";
 import { OpenClawSchema } from "./zod-schema.js";
 
@@ -47,6 +48,43 @@ describe("legacy config detection", () => {
       expectedMessageIncludes: '"whatsapp"',
     });
   });
+
+  it("does not strip retired iMessage coalesceSameSenderDms keys during validation", () => {
+    const config = {
+      channels: {
+        imessage: {
+          dmPolicy: "allowlist",
+          allowFrom: ["+15550001111"],
+          coalesceSameSenderDms: true,
+          accounts: {
+            work: {
+              cliPath: "imsg-work",
+              coalesceSameSenderDms: false,
+            },
+          },
+        },
+      },
+    };
+
+    const res = validateConfigObjectRaw(config);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const imessage = res.config.channels?.imessage as Record<string, unknown>;
+      expect(imessage.coalesceSameSenderDms).toBe(true);
+      const accounts = imessage.accounts as Record<string, Record<string, unknown>>;
+      const workAccount = accounts.work;
+      expect(workAccount).toBeDefined();
+      if (!workAccount) {
+        throw new Error("missing work iMessage account");
+      }
+      expect(workAccount.coalesceSameSenderDms).toBe(false);
+      expect(workAccount.cliPath).toBe("imsg-work");
+    }
+    expect(config.channels.imessage.coalesceSameSenderDms).toBe(true);
+    expect(config.channels.imessage.accounts.work.coalesceSameSenderDms).toBe(false);
+  });
+
   it("preserves claude-cli auth profile mode during validation", () => {
     const config = {
       auth: {

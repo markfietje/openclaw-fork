@@ -212,7 +212,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_ENTRYPOINTS",
       // Registry sweep: 77 packages, zero fetch failures; retired dead channel-ingress facade.
       // +1: speech-settings keeps agent prompt imports off the synthesis/runtime graph.
-      329,
+      // +1: focused base64 media helpers.
+      330,
       env,
     ),
     // ScopeTree adds six channel-policy exports, mirrored by compat, including three functions.
@@ -221,7 +222,7 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
     // Its length-prefixed segment encoder and scope-key builder add two functions, also mirrored.
     // The focused HTML entity runtime and quote-aware HTML tokenizer add one public function each.
     // Plugin service Gateway event scope and emitter types add four facade exports.
-    // media-runtime adds the canonical base64 source parser and result type;
+    // The focused base64 facade adds four exports, including three functions.
     // media-mime adds the canonical kindFromMime classifier.
     publicExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_EXPORTS",
@@ -252,7 +253,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +4: bounded plugin blob store options, entry, entry info, and store types.
       // +6: shared progress receipt tracker + compositor snapshot across channel barrels.
       // +1: selectPreferredLocalModelId shares app-guided local model ranking across providers.
-      8006,
+      // +4: focused base64 media helpers.
+      8011,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
@@ -277,7 +279,8 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
       // +3: lightweight speech settings normalizers and config resolver.
       // +1: unified implicit-mention policy resolver.
       // +1: selectPreferredLocalModelId shares app-guided local model ranking across providers.
-      4473,
+      // +3: focused base64 media helpers.
+      4477,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(

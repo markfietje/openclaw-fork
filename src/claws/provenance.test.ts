@@ -190,7 +190,12 @@ describe("applyClawAddPlan", () => {
         consentPlanIntegrity: plan.planIntegrity,
         env: stateEnv(root),
       }),
-    ).rejects.toMatchObject({ code: "workspace_collision" });
+    ).resolves.toMatchObject({
+      status: "partial",
+      workspaceCreated: false,
+      configCommitted: false,
+      error: { code: "workspace_collision" },
+    });
     expect(readInstallRow("worker", root)?.status).toBe("partial");
   });
 

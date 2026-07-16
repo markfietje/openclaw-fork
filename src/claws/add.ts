@@ -35,7 +35,7 @@ export class ClawAddMutationError extends Error {
   }
 }
 
-export type ClawAddResult = {
+type ClawAddResult = {
   schemaVersion: typeof CLAW_ADD_RESULT_SCHEMA_VERSION;
   stability: typeof CLAW_OUTPUT_STABILITY;
   dryRun: false;
@@ -173,7 +173,11 @@ export async function applyClawAddPlan(
       packages,
       error: {
         code: "workspace_collision",
-        message: "Could not create new workspace " + JSON.stringify(workspace) + ": " + (error as Error).message,
+        message:
+          "Could not create new workspace " +
+          JSON.stringify(workspace) +
+          ": " +
+          (error as Error).message,
       },
       nowMs: options.nowMs,
     });

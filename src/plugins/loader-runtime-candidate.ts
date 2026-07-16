@@ -304,8 +304,6 @@ export function loadRuntimePluginCandidate(
     rootDir: candidate.rootDir,
     env: context.env,
   });
-  // The artifact resolver canonicalizes both source and root from staging-only
-  // dist-runtime paths before this boundary check and module import.
   const opened = openRootFileSync({
     absolutePath: loadEntry.source,
     rootPath: loadEntry.rootDir,

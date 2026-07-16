@@ -18,6 +18,7 @@ function packageRef(overrides: Partial<PersistedClawPackageRef> = {}): Persisted
     status: "complete",
     ownership: "claw-installed",
     installedAtMs: 1,
+    updatedAtMs: 1,
     ...overrides,
   };
 }
@@ -42,6 +43,7 @@ describe("Claw package removal", () => {
     await expect(
       applyClawPackageRemovals(decisions, {
         deps: {
+          readPackageRefs: vi.fn().mockReturnValue([ref]),
           uninstallPlugin,
           resolvePlugin: vi.fn().mockResolvedValue({
             status: "found",
@@ -60,7 +62,7 @@ describe("Claw package removal", () => {
   });
 
   it.each([
-    ["preexisting", packageRef({ ownership: "preexisting" })],
+    ["independently-owned", packageRef({ ownership: "independently-owned" })],
     ["pending", packageRef({ status: "pending" })],
     ["shared", packageRef()],
   ])("retains %s artifacts while releasing the Claw reference", async (scenario, ref) => {
@@ -92,6 +94,25 @@ describe("Claw package removal", () => {
     ]);
   });
 
+  it("retains a plugin reinstalled directly after Claw provenance", async () => {
+    const ref = packageRef({ updatedAtMs: 10 });
+    const decisions = await planClawPackageRemovals(install, [ref], {
+      deps: {
+        readPackageRefs: vi.fn().mockReturnValue([ref]),
+        resolvePlugin: vi.fn().mockResolvedValue({
+          status: "found",
+          pluginId: "audit",
+          record: { source: "clawhub", installedAt: new Date(20).toISOString() },
+          installedVersion: "1.0.0",
+        }),
+      },
+    });
+
+    expect(decisions).toMatchObject([
+      { action: "retain", reason: "Package is independently owned outside this Claw." },
+    ]);
+  });
+
   it("treats equal skill refs in separate agent workspaces as separate artifacts", async () => {
     const ref = packageRef({ kind: "skill", ref: "triage" });
     const other = packageRef({ kind: "skill", ref: "triage", agentId: "other" });
@@ -99,6 +120,7 @@ describe("Claw package removal", () => {
       workspaceDir: install.workspace,
       slug: "triage",
       version: "1.0.0",
+      installedAt: 1,
       targetDir: "/tmp/claw-workspace/skills/triage",
       skillFilePath: "SKILL.md",
       skillFileSha256: "abc",
@@ -128,6 +150,7 @@ describe("Claw package removal", () => {
     await expect(
       applyClawPackageRemovals(decisions, {
         deps: {
+          readPackageRefs: vi.fn().mockReturnValue([ref]),
           resolvePlugin: vi.fn().mockResolvedValue({
             status: "found",
             pluginId: "audit",
@@ -139,6 +162,33 @@ describe("Claw package removal", () => {
       }),
     ).resolves.toEqual([
       { kind: "plugin", ref: "audit", version: "1.0.0", action: "error", reason: "busy" },
+    ]);
+  });
+
+  it("rejects uninstall when direct adoption appears after planning", async () => {
+    const ref = packageRef();
+    const decisions = await planClawPackageRemovals(install, [ref], {
+      deps: {
+        readPackageRefs: vi.fn().mockReturnValue([ref]),
+        resolvePlugin: vi.fn().mockResolvedValue({
+          status: "found",
+          pluginId: "audit",
+          record: { source: "clawhub" },
+          installedVersion: "1.0.0",
+        }),
+      },
+    });
+    const adopted = packageRef({ ownership: "independently-owned" });
+
+    await expect(
+      applyClawPackageRemovals(decisions, {
+        deps: {
+          readPackageRefs: vi.fn().mockReturnValue([adopted]),
+          uninstallPlugin: vi.fn(),
+        },
+      }),
+    ).resolves.toMatchObject([
+      { action: "error", reason: expect.stringContaining("ownership changed") },
     ]);
   });
 });

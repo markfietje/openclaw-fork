@@ -79,7 +79,7 @@ describe("claws lifecycle cli e2e", () => {
     });
   });
 
-  it("fails closed in dry-run when package preflight is not available", async () => {
+  it("builds a complete read-only plan with deferred package blockers", async () => {
     const result = await runOpenClaw(["claws", "add", manifestPath, "--dry-run", "--json"], {
       expectFailure: true,
     });
@@ -101,19 +101,33 @@ describe("claws lifecycle cli e2e", () => {
         blockedActions: 1,
       },
       blockers: expect.arrayContaining([
-        expect.objectContaining({ code: "skill_package_preflight_unavailable" }),
+        expect.objectContaining({ code: "skill_package_preflight_unavailable", phase: "plan" }),
       ]),
     });
+    expect(result.code).toBe(1);
   });
 
   it("creates exactly one agent and root install record after explicit consent", async () => {
-    const result = await runOpenClaw([
+    const preview = await runOpenClaw([
       "claws",
       "add",
       "src/claws/fixtures/minimal-agent.claw.json",
-      "--yes",
+      "--dry-run",
       "--json",
     ]);
+    const plan = parseJson(preview.stdout) as { planIntegrity: string };
+    const result = await runOpenClaw(
+      [
+        "claws",
+        "add",
+        "src/claws/fixtures/minimal-agent.claw.json",
+        "--yes",
+        "--plan-integrity",
+        plan.planIntegrity,
+        "--json",
+      ],
+      { stateDir: preview.stateDir },
+    );
 
     expect(parseJson(result.stdout)).toMatchObject({
       schemaVersion: "openclaw.clawAddResult.v1",
@@ -135,13 +149,26 @@ describe("claws lifecycle cli e2e", () => {
   });
 
   it("creates declared bootstrap and supporting files in the new workspace", async () => {
-    const result = await runOpenClaw([
+    const preview = await runOpenClaw([
       "claws",
       "add",
       "src/claws/fixtures/workspace-agent.claw.json",
-      "--yes",
+      "--dry-run",
       "--json",
     ]);
+    const plan = parseJson(preview.stdout) as { planIntegrity: string };
+    const result = await runOpenClaw(
+      [
+        "claws",
+        "add",
+        "src/claws/fixtures/workspace-agent.claw.json",
+        "--yes",
+        "--plan-integrity",
+        plan.planIntegrity,
+        "--json",
+      ],
+      { stateDir: preview.stateDir },
+    );
     const payload = parseJson(result.stdout);
     const workspace = join(result.stateDir, ".openclaw", "workspace-workspace-agent");
 
@@ -168,13 +195,26 @@ describe("claws lifecycle cli e2e", () => {
   });
 
   it("reports and removes a Claw-created agent through plan-first lifecycle commands", async () => {
-    const added = await runOpenClaw([
+    const addPreview = await runOpenClaw([
       "claws",
       "add",
       "src/claws/fixtures/workspace-agent.claw.json",
-      "--yes",
+      "--dry-run",
       "--json",
     ]);
+    const addPlan = parseJson(addPreview.stdout) as { planIntegrity: string };
+    const added = await runOpenClaw(
+      [
+        "claws",
+        "add",
+        "src/claws/fixtures/workspace-agent.claw.json",
+        "--yes",
+        "--plan-integrity",
+        addPlan.planIntegrity,
+        "--json",
+      ],
+      { stateDir: addPreview.stateDir },
+    );
     const status = await runOpenClaw(["claws", "status", "workspace-agent", "--json"], {
       stateDir: added.stateDir,
     });
@@ -188,16 +228,26 @@ describe("claws lifecycle cli e2e", () => {
       ["claws", "remove", "workspace-agent", "--dry-run", "--json"],
       { stateDir: added.stateDir },
     );
-    expect(parseJson(preview.stdout)).toMatchObject({
+    const removePlan = parseJson(preview.stdout) as { planIntegrity: string };
+    expect(removePlan).toMatchObject({
       schemaVersion: "openclaw.clawRemovePlan.v1",
       mutationAllowed: false,
       agentId: "workspace-agent",
       blockers: [],
     });
 
-    const removed = await runOpenClaw(["claws", "remove", "workspace-agent", "--yes", "--json"], {
-      stateDir: added.stateDir,
-    });
+    const removed = await runOpenClaw(
+      [
+        "claws",
+        "remove",
+        "workspace-agent",
+        "--yes",
+        "--plan-integrity",
+        removePlan.planIntegrity,
+        "--json",
+      ],
+      { stateDir: added.stateDir },
+    );
     expect(parseJson(removed.stdout)).toMatchObject({
       schemaVersion: "openclaw.clawRemoveResult.v1",
       status: "complete",
@@ -209,13 +259,13 @@ describe("claws lifecycle cli e2e", () => {
   });
 
   it("exports an installed agent as a self-contained grouped package", async () => {
-    const added = await runOpenClaw([
-      "claws",
-      "add",
-      "src/claws/fixtures/workspace-agent.claw.json",
-      "--yes",
-      "--json",
-    ]);
+    const source = "src/claws/fixtures/workspace-agent.claw.json";
+    const addPreview = await runOpenClaw(["claws", "add", source, "--dry-run", "--json"]);
+    const addPlan = parseJson(addPreview.stdout) as { planIntegrity: string };
+    const added = await runOpenClaw(
+      ["claws", "add", source, "--yes", "--plan-integrity", addPlan.planIntegrity, "--json"],
+      { stateDir: addPreview.stateDir },
+    );
     const outputDirectory = join(added.stateDir, "exported-claw");
     const exported = await runOpenClaw(
       ["claws", "export", "workspace-agent", "--out", outputDirectory, "--json"],
@@ -246,7 +296,7 @@ describe("claws lifecycle cli e2e", () => {
     expect(JSON.parse(await readFile(join(outputDirectory, "package.json"), "utf8"))).toMatchObject(
       {
         name: "openclaw-claw-workspace-agent",
-        version: "0.0.0-development",
+        version: expect.stringMatching(/^0\.0\.0-export\.[0-9a-f]{12}$/),
         type: "module",
       },
     );
@@ -256,7 +306,26 @@ describe("claws lifecycle cli e2e", () => {
       source: { kind: "package" },
       manifest: { agent: { id: "workspace-agent" } },
     });
-    const roundTrip = await runOpenClaw(["claws", "add", outputDirectory, "--yes", "--json"]);
+    const roundTripPreview = await runOpenClaw([
+      "claws",
+      "add",
+      outputDirectory,
+      "--dry-run",
+      "--json",
+    ]);
+    const roundTripPlan = parseJson(roundTripPreview.stdout) as { planIntegrity: string };
+    const roundTrip = await runOpenClaw(
+      [
+        "claws",
+        "add",
+        outputDirectory,
+        "--yes",
+        "--plan-integrity",
+        roundTripPlan.planIntegrity,
+        "--json",
+      ],
+      { stateDir: roundTripPreview.stateDir },
+    );
     expect(parseJson(roundTrip.stdout)).toMatchObject({
       status: "complete",
       claw: { kind: "package" },
@@ -270,9 +339,17 @@ describe("claws lifecycle cli e2e", () => {
   });
 
   it("blocks mutation when declared components need later lifecycle slices", async () => {
-    const result = await runOpenClaw(["claws", "add", manifestPath, "--yes", "--json"], {
+    const preview = await runOpenClaw(["claws", "add", manifestPath, "--dry-run", "--json"], {
       expectFailure: true,
     });
+    const plan = parseJson(preview.stdout) as { planIntegrity: string };
+    const result = await runOpenClaw(
+      ["claws", "add", manifestPath, "--yes", "--plan-integrity", plan.planIntegrity, "--json"],
+      {
+        expectFailure: true,
+        stateDir: preview.stateDir,
+      },
+    );
 
     expect(result.code).toBe(1);
     expect(parseJson(result.stdout)).toMatchObject({

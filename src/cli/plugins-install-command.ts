@@ -50,6 +50,7 @@ import {
 import { tracePluginLifecyclePhaseAsync } from "../plugins/plugin-lifecycle-trace.js";
 import { validateJsonSchemaValue } from "../plugins/schema-validator.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
+import { markClawPackageIndependentlyOwned } from "../state/claw-package-adoption.js";
 import { resolveUserPath, shortenHomePath } from "../utils.js";
 import { resolveClawHubRiskAcknowledgementCliOptions } from "./clawhub-risk-acknowledgement.js";
 import { formatCliCommand } from "./command-format.js";
@@ -870,6 +871,7 @@ export async function runPluginInstallCommand(params: {
     marketplace?: string;
   };
   invalidateRuntimeCache?: boolean;
+  clawManaged?: boolean;
   runtime?: RuntimeEnv;
 }) {
   assertConfigWriteAllowedInCurrentMode();
@@ -1340,6 +1342,14 @@ export async function runPluginInstallCommand(params: {
       invalidateRuntimeCache,
       runtime,
     });
+    if (!params.clawManaged && result.clawhub.version) {
+      markClawPackageIndependentlyOwned({
+        kind: "plugin",
+        source: "clawhub",
+        ref: result.clawhub.clawhubPackage,
+        version: result.clawhub.version,
+      });
+    }
     return;
   }
 

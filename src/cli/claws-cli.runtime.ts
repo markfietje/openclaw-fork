@@ -13,6 +13,7 @@ import {
 import {
   applyClawRemovePlan,
   buildClawRemovePlan,
+  CLAW_REMOVE_PLAN_SCHEMA_VERSION,
   CLAW_REMOVE_RESULT_SCHEMA_VERSION,
   ClawRemoveError,
   readClawStatus,
@@ -39,6 +40,7 @@ import {
 import { agentsDeleteCommand } from "../commands/agents.commands.delete.js";
 // Runtime handlers for experimental local Claws commands.
 import { loadConfig } from "../config/config.js";
+import { listConfiguredMcpServers } from "../config/mcp-config.js";
 import { redactSensitiveArgv } from "../config/redact-argv.js";
 import {
   defaultRuntime,
@@ -46,6 +48,7 @@ import {
   type OutputRuntimeEnv,
   type RuntimeEnv,
 } from "../runtime.js";
+import { openExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db.js";
 import type {
   ClawsAddOptions,
   ClawsExportOptions,
@@ -99,17 +102,23 @@ function logClawAddPlanSummary(plan: ClawAddPlan, runtime: RuntimeEnv): void {
 }
 
 function failNonDryRun(opts: ClawsAddOptions, runtime: RuntimeEnv): boolean {
-  if (opts.dryRun || opts.yes) {
+  if (opts.dryRun) {
     return false;
   }
-  const message =
-    "Claw add requires explicit consent; pass --dry-run to preview or --yes to create the new agent and workspace.";
+  const consented = opts.yes && opts.planIntegrity;
+  if (consented) {
+    return false;
+  }
+  const code = opts.yes ? "plan_integrity_required" : "consent_required";
+  const message = opts.yes
+    ? "Claw add consent must include --plan-integrity from the exact dry-run plan."
+    : "Claw add requires explicit consent; pass --dry-run to preview or --yes with --plan-integrity to create the new agent and workspace.";
   if (opts.json) {
     writeRuntimeJson(runtime, {
       schemaVersion: CLAW_ADD_PLAN_SCHEMA_VERSION,
       stability: CLAW_OUTPUT_STABILITY,
       ok: false,
-      error: { code: "consent_required", message },
+      error: { code, message },
     });
   } else {
     runtime.error(message);
@@ -119,13 +128,20 @@ function failNonDryRun(opts: ClawsAddOptions, runtime: RuntimeEnv): boolean {
 }
 
 function requireRemoveConsent(opts: ClawsRemoveOptions, runtime: RuntimeEnv): boolean {
-  if (opts.dryRun || opts.yes) {
+  if (opts.dryRun || (opts.yes && opts.planIntegrity)) {
     return false;
   }
-  const message =
-    "Claw remove requires explicit consent; pass --dry-run to preview or --yes to remove owned state.";
+  const code = opts.yes ? "plan_integrity_required" : "consent_required";
+  const message = opts.yes
+    ? "Claw remove consent must include --plan-integrity from the exact dry-run plan."
+    : "Claw remove requires explicit consent; pass --dry-run to preview or --yes with --plan-integrity to remove owned state.";
   if (opts.json) {
-    writeRuntimeJson(runtime, { ok: false, error: { code: "consent_required", message } });
+    writeRuntimeJson(runtime, {
+      schemaVersion: CLAW_REMOVE_PLAN_SCHEMA_VERSION,
+      stability: CLAW_OUTPUT_STABILITY,
+      ok: false,
+      error: { code, message },
+    });
   } else {
     runtime.error(message);
   }
@@ -201,6 +217,12 @@ export async function runClawsAddCommand(
   }
 
   const config = loadConfig();
+  const listedMcpServers = await listConfiguredMcpServers();
+  if (!listedMcpServers.ok) {
+    runtime.error(listedMcpServers.error);
+    runtime.exit(1);
+    return;
+  }
   const existingAgentIds = listAgentIds(config);
   const plan = await buildClawAddPlan({
     manifest: result.manifest,
@@ -213,7 +235,7 @@ export async function runClawsAddCommand(
       existingWorkspacePaths: existingAgentIds.map((agentId) =>
         resolveAgentWorkspaceDir(config, agentId),
       ),
-      existingMcpServerNames: Object.keys(config.mcp?.servers ?? {}),
+      existingMcpServers: listedMcpServers.mcpServers,
       packagePreflight: preflightClawPackage,
     },
   });
@@ -241,9 +263,27 @@ export async function runClawsAddCommand(
     return;
   }
 
+  if (opts.planIntegrity !== plan.planIntegrity) {
+    const message = "The consented Claw plan no longer matches; run add --dry-run again.";
+    if (opts.json) {
+      writeRuntimeJson(runtime, {
+        schemaVersion: CLAW_ADD_RESULT_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        status: "failed",
+        planIntegrity: plan.planIntegrity,
+        error: { code: "plan_integrity_mismatch", message },
+      });
+    } else {
+      runtime.error(message);
+    }
+    runtime.exit(1);
+    return;
+  }
+
   let addResult;
   try {
     addResult = await applyClawAddPlan(plan, {
+      consentPlanIntegrity: opts.planIntegrity,
       runtime: opts.json ? { ...runtime, log: () => undefined } : runtime,
       cronGateway: {
         add: async (input) => await callGatewayFromCli("cron.add", {}, input),
@@ -311,7 +351,7 @@ function logClawUpdatePlanSummary(plan: ClawUpdatePlan, runtime: RuntimeEnv): vo
   runtime.log(`Agent: ${plan.agentId}`);
   runtime.log(`Update actions: ${plan.summary.totalActions}`);
   runtime.log(
-    `Add: ${plan.summary.added}; change: ${plan.summary.changed}; remove: ${plan.summary.removed}; unchanged: ${plan.summary.unchanged}; manual: ${plan.summary.manual}`,
+    `Add: ${plan.summary.added}; change: ${plan.summary.changed}; remove: ${plan.summary.removed}; release: ${plan.summary.released}; unchanged: ${plan.summary.unchanged}; manual: ${plan.summary.manual}`,
   );
   if (plan.blockers.length > 0) {
     runtime.error(formatDiagnostics(plan.blockers));
@@ -324,15 +364,17 @@ export async function runClawsUpdateCommand(
   runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   assertExperimentalClawsEnabled();
-  if (!opts.dryRun && !opts.yes) {
-    const message =
-      "Claw update requires explicit consent; pass --dry-run to preview or --yes to apply supported actions.";
+  if (!opts.dryRun && (!opts.yes || !opts.planIntegrity)) {
+    const code = opts.yes ? "plan_integrity_required" : "consent_required";
+    const message = opts.yes
+      ? "Claw update requires --plan-integrity from an exact dry-run preview."
+      : "Claw update requires explicit consent; pass --dry-run to preview or --yes with --plan-integrity to apply.";
     if (opts.json) {
       writeRuntimeJson(runtime, {
         schemaVersion: CLAW_UPDATE_PLAN_SCHEMA_VERSION,
         stability: CLAW_OUTPUT_STABILITY,
         ok: false,
-        error: { code: "consent_required", message },
+        error: { code, message },
       });
     } else {
       runtime.error(message);
@@ -341,9 +383,54 @@ export async function runClawsUpdateCommand(
     return;
   }
 
+  const listedMcpServers = await listConfiguredMcpServers();
+  if (!listedMcpServers.ok) {
+    if (opts.json) {
+      writeRuntimeJson(runtime, {
+        schemaVersion: CLAW_UPDATE_PLAN_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        dryRun: true,
+        mutationAllowed: false,
+        valid: false,
+        diagnostics: [
+          {
+            level: "error",
+            code: "mcp_config_unavailable",
+            phase: "plan",
+            path: "$.mcpServers",
+            message: listedMcpServers.error,
+          },
+        ],
+      });
+    } else {
+      runtime.error(listedMcpServers.error);
+    }
+    runtime.exit(1);
+    return;
+  }
+
   let source = opts.from;
   if (!source) {
-    const status = await readClawStatus(target, { readOnly: true });
+    const database = openExistingOpenClawStateDatabaseReadOnly();
+    let status: Awaited<ReturnType<typeof readClawStatus>> | { records: never[] } = {
+      records: [],
+    };
+    if (database) {
+      try {
+        const hasClawInstalls = database.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'claw_installs'")
+          .get();
+        if (hasClawInstalls) {
+          status = await readClawStatus(target, {
+            database,
+            readOnly: true,
+            sourceMcpServers: listedMcpServers.mcpServers,
+          });
+        }
+      } finally {
+        database.walMaintenance.close();
+      }
+    }
     if (status.records.length !== 1) {
       const message =
         status.records.length === 0
@@ -360,6 +447,7 @@ export async function runClawsUpdateCommand(
             {
               level: "error",
               code: status.records.length === 0 ? "claw_not_found" : "claw_ambiguous",
+              phase: "plan",
               path: "$",
               message,
             },
@@ -384,6 +472,7 @@ export async function runClawsUpdateCommand(
           {
             level: "error" as const,
             code: "recorded_source_unavailable",
+            phase: "plan" as const,
             path: "$",
             message: "The recorded Claw source is unavailable; pass --from to override it.",
           },
@@ -410,6 +499,7 @@ export async function runClawsUpdateCommand(
     targetManifest: loaded.manifest,
     targetSource: loaded.source,
     config,
+    sourceMcpServers: listedMcpServers.mcpServers,
     packagePreflight: preflightClawPackage,
     diagnostics: loaded.diagnostics,
   });
@@ -428,13 +518,14 @@ export async function runClawsUpdateCommand(
     }
     return;
   }
-
   try {
     const result = await applyClawUpdatePlan(
       plan,
       { targetManifest: loaded.manifest, targetSource: loaded.source },
       {
         config,
+        sourceMcpServers: listedMcpServers.mcpServers,
+        consentPlanIntegrity: opts.planIntegrity,
         cronGateway: {
           add: async (input) => await callGatewayFromCli("cron.add", {}, input),
           remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),
@@ -481,6 +572,7 @@ export async function runClawsRemoveCommand(
     } else {
       logExperimentalWarning(runtime);
       runtime.log(`Remove actions: ${plan.actions.length}`);
+      runtime.log(`Plan integrity: ${plan.planIntegrity}`);
       for (const action of plan.actions.filter((candidate) => candidate.kind === "packageRef")) {
         runtime.log(
           `  Package ${action.target}: ${action.action}${action.reason ? ` (${action.reason})` : ""}`,
@@ -518,6 +610,7 @@ export async function runClawsRemoveCommand(
       cronGateway: {
         remove: async (id) => await callGatewayFromCli("cron.remove", {}, { id }),
       },
+      consentPlanIntegrity: opts.planIntegrity,
     });
     if (opts.json) {
       writeRuntimeJson(runtime, result);
@@ -559,7 +652,14 @@ export async function runClawsExportCommand(
 ): Promise<void> {
   assertExperimentalClawsEnabled();
   try {
-    const result = await exportClawAgent(agentId, opts.out, { config: loadConfig() });
+    const listedMcpServers = await listConfiguredMcpServers();
+    if (!listedMcpServers.ok) {
+      throw new ClawExportError("mcp_config_unavailable", listedMcpServers.error);
+    }
+    const result = await exportClawAgent(agentId, opts.out, {
+      config: loadConfig(),
+      sourceMcpServers: listedMcpServers.mcpServers,
+    });
     if (opts.json) {
       writeRuntimeJson(runtime, result);
       return;

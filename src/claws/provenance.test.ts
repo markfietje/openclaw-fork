@@ -1,5 +1,5 @@
 // Tests root Claw install ownership and the narrow agent/workspace mutation slice.
-import { access, mkdtemp } from "node:fs/promises";
+import { access, mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -36,7 +36,9 @@ async function makePlan(manifestValue: unknown = { schemaVersion: 1, agent: { id
     version: "1.0.0",
     packageRoot: root,
     manifestPath: join(root, "openclaw.claw.json"),
+    integrityKind: "artifact",
     integrity: "sha256:manifest",
+    byteLength: 123,
   };
   const plan = await buildClawAddPlan({
     manifest: parsed.manifest,
@@ -59,8 +61,11 @@ describe("Claw root install provenance", () => {
     expect(record).toMatchObject({
       schemaVersion: "openclaw.clawInstallRecord.v1",
       claw: { name: "@acme/worker", version: "1.0.0", integrity: "sha256:manifest" },
+      manifestSchemaVersion: 1,
+      planIntegrity: plan.planIntegrity,
       agentId: "worker",
       workspace: plan.agent.workspace,
+      agentOwnedPaths: ['agents.list["worker"]'],
       status: "complete",
       addedAtMs: 42,
     });
@@ -185,6 +190,7 @@ describe("applyClawAddPlan", () => {
     };
 
     const result = await applyClawAddPlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: stateEnv(root),
       nowMs: 10,
       commitConfig: async (transform) => {
@@ -219,12 +225,35 @@ describe("applyClawAddPlan", () => {
 
     await expect(
       applyClawAddPlan(plan, {
+        consentPlanIntegrity: plan.planIntegrity,
         commitConfig: async (transform) => {
           transform({ agents: { list: [{ id: "worker" }] } });
         },
       }),
-    ).rejects.toMatchObject({ code: "agent_id_collision" });
+    ).resolves.toMatchObject({
+      status: "partial",
+      workspaceCreated: false,
+      configCommitted: false,
+      error: { code: "agent_id_collision" },
+    });
     await expect(access(plan.agent.workspace)).rejects.toThrow();
+  });
+
+  it("records a partial add when the workspace appears after planning", async () => {
+    const { root, plan } = await makePlan();
+    await mkdir(plan.agent.workspace);
+
+    await expect(
+      applyClawAddPlan(plan, {
+        consentPlanIntegrity: plan.planIntegrity,
+        env: stateEnv(root),
+      }),
+    ).resolves.toMatchObject({
+      status: "partial",
+      workspaceCreated: false,
+      error: { code: "workspace_collision" },
+    });
+    expect(readClawInstallRecord("worker", { env: stateEnv(root) })?.status).toBe("partial");
   });
 
   it("blocks declared components that this lifecycle slice cannot yet create", async () => {
@@ -234,7 +263,9 @@ describe("applyClawAddPlan", () => {
       packages: [{ kind: "skill", source: "clawhub", ref: "demo", version: "1.0.0" }],
     });
 
-    await expect(applyClawAddPlan(plan)).rejects.toEqual(
+    await expect(
+      applyClawAddPlan(plan, { consentPlanIntegrity: plan.planIntegrity }),
+    ).rejects.toEqual(
       expect.objectContaining<Partial<ClawAddMutationError>>({ code: "plan_blocked" }),
     );
     await expect(access(plan.agent.workspace)).rejects.toThrow();
@@ -246,6 +277,7 @@ describe("applyClawAddPlan", () => {
 
     await expect(
       applyClawAddPlan(plan, {
+        consentPlanIntegrity: plan.planIntegrity,
         commitConfig: async (transform) => {
           config = transform(config);
         },
@@ -264,7 +296,7 @@ describe("applyClawAddPlan", () => {
       cronJobs: [
         {
           id: "daily-report",
-          schedule: { cron: "0 9 * * *" },
+          schedule: { cron: "0 9 * * *", timezone: "UTC" },
           session: "isolated",
           message: "Prepare report",
         },
@@ -278,7 +310,7 @@ describe("applyClawAddPlan", () => {
       status: "failed" as const,
       job: {
         id: "daily-report",
-        schedule: { cron: "0 9 * * *" },
+        schedule: { cron: "0 9 * * *", timezone: "UTC" },
         session: "isolated" as const,
         message: "Prepare report",
       },
@@ -288,6 +320,7 @@ describe("applyClawAddPlan", () => {
     };
 
     const result = await applyClawAddPlan(plan, {
+      consentPlanIntegrity: plan.planIntegrity,
       env: stateEnv(root),
       commitConfig: async (transform) => {
         transform({});
@@ -303,5 +336,14 @@ describe("applyClawAddPlan", () => {
       installRecord: { status: "partial" },
       error: { code: "cron_install_failed", message: "gateway unavailable" },
     });
+  });
+
+  it("rejects mutation when consent does not bind the current plan", async () => {
+    const { plan } = await makePlan();
+
+    await expect(
+      applyClawAddPlan(plan, { consentPlanIntegrity: "sha256:stale" }),
+    ).rejects.toMatchObject({ code: "plan_integrity_mismatch" });
+    await expect(access(plan.agent.workspace)).rejects.toThrow();
   });
 });

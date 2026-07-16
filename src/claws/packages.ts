@@ -5,6 +5,7 @@ import { installSkillFromClawHub } from "../skills/lifecycle/clawhub.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import {
   persistClawPackageRef,
+  readClawPackageRefs,
   updateClawPackageRefStatus,
   type PersistedClawPackageRef,
 } from "./provenance.js";
@@ -27,17 +28,31 @@ export type PackageInstallerDeps = {
   preflightPlugin?: typeof preflightPluginInstall;
   persistPackageRef?: typeof persistClawPackageRef;
   completePackageRef?: typeof updateClawPackageRefStatus;
+  readPackageRefs?: typeof readClawPackageRefs;
 };
 
-function packageFromAction(action: ClawAddPlanAction): ClawPackage {
-  const details = action.details as Partial<ClawPackage> | undefined;
+type PlannedClawPackage = ClawPackage & { ownerAction: "install" | "reuse" };
+
+function packageFromAction(action: ClawAddPlanAction): PlannedClawPackage {
+  const details = action.details as
+    | (Partial<ClawPackage> & { ownerAction?: "install" | "reuse" })
+    | undefined;
   if (details?.kind !== "skill" && details?.kind !== "plugin") {
     throw new Error(`Package action ${JSON.stringify(action.id)} has no valid package kind.`);
   }
   if (details.source !== "clawhub" || !details.ref || !details.version) {
     throw new Error(`Package action ${JSON.stringify(action.id)} is not a pinned ClawHub package.`);
   }
-  return { kind: details.kind, source: details.source, ref: details.ref, version: details.version };
+  if (details.ownerAction !== "install" && details.ownerAction !== "reuse") {
+    throw new Error(`Package action ${JSON.stringify(action.id)} has no planned owner state.`);
+  }
+  return {
+    kind: details.kind,
+    source: details.source,
+    ref: details.ref,
+    version: details.version,
+    ownerAction: details.ownerAction,
+  };
 }
 
 function installerRuntime(runtime: RuntimeEnv): RuntimeEnv {
@@ -52,7 +67,7 @@ function installerRuntime(runtime: RuntimeEnv): RuntimeEnv {
 
 export type ClawPackagePreflightResult =
   | { ok: true; action: "install" | "reuse" }
-  | { ok: false; code: string; message: string };
+  | { ok: false; code: string; message: string; installedVersion?: string };
 
 export async function preflightClawPackage(pkg: ClawPackage): Promise<ClawPackagePreflightResult> {
   if (pkg.kind === "skill") {
@@ -71,6 +86,9 @@ export async function preflightClawPackage(pkg: ClawPackage): Promise<ClawPackag
     return {
       ok: false,
       code: result.code,
+      ...(result.code === "plugin_version_conflict"
+        ? { installedVersion: result.installedVersion }
+        : {}),
       message:
         result.code === "plugin_version_conflict"
           ? `Plugin ${pkg.ref}@${pkg.version} conflicts with installed version ${result.installedVersion}.`
@@ -94,6 +112,7 @@ export async function installClawPackages(
   const preflightPlugin = deps.preflightPlugin ?? preflightPluginInstall;
   const persistPackageRef = deps.persistPackageRef ?? persistClawPackageRef;
   const completePackageRef = deps.completePackageRef ?? updateClawPackageRefStatus;
+  const readPackageRefs = deps.readPackageRefs ?? readClawPackageRefs;
   const runtime = options.runtime ?? defaultRuntime;
   const installedPackages: PersistedClawPackageRef[] = [];
 
@@ -113,13 +132,31 @@ export async function installClawPackages(
               : preflight.error,
           );
         }
+        if (preflight.action !== pkg.ownerAction) {
+          throw new ClawPackageInstallError(
+            "package_owner_state_changed",
+            `Plugin ${pkg.ref}@${pkg.version} owner state changed from ${pkg.ownerAction} to ${preflight.action}; run add --dry-run again.`,
+            installedPackages,
+          );
+        }
         if (preflight.action === "reuse") {
-          // The operator installed this package first. Retain only a dependency ref.
+          const existingRefs = readPackageRefs({
+            ...options,
+            kind: pkg.kind,
+            source: pkg.source,
+            ref: pkg.ref,
+            version: pkg.version,
+          });
+          const ownership =
+            existingRefs.length > 0 &&
+            existingRefs.every((candidate) => candidate.ownership === "claw-installed")
+              ? "claw-installed"
+              : "independently-owned";
           installedPackages.push(
             persistPackageRef(plan, pkg, {
               ...options,
               status: "complete",
-              ownership: "preexisting",
+              ownership,
             }),
           );
           continue;
@@ -140,6 +177,7 @@ export async function installClawPackages(
           workspaceDir: plan.agent.workspace,
           slug: pkg.ref,
           version: pkg.version,
+          clawManaged: true,
           logger: {
             info: (message) => runtime.log(message),
             warn: (message) => runtime.log(message),
@@ -153,12 +191,28 @@ export async function installClawPackages(
           raw: `clawhub:${pkg.ref}@${pkg.version}`,
           opts: {},
           invalidateRuntimeCache: false,
+          clawManaged: true,
           runtime: installerRuntime(runtime),
         });
       }
       packageRef = completePackageRef(packageRef, "complete", options);
       installedPackages[installedPackages.length - 1] = packageRef;
     } catch (error) {
+      const pending = installedPackages.at(-1);
+      if (pending?.status === "pending") {
+        try {
+          installedPackages[installedPackages.length - 1] = completePackageRef(
+            pending,
+            "failed",
+            options,
+          );
+        } catch {
+          // Preserve the installer error; pending provenance still exposes uncertain ownership.
+        }
+      }
+      if (error instanceof ClawPackageInstallError) {
+        throw new ClawPackageInstallError(error.code, error.message, installedPackages);
+      }
       throw new ClawPackageInstallError(
         "package_install_failed",
         error instanceof Error ? error.message : String(error),

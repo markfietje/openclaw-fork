@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import { stableStringify } from "../agents/stable-stringify.js";
 import { resolveUserPath } from "../utils.js";
+import { digestClawMcpServer } from "./mcp.js";
 import {
   CLAW_ADD_PLAN_SCHEMA_VERSION,
   CLAW_BOOTSTRAP_FILE_NAMES,
@@ -12,6 +14,7 @@ import {
   type ClawAddPlanAction,
   type ClawDiagnostic,
   type ClawManifest,
+  type ClawLocalPrerequisite,
   type ClawPackage,
   type ClawSourceIdentity,
 } from "./types.js";
@@ -25,13 +28,14 @@ export type ClawAddPlanContext = {
   existingAgentIds?: Iterable<string>;
   existingWorkspacePaths?: Iterable<string>;
   existingMcpServerNames?: Iterable<string>;
+  existingMcpServers?: Record<string, Record<string, unknown>>;
   packagePreflight?: (
     pkg: ClawPackage,
   ) => Promise<{ ok: boolean; action?: "install" | "reuse"; code?: string; message?: string }>;
 };
 
 function blocker(code: string, path: string, message: string): ClawDiagnostic {
-  return { level: "error", code, path, message };
+  return { level: "error", code, phase: "plan", path, message };
 }
 
 function isContained(root: string, candidate: string): boolean {
@@ -120,6 +124,7 @@ async function fileAction(params: {
       target: requestedTarget,
       source: sourceRealPath,
       digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
+      details: { expectedState: "absent" },
       blocked: false,
     },
   };
@@ -142,6 +147,7 @@ export async function buildClawAddPlan(params: {
   const source = { ...params.source, packageRoot };
   const blockers: ClawDiagnostic[] = [];
   const actions: ClawAddPlanAction[] = [];
+  const readinessRequirements: ClawLocalPrerequisite[] = [];
 
   if (!AGENT_ID_PATTERN.test(finalId)) {
     blockers.push(
@@ -168,7 +174,7 @@ export async function buildClawAddPlan(params: {
     id: finalId,
     action: "create",
     target: `agents.list[${JSON.stringify(finalId)}]`,
-    details: { ...params.manifest.agent, id: finalId, workspace },
+    details: { ...params.manifest.agent, id: finalId, workspace, expectedState: "absent" },
     blocked: agentBlocked || !AGENT_ID_PATTERN.test(finalId),
   });
 
@@ -194,6 +200,7 @@ export async function buildClawAddPlan(params: {
     id: finalId,
     action: "create",
     target: workspace,
+    details: { expectedState: "absent" },
     blocked: workspaceExists,
     ...(workspaceExists
       ? { reason: `Workspace ${JSON.stringify(workspace)} already exists.` }
@@ -264,7 +271,15 @@ export async function buildClawAddPlan(params: {
       id: `${pkg.kind}:${pkg.ref}`,
       action: "install",
       target: `${pkg.source}:${pkg.ref}@${pkg.version}`,
-      details: { ...pkg },
+      details: {
+        ...pkg,
+        expectedState: !preflight.ok
+          ? "unresolved"
+          : preflight.action === "reuse"
+            ? "present-exact"
+            : "absent",
+        ownerAction: preflight.action,
+      },
       blocked: !preflight.ok,
       ...(diagnostic ? { reason: diagnostic.message } : {}),
     });
@@ -273,52 +288,88 @@ export async function buildClawAddPlan(params: {
   const existingMcpServerNames = new Set(context.existingMcpServerNames ?? []);
   for (const name of Object.keys(params.manifest.mcpServers)) {
     const server = params.manifest.mcpServers[name];
-    const blocked = existingMcpServerNames.has(name);
+    const existingServer = context.existingMcpServers?.[name];
+    const exactExisting =
+      existingServer !== undefined &&
+      digestClawMcpServer(existingServer) === digestClawMcpServer(server);
+    const blocked =
+      existingMcpServerNames.has(name) || (existingServer !== undefined && !exactExisting);
     if (blocked) {
       blockers.push(
         blocker(
           "mcp_server_collision",
           `$.mcpServers.${name}`,
-          `MCP server ${JSON.stringify(name)} already exists and will not be overwritten.`,
+          `MCP server ${JSON.stringify(name)} already exists with different or unresolved configuration and will not be overwritten.`,
         ),
       );
+    }
+    if ("env" in server) {
+      for (const value of Object.values(server.env ?? {})) {
+        readinessRequirements.push({
+          kind: "environment",
+          mcpServer: name,
+          name: value.slice(2, -1),
+        });
+      }
+    }
+    if ("auth" in server && server.auth === "oauth") {
+      readinessRequirements.push({ kind: "oauth", mcpServer: name });
     }
     actions.push({
       kind: "mcpServer",
       id: name,
       action: "configure",
       target: `mcp.servers.${name}`,
-      details: { ...server },
+      details: {
+        ...server,
+        expectedState: exactExisting ? "present-exact" : "absent",
+        prerequisites: readinessRequirements.filter(
+          (requirement) => requirement.mcpServer === name,
+        ),
+      },
       blocked,
     });
   }
 
+  // Strict v1 validation permits only deterministic main or isolated targets.
   for (const job of params.manifest.cronJobs) {
-    const blocked = job.session === "current";
-    if (blocked) {
-      blockers.push(
-        blocker(
-          "cron_current_session_unavailable",
-          `$.cronJobs.${job.id}.session`,
-          'Claw apply has no caller session; use "main" or "isolated".',
-        ),
-      );
-    }
     actions.push({
       kind: "cronJob",
       id: job.id,
       action: "schedule",
       target: `cron:${job.id}:agent=${finalId}`,
-      details: { ...job, agentId: finalId },
-      blocked,
+      details: {
+        ...job,
+        agentId: finalId,
+        expectedState: "absent",
+        ...(job.delivery?.channel === "last"
+          ? { deliveryResolution: "local-channel-state:last" }
+          : {}),
+      },
+      blocked: false,
     });
   }
 
+  const planIntegrity = `sha256:${createHash("sha256")
+    .update(
+      stableStringify({
+        manifestSchemaVersion: params.manifest.schemaVersion,
+        clawIntegrity: source.integrity,
+        finalId,
+        workspace,
+        actions,
+        blockers,
+      }),
+    )
+    .digest("hex")}`;
+
   return {
     schemaVersion: CLAW_ADD_PLAN_SCHEMA_VERSION,
+    manifestSchemaVersion: params.manifest.schemaVersion,
     stability: CLAW_OUTPUT_STABILITY,
     dryRun: true,
     mutationAllowed: false,
+    planIntegrity,
     claw: source,
     agent: {
       requestedId: params.manifest.agent.id,
@@ -338,6 +389,10 @@ export async function buildClawAddPlan(params: {
       blockedActions: actions.filter((action) => action.blocked).length,
     },
     actions,
+    readiness: {
+      ready: readinessRequirements.length === 0,
+      requirements: readinessRequirements,
+    },
     blockers,
     diagnostics: params.diagnostics ?? [],
   };

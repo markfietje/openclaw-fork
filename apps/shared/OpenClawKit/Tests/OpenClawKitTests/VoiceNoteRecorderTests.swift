@@ -287,6 +287,25 @@ final class VoiceNoteRecorderTests: XCTestCase {
             isVoiceNoteCaptureActive: false))
     }
 
+    func testCompactTalkControlYieldsToLocalVoiceCapture() {
+        XCTAssertTrue(OpenClawChatComposer.showsCompactTalkControl(
+            hasDraftToSend: false,
+            hasBlockingRunActivity: false,
+            isLocalVoiceCaptureActive: false))
+        XCTAssertFalse(OpenClawChatComposer.showsCompactTalkControl(
+            hasDraftToSend: false,
+            hasBlockingRunActivity: false,
+            isLocalVoiceCaptureActive: true))
+        XCTAssertFalse(OpenClawChatComposer.showsCompactTalkControl(
+            hasDraftToSend: true,
+            hasBlockingRunActivity: false,
+            isLocalVoiceCaptureActive: false))
+        XCTAssertFalse(OpenClawChatComposer.showsCompactTalkControl(
+            hasDraftToSend: false,
+            hasBlockingRunActivity: true,
+            isLocalVoiceCaptureActive: false))
+    }
+
     @MainActor
     func testRecordingPublishesCaptureLevelsAndResetsOnFinish() async throws {
         let capture = FakeVoiceNoteAudioCapture()

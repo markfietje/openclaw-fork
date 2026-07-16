@@ -691,12 +691,34 @@ struct OpenClawChatComposer: View {
     /// draft is empty, swapping to the send button once the user types.
     @ViewBuilder
     private var cleanTrailingControl: some View {
-        if !self.viewModel.hasDraftToSend, !self.viewModel.hasBlockingRunActivity, let talkControl {
+        if Self.showsCompactTalkControl(
+            hasDraftToSend: self.viewModel.hasDraftToSend,
+            hasBlockingRunActivity: self.viewModel.hasBlockingRunActivity,
+            isLocalVoiceCaptureActive: self.isLocalVoiceCaptureActive),
+            let talkControl
+        {
             self.compactTalkButton(talkControl)
         } else {
             sendButton
                 .frame(width: cleanControlHeight, height: cleanControlHeight)
         }
+    }
+
+    private var isLocalVoiceCaptureActive: Bool {
+        self.dictationTask != nil ||
+            self.dictationControl?.isActive == true ||
+            self.voiceNoteControl?.recorder.isRecording == true ||
+            self.voiceNoteControl?.recorder.isRequestingPermission == true
+    }
+
+    /// Local capture and realtime Talk share one microphone, so the Talk affordance
+    /// must yield until dictation or voice-note capture releases audio ownership.
+    nonisolated static func showsCompactTalkControl(
+        hasDraftToSend: Bool,
+        hasBlockingRunActivity: Bool,
+        isLocalVoiceCaptureActive: Bool) -> Bool
+    {
+        !hasDraftToSend && !hasBlockingRunActivity && !isLocalVoiceCaptureActive
     }
 
     private func talkButton(_ talkControl: OpenClawChatTalkControl) -> some View {

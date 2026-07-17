@@ -315,12 +315,12 @@ describe("getStatusSummary", () => {
     expect(summary.secrets).toEqual({
       degraded: [
         {
-          kind: "provider",
-          id: "openai",
+          kind: "account",
+          id: "discord:ops",
           reason: "secret reference was not found",
           state: "cold",
           retryHint: "openclaw secrets reload",
-          paths: ["models.providers.openai.apiKey"],
+          paths: ["channels.discord.accounts.ops.token"],
         },
         {
           kind: "route",

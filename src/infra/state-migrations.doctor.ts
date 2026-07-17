@@ -876,7 +876,7 @@ export async function runLegacyStateMigrations(params: {
     detected: detected.commitments,
     stateDir: detected.stateDir,
   });
-  const auditLogs = migrateLegacyAuditLogs({
+  const auditLogs = await migrateLegacyAuditLogs({
     detected: detected.auditLogs,
     stateDir: detected.stateDir,
   });

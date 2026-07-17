@@ -386,7 +386,7 @@ if (process.env.VITEST || process.env.NODE_ENV === "test") {
   };
 }
 
-export type ExecutePreparedCliRunOptions = {
+type ExecutePreparedCliRunOptions = {
   onPhase?: (phase: "send" | "resolve" | "cleanup") => void;
 };
 

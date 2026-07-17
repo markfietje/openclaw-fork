@@ -3,7 +3,7 @@ name = "openclaw-desktop-linux"
 version = "0.1.0"
 description = "OpenClaw desktop companion for Linux"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.93"
 
 [[bin]]
 name = "openclaw-desktop"

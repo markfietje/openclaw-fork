@@ -87,7 +87,9 @@ function rowToInstall(row: InstallRow): PersistedClawInstall {
       integrity: row.integrity,
       byteLength: Number(row.source_byte_length),
     },
-    manifestSchemaVersion: Number(row.manifest_schema_version) as ClawAddPlan["manifestSchemaVersion"],
+    manifestSchemaVersion: Number(
+      row.manifest_schema_version,
+    ) as ClawAddPlan["manifestSchemaVersion"],
     planIntegrity: row.plan_integrity,
     agentId: row.agent_id,
     workspace: row.workspace,
@@ -273,42 +275,23 @@ export function updateClawInstallRecordStatus(
   }, options);
 }
 
-export function readClawInstallRecord(
-  agentId: string,
-  options: OpenClawStateDatabaseOptions = {},
-): PersistedClawInstall | undefined {
-  const database = openOpenClawStateDatabase(options);
-  // sqlite-allow-raw: read-only Claw install lookup with a closed agent-id filter.
-  const row = database.db
-    .prepare(
-      `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
-              manifest_path, integrity_kind, integrity, source_byte_length,
-              manifest_schema_version, plan_integrity, agent_id, workspace,
-              agent_config_digest, agent_owned_paths_json, status, added_at_ms,
-              updated_at_ms
-         FROM claw_installs
-        WHERE agent_id = ?`,
-    )
-    .get(agentId) as InstallRow | undefined;
-  return row ? rowToInstall(row) : undefined;
-}
-
 export function readClawInstallRecords(
   options: OpenClawStateDatabaseOptions = {},
 ): PersistedClawInstall[] {
   const database = openOpenClawStateDatabase(options);
   // sqlite-allow-raw: read-only Claw install inventory ordered by stable agent id.
-  const rows = database.db
-    .prepare(
-      `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
+  const rows =
+    database.db /* sqlite-allow-raw: read-only Claw install inventory ordered by stable agent id. */
+      .prepare(
+        `SELECT schema_version, source_kind, claw_name, claw_version, package_root,
               manifest_path, integrity_kind, integrity, source_byte_length,
               manifest_schema_version, plan_integrity, agent_id, workspace,
               agent_config_digest, agent_owned_paths_json, status, added_at_ms,
               updated_at_ms
          FROM claw_installs
         ORDER BY agent_id`,
-    )
-    .all() as InstallRow[];
+      )
+      .all() as InstallRow[];
   return rows.map(rowToInstall);
 }
 

@@ -13,7 +13,7 @@ import {
   type PersistedClawPackageRef,
 } from "./provenance.js";
 
-export type ClawPackageRemovalDecision = {
+type ClawPackageRemovalDecision = {
   packageRef: PersistedClawPackageRef;
   action: "uninstall" | "retain";
   reason?: string;
@@ -37,7 +37,7 @@ export type PackageRemovalDeps = {
   uninstallSkill?: typeof applyClawHubSkillUninstall;
 };
 
-export type ClawPackageState = "present" | "missing" | "modified" | "ambiguous" | "incomplete";
+type ClawPackageState = "present" | "missing" | "modified" | "ambiguous" | "incomplete";
 export type ClawPackageInspection = PersistedClawPackageRef & {
   state: ClawPackageState;
   message?: string;

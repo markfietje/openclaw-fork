@@ -15,7 +15,7 @@ export type ClawHubSkillUninstallPlan = {
   skillFileSha256: string;
 };
 
-export type ClawHubSkillUninstallPlanResult =
+type ClawHubSkillUninstallPlanResult =
   | { ok: true; plan: ClawHubSkillUninstallPlan }
   | {
       ok: false;

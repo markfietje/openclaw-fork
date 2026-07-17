@@ -210,7 +210,8 @@ describe("Claw status and remove", () => {
   it("blocks removal when the created agent config changed", async () => {
     const current = await addFixture();
     const config = current.getConfig();
-    config.agents!.list![0] = { ...config.agents!.list![0], name: "Operator edit" };
+    const agent = config.agents!.list![0]!;
+    config.agents!.list![0] = { ...agent, name: "Operator edit" };
     const plan = await buildClawRemovePlan("worker", { env: current.env, config });
     expect(plan.blockers).toContainEqual(expect.objectContaining({ code: "agent_modified" }));
     await expect(

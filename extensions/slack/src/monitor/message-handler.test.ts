@@ -5,7 +5,7 @@ const enqueueMock = vi.fn(async (_entry: unknown) => {});
 const flushKeyMock = vi.fn(async (_key: string) => {});
 const onFlushCallbacks: Array<(entries: Array<Record<string, unknown>>) => Promise<void>> = [];
 const prepareSlackMessageMock = vi.fn(async () => ({ ctxPayload: {} }));
-const dispatchPreparedSlackMessageMock = vi.fn(async () => {});
+const dispatchPreparedSlackMessageMock = vi.fn(async (_prepared: unknown) => {});
 const resolveThreadTsMock = vi.fn(async ({ message }: { message: Record<string, unknown> }) => ({
   ...message,
 }));

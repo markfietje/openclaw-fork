@@ -356,10 +356,9 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
       );
 
       const startedEvent = diagnosticEvents.find((event) => event.type === "model.call.started");
-      const completedEvent = diagnosticEvents.find(
-        (event) => event.type === "model.call.completed",
-      );
-      expect(startedEvent?.callId).toBe("diagnostic-run-1:codex-model:1");
+      const completedEvent = diagnosticEvents.find(({ type }) => type === "model.call.completed");
+      const expectedCallId = "diagnostic-run-1:codex-model:1";
+      expect(startedEvent).toMatchObject({ callId: expectedCallId, observationUnit: "turn" });
       expect(startedEvent?.trace?.traceId).toBeTypeOf("string");
       expect(JSON.stringify(startedEvent)).not.toContain("hello");
       const startedContent = diagnosticContentByType.get("model.call.started")?.modelContent;
@@ -368,7 +367,7 @@ describe("runCodexAppServerAttempt hooks and model diagnostics", () => {
       expect(startedContent?.systemPrompt).toContain(
         "You are a personal agent running inside OpenClaw.",
       );
-      expect(completedEvent?.callId).toBe("diagnostic-run-1:codex-model:1");
+      expect(completedEvent).toMatchObject({ callId: expectedCallId, observationUnit: "turn" });
       expect(JSON.stringify(completedEvent)).not.toContain("hello back");
       expect(
         JSON.stringify(diagnosticContentByType.get("model.call.completed")?.modelContent),

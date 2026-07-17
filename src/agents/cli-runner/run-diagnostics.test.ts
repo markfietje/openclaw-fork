@@ -78,6 +78,7 @@ describe("Claude CLI run diagnostics", () => {
                 model: "claude-opus-4-7",
                 api: "claude-code",
                 transport: "stdio-live",
+                observationUnit: "turn",
                 trace: modelTrace,
               },
               undefined,
@@ -92,6 +93,7 @@ describe("Claude CLI run diagnostics", () => {
                 model: "claude-opus-4-7",
                 api: "claude-code",
                 transport: "stdio-live",
+                observationUnit: "turn",
                 durationMs: 5,
                 trace: modelTrace,
               },
@@ -133,6 +135,7 @@ describe("Claude CLI run diagnostics", () => {
     expect(harnessStarted.trace?.parentSpanId).toBe(parentTrace.spanId);
     expect(runStarted.trace?.parentSpanId).toBe(harnessStarted.trace?.spanId);
     expect(modelStarted.trace?.parentSpanId).toBe(runStarted.trace?.spanId);
+    expect(modelStarted.observationUnit).toBe("turn");
     expect(callbackTrace).toEqual(runStarted.trace);
     expect(result?.diagnosticTrace).toEqual(harnessStarted.trace);
     expect(

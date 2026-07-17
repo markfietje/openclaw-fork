@@ -150,6 +150,7 @@ export function createClaudeCliModelCallDiagnostics(params: {
     model: params.context.normalizedModel,
     api: "claude-code",
     transport: params.transport,
+    observationUnit: "turn" as const,
     ...(contextWindow
       ? {
           contextTokenBudget: contextWindow.tokens,

@@ -2548,9 +2548,9 @@ describe("diagnostics-otel service", () => {
     await service.stop?.(ctx);
   });
 
-  test("exports GenAI client operation duration histogram without diagnostic identifiers", async () => {
+  test("exports GenAI client duration only for request-scoped model calls", async () => {
     const service = createDiagnosticsOtelService();
-    const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { metrics: true });
+    const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { traces: true, metrics: true });
     await service.start(ctx);
 
     emitDiagnosticEvent({
@@ -2561,6 +2561,7 @@ describe("diagnostics-otel service", () => {
       provider: "anthropic",
       model: "anthropic/claude-sonnet-4.6",
       api: "openai-completions",
+      observationUnit: "request",
       durationMs: 250,
     });
     emitDiagnosticEvent({
@@ -2573,6 +2574,29 @@ describe("diagnostics-otel service", () => {
       api: "google-generative-ai",
       durationMs: 1250,
       errorCategory: "TimeoutError",
+    });
+    emitDiagnosticEvent({
+      type: "model.call.completed",
+      runId: "run-1",
+      callId: "call-3",
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      api: "claude-code",
+      transport: "stdio-live",
+      observationUnit: "turn",
+      durationMs: 2500,
+    });
+    emitDiagnosticEvent({
+      type: "model.call.error",
+      runId: "run-1",
+      callId: "call-4",
+      provider: "openai",
+      model: "gpt-5.4",
+      api: "openai-responses",
+      transport: "stdio",
+      observationUnit: "turn",
+      durationMs: 3000,
+      errorCategory: "TurnError",
     });
     await flushDiagnosticEvents();
 
@@ -2597,6 +2621,24 @@ describe("diagnostics-otel service", () => {
       "gen_ai.request.model": "gemini-2.5-flash",
       "error.type": "TimeoutError",
     });
+    const openClawModelCallDuration = telemetryState.histograms.get(
+      "openclaw.model_call.duration_ms",
+    );
+    expect(openClawModelCallDuration?.record).toHaveBeenCalledTimes(4);
+    expect(
+      openClawModelCallDuration?.record.mock.calls.map(
+        (call) => call[1]?.["openclaw.model_call.observation_unit"],
+      ),
+    ).toEqual(["request", "request", "turn", "turn"]);
+    const spanObservationUnits = telemetryState.tracer.startSpan.mock.calls
+      .filter((call) => call[0] === "openclaw.model.call")
+      .map(
+        (call) =>
+          (call[1] as { attributes?: Record<string, unknown> }).attributes?.[
+            "openclaw.model_call.observation_unit"
+          ],
+      );
+    expect(spanObservationUnits).toEqual(["request", "request", "turn", "turn"]);
     expect(JSON.stringify(genAiOperationDuration?.record.mock.calls)).not.toContain("session-key");
     expect(JSON.stringify(genAiOperationDuration?.record.mock.calls)).not.toContain("run-1");
     await service.stop?.(ctx);

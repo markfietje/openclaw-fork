@@ -166,9 +166,21 @@ export function assignGenAiSpanIdentityAttrs(
 
 export function assignGenAiModelCallAttrs(
   attrs: Record<string, string | number | boolean>,
-  evt: { api?: string; model?: string; provider?: string },
+  evt: {
+    api?: string;
+    model?: string;
+    observationUnit?: "request" | "turn";
+    provider?: string;
+  },
 ): void {
   assignGenAiSpanIdentityAttrs(attrs, evt);
+  attrs["openclaw.model_call.observation_unit"] = modelCallObservationUnit(evt);
+}
+
+export function modelCallObservationUnit(evt: {
+  observationUnit?: "request" | "turn";
+}): "request" | "turn" {
+  return evt.observationUnit ?? "request";
 }
 
 export function modelCallSpanName(evt: { api?: string; model?: string }): string {

@@ -643,6 +643,7 @@ describe("runCliAgent spawn path", () => {
       ]);
       expect(diagnostics.events[1]?.event).toMatchObject({
         transport: "paired-node-cli",
+        observationUnit: "turn",
         failureKind: "aborted",
       });
     } finally {
@@ -1047,6 +1048,7 @@ describe("runCliAgent spawn path", () => {
         model: "claude-sonnet-4-6",
         api: "claude-code",
         transport: "stdio",
+        observationUnit: "turn",
         promptStats: {
           inputMessagesCount: 1,
           inputMessagesChars: prompt.length,
@@ -2156,6 +2158,7 @@ describe("runCliAgent spawn path", () => {
       expect(completed?.event).toMatchObject({
         api: "claude-code",
         transport: "stdio-live",
+        observationUnit: "turn",
         requestPayloadBytes: Buffer.byteLength(writes[0] ?? ""),
         responseStreamBytes: Buffer.byteLength(interimChunk) + Buffer.byteLength(finalChunk),
         usage: {

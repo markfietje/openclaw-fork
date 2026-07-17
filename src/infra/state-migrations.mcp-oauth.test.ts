@@ -5,12 +5,9 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createMcpOAuthClientProvider } from "../agents/mcp-oauth-provider.js";
 import { resolveMcpOAuthStoreKey } from "../agents/mcp-oauth-store.js";
-import {
-  clearMcpOAuthCredentials,
-  createMcpOAuthClientProvider,
-  resolveMcpOAuthAccessToken,
-} from "../agents/mcp-oauth.js";
+import { clearMcpOAuthCredentials, resolveMcpOAuthAccessToken } from "../agents/mcp-oauth.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseForTest,

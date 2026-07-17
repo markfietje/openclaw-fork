@@ -18,6 +18,7 @@ import {
 } from "./kysely-sync.js";
 import { parseLegacyMcpOAuthStore } from "./state-migrations.mcp-oauth-format.js";
 import { withRootBoundedLegacyFileLock } from "./state-migrations.mcp-oauth-lock.js";
+import type { LegacyMcpOAuthDetection } from "./state-migrations.mcp-oauth.types.js";
 import type { MigrationMessages } from "./state-migrations.types.js";
 
 const LEGACY_MCP_OAUTH_DIR = "mcp-oauth";
@@ -47,12 +48,6 @@ type LegacySourceSnapshot = {
 type MigrationReceipt = {
   sourceKey: string;
   removedSource: boolean;
-};
-
-export type LegacyMcpOAuthDetection = {
-  sourceDir: string;
-  sourcePaths: string[];
-  hasLegacy: boolean;
 };
 
 function exactLegacyBaseName(name: string): string | null {

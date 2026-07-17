@@ -29,10 +29,10 @@ import { sanitizeServerName } from "./agent-bundle-mcp-names.js";
 
 type McpOAuthDatabase = Pick<OpenClawStateKyselyDatabase, "mcp_oauth_stores">;
 
-export const MCP_OAUTH_STORE_FORMAT_VERSION = 1;
+const MCP_OAUTH_STORE_FORMAT_VERSION = 1;
 const UNINITIALIZED_STORE_FIELDS = new Set(["credentialState", "pendingAuthorizationChallenge"]);
 
-export type McpOAuthAuthorizationChallenge = {
+type McpOAuthAuthorizationChallenge = {
   resourceMetadataUrl?: string;
   scope?: string;
   requiresAuthorization?: true;
@@ -51,7 +51,7 @@ export type McpOAuthStore = {
   pendingAuthorizationChallenge?: McpOAuthAuthorizationChallenge;
 };
 
-export class McpOAuthStoreCorruptionError extends Error {
+class McpOAuthStoreCorruptionError extends Error {
   constructor(storeKey: string, detail: string, options?: { cause?: unknown }) {
     super(`MCP OAuth store ${storeKey} is invalid: ${detail}`, options);
     this.name = "McpOAuthStoreCorruptionError";

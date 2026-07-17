@@ -24,9 +24,9 @@ type LeaseDatabase = Pick<OpenClawStateKyselyDatabase, "state_leases">;
 type AgentLeaseDatabase = Pick<OpenClawAgentKyselyDatabase, "state_leases">;
 type LeaseKysely = ReturnType<typeof getNodeSqliteKysely<LeaseDatabase>>;
 
-export type OpenClawStateLeaseDatabase = { scope: "shared" } | { scope: "agent"; agentId: string };
+type OpenClawStateLeaseDatabase = { scope: "shared" } | { scope: "agent"; agentId: string };
 
-export type OpenClawStateLeaseOptions = {
+type OpenClawStateLeaseOptions = {
   scope: string;
   key: string;
   database: OpenClawStateLeaseDatabase;

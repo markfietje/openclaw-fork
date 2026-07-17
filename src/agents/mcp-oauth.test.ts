@@ -9,6 +9,7 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import { createMcpOAuthClientProvider } from "./mcp-oauth-provider.js";
 import {
   readMcpOAuthStore,
   resolveMcpOAuthStoreKey,
@@ -16,7 +17,6 @@ import {
 } from "./mcp-oauth-store.js";
 import {
   clearMcpOAuthCredentials,
-  createMcpOAuthClientProvider,
   readMcpOAuthCredentialsStatus,
   recordMcpOAuthAuthorizationRequired,
   resolveMcpOAuthAccessToken,

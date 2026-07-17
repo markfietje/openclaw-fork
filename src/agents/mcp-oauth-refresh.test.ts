@@ -7,13 +7,9 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { createMcpOAuthClientProvider, withMcpOAuthLeaseSignal } from "./mcp-oauth-provider.js";
 import { readMcpOAuthStore, resolveMcpOAuthStoreKey } from "./mcp-oauth-store.js";
-import {
-  clearMcpOAuthCredentials,
-  createMcpOAuthClientProvider,
-  resolveMcpOAuthAccessToken,
-  withMcpOAuthLeaseSignal,
-} from "./mcp-oauth.js";
+import { clearMcpOAuthCredentials, resolveMcpOAuthAccessToken } from "./mcp-oauth.js";
 
 const authMock = vi.hoisted(() => vi.fn());
 const FRESH_ACCESS = "test-token-placeholder";

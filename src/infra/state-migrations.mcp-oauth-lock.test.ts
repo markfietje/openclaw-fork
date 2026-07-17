@@ -4,10 +4,8 @@ import path from "node:path";
 import { root } from "@openclaw/fs-safe";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  isDefinitelyStaleLegacyMcpOAuthLock,
-  withRootBoundedLegacyFileLock,
-} from "./state-migrations.mcp-oauth-lock.js";
+import { isDefinitelyStaleLegacyMcpOAuthLock } from "./state-migrations.mcp-oauth-lock-stale.js";
+import { withRootBoundedLegacyFileLock } from "./state-migrations.mcp-oauth-lock.js";
 
 function payload(overrides: Record<string, unknown> = {}): string {
   return `${JSON.stringify({

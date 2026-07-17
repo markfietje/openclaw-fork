@@ -300,16 +300,17 @@ describe("plugin authoring commands", () => {
 
   it("throws a user-friendly error when package.json is malformed JSON", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-plugin-bad-json-"));
+    const packagePath = path.join(tmpDir, "package.json");
     const entryPath = writeSourceToolPluginProject({
       tmpDir,
       packageName: "openclaw-plugin-bad-json",
       pluginId: "bad-json",
       toolName: "bad_json_echo",
     });
-    fs.writeFileSync(path.join(tmpDir, "package.json"), "{invalid json");
+    fs.writeFileSync(packagePath, "{invalid json");
     try {
       await expect(runPluginsBuildCommand({ root: tmpDir, entry: entryPath })).rejects.toThrow(
-        /Malformed JSON in /,
+        `Malformed JSON in ${packagePath}`,
       );
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });

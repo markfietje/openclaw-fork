@@ -202,7 +202,9 @@ describe("LINE webhook spool", () => {
 
         await spool.accept(callback(ninth));
         // Hold the eight adopted-but-unfinished deliveries across two timer pumps.
-        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 1_100);
+        });
 
         expect(deliver).toHaveBeenCalledTimes(8);
         expect(maxActiveDeliveries).toBe(8);
@@ -244,7 +246,9 @@ describe("LINE webhook spool", () => {
       const stopping = first.stop().then(() => {
         stopSettled = true;
       });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 50);
+      });
       expect(stopSettled).toBe(false);
       expect(await queue.listClaims()).toHaveLength(1);
 
@@ -321,7 +325,9 @@ describe("LINE webhook spool", () => {
         await waitForVerdict(queue, "message:message-event-duplicate", "completed");
 
         await spool.accept(callback(event));
-        await new Promise((resolve) => setTimeout(resolve, 600));
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 600);
+        });
 
         expect(deliver).toHaveBeenCalledTimes(1);
       } finally {
@@ -351,7 +357,9 @@ describe("LINE webhook spool", () => {
         await spool.accept(
           callback(createEvent({ webhookEventId: "delivery-b", messageId: "shared-message" })),
         );
-        await new Promise((resolve) => setTimeout(resolve, 600));
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 600);
+        });
 
         expect(deliver).toHaveBeenCalledTimes(1);
       } finally {

@@ -176,7 +176,7 @@ export async function monitorLineProvider(
           accountId: route.accountId,
           raw: ctx,
           turnAdoptionLifecycle: {
-            ...(ingressLifecycle ?? {}),
+            ...ingressLifecycle,
             admission: "exclusive",
             onAdopted: async () => {
               await ingressLifecycle?.onAdopted();

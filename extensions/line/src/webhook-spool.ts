@@ -209,7 +209,10 @@ export function createLineWebhookSpool(options: LineWebhookSpoolOptions): LineWe
       return;
     }
     drainTask = runDetachedWebhookWork(async () => {
-      while (running && drainRequested && !shutdown.signal.aborted) {
+      while (drainRequested && !shutdown.signal.aborted) {
+        if (!running) {
+          break;
+        }
         drainRequested = false;
         await drain.drainOnce({
           // startLimit caps one pump. Keep later timer pumps from exceeding this
@@ -281,7 +284,7 @@ export function createLineWebhookSpool(options: LineWebhookSpoolOptions): LineWe
       await drainTask;
       // Keep the claim owner live until every real delivery and core handler exits;
       // disposing earlier lets a replacement drain recover work still producing replies.
-      await Promise.allSettled([...activeDeliveries]);
+      await Promise.allSettled(activeDeliveries);
       await drain.waitForIdle();
       drain.dispose();
     },

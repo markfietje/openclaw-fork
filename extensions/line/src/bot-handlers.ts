@@ -439,11 +439,10 @@ async function handleMessageEvent(event: MessageEvent, context: LineHandlerConte
       return;
     }
 
-    await processMessage(messageContext, {
-      ...(context.turnAdoptionLifecycle
-        ? { turnAdoptionLifecycle: context.turnAdoptionLifecycle }
-        : {}),
-    });
+    await processMessage(
+      messageContext,
+      context.turnAdoptionLifecycle ? { turnAdoptionLifecycle: context.turnAdoptionLifecycle } : {},
+    );
     historyReservation.commit();
   } finally {
     historyReservation.release();
@@ -495,11 +494,10 @@ async function handlePostbackEvent(
     return;
   }
 
-  await context.processMessage(postbackContext, {
-    ...(context.turnAdoptionLifecycle
-      ? { turnAdoptionLifecycle: context.turnAdoptionLifecycle }
-      : {}),
-  });
+  await context.processMessage(
+    postbackContext,
+    context.turnAdoptionLifecycle ? { turnAdoptionLifecycle: context.turnAdoptionLifecycle } : {},
+  );
 }
 
 export async function handleLineWebhookEvents(

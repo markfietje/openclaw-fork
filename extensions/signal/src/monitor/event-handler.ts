@@ -666,7 +666,8 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
     const lifecycles = entries
       .map((entry) => entry.turnAdoptionLifecycle)
       .filter((lifecycle) => lifecycle !== undefined);
-    if (lifecycles.length === 0) {
+    const [firstLifecycle] = lifecycles;
+    if (!firstLifecycle) {
       return { lifecycle: undefined, settle: async () => {} };
     }
     let handedOff = false;
@@ -679,7 +680,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
       lifecycle: {
         abortSignal:
           lifecycles.length === 1
-            ? lifecycles[0].abortSignal
+            ? firstLifecycle.abortSignal
             : AbortSignal.any(lifecycles.map((lifecycle) => lifecycle.abortSignal)),
         onAdopted: async () => {
           handedOff = true;
@@ -952,7 +953,7 @@ export function createSignalEventHandler(deps: SignalEventHandlerDeps) {
   return async (
     event: { event?: string; data?: string },
     turnAdoptionLifecycle?: SignalIngressLifecycle,
-  ): Promise<{ kind: "failed-retryable"; error: unknown } | void> => {
+  ): Promise<{ kind: "deferred" } | { kind: "failed-retryable"; error: unknown } | void> => {
     if (event.event !== "receive" || !event.data) {
       return;
     }

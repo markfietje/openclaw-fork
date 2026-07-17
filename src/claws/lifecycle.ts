@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { stableStringify } from "../agents/stable-stringify.js";
 import {
   assertNoSymlinkParents,
+  canonicalPathFromExistingAncestor,
   FsSafeError,
   root as fsSafeRoot,
   type Root,
@@ -79,6 +80,10 @@ function workspaceSourceErrorCode(
     return "workspace_source_unsafe";
   }
   return "workspace_source_invalid";
+}
+
+async function canonicalWorkspacePath(workspace: string): Promise<string> {
+  return await canonicalPathFromExistingAncestor(workspace).catch(() => workspace);
 }
 
 function workspaceSourceMessage(code: string, sourcePath: string): string {
@@ -167,9 +172,10 @@ export async function buildClawAddPlan(params: {
 }): Promise<ClawAddPlan> {
   const context = params.context ?? {};
   const finalId = context.agentId ?? params.manifest.agent.id;
-  const workspace = resolve(
+  const requestedWorkspace = resolve(
     resolveUserPath(context.workspace ?? resolve(homedir(), ".openclaw", `workspace-${finalId}`)),
   );
+  const workspace = await canonicalWorkspacePath(requestedWorkspace);
   const packageRoot = await realpath(params.source.packageRoot).catch(
     () => params.source.packageRoot,
   );
@@ -209,7 +215,11 @@ export async function buildClawAddPlan(params: {
   });
 
   const configuredWorkspacePaths = new Set(
-    [...(context.existingWorkspacePaths ?? [])].map((path) => resolve(resolveUserPath(path))),
+    await Promise.all(
+      [...(context.existingWorkspacePaths ?? [])].map((path) =>
+        canonicalWorkspacePath(resolve(resolveUserPath(path))),
+      ),
+    ),
   );
   const workspaceExists =
     configuredWorkspacePaths.has(workspace) ||

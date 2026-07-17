@@ -129,6 +129,8 @@ export type OpenClawConfig = {
       | undefined;
   };
   wizard?: {
+    /** Offer installed-application plugin and skill recommendations during classic onboarding. */
+    appRecommendations?: boolean;
     /** Last setup wizard completion timestamp. */
     lastRunAt?: string;
     /** OpenClaw version used by the last completed wizard run. */

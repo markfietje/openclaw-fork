@@ -666,6 +666,7 @@ export const OpenClawSchema = z
       .optional(),
     wizard: z
       .strictObject({
+        appRecommendations: z.boolean().optional(),
         lastRunAt: z.string().optional(),
         lastRunVersion: z.string().optional(),
         lastRunCommit: z.string().optional(),

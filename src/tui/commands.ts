@@ -206,6 +206,25 @@ export function getSlashCommands(options: SlashCommandOptions = {}): SlashComman
   return commands;
 }
 
+export function shouldSubmitExactArgumentCompletion(
+  input: string,
+  commands: SlashCommand[],
+): boolean {
+  const match = /^\/([^\s]+)\s+(.+)$/u.exec(input);
+  if (!match) {
+    return false;
+  }
+  const [, commandName, argumentText] = match;
+  const command = commands.find((candidate) => candidate.name === commandName);
+  if (!command?.getArgumentCompletions) {
+    return false;
+  }
+  const completions = command.getArgumentCompletions(argumentText);
+  return (
+    Array.isArray(completions) && completions.length === 1 && completions[0]?.value === argumentText
+  );
+}
+
 export function helpText(options: SlashCommandOptions = {}): string {
   const thinkLevels = formatThinkingLevels(
     options.provider,

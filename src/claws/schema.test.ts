@@ -1,5 +1,5 @@
 // Tests for the grouped Claw manifest and read-only add plan.
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -436,6 +436,62 @@ describe("buildClawAddPlan", () => {
     expect(plan.actions.find((action) => action.kind === "cronJob")?.target).toContain(
       "agent=triage-two",
     );
+  });
+
+  it("rejects workspace sources through symlinked parents", async () => {
+    const { source, workspace } = await createPlanSource();
+    await symlink(
+      join(source.packageRoot, "workspace"),
+      join(source.packageRoot, "workspace-link"),
+      "dir",
+    );
+    const plan = await buildClawAddPlan({
+      manifest: requireManifest({
+        schemaVersion: 1,
+        agent: { id: "symlink-agent" },
+        workspace: {
+          bootstrapFiles: { "AGENTS.md": { source: "workspace-link/AGENTS.md" } },
+        },
+      }),
+      source,
+      context: { workspace },
+    });
+
+    expect(plan.blockers).toContainEqual(
+      expect.objectContaining({ code: "workspace_source_unsafe" }),
+    );
+    const workspaceAction = plan.actions.find(
+      (action) => action.kind === "workspaceFile" && action.id === "AGENTS.md",
+    );
+    expect(workspaceAction).toMatchObject({ kind: "workspaceFile", blocked: true });
+    expect(workspaceAction).not.toHaveProperty("digest");
+  });
+
+  it("blocks aggregate workspace bytes before hashing sources", async () => {
+    const { source, workspace } = await createPlanSource();
+    const files = [];
+    for (let index = 0; index < 5; index += 1) {
+      const sourcePath = `workspace/large-${index}.md`;
+      await writeFile(join(source.packageRoot, sourcePath), Buffer.alloc(1024 * 1024, index));
+      files.push({ source: sourcePath, path: `large-${index}.md` });
+    }
+    const plan = await buildClawAddPlan({
+      manifest: requireManifest({
+        schemaVersion: 1,
+        agent: { id: "large-agent" },
+        workspace: { files },
+      }),
+      source,
+      context: { workspace },
+    });
+
+    expect(plan.blockers).toContainEqual(
+      expect.objectContaining({ code: "workspace_sources_too_large" }),
+    );
+    const workspaceFileActions = plan.actions.filter((action) => action.kind === "workspaceFile");
+    expect(workspaceFileActions).toHaveLength(5);
+    expect(workspaceFileActions.every((action) => action.blocked)).toBe(true);
+    expect(workspaceFileActions.every((action) => !Object.hasOwn(action, "digest"))).toBe(true);
   });
 
   it("binds plan integrity to the source and planned mutations", async () => {

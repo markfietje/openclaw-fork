@@ -1,9 +1,15 @@
 // Builds complete read-only Claw add plans without mutating local state.
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { resolve } from "node:path";
 import { stableStringify } from "../agents/stable-stringify.js";
+import {
+  assertNoSymlinkParents,
+  FsSafeError,
+  root as fsSafeRoot,
+  type Root,
+} from "../infra/fs-safe.js";
 import { resolveUserPath } from "../utils.js";
 import {
   CLAW_ADD_PLAN_SCHEMA_VERSION,
@@ -18,6 +24,7 @@ import {
 } from "./types.js";
 
 const MAX_MANAGED_FILE_BYTES = 1024 * 1024;
+const MAX_MANAGED_WORKSPACE_BYTES = 4 * MAX_MANAGED_FILE_BYTES;
 const AGENT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 type ClawAddPlanContext = {
@@ -33,96 +40,123 @@ function blocker(code: string, path: string, message: string): ClawDiagnostic {
   return { level: "error", code, phase: "plan", path, message };
 }
 
-function isContained(root: string, candidate: string): boolean {
-  const child = relative(root, candidate);
-  return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+type PendingWorkspaceFileAction = {
+  action: ClawAddPlanAction;
+  sourcePath: string;
+  manifestPath: string;
+  byteLength: number;
+};
+
+function blockedWorkspaceFileAction(params: {
+  id: string;
+  source: string;
+  target: string;
+  reason: string;
+}): ClawAddPlanAction {
+  return {
+    kind: "workspaceFile",
+    id: params.id,
+    action: "write",
+    target: params.target,
+    source: params.source,
+    blocked: true,
+    reason: params.reason,
+  };
 }
 
-async function fileAction(params: {
+function workspaceSourceErrorCode(
+  error: unknown,
+): "workspace_source_invalid" | "workspace_source_unsafe" | "workspace_source_too_large" {
+  if (error instanceof FsSafeError) {
+    if (error.code === "too-large") {
+      return "workspace_source_too_large";
+    }
+    if (error.code === "symlink" || error.code === "hardlink" || error.code === "path-mismatch") {
+      return "workspace_source_unsafe";
+    }
+  }
+  if (error instanceof Error && error.message.includes("symlinked directory")) {
+    return "workspace_source_unsafe";
+  }
+  return "workspace_source_invalid";
+}
+
+function workspaceSourceMessage(code: string, sourcePath: string): string {
+  if (code === "workspace_source_too_large") {
+    return `Workspace source ${JSON.stringify(sourcePath)} exceeds ${MAX_MANAGED_FILE_BYTES} bytes.`;
+  }
+  if (code === "workspace_sources_too_large") {
+    return `Workspace sources exceed ${MAX_MANAGED_WORKSPACE_BYTES} aggregate bytes.`;
+  }
+  if (code === "workspace_source_unsafe") {
+    return `Workspace source ${JSON.stringify(sourcePath)} must be a regular, non-symlinked, non-hardlinked file.`;
+  }
+  return `Workspace source ${JSON.stringify(sourcePath)} must resolve to a file inside the Claw package.`;
+}
+
+async function inspectWorkspaceFileAction(params: {
+  sourceRoot: Root;
   source: ClawSourceIdentity;
   workspace: string;
   sourcePath: string;
   targetPath: string;
   id: string;
   manifestPath: string;
-}): Promise<{ action: ClawAddPlanAction; blocker?: ClawDiagnostic }> {
+}): Promise<{
+  pending?: PendingWorkspaceFileAction;
+  action?: ClawAddPlanAction;
+  blocker?: ClawDiagnostic;
+}> {
   const requestedSource = resolve(params.source.packageRoot, params.sourcePath);
   const requestedTarget = resolve(params.workspace, params.targetPath);
-  const sourceRealPath = await realpath(requestedSource).catch(() => undefined);
-  if (!sourceRealPath || !isContained(params.source.packageRoot, sourceRealPath)) {
-    const diagnostic = blocker(
-      "workspace_source_invalid",
-      params.manifestPath,
-      `Workspace source ${JSON.stringify(params.sourcePath)} must resolve to a file inside the Claw package.`,
-    );
+  try {
+    await assertNoSymlinkParents({
+      rootDir: params.source.packageRoot,
+      targetPath: requestedSource,
+      allowMissing: false,
+      messagePrefix: "Workspace source",
+    });
+    const opened = await params.sourceRoot.open(params.sourcePath, {
+      hardlinks: "reject",
+      symlinks: "reject",
+    });
+    await opened[Symbol.asyncDispose]();
+    if (opened.stat.size > MAX_MANAGED_FILE_BYTES) {
+      throw new FsSafeError(
+        "too-large",
+        `file exceeds limit of ${MAX_MANAGED_FILE_BYTES} bytes (got ${opened.stat.size})`,
+      );
+    }
     return {
-      action: {
-        kind: "workspaceFile",
+      pending: {
+        sourcePath: params.sourcePath,
+        manifestPath: params.manifestPath,
+        byteLength: opened.stat.size,
+        action: {
+          kind: "workspaceFile",
+          id: params.id,
+          action: "write",
+          target: requestedTarget,
+          source: opened.realPath,
+          details: { expectedState: "absent" },
+          blocked: false,
+        },
+      },
+    };
+  } catch (error) {
+    const code = workspaceSourceErrorCode(error);
+    const message = workspaceSourceMessage(code, params.sourcePath);
+    const diagnostic = blocker(code, params.manifestPath, message);
+    return {
+      action: blockedWorkspaceFileAction({
         id: params.id,
-        action: "write",
         target: requestedTarget,
         source: requestedSource,
-        blocked: true,
         reason: diagnostic.message,
-      },
+      }),
       blocker: diagnostic,
     };
   }
-  const [sourceStat, sourceLinkStat] = await Promise.all([
-    stat(sourceRealPath),
-    lstat(requestedSource),
-  ]);
-  if (!sourceStat.isFile() || sourceLinkStat.isSymbolicLink() || sourceStat.nlink > 1) {
-    const diagnostic = blocker(
-      "workspace_source_unsafe",
-      params.manifestPath,
-      `Workspace source ${JSON.stringify(params.sourcePath)} must be a regular, non-symlinked, non-hardlinked file.`,
-    );
-    return {
-      action: {
-        kind: "workspaceFile",
-        id: params.id,
-        action: "write",
-        target: requestedTarget,
-        source: sourceRealPath,
-        blocked: true,
-        reason: diagnostic.message,
-      },
-      blocker: diagnostic,
-    };
-  }
-  if (sourceStat.size > MAX_MANAGED_FILE_BYTES) {
-    const diagnostic = blocker(
-      "workspace_source_too_large",
-      params.manifestPath,
-      `Workspace source ${JSON.stringify(params.sourcePath)} exceeds ${MAX_MANAGED_FILE_BYTES} bytes.`,
-    );
-    return {
-      action: {
-        kind: "workspaceFile",
-        id: params.id,
-        action: "write",
-        target: requestedTarget,
-        source: sourceRealPath,
-        blocked: true,
-        reason: diagnostic.message,
-      },
-      blocker: diagnostic,
-    };
-  }
-  const content = await readFile(sourceRealPath);
-  return {
-    action: {
-      kind: "workspaceFile",
-      id: params.id,
-      action: "write",
-      target: requestedTarget,
-      source: sourceRealPath,
-      digest: `sha256:${createHash("sha256").update(content).digest("hex")}`,
-      details: { expectedState: "absent" },
-      blocked: false,
-    },
-  };
 }
 
 export async function buildClawAddPlan(params: {
@@ -140,6 +174,7 @@ export async function buildClawAddPlan(params: {
     () => params.source.packageRoot,
   );
   const source = { ...params.source, packageRoot };
+  const sourceRoot = await fsSafeRoot(packageRoot);
   const blockers: ClawDiagnostic[] = [];
   const actions: ClawAddPlanAction[] = [];
   const readinessRequirements: ClawLocalPrerequisite[] = [];
@@ -202,44 +237,99 @@ export async function buildClawAddPlan(params: {
       : {}),
   });
 
+  const pendingWorkspaceFiles: PendingWorkspaceFileAction[] = [];
+  async function addWorkspaceFileInspection(params: {
+    sourcePath: string;
+    targetPath: string;
+    id: string;
+    manifestPath: string;
+  }): Promise<void> {
+    const result = await inspectWorkspaceFileAction({
+      sourceRoot,
+      source,
+      workspace,
+      sourcePath: params.sourcePath,
+      targetPath: params.targetPath,
+      id: params.id,
+      manifestPath: params.manifestPath,
+    });
+    const action = result.pending?.action ?? result.action;
+    if (!action) {
+      throw new Error("Claw workspace source inspection did not produce an action");
+    }
+    action.blocked ||= workspaceExists;
+    if (workspaceExists) {
+      action.reason = `Workspace ${JSON.stringify(workspace)} already exists.`;
+    }
+    actions.push(action);
+    if (result.pending) {
+      pendingWorkspaceFiles.push(result.pending);
+    }
+    if (result.blocker) {
+      blockers.push(result.blocker);
+    }
+  }
+
   for (const name of CLAW_BOOTSTRAP_FILE_NAMES) {
     const declaration = params.manifest.workspace.bootstrapFiles[name];
     if (!declaration) {
       continue;
     }
-    const result = await fileAction({
-      source,
-      workspace,
+    await addWorkspaceFileInspection({
       sourcePath: declaration.source,
       targetPath: name,
       id: name,
       manifestPath: `$.workspace.bootstrapFiles.${name}`,
     });
-    result.action.blocked ||= workspaceExists;
-    if (workspaceExists) {
-      result.action.reason = `Workspace ${JSON.stringify(workspace)} already exists.`;
-    }
-    actions.push(result.action);
-    if (result.blocker) {
-      blockers.push(result.blocker);
-    }
   }
   for (const [index, file] of params.manifest.workspace.files.entries()) {
-    const result = await fileAction({
-      source,
-      workspace,
+    await addWorkspaceFileInspection({
       sourcePath: file.source,
       targetPath: file.path,
       id: file.path,
       manifestPath: `$.workspace.files[${index}]`,
     });
-    result.action.blocked ||= workspaceExists;
-    if (workspaceExists) {
-      result.action.reason = `Workspace ${JSON.stringify(workspace)} already exists.`;
+  }
+
+  const workspaceByteLength = pendingWorkspaceFiles.reduce(
+    (total, pending) => total + pending.byteLength,
+    0,
+  );
+  if (workspaceByteLength > MAX_MANAGED_WORKSPACE_BYTES) {
+    const diagnostic = blocker(
+      "workspace_sources_too_large",
+      "$.workspace",
+      workspaceSourceMessage("workspace_sources_too_large", ""),
+    );
+    blockers.push(diagnostic);
+    for (const pending of pendingWorkspaceFiles) {
+      pending.action.blocked = true;
+      pending.action.reason = diagnostic.message;
     }
-    actions.push(result.action);
-    if (result.blocker) {
-      blockers.push(result.blocker);
+  } else {
+    for (const pending of pendingWorkspaceFiles) {
+      try {
+        await assertNoSymlinkParents({
+          rootDir: source.packageRoot,
+          targetPath: resolve(source.packageRoot, pending.sourcePath),
+          allowMissing: false,
+          messagePrefix: "Workspace source",
+        });
+        const read = await sourceRoot.read(pending.sourcePath, {
+          hardlinks: "reject",
+          maxBytes: MAX_MANAGED_FILE_BYTES,
+          symlinks: "reject",
+        });
+        pending.action.source = read.realPath;
+        pending.action.digest = `sha256:${createHash("sha256").update(read.buffer).digest("hex")}`;
+      } catch (error) {
+        const code = workspaceSourceErrorCode(error);
+        const message = workspaceSourceMessage(code, pending.sourcePath);
+        const diagnostic = blocker(code, pending.manifestPath, message);
+        pending.action.blocked = true;
+        pending.action.reason = diagnostic.message;
+        blockers.push(diagnostic);
+      }
     }
   }
 

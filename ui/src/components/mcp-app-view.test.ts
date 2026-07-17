@@ -2,14 +2,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../i18n/index.ts";
 import { WIDGET_PROMPT_EVENT, type WidgetPromptEventDetail } from "./mcp-app-security.ts";
 
-const bridgeMocks = vi.hoisted(() => ({ instances: [] as Array<Record<string, unknown>> }));
+const bridgeMocks = vi.hoisted(() => ({
+  instances: [] as Array<Record<string, unknown>>,
+  messageSchema: Symbol("McpUiMessageRequestSchema"),
+}));
+
+vi.mock("@modelcontextprotocol/ext-apps", () => ({
+  McpUiMessageRequestSchema: bridgeMocks.messageSchema,
+}));
 
 vi.mock("@modelcontextprotocol/ext-apps/app-bridge", () => {
-  const McpUiMessageRequestSchema = Symbol("McpUiMessageRequestSchema");
-
   class AppBridge {
     oninitialized?: () => void;
-    onmessage?: (params: {
+    messageHandler?: (params: {
       role: "user";
       content: Array<{ type: string; text?: string }>;
     }) => Promise<{ isError?: boolean }>;
@@ -33,8 +38,8 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", () => {
       schema: unknown,
       handler: (request: { params: unknown }) => Promise<unknown>,
     ) {
-      if (schema === McpUiMessageRequestSchema) {
-        this.onmessage = (params) => handler({ params }) as Promise<{ isError?: boolean }>;
+      if (schema === bridgeMocks.messageSchema) {
+        this.messageHandler = (params) => handler({ params }) as Promise<{ isError?: boolean }>;
       }
     }
 
@@ -47,7 +52,7 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", () => {
     async close() {}
   }
 
-  return { AppBridge, McpUiMessageRequestSchema, PostMessageTransport };
+  return { AppBridge, PostMessageTransport };
 });
 
 const { McpAppView } = await import("./mcp-app-view.ts");
@@ -133,7 +138,7 @@ describe("mcp-app-view localization", () => {
       bridge: bridgeMocks.instances[0] as {
         capabilities: Record<string, unknown>;
         options: { hostContext?: Record<string, unknown> };
-        onmessage?: (params: {
+        messageHandler?: (params: {
           role: "user";
           content: Array<{ type: string; text?: string }>;
         }) => Promise<{ isError?: boolean }>;
@@ -150,14 +155,14 @@ describe("mcp-app-view localization", () => {
   it("accepts only focused visible plain-text ui/message requests through the chat seam", async () => {
     const { bridge, frame, view } = await mountBridge(`view-message-${crypto.randomUUID()}`);
     expect(bridge.capabilities).toMatchObject({ message: { text: {} } });
-    expect(bridge.onmessage).toBeTypeOf("function");
+    expect(bridge.messageHandler).toBeTypeOf("function");
 
     const received: string[] = [];
     view.addEventListener(WIDGET_PROMPT_EVENT, (event: Event) => {
       received.push((event as CustomEvent<WidgetPromptEventDetail>).detail.text);
     });
     const send = async (content: Array<{ type: string; text?: string }>) =>
-      await bridge.onmessage!({ role: "user", content });
+      await bridge.messageHandler!({ role: "user", content });
 
     expect(await send([{ type: "text", text: "Background send" }])).toEqual({ isError: true });
     (frame as HTMLIFrameElement & { checkVisibility: () => boolean }).checkVisibility = () => false;
@@ -195,7 +200,7 @@ describe("mcp-app-view localization", () => {
   it("does not advertise or install message support for read-only views", async () => {
     const { bridge } = await mountBridge(`view-read-only-${crypto.randomUUID()}`, false);
     expect(bridge.capabilities).not.toHaveProperty("message");
-    expect(bridge.onmessage).toBeUndefined();
+    expect(bridge.messageHandler).toBeUndefined();
   });
 
   it("pushes live theme and container changes and cleans up their observers", async () => {

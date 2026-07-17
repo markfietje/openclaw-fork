@@ -1,11 +1,10 @@
 import { consume } from "@lit/context";
 import {
-  AppBridge,
   type McpUiMessageRequest,
   McpUiMessageRequestSchema,
   type McpUiMessageResult,
-  PostMessageTransport,
-} from "@modelcontextprotocol/ext-apps/app-bridge";
+} from "@modelcontextprotocol/ext-apps";
+import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import {
   type CallToolResult,
   type ListToolsRequest,

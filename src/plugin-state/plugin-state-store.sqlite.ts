@@ -507,6 +507,7 @@ export function pluginStateRegister(params: {
   valueJson: string;
   maxEntries: number;
   overflowPolicy: PluginStateOverflowPolicy;
+  createdAt?: number;
   ttlMs?: number;
   env?: NodeJS.ProcessEnv;
 }): void {
@@ -549,7 +550,7 @@ export function pluginStateRegister(params: {
             namespace: params.namespace,
             key: params.key,
             valueJson: params.valueJson,
-            createdAt: now,
+            createdAt: params.createdAt ?? now,
             expiresAt,
           }),
         );

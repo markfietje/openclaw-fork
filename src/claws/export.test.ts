@@ -123,8 +123,9 @@ describe("exportClawAgent", () => {
     const avatarPath = join(fixture.plan.agent.workspace, "avatars", "worker.png");
     await mkdir(join(fixture.plan.agent.workspace, "avatars"), { recursive: true });
     await writeFile(avatarPath, "avatar bytes");
+    const agent = fixture.config.agents!.list![0]!;
     fixture.config.agents!.list![0] = {
-      ...fixture.config.agents!.list![0],
+      ...agent,
       identity: { avatar: "avatars/worker.png" },
     };
     const out = join(fixture.root, "exported-avatar");
@@ -146,8 +147,9 @@ describe("exportClawAgent", () => {
 
   it("omits a remote avatar from the portable agent", async () => {
     const fixture = await installedFixture();
+    const agent = fixture.config.agents!.list![0]!;
     fixture.config.agents!.list![0] = {
-      ...fixture.config.agents!.list![0],
+      ...agent,
       identity: { avatar: "https://example.com/worker.png" },
     };
 
@@ -161,8 +163,9 @@ describe("exportClawAgent", () => {
 
   it("omits valid empty optional arrays", async () => {
     const fixture = await installedFixture();
+    const agent = fixture.config.agents!.list![0]!;
     fixture.config.agents!.list![0] = {
-      ...fixture.config.agents!.list![0],
+      ...agent,
       tools: { allow: [], deny: [] },
       groupChat: { mentionPatterns: [] },
     };

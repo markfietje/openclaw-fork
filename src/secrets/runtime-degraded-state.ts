@@ -20,7 +20,7 @@ export type DegradedSecretOwner = {
 };
 
 /** One owner from an atomic resolution attempt, including whether it caused the failure. */
-export type SecretResolutionErrorOwner = DegradedSecretOwner & {
+type SecretResolutionErrorOwner = DegradedSecretOwner & {
   failureMatched: boolean;
 };
 

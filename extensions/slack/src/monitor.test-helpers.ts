@@ -20,6 +20,7 @@ type SlackStartupAuthClientFactory = typeof import("./client.js").createSlackSta
 
 type SlackTestState = {
   config: Record<string, unknown>;
+  appConstructorArgs?: Record<string, unknown>;
   appStartMock: Mock<(...args: unknown[]) => Promise<unknown>>;
   appStopMock: Mock<(...args: unknown[]) => Promise<unknown>>;
   sendMock: Mock<(...args: unknown[]) => Promise<unknown>>;
@@ -40,6 +41,7 @@ type SlackTestState = {
 
 const slackTestState: SlackTestState = vi.hoisted(() => ({
   config: {} as Record<string, unknown>,
+  appConstructorArgs: undefined,
   appStartMock: vi.fn(),
   appStopMock: vi.fn(),
   sendMock: vi.fn(),
@@ -239,6 +241,7 @@ export const defaultSlackTestConfig = () => ({
 export function resetSlackTestState(config: Record<string, unknown> = defaultSlackTestConfig()) {
   slackInboundDeliveryTestCache.clear();
   slackTestState.config = config;
+  slackTestState.appConstructorArgs = undefined;
   slackTestState.socketModeLogger = undefined;
   slackTestState.appStartMock.mockReset().mockResolvedValue(undefined);
   slackTestState.appStopMock.mockReset().mockResolvedValue(undefined);
@@ -354,7 +357,8 @@ vi.mock("@slack/bolt", () => {
     receiver: unknown;
     middlewares: SlackMiddleware[] = [];
 
-    constructor(args?: { receiver?: unknown }) {
+    constructor(args?: Record<string, unknown>) {
+      slackTestState.appConstructorArgs = args;
       this.receiver = args?.receiver;
     }
     use(middleware: SlackMiddleware) {

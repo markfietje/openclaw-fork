@@ -28,13 +28,13 @@ const SLACK_INGRESS_FAILED_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const SLACK_INGRESS_FAILED_MAX_ENTRIES = 20_000;
 const SLACK_BOLT_AUTHORIZATION_ERROR = "slack_bolt_authorization_error";
 
-export const SLACK_INGRESS_LIFECYCLE_CONTEXT_KEY = "openclawIngressLifecycle";
+const SLACK_INGRESS_LIFECYCLE_CONTEXT_KEY = "openclawIngressLifecycle";
 
 export type SlackIngressTurnLifecycle = ReturnType<
   typeof bindIngressLifecycleToReplyOptions
 >["turnAdoptionLifecycle"];
 
-export type SlackIngressPayload = {
+type SlackIngressPayload = {
   version: number;
   receivedAt: number;
 } & (
@@ -51,18 +51,18 @@ export type SlackIngressPayload = {
   | { kind: "relay"; message: PluginJsonValue }
 );
 
-export type SlackRelayIngressEvent = {
+type SlackRelayIngressEvent = {
   deliveryId: string;
   message: { channel: string; ts?: string; team?: string };
 };
 
-export type SlackRelayIngressDispatch = (
+type SlackRelayIngressDispatch = (
   message: PluginJsonValue,
   lifecycle: SlackIngressTurnLifecycle,
 ) => Promise<void>;
 
 /** Logical message identity: mirrors the retired guard key (team:channel:ts). */
-export function resolveSlackRelayIngressEventId(event: SlackRelayIngressEvent): string {
+function resolveSlackRelayIngressEventId(event: SlackRelayIngressEvent): string {
   const ts = event.message.ts?.trim();
   if (!event.message.channel?.trim() || !ts) {
     return `relay:${event.deliveryId}`;
@@ -80,7 +80,7 @@ type SlackDurableIngressOptions = {
   abortSignal?: AbortSignal;
 };
 
-export type SlackDurableIngress = {
+type SlackDurableIngress = {
   wrapReceiver: (receiver: Receiver) => Receiver;
   /** Durable-before-ack accept for relay frames; caller acks after this resolves. */
   acceptRelayEvent: (event: SlackRelayIngressEvent) => Promise<void>;

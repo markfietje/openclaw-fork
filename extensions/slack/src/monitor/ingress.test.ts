@@ -10,11 +10,10 @@ import {
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  createSlackDurableIngress,
-  resolveSlackIngressTurnLifecycle,
-  type SlackIngressPayload,
-} from "./ingress.js";
+import { createSlackDurableIngress, resolveSlackIngressTurnLifecycle } from "./ingress.js";
+
+type SlackIngressQueue = NonNullable<Parameters<typeof createSlackDurableIngress>[0]["queue"]>;
+type SlackIngressPayload = Parameters<SlackIngressQueue["enqueue"]>[1];
 
 function createSlackEnvelope(eventId: string, ts = "1700000000.000100") {
   return {

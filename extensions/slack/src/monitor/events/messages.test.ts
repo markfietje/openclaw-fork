@@ -1,12 +1,13 @@
 // Slack tests cover messages plugin behavior.
 import type { App } from "@slack/bolt";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { SLACK_INGRESS_LIFECYCLE_CONTEXT_KEY } from "../ingress.js";
 import { createInboundSlackTestContext } from "../message-handler/prepare.test-helpers.js";
 import {
   createSlackSystemEventTestHarness,
   type SlackSystemEventTestOverrides,
 } from "./system-event-test-harness.js";
+
+const SLACK_INGRESS_LIFECYCLE_CONTEXT_KEY = "openclawIngressLifecycle";
 
 const { messageQueueMock, messageAllowMock, inboundInfoSpy } = vi.hoisted(() => ({
   messageQueueMock: vi.fn(),

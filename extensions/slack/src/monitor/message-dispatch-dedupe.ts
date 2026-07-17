@@ -21,7 +21,7 @@ const SLACK_MESSAGE_DISPATCH_DEDUPE_STATE_PLUGIN_ID = "slack-message-dispatch-de
 
 export type SlackMessageDispatchReplayClaim = ChannelReplayClaimHandle;
 
-export type SlackMessageDispatchClaimResult =
+type SlackMessageDispatchClaimResult =
   | { kind: "claimed"; handle: SlackMessageDispatchReplayClaim }
   | { kind: "duplicate" };
 

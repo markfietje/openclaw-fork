@@ -34,23 +34,21 @@ export function classifySecretResolutionErrorDegradations(params: {
   const activeColdOwners = new Set(
     (active?.degradedOwners ?? []).map((owner) => `${owner.ownerKind}\0${owner.ownerId}`),
   );
-  const classified = attempts.flatMap((owner) => {
+  const classified = attempts.map<SecretDegradationStatus>((owner) => {
     const hasActiveValue = owner.paths.some(
       (path) => active && getPath(active.config, pathSegments(path)) !== undefined,
     );
-    return [
-      {
-        kind: owner.ownerKind,
-        id: owner.ownerId,
-        reason: owner.reason,
-        state:
-          activeColdOwners.has(`${owner.ownerKind}\0${owner.ownerId}`) || !hasActiveValue
-            ? "cold"
-            : "stale",
-        retryHint: SECRET_DEGRADATION_RETRY_HINT,
-        paths: [...owner.paths],
-      },
-    ];
+    return {
+      kind: owner.ownerKind,
+      id: owner.ownerId,
+      reason: owner.reason,
+      state:
+        activeColdOwners.has(`${owner.ownerKind}\0${owner.ownerId}`) || !hasActiveValue
+          ? "cold"
+          : "stale",
+      retryHint: SECRET_DEGRADATION_RETRY_HINT,
+      paths: [...owner.paths],
+    };
   });
   return attempts.some((owner) => owner.failureMatched)
     ? classified

@@ -2175,12 +2175,46 @@ describe("qa bundled plugin dir", () => {
       env: { OPENCLAW_QA_LIVE_PROVIDER_CONFIG_PATH: configPath },
     });
     expect(Object.keys(overrides)).toEqual(["openai"]);
-    expect(overrides["openai"]?.baseUrl).toBe("");
+    expect(overrides["openai"]).not.toHaveProperty("baseUrl");
     expect(overrides["openai"]?.models).toEqual([]);
     expect(overrides["openai"]?.apiKey).toEqual({
       source: "env",
       id: "OPENCLAW_LIVE_CODEX_API_KEY",
     });
+  });
+
+  it("omits empty base URLs from live provider configs", async () => {
+    const configPath = path.join(
+      await mkdtemp(path.join(os.tmpdir(), "qa-provider-config-")),
+      "openclaw.json",
+    );
+    cleanups.push(async () => {
+      await rm(path.dirname(configPath), { recursive: true, force: true });
+    });
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "",
+              models: [],
+              apiKey: {
+                source: "env",
+                id: "OPENCLAW_LIVE_CODEX_API_KEY",
+              },
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const overrides = await testing.readQaLiveProviderConfigOverrides({
+      providerIds: ["openai"],
+      env: { OPENCLAW_QA_LIVE_PROVIDER_CONFIG_PATH: configPath },
+    });
+    expect(overrides["openai"]).not.toHaveProperty("baseUrl");
   });
 
   it("does not copy OpenAI provider configs for custom OpenAI-compatible runs", async () => {

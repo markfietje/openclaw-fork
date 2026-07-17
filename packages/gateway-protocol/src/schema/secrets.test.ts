@@ -1,10 +1,17 @@
 import { Compile } from "typebox/compile";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { validateSecretsStatus } from "../index.js";
-import { SecretsStatusSchema } from "./secrets.js";
+import { type SecretsDegradedOwner, SecretsStatusSchema } from "./secrets.js";
 
 describe("SecretsStatusSchema", () => {
   const validate = Compile(SecretsStatusSchema);
+
+  it("keeps owner kind and state closed in the static contract", () => {
+    expectTypeOf<SecretsDegradedOwner["kind"]>().toEqualTypeOf<
+      "account" | "capability" | "gateway" | "provider" | "route" | "unknown"
+    >();
+    expectTypeOf<SecretsDegradedOwner["state"]>().toEqualTypeOf<"cold" | "stale">();
+  });
 
   it("accepts cold and stale degraded owners", () => {
     const status = {

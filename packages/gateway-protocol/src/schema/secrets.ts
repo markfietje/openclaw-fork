@@ -13,12 +13,20 @@ import { NonEmptyString } from "./primitives.js";
 export const SecretsReloadParamsSchema = closedObject({});
 
 /** Runtime owner families reported by SecretRef degradation status. */
-export const SecretsDegradedOwnerKindSchema = Type.String({
-  enum: ["account", "capability", "gateway", "provider", "route", "unknown"],
-});
+export const SecretsDegradedOwnerKindSchema = Type.Union([
+  Type.Literal("account"),
+  Type.Literal("capability"),
+  Type.Literal("gateway"),
+  Type.Literal("provider"),
+  Type.Literal("route"),
+  Type.Literal("unknown"),
+]);
 
 /** Availability of the active value for a degraded SecretRef owner. */
-export const SecretsDegradationStateSchema = Type.String({ enum: ["cold", "stale"] });
+export const SecretsDegradationStateSchema = Type.Union([
+  Type.Literal("cold"),
+  Type.Literal("stale"),
+]);
 
 /** Operator-visible lifecycle state for one SecretRef owner. */
 export const SecretsDegradedOwnerSchema = closedObject({

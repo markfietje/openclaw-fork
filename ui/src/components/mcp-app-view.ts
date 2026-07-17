@@ -1,9 +1,4 @@
 import { consume } from "@lit/context";
-import {
-  type McpUiMessageRequest,
-  McpUiMessageRequestSchema,
-  type McpUiMessageResult,
-} from "@modelcontextprotocol/ext-apps";
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import {
   type CallToolResult,
@@ -86,10 +81,8 @@ function hostContext(element: Element | undefined, height: number): HostContext 
 }
 
 class OpenClawAppBridge extends AppBridge {
-  setMessageHandler(
-    handler: (params: McpUiMessageRequest["params"]) => Promise<McpUiMessageResult>,
-  ) {
-    this.replaceRequestHandler(McpUiMessageRequestSchema, (request) => handler(request.params));
+  setMessageHandler(handler: NonNullable<AppBridge["onmessage"]>) {
+    Reflect.set(this, "onmessage", handler);
   }
 
   setListToolsHandler(handler: (params: ListToolsRequest["params"]) => Promise<ListToolsResult>) {

@@ -2,14 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { i18n } from "../i18n/index.ts";
 import { WIDGET_PROMPT_EVENT, type WidgetPromptEventDetail } from "./mcp-app-security.ts";
 
-const bridgeMocks = vi.hoisted(() => ({
-  instances: [] as Array<Record<string, unknown>>,
-  messageSchema: Symbol("McpUiMessageRequestSchema"),
-}));
-
-vi.mock("@modelcontextprotocol/ext-apps", () => ({
-  McpUiMessageRequestSchema: bridgeMocks.messageSchema,
-}));
+const bridgeMocks = vi.hoisted(() => ({ instances: [] as Array<Record<string, unknown>> }));
 
 vi.mock("@modelcontextprotocol/ext-apps/app-bridge", () => {
   class AppBridge {
@@ -34,14 +27,11 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", () => {
       bridgeMocks.instances.push(this as unknown as Record<string, unknown>);
     }
 
-    protected replaceRequestHandler(
-      schema: unknown,
-      handler: (request: { params: unknown }) => Promise<unknown>,
-    ) {
-      if (schema === bridgeMocks.messageSchema) {
-        this.messageHandler = (params) => handler({ params }) as Promise<{ isError?: boolean }>;
-      }
+    set onmessage(handler: NonNullable<AppBridge["messageHandler"]>) {
+      this.messageHandler = handler;
     }
+
+    protected replaceRequestHandler() {}
 
     async connect() {
       this.oninitialized?.();

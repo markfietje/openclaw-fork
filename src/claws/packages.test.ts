@@ -6,9 +6,11 @@ import type { ClawAddPlan, ClawPackage } from "./types.js";
 function plan(packages: ClawPackage[], ownerAction: "install" | "reuse" = "install"): ClawAddPlan {
   return {
     schemaVersion: "openclaw.clawAddPlan.v1",
+    manifestSchemaVersion: 1,
     stability: "experimental",
     dryRun: true,
     mutationAllowed: false,
+    planIntegrity: "sha256:test-plan",
     claw: {
       kind: "package",
       name: "incident-claw",
@@ -16,6 +18,8 @@ function plan(packages: ClawPackage[], ownerAction: "install" | "reuse" = "insta
       packageRoot: "/tmp/claw",
       manifestPath: "/tmp/claw/claw.json",
       integrity: "sha256:claw",
+      integrityKind: "artifact",
+      byteLength: 100,
     },
     agent: {
       requestedId: "incident",
@@ -40,6 +44,7 @@ function plan(packages: ClawPackage[], ownerAction: "install" | "reuse" = "insta
       details: { ...pkg, ownerAction },
       blocked: false,
     })),
+    readiness: { ready: true, requirements: [] },
     blockers: [],
     diagnostics: [],
   };

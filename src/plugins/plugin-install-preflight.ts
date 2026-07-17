@@ -23,7 +23,7 @@ type PluginInstallPreflightResult =
     }
   | { ok: false; code: "invalid_plugin_spec"; error: string };
 
-export type InstalledClawHubPluginResolution =
+type InstalledClawHubPluginResolution =
   | { status: "missing" }
   | { status: "ambiguous"; pluginIds: string[] }
   | {
@@ -51,7 +51,11 @@ export async function resolveInstalledClawHubPlugin(params: {
   if (matches.length > 1) {
     return { status: "ambiguous", pluginIds: matches.map(([pluginId]) => pluginId).toSorted() };
   }
-  const [pluginId, record] = matches[0];
+  const match = matches[0];
+  if (!match) {
+    return { status: "missing" };
+  }
+  const [pluginId, record] = match;
   return {
     status: "found",
     pluginId,

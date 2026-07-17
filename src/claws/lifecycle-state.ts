@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { stableStringify } from "../agents/stable-stringify.js";
 import { pruneAgentConfig } from "../commands/agents.config.js";
-import { loadConfig } from "../config/config.js";
+import { getRuntimeConfig } from "../config/config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { deleteAgentConfigEntry } from "../gateway/server-methods/agents-config-mutations.js";
 import { root as fsSafeRoot, FsSafeError } from "../infra/fs-safe.js";
@@ -27,22 +27,22 @@ import {
 import { CLAW_OUTPUT_STABILITY } from "./types.js";
 import { readClawWorkspaceFiles, type PersistedClawWorkspaceFile } from "./workspace.js";
 
-export const CLAW_STATUS_SCHEMA_VERSION = "openclaw.clawStatus.v1" as const;
+const CLAW_STATUS_SCHEMA_VERSION = "openclaw.clawStatus.v1" as const;
 export const CLAW_REMOVE_PLAN_SCHEMA_VERSION = "openclaw.clawRemovePlan.v1" as const;
 export const CLAW_REMOVE_RESULT_SCHEMA_VERSION = "openclaw.clawRemoveResult.v1" as const;
 const MAX_FILE_BYTES = 1024 * 1024;
 
-export type ClawManagedFileStatus = PersistedClawWorkspaceFile & {
+type ClawManagedFileStatus = PersistedClawWorkspaceFile & {
   state: "unchanged" | "modified" | "missing" | "unsafe";
   message?: string;
 };
-export type ClawStatusRecord = {
+type ClawStatusRecord = {
   install: PersistedClawInstall;
   agentState: "present" | "modified" | "missing";
   workspaceFiles: ClawManagedFileStatus[];
   packages: ClawPackageInspection[];
 };
-export type ClawStatusResult = {
+type ClawStatusResult = {
   schemaVersion: typeof CLAW_STATUS_SCHEMA_VERSION;
   stability: typeof CLAW_OUTPUT_STABILITY;
   target?: string;
@@ -58,7 +58,7 @@ export type ClawStatusResult = {
     incompletePackages: number;
   };
 };
-export type ClawRemovePlanAction = {
+type ClawRemovePlanAction = {
   kind: "agent" | "workspaceFile" | "packageRef" | "installRecord";
   id: string;
   action: "remove" | "delete" | "retain" | "release" | "uninstall";
@@ -67,7 +67,7 @@ export type ClawRemovePlanAction = {
   reason?: string;
   details?: Record<string, unknown>;
 };
-export type ClawRemovePlan = {
+type ClawRemovePlan = {
   schemaVersion: typeof CLAW_REMOVE_PLAN_SCHEMA_VERSION;
   stability: typeof CLAW_OUTPUT_STABILITY;
   dryRun: true;
@@ -78,12 +78,12 @@ export type ClawRemovePlan = {
   actions: ClawRemovePlanAction[];
   blockers: Array<{ code: string; message: string }>;
 };
-export type RemovedWorkspaceFile = {
+type RemovedWorkspaceFile = {
   path: string;
   action: "deleted" | "missing" | "retainedModified" | "error";
   message?: string;
 };
-export type ClawRemoveResult = {
+type ClawRemoveResult = {
   schemaVersion: typeof CLAW_REMOVE_RESULT_SCHEMA_VERSION;
   stability: typeof CLAW_OUTPUT_STABILITY;
   dryRun: false;
@@ -143,7 +143,7 @@ export async function readClawStatus(
     packageDeps?: PackageRemovalDeps;
   } = {},
 ): Promise<ClawStatusResult> {
-  const config = options.config ?? loadConfig();
+  const config = options.config ?? getRuntimeConfig();
   const installs = readClawInstallRecords(options).filter(
     (install) => !target || install.agentId === target || install.claw.name === target,
   );
@@ -358,7 +358,9 @@ async function removeFile(record: ClawManagedFileStatus): Promise<RemovedWorkspa
 }
 function tableExists(db: DatabaseSync, name: string): boolean {
   return Boolean(
-    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name),
+    db /* sqlite-allow-raw: schema probe for optional Claw state tables. */
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(name),
   );
 }
 function releaseRows(
@@ -370,20 +372,23 @@ function releaseRows(
   runOpenClawStateWriteTransaction(({ db }) => {
     if (tableExists(db, "claw_workspace_files")) {
       for (const file of files.filter((candidate) => candidate.action !== "error")) {
-        db.prepare("DELETE FROM claw_workspace_files WHERE agent_id = ? AND target_path = ?").run(
-          agentId,
-          file.path,
-        );
+        db /* sqlite-allow-raw: remove one owned Claw workspace-file row. */
+          .prepare("DELETE FROM claw_workspace_files WHERE agent_id = ? AND target_path = ?")
+          .run(agentId, file.path);
       }
     }
     if (!complete) {
       return;
     }
     if (tableExists(db, "claw_package_refs")) {
-      db.prepare("DELETE FROM claw_package_refs WHERE agent_id = ?").run(agentId);
+      db /* sqlite-allow-raw: release package refs for a removed Claw agent. */
+        .prepare("DELETE FROM claw_package_refs WHERE agent_id = ?")
+        .run(agentId);
     }
     if (tableExists(db, "claw_installs")) {
-      db.prepare("DELETE FROM claw_installs WHERE agent_id = ?").run(agentId);
+      db /* sqlite-allow-raw: remove the completed Claw install owner row. */
+        .prepare("DELETE FROM claw_installs WHERE agent_id = ?")
+        .run(agentId);
     }
   }, options);
 }

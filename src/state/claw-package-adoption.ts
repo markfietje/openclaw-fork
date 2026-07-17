@@ -5,7 +5,7 @@ import {
 } from "./openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 
-export type ClawPackageAdoption = {
+type ClawPackageAdoption = {
   kind: "skill" | "plugin";
   source: "clawhub";
   ref: string;
@@ -31,8 +31,10 @@ export function markClawPackageIndependentlyOwned(
              SELECT agent_id FROM claw_installs WHERE workspace = @workspace
            )`
           : "";
-      const statement = db.prepare(
-        `UPDATE claw_package_refs
+      const statement =
+        db /* sqlite-allow-raw: adopt Claw package ownership after independent install. */
+          .prepare(
+            `UPDATE claw_package_refs
             SET ownership = 'independently-owned', updated_at_ms = @updated_at_ms
           WHERE package_kind = @package_kind
             AND package_source = @package_source
@@ -40,7 +42,7 @@ export function markClawPackageIndependentlyOwned(
             AND package_version = @package_version
             AND ownership <> 'independently-owned'
             ${workspaceScope}`,
-      );
+          );
       const bindings: Record<string, string | number> = {
         package_kind: artifact.kind,
         package_source: artifact.source,

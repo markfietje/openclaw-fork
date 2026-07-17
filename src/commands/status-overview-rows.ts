@@ -106,12 +106,21 @@ export function buildStatusCommandOverviewRows(
   const eventsValue = buildStatusEventsValue({
     queuedSystemEvents: params.summary.queuedSystemEvents,
   });
-  const degradedSecretOwners = params.summary.degradedSecretOwners ?? [];
+  const degradedSecretOwners =
+    params.summary.secrets?.degraded ??
+    (params.summary.degradedSecretOwners ?? []).map((owner) => ({
+      kind: owner.ownerKind,
+      id: owner.ownerId,
+      reason: owner.reason,
+      state: "cold" as const,
+      retryHint: "openclaw secrets reload" as const,
+      paths: owner.paths,
+    }));
   const degradedSecretsValue =
     degradedSecretOwners.length > 0
       ? params.warn(
-          `${degradedSecretOwners.length} unavailable · ${degradedSecretOwners
-            .map((owner) => `${owner.ownerKind}:${owner.ownerId}`)
+          `${degradedSecretOwners.length} degraded · ${degradedSecretOwners
+            .map((owner) => `${owner.state} ${owner.kind}:${owner.id}`)
             .join(", ")}`,
         )
       : null;

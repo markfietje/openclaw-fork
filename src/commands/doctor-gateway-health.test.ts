@@ -114,22 +114,26 @@ describe("checkGatewayHealth", () => {
   it("lists every degraded SecretRef owner reported by Gateway status", async () => {
     callGateway
       .mockResolvedValueOnce({
-        degradedSecretOwners: [
-          {
-            ownerKind: "account",
-            ownerId: "discord:ops",
-            state: "unavailable",
-            paths: ["channels.discord.accounts.ops.token"],
-            reason: "secret reference was not found",
-          },
-          {
-            ownerKind: "capability",
-            ownerId: "tts",
-            state: "unavailable",
-            paths: ["messages.tts.providers.elevenlabs.apiKey"],
-            reason: "secret provider failed",
-          },
-        ],
+        secrets: {
+          degraded: [
+            {
+              kind: "account",
+              id: "discord:ops",
+              state: "stale",
+              retryHint: "openclaw secrets reload",
+              paths: ["channels.discord.accounts.ops.token"],
+              reason: "secret reference was not found",
+            },
+            {
+              kind: "capability",
+              id: "tts",
+              state: "cold",
+              retryHint: "openclaw secrets reload",
+              paths: ["messages.tts.providers.elevenlabs.apiKey"],
+              reason: "secret provider failed",
+            },
+          ],
+        },
       })
       .mockResolvedValueOnce({});
     const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
@@ -138,10 +142,12 @@ describe("checkGatewayHealth", () => {
 
     expect(note).toHaveBeenCalledWith(
       [
-        "- account:discord:ops (channels.discord.accounts.ops.token): secret reference was not found",
-        "- capability:tts (messages.tts.providers.elevenlabs.apiKey): secret provider failed",
+        "- stale account:discord:ops (channels.discord.accounts.ops.token): secret reference was not found",
+        "  Retry: openclaw secrets reload",
+        "- cold capability:tts (messages.tts.providers.elevenlabs.apiKey): secret provider failed",
+        "  Retry: openclaw secrets reload",
       ].join("\n"),
-      "Secret owners unavailable",
+      "Secret runtime degradation",
     );
   });
 

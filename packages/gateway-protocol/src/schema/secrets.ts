@@ -12,6 +12,32 @@ import { NonEmptyString } from "./primitives.js";
 /** Empty request payload for reloading configured secret providers. */
 export const SecretsReloadParamsSchema = closedObject({});
 
+/** Runtime owner families reported by SecretRef degradation status. */
+export const SecretsDegradedOwnerKindSchema = Type.String({
+  enum: ["account", "capability", "gateway", "provider", "route", "unknown"],
+});
+
+/** Availability of the active value for a degraded SecretRef owner. */
+export const SecretsDegradationStateSchema = Type.String({ enum: ["cold", "stale"] });
+
+/** Operator-visible lifecycle state for one SecretRef owner. */
+export const SecretsDegradedOwnerSchema = closedObject({
+  kind: SecretsDegradedOwnerKindSchema,
+  id: NonEmptyString,
+  reason: NonEmptyString,
+  state: SecretsDegradationStateSchema,
+  retryHint: Type.Literal("openclaw secrets reload"),
+  paths: Type.Array(NonEmptyString),
+});
+
+/** Secret-runtime section embedded in operator status responses. */
+export const SecretsStatusSchema = closedObject({
+  degraded: Type.Array(SecretsDegradedOwnerSchema),
+});
+
+export type SecretsDegradedOwner = Static<typeof SecretsDegradedOwnerSchema>;
+export type SecretsStatus = Static<typeof SecretsStatusSchema>;
+
 /** Request payload for resolving the secrets needed by one command invocation. */
 export const SecretsResolveParamsSchema = closedObject({
   commandName: NonEmptyString,

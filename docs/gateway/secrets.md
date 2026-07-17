@@ -21,7 +21,7 @@ Plaintext credentials remain agent-readable if they sit in files the agent can i
 ## Runtime model
 
 - Secrets resolve into an in-memory runtime snapshot, eagerly during activation, not lazily on request paths.
-- Cold Gateway startup isolates unavailable SecretRefs to a known non-Gateway owner when that owner supports isolation. Today this covers model providers and the built-in TTS capability. The Gateway starts, records that owner as configured-unavailable, and emits a redacted `SECRETS_OWNER_UNAVAILABLE` warning. Gateway ingress auth, structurally invalid refs or resolved values, and refs whose runtime owner is not yet mapped still fail startup.
+- Cold Gateway startup isolates unavailable SecretRefs to a known non-Gateway owner when that owner supports isolation. Today this covers model providers, the built-in TTS capability, and webhook routes. The Gateway starts, records that owner as configured-unavailable, and emits a redacted `SECRETS_OWNER_UNAVAILABLE` warning. Gateway ingress auth, structurally invalid refs or resolved values, and refs whose runtime owner is not yet mapped still fail startup.
 - Reload is an atomic swap: full success, or keep the last-known-good snapshot.
 - Policy violations (for example an OAuth-mode auth profile combined with SecretRef input) fail activation before the runtime swap.
 - Runtime requests read only the active in-memory snapshot. Model-provider SecretRef credentials pass through auth storage and stream options as process-local sentinels until egress. Outbound delivery paths (Discord reply/thread delivery, Telegram action sends) also read that snapshot and do not re-resolve refs per send.
@@ -617,6 +617,8 @@ Behavior:
 - Recovered: emitted once after the next successful activation.
 - Repeated failures while already degraded log warnings but do not re-emit the event.
 - Startup fail-fast never emits a degraded event, because runtime never became active.
+- The `status` RPC and `openclaw status --json` expose every affected owner under `secrets.degraded[]`. `cold` means the owner has no active value; `stale` means a failed reload left that owner on its last-known-good value. Entries include a redacted reason, affected config paths, and the retry hint `openclaw secrets reload`.
+- `openclaw doctor` renders the same inventory and retry guidance. Gateway startup also emits one redacted summary warning after the per-owner warnings.
 
 ## Command-path resolution
 

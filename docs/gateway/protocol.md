@@ -403,7 +403,7 @@ methods. Treat this as feature discovery, not a full enumeration of
   <Accordion title="System and identity">
     - `health` returns the cached or freshly probed gateway health snapshot.
     - `diagnostics.stability` returns the recent bounded diagnostic stability recorder: event names, counts, byte sizes, memory readings, queue/session state, channel/plugin names, session ids. No chat text, webhook bodies, tool outputs, raw request/response bodies, tokens, cookies, or secrets. Requires `operator.read`.
-    - `status` returns the `/status`-style gateway summary; sensitive fields only for admin-scoped operator clients.
+    - `status` returns the `/status`-style gateway summary; sensitive fields only for admin-scoped operator clients. SecretRef degradation is additive under `secrets.degraded[]`: each item includes `kind`, `id`, redacted `reason`, `state` (`cold` or `stale`), `paths`, and the `openclaw secrets reload` retry hint.
     - `gateway.identity.get` returns the gateway device identity used by relay and pairing flows.
     - `system-presence` returns the current presence snapshot for connected operator/node devices.
     - `system-event` appends a system event and can update/broadcast presence context.

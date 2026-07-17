@@ -9,6 +9,7 @@ import {
 } from "./resolve-errors.js";
 import { resolveSecretRefValues, resolveSecretRefValuesSettledByProvider } from "./resolve.js";
 import type { DegradedSecretOwner } from "./runtime-degraded-state.js";
+import { associateSecretResolutionErrorOwners } from "./runtime-degraded-state.js";
 import {
   applyResolvedAssignments,
   pushWarning,
@@ -86,12 +87,37 @@ async function resolveStrictAssignments(params: {
   assignments: SecretAssignment[];
   options: SecretResolutionOptions;
 }): Promise<void> {
-  const resolved = await resolveSecretRefValues(
-    params.assignments.map((assignment) => assignment.ref),
-    params.options,
-  );
-  registerResolvedValuesForRedaction(resolved);
-  applyResolvedAssignments({ assignments: params.assignments, resolved });
+  try {
+    const resolved = await resolveSecretRefValues(
+      params.assignments.map((assignment) => assignment.ref),
+      params.options,
+    );
+    registerResolvedValuesForRedaction(resolved);
+    applyResolvedAssignments({ assignments: params.assignments, resolved });
+  } catch (error) {
+    const reason = describeSecretResolutionError(error);
+    if (reason) {
+      const owners = groupAssignmentsByOwner(params.assignments).flatMap((assignments) => {
+        if (assignments[0]?.ownerKind === "unknown") {
+          return [];
+        }
+        const failureMatched = assignments.some((assignment) =>
+          assignmentMatchesResolutionFailure(assignment, error),
+        );
+        return [
+          {
+            ...createDegradedOwner(
+              assignments,
+              failureMatched ? reason : "secret reload was not activated",
+            ),
+            failureMatched,
+          },
+        ];
+      });
+      associateSecretResolutionErrorOwners(error, owners);
+    }
+    throw error;
+  }
 }
 
 function assignmentMatchesResolutionFailure(assignment: SecretAssignment, error: unknown): boolean {

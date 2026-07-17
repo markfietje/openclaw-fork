@@ -76,7 +76,7 @@ and `openclaw memory status --deep`.
 
 ## Secrets
 
-- When the running Gateway isolated a known SecretRef owner during cold startup, status includes `degradedSecretOwners` in JSON and a **Degraded secrets** overview row in human output. Each entry names the owner, unavailable state, config paths, and redacted reason.
+- When the running Gateway has degraded SecretRef owners, status includes `secrets.degraded[]` in JSON and a **Degraded secrets** overview row in human output. Each entry names the owner kind and id, affected config paths, a redacted reason, retry guidance, and whether the owner is `cold` (unavailable after startup) or `stale` (still using the last-known-good value after a failed reload). The older `degradedSecretOwners` JSON field remains available for cold owners.
 - Read-only status surfaces (`status`, `status --json`, `status --all`)
   resolve supported SecretRefs for their targeted config paths when
   possible.

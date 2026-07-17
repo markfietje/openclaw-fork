@@ -255,6 +255,7 @@ export function createGatewayAuxHandlers(params: {
                     {
                       reason: "reload",
                       activate: false,
+                      publishFailureAsDegraded: true,
                     },
                   );
                   const plan = buildReloadPlan(

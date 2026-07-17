@@ -1649,6 +1649,7 @@ export function startManagedGatewayConfigReloader(
           {
             reason: "restart-check",
             activate: false,
+            publishFailureAsDegraded: true,
             ...(transactionOwnership.runtimeEnv
               ? { env: transactionOwnership.runtimeEnv.env }
               : {}),
@@ -1716,6 +1717,7 @@ export function startManagedGatewayConfigReloader(
             {
               reason: "restart-check",
               activate: false,
+              publishFailureAsDegraded: true,
               ...(transactionOwnership.runtimeEnv
                 ? { env: transactionOwnership.runtimeEnv.env }
                 : {}),
@@ -1783,6 +1785,7 @@ export function startManagedGatewayConfigReloader(
             {
               reason: "restart-check",
               activate: false,
+              publishFailureAsDegraded: true,
               ...(transactionOwnership.runtimeEnv
                 ? { env: transactionOwnership.runtimeEnv.env }
                 : {}),
@@ -1913,6 +1916,7 @@ export function startManagedGatewayConfigReloader(
           {
             reason: "reload",
             activate: false,
+            publishFailureAsDegraded: true,
             ...(transactionOwnership.runtimeEnv
               ? { env: transactionOwnership.runtimeEnv.env }
               : {}),
@@ -1965,6 +1969,7 @@ export function startManagedGatewayConfigReloader(
           {
             reason: "reload",
             activate: false,
+            publishFailureAsDegraded: true,
             ...(transactionOwnership.runtimeEnv
               ? { env: transactionOwnership.runtimeEnv.env }
               : {}),
@@ -2000,6 +2005,7 @@ export function startManagedGatewayConfigReloader(
                 {
                   reason: "restart-check",
                   activate: false,
+                  publishFailureAsDegraded: true,
                   ...(transactionOwnership.runtimeEnv
                     ? { env: transactionOwnership.runtimeEnv.env }
                     : {}),

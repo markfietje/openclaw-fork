@@ -14,6 +14,10 @@ import {
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.js";
 import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
 import {
+  associateSecretResolutionErrorOwners,
+  listActiveSecretDegradations,
+} from "../secrets/runtime-degraded-state.js";
+import {
   activateSecretsRuntimeSnapshotState,
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshot,
@@ -686,6 +690,16 @@ describe("gateway startup config secret preflight", () => {
       ...preparedSnapshot(sourceConfig),
       config: structuredClone(sourceConfig),
       warnings: [warning],
+      degradedOwners: [
+        {
+          ownerKind: "capability" as const,
+          ownerId: "tts",
+          state: "unavailable" as const,
+          paths: ["messages.tts.providers.elevenlabs.apiKey"],
+          refKeys: ["env:default:ELEVENLABS_API_KEY"],
+          reason: "secret reference was not found",
+        },
+      ],
     }));
     const emitStateEvent = vi.fn();
     const logSecrets = mockLogSecretsForTest();
@@ -707,12 +721,17 @@ describe("gateway startup config secret preflight", () => {
       expect.objectContaining({ allowUnavailableSecretOwners: true }),
     );
     expect(logSecrets.warn).toHaveBeenCalledWith(`[${warning.code}] ${warning.message}`);
+    expect(logSecrets.warn).toHaveBeenCalledWith(
+      "[SECRETS_DEGRADED_SUMMARY] 1 secret owner(s) cold: capability:tts. " +
+        "Retry: openclaw secrets reload.",
+    );
     expect(emitStateEvent).not.toHaveBeenCalled();
   });
 
   it.each(["reload", "restart-check"] as const)(
     "keeps unavailable SecretRef owners fail-closed during %s",
     async (reason) => {
+      activateSecretsRuntimeSnapshotForTest(preparedSnapshot(gatewayTokenConfig({})));
       const missingSecretError = new Error(
         'Environment variable "ELEVENLABS_API_KEY" is missing or empty.',
       );
@@ -728,7 +747,8 @@ describe("gateway startup config secret preflight", () => {
       await expect(
         activateRuntimeSecrets(gatewayTokenConfig({}), {
           reason,
-          activate: true,
+          activate: false,
+          publishFailureAsDegraded: true,
         }),
       ).rejects.toThrow(missingSecretError.message);
 
@@ -736,15 +756,78 @@ describe("gateway startup config secret preflight", () => {
         expect.objectContaining({ allowUnavailableSecretOwners: false }),
       );
       expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+      expect(listActiveSecretDegradations()).toEqual([
+        {
+          kind: "unknown",
+          id: "runtime",
+          reason: "secret reload failed",
+          state: "stale",
+          retryHint: "openclaw secrets reload",
+          paths: [],
+        },
+      ]);
     },
   );
 
+  it("does not publish a rejected candidate-only preflight as active degradation", async () => {
+    let shouldFail = true;
+    const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => {
+      if (shouldFail) {
+        throw new Error("candidate secret resolution failed");
+      }
+      return preparedSnapshot(config);
+    });
+    const emitStateEvent = vi.fn();
+    const logSecrets = mockLogSecretsForTest();
+    const activateRuntimeSecrets = runtimeSecretsActivatorForTest({
+      prepareRuntimeSecretsSnapshot,
+      emitStateEvent,
+      logSecrets,
+    });
+
+    await expect(
+      activateRuntimeSecrets(gatewayTokenConfig({}), {
+        reason: "reload",
+        activate: false,
+      }),
+    ).rejects.toThrow("candidate secret resolution failed");
+
+    expect(listActiveSecretDegradations()).toEqual([]);
+    expect(emitStateEvent).not.toHaveBeenCalled();
+
+    shouldFail = false;
+    await expect(
+      activateRuntimeSecrets(gatewayTokenConfig({}), {
+        reason: "reload",
+        activate: false,
+      }),
+    ).resolves.toBeDefined();
+    expect(emitStateEvent).not.toHaveBeenCalled();
+    expect(logSecrets.info).not.toHaveBeenCalledWith(
+      expect.stringContaining("SECRETS_RELOADER_RECOVERED"),
+    );
+  });
+
   it("enables cold-start owner isolation during non-activating startup preparation", async () => {
-    const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => preparedSnapshot(config));
+    const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => ({
+      ...preparedSnapshot(config),
+      degradedOwners: [
+        {
+          ownerKind: "capability" as const,
+          ownerId: "tts",
+          state: "unavailable" as const,
+          paths: ["messages.tts.providers.elevenlabs.apiKey"],
+          refKeys: ["env:default:ELEVENLABS_API_KEY"],
+          reason: "secret reference was not found",
+        },
+      ],
+    }));
     const activateRuntimeSecretsSnapshot = vi.fn();
+    const logSecrets = mockLogSecretsForTest();
     const activateRuntimeSecrets = runtimeSecretsActivatorForTest({
       prepareRuntimeSecretsSnapshot,
       activateRuntimeSecretsSnapshot,
+      logSecrets,
     });
 
     await activateRuntimeSecrets(gatewayTokenConfig({}), {
@@ -756,6 +839,7 @@ describe("gateway startup config secret preflight", () => {
       expect.objectContaining({ allowUnavailableSecretOwners: true }),
     );
     expect(activateRuntimeSecretsSnapshot).not.toHaveBeenCalled();
+    expect(logSecrets.warn).not.toHaveBeenCalledWith(expect.stringContaining("SUMMARY"));
   });
 
   it("does not enable cold-start degradation while a runtime snapshot is active", async () => {
@@ -867,6 +951,20 @@ describe("gateway startup config secret preflight", () => {
         },
       },
     });
+    const activeSnapshot = preparedSnapshot(sourceConfig);
+    activeSnapshot.config.models!.providers!.openai!.apiKey = "test-api-key";
+    activateSecretsRuntimeSnapshotForTest(activeSnapshot);
+    associateSecretResolutionErrorOwners(missingSecretError, [
+      {
+        ownerKind: "provider",
+        ownerId: "openai",
+        state: "unavailable",
+        paths: ["models.providers.openai.apiKey"],
+        refKeys: ["env:default:OPENAI_API_KEY"],
+        reason: "secret reference was not found",
+        failureMatched: true,
+      },
+    ]);
     const prepareRuntimeSecretsSnapshot = vi.fn(async ({ config }) => {
       if (!shouldResolve) {
         throw missingSecretError;
@@ -879,27 +977,58 @@ describe("gateway startup config secret preflight", () => {
       logSecrets,
       emitStateEvent,
       prepareRuntimeSecretsSnapshot,
+      activateRuntimeSecretsSnapshot: activateSecretsRuntimeSnapshotForTest,
     });
 
     await expect(
       activateRuntimeSecrets(sourceConfig, {
         reason: "reload",
-        activate: true,
+        activate: false,
+        publishFailureAsDegraded: true,
       }),
     ).rejects.toThrow(missingSecretError.message);
+    expect(listActiveSecretDegradations()).toEqual([
+      {
+        kind: "provider",
+        id: "openai",
+        reason: "secret reference was not found",
+        state: "stale",
+        retryHint: "openclaw secrets reload",
+        paths: ["models.providers.openai.apiKey"],
+      },
+    ]);
     await expect(
       activateRuntimeSecrets(sourceConfig, {
         reason: "reload",
-        activate: true,
+        activate: false,
+        publishFailureAsDegraded: true,
       }),
     ).rejects.toThrow(missingSecretError.message);
     shouldResolve = true;
+    const activeRevision = getActiveSecretsRuntimeSnapshotRevision();
+    const prepared = await activateRuntimeSecrets(sourceConfig, {
+      reason: "restart-check",
+      activate: false,
+    });
+    expect(listActiveSecretDegradations()).toEqual([
+      {
+        kind: "provider",
+        id: "openai",
+        reason: "secret reference was not found",
+        state: "stale",
+        retryHint: "openclaw secrets reload",
+        paths: ["models.providers.openai.apiKey"],
+      },
+    ]);
+    expect(emitStateEvent).toHaveBeenCalledTimes(1);
+
     await expect(
-      activateRuntimeSecrets(sourceConfig, {
+      activateRuntimeSecrets.activatePreparedSnapshotIfCurrent?.(prepared, activeRevision, {
         reason: "reload",
         activate: true,
       }),
     ).resolves.toMatchObject({ config: sourceConfig });
+    expect(listActiveSecretDegradations()).toEqual([]);
 
     expect(emitStateEvent.mock.calls.map((call) => call[0])).toEqual([
       "SECRETS_RELOADER_DEGRADED",

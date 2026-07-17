@@ -367,10 +367,14 @@ import { NodeInvokeProtocolSchemas } from "./protocol-schemas-node-invoke.js";
 import { NodePresenceProtocolSchemas } from "./protocol-schemas-node-presence.js";
 import { PushTestParamsSchema, PushTestResultSchema } from "./push.js";
 import {
+  SecretsDegradationStateSchema,
+  SecretsDegradedOwnerKindSchema,
+  SecretsDegradedOwnerSchema,
   SecretsReloadParamsSchema,
   SecretsResolveAssignmentSchema,
   SecretsResolveParamsSchema,
   SecretsResolveResultSchema,
+  SecretsStatusSchema,
 } from "./secrets.js";
 import { SessionPlacementProtocolSchemas } from "./session-placement.js";
 import {
@@ -623,6 +627,10 @@ export const ProtocolSchemas = {
   UiCommandParams: UiCommandParamsSchema,
   UiCommandResult: UiCommandResultSchema,
   SecretsReloadParams: SecretsReloadParamsSchema,
+  SecretsDegradedOwnerKind: SecretsDegradedOwnerKindSchema,
+  SecretsDegradationState: SecretsDegradationStateSchema,
+  SecretsDegradedOwner: SecretsDegradedOwnerSchema,
+  SecretsStatus: SecretsStatusSchema,
   SecretsResolveParams: SecretsResolveParamsSchema,
   SecretsResolveAssignment: SecretsResolveAssignmentSchema,
   SecretsResolveResult: SecretsResolveResultSchema,

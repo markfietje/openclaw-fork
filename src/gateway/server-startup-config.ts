@@ -20,6 +20,11 @@ import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.opencla
 import { measureDiagnosticsTimelineSpan } from "../infra/diagnostics-timeline.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { classifySecretResolutionErrorDegradations } from "../secrets/runtime-degradation-classifier.js";
+import {
+  SECRET_DEGRADATION_RETRY_HINT,
+  setActiveReloadSecretDegradations,
+} from "../secrets/runtime-degraded-state.js";
 import { prepareSecretsRuntimeFastPathSnapshot } from "../secrets/runtime-fast-path.js";
 import {
   GATEWAY_AUTH_SURFACE_PATHS,
@@ -63,6 +68,8 @@ type PreparedRuntimeSecretsSnapshot = Awaited<ReturnType<PrepareRuntimeSecretsSn
 type RuntimeSecretsActivationParams = {
   reason: "startup" | "reload" | "restart-check";
   activate: boolean;
+  /** This preparation belongs to a live reload; publish failure against the active snapshot. */
+  publishFailureAsDegraded?: boolean;
   env?: NodeJS.ProcessEnv;
   includeAuthStoreRefs?: boolean;
 };
@@ -233,13 +240,25 @@ export function createRuntimeSecretsActivator(params: {
     for (const warning of prepared.warnings) {
       params.logSecrets.warn(`[${warning.code}] ${warning.message}`);
     }
-    if (secretsDegraded) {
+    if (
+      activationParams.reason === "startup" &&
+      activationParams.activate &&
+      (prepared.degradedOwners?.length ?? 0) > 0
+    ) {
+      const degradedOwners = prepared.degradedOwners ?? [];
+      params.logSecrets.warn(
+        `[SECRETS_DEGRADED_SUMMARY] ${degradedOwners.length} secret owner(s) cold: ` +
+          `${degradedOwners.map((owner) => `${owner.ownerKind}:${owner.ownerId}`).join(", ")}. ` +
+          `Retry: ${SECRET_DEGRADATION_RETRY_HINT}.`,
+      );
+    }
+    if (activationParams.activate && secretsDegraded) {
       const recoveredMessage =
         "Secret resolution recovered; runtime remained on last-known-good during the outage.";
       params.logSecrets.info(`[SECRETS_RELOADER_RECOVERED] ${recoveredMessage}`);
       params.emitStateEvent("SECRETS_RELOADER_RECOVERED", recoveredMessage, prepared.config);
+      secretsDegraded = false;
     }
-    secretsDegraded = false;
     return prepared;
   };
 
@@ -249,9 +268,15 @@ export function createRuntimeSecretsActivator(params: {
     eventConfig: OpenClawConfig,
   ): never => {
     const details = String(err);
+    const publishDegradation =
+      activationParams.reason !== "startup" &&
+      (activationParams.activate || activationParams.publishFailureAsDegraded === true);
+    if (publishDegradation) {
+      setActiveReloadSecretDegradations(classifySecretResolutionErrorDegradations({ error: err }));
+    }
     if (!secretsDegraded) {
       params.logSecrets.error?.(`[SECRETS_RELOADER_DEGRADED] ${details}`);
-      if (activationParams.reason !== "startup") {
+      if (publishDegradation) {
         params.emitStateEvent(
           "SECRETS_RELOADER_DEGRADED",
           `Secret resolution failed; runtime remains on last-known-good snapshot. ${details}`,
@@ -261,7 +286,9 @@ export function createRuntimeSecretsActivator(params: {
     } else {
       params.logSecrets.warn(`[SECRETS_RELOADER_DEGRADED] ${details}`);
     }
-    secretsDegraded = true;
+    if (publishDegradation) {
+      secretsDegraded = true;
+    }
     if (activationParams.reason === "startup") {
       throw new Error(`Startup failed: required secrets are unavailable. ${details}`, {
         cause: err,
@@ -272,6 +299,7 @@ export function createRuntimeSecretsActivator(params: {
 
   const activateRuntimeSecrets = (async (config, activationParams) =>
     await runWithSecretsActivationLock(async () => {
+      let activationSourceConfig = config;
       try {
         const { sourceConfig, assignmentConfig } = resolveGatewayStartupSecretProjection({
           config,
@@ -279,6 +307,7 @@ export function createRuntimeSecretsActivator(params: {
           channelAutostartSuppression: params.channelAutostartSuppression,
           ...(activationParams.env ? { env: activationParams.env } : {}),
         });
+        activationSourceConfig = sourceConfig;
         const startupPreflight =
           activationParams.reason === "startup" || activationParams.reason === "restart-check";
         if (
@@ -357,7 +386,7 @@ export function createRuntimeSecretsActivator(params: {
         }
         return await finishPreparedSnapshot(prepared, activationParams);
       } catch (err) {
-        return handleSecretsActivationError(err, activationParams, config);
+        return handleSecretsActivationError(err, activationParams, activationSourceConfig);
       }
     })) as ActivateRuntimeSecrets;
 

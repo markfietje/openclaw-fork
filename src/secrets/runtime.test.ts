@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.ts";
 import { redactSensitiveText } from "../logging/redact.js";
 import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
+import { listSecretResolutionErrorOwners } from "./runtime-degraded-state.js";
 import { asConfig, setupSecretsRuntimeSnapshotTestHooks } from "./runtime.test-support.ts";
 
 const EMPTY_LOADABLE_PLUGIN_ORIGINS = new Map();
@@ -290,24 +291,58 @@ describe("secrets runtime snapshot", () => {
   });
 
   it("fails closed for missing TTS SecretRefs outside cold-start isolation", async () => {
-    await expect(
-      prepareSecretsRuntimeSnapshot({
-        config: asConfig({
-          messages: {
-            tts: {
-              providers: {
-                elevenlabs: {
-                  apiKey: TTS_REF,
-                },
+    const apiKey = "test-api-key";
+    const error = await prepareSecretsRuntimeSnapshot({
+      config: asConfig({
+        models: {
+          providers: {
+            openai: {
+              apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
+              baseUrl: "https://api.openai.com/v1",
+              models: [],
+            },
+          },
+        },
+        messages: {
+          tts: {
+            providers: {
+              elevenlabs: {
+                apiKey: TTS_REF,
               },
             },
           },
-        }),
-        env: {},
-        includeAuthStoreRefs: false,
-        loadablePluginOrigins: EMPTY_LOADABLE_PLUGIN_ORIGINS,
+        },
       }),
-    ).rejects.toThrow('Environment variable "ELEVENLABS_API_KEY" is missing or empty.');
+      env: { OPENAI_API_KEY: apiKey },
+      includeAuthStoreRefs: false,
+      loadablePluginOrigins: EMPTY_LOADABLE_PLUGIN_ORIGINS,
+    }).then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain(
+      'Environment variable "ELEVENLABS_API_KEY" is missing or empty.',
+    );
+    expect(listSecretResolutionErrorOwners(error)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ownerKind: "provider",
+          ownerId: "openai",
+          paths: ["models.providers.openai.apiKey"],
+          reason: "secret reload was not activated",
+          failureMatched: false,
+        }),
+        expect.objectContaining({
+          ownerKind: "capability",
+          ownerId: "tts",
+          paths: ["messages.tts.providers.elevenlabs.apiKey"],
+          reason: "secret reference was not found",
+          failureMatched: true,
+        }),
+      ]),
+    );
   });
 
   it("isolates the TTS owner when its SecretRef is missing during cold startup", async () => {

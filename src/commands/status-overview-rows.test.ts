@@ -51,6 +51,40 @@ describe("status-overview-rows", () => {
     expect(findRowValue(rows, "Update restart")).toBe("failed · managed-service-handoff-failed");
   });
 
+  it("shows cold and stale SecretRef owners in fast status output", () => {
+    const rows = buildStatusCommandOverviewRows(
+      createStatusCommandOverviewRowsParams({
+        summary: {
+          ...createStatusCommandOverviewRowsParams().summary,
+          secrets: {
+            degraded: [
+              {
+                kind: "route",
+                id: "webhooks/zapier",
+                reason: "secret reference was not found",
+                state: "cold",
+                retryHint: "openclaw secrets reload",
+                paths: ["plugins.entries.webhooks.config.routes.zapier.secret"],
+              },
+              {
+                kind: "provider",
+                id: "openai",
+                reason: "secret provider failed",
+                state: "stale",
+                retryHint: "openclaw secrets reload",
+                paths: ["models.providers.openai.apiKey"],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(findRowValue(rows, "Degraded secrets")).toBe(
+      "warn(2 degraded · cold route:webhooks/zapier, stale provider:openai)",
+    );
+  });
+
   it("builds status-all overview rows from the shared surface", () => {
     const rows = buildStatusAllOverviewRows({
       surface: {

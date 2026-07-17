@@ -86,15 +86,27 @@ export async function checkGatewayHealth(params: {
     });
     healthOk = true;
     noteCliGatewayVersionSkew(status);
-    if (status.degradedSecretOwners && status.degradedSecretOwners.length > 0) {
+    const degradedSecrets =
+      status.secrets?.degraded ??
+      (status.degradedSecretOwners ?? []).map((owner) => ({
+        kind: owner.ownerKind,
+        id: owner.ownerId,
+        reason: owner.reason,
+        state: "cold" as const,
+        retryHint: "openclaw secrets reload" as const,
+        paths: owner.paths,
+      }));
+    if (degradedSecrets.length > 0) {
       note(
-        status.degradedSecretOwners
+        degradedSecrets
           .map(
             (owner) =>
-              `- ${owner.ownerKind}:${owner.ownerId} (${owner.paths.join(", ")}): ${owner.reason}`,
+              `- ${owner.state} ${owner.kind}:${owner.id}` +
+              `${owner.paths.length > 0 ? ` (${owner.paths.join(", ")})` : ""}: ${owner.reason}` +
+              `\n  Retry: ${owner.retryHint}`,
           )
           .join("\n"),
-        "Secret owners unavailable",
+        "Secret runtime degradation",
       );
     }
     try {

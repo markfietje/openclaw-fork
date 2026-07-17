@@ -3604,6 +3604,8 @@ describe("gateway Gmail hot reload handlers", () => {
     expect(activateRuntimeSecrets).toHaveBeenCalledWith(nextConfig, {
       reason: "reload",
       activate: false,
+      publishFailureAsDegraded: true,
+      includeAuthStoreRefs: undefined,
     });
     expect(getActiveSecretsRuntimeSnapshot()?.sourceConfig).toEqual(nextConfig);
     expect(acceptTerminalConfig).toHaveBeenCalledWith({
@@ -4035,10 +4037,12 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(1, harness.deferredConfig, {
         reason: "restart-check",
         activate: false,
+        publishFailureAsDegraded: true,
       });
       expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(2, harness.invalidConfig, {
         reason: "restart-check",
         activate: false,
+        publishFailureAsDegraded: true,
       });
       expect(harness.terminalPolicy.isEnabled()).toBe(false);
       expect(harness.promoteSnapshot.mock.calls.map(([snapshot]) => snapshot.hash)).not.toContain(
@@ -4062,11 +4066,13 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(3, acceptedWithLogging, {
         reason: "reload",
         activate: false,
+        publishFailureAsDegraded: true,
         includeAuthStoreRefs: undefined,
       });
       expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(4, acceptedWithLogging, {
         reason: "restart-check",
         activate: false,
+        publishFailureAsDegraded: true,
       });
       const deferredPlan = buildGatewayReloadPlan(
         diffConfigPaths(harness.initialConfig, harness.deferredConfig),
@@ -4216,6 +4222,7 @@ describe("gateway Gmail hot reload handlers", () => {
         {
           reason: "restart-check",
           activate: false,
+          publishFailureAsDegraded: true,
         },
       );
       expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
@@ -4320,6 +4327,7 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(harness.activateRuntimeSecrets).toHaveBeenCalledWith(harness.deferredConfig, {
         reason: "restart-check",
         activate: false,
+        publishFailureAsDegraded: true,
       });
       await vi.waitFor(() =>
         expect(harness.requestRecoveryRestart.mock.calls).toEqual([
@@ -4368,6 +4376,7 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(3, harness.deferredConfig, {
         reason: "restart-check",
         activate: false,
+        publishFailureAsDegraded: true,
       });
       expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
       expect(harness.promoteSnapshot.mock.calls.map(([snapshot]) => snapshot.hash)).not.toContain(
@@ -4402,6 +4411,7 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(harness.activateRuntimeSecrets).toHaveBeenNthCalledWith(2, harness.replacementConfig, {
         reason: "restart-check",
         activate: false,
+        publishFailureAsDegraded: true,
       });
       expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
 

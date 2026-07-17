@@ -79,6 +79,20 @@ public enum NodePresenceAliveReason: String, Codable, Sendable {
     case connect = "connect"
 }
 
+public enum SecretsDegradedOwnerKind: String, Codable, Sendable {
+    case account = "account"
+    case capability = "capability"
+    case gateway = "gateway"
+    case provider = "provider"
+    case route = "route"
+    case unknown = "unknown"
+}
+
+public enum SecretsDegradationState: String, Codable, Sendable {
+    case cold = "cold"
+    case stale = "stale"
+}
+
 public enum SessionPlacementState: String, Codable, Sendable {
     case local = "local"
     case requested = "requested"
@@ -2889,6 +2903,54 @@ public struct UiCommandResult: Codable, Sendable {
 }
 
 public struct SecretsReloadParams: Codable, Sendable {}
+
+public struct SecretsDegradedOwner: Codable, Sendable {
+    public let kind: SecretsDegradedOwnerKind
+    public let id: String
+    public let reason: String
+    public let state: SecretsDegradationState
+    public let retryhint: String
+    public let paths: [String]
+
+    public init(
+        kind: SecretsDegradedOwnerKind,
+        id: String,
+        reason: String,
+        state: SecretsDegradationState,
+        retryhint: String,
+        paths: [String])
+    {
+        self.kind = kind
+        self.id = id
+        self.reason = reason
+        self.state = state
+        self.retryhint = retryhint
+        self.paths = paths
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case id
+        case reason
+        case state
+        case retryhint = "retryHint"
+        case paths
+    }
+}
+
+public struct SecretsStatus: Codable, Sendable {
+    public let degraded: [SecretsDegradedOwner]
+
+    public init(
+        degraded: [SecretsDegradedOwner])
+    {
+        self.degraded = degraded
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case degraded
+    }
+}
 
 public struct SecretsResolveParams: Codable, Sendable {
     public let commandname: String

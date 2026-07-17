@@ -1,6 +1,9 @@
 // Status summary tests cover aggregate status text for channels, sessions, tasks, and audit findings.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { setActiveDegradedSecretOwners } from "../secrets/runtime-degraded-state.js";
+import {
+  setActiveDegradedSecretOwners,
+  setActiveReloadSecretDegradations,
+} from "../secrets/runtime-degraded-state.js";
 import type { TaskAuditFinding } from "../tasks/task-registry.audit.js";
 import type { TaskRecord, TaskRegistrySummary } from "../tasks/task-registry.types.js";
 
@@ -287,6 +290,16 @@ describe("getStatusSummary", () => {
         reason: "secret reference was not found",
       },
     ]);
+    setActiveReloadSecretDegradations([
+      {
+        kind: "route",
+        id: "webhooks/zapier",
+        state: "stale",
+        paths: ["plugins.entries.webhooks.config.routes.zapier.secret"],
+        retryHint: "openclaw secrets reload",
+        reason: "secret provider failed",
+      },
+    ]);
 
     const summary = await getStatusSummary();
 
@@ -299,7 +312,28 @@ describe("getStatusSummary", () => {
         reason: "secret reference was not found",
       },
     ]);
+    expect(summary.secrets).toEqual({
+      degraded: [
+        {
+          kind: "provider",
+          id: "openai",
+          reason: "secret reference was not found",
+          state: "cold",
+          retryHint: "openclaw secrets reload",
+          paths: ["models.providers.openai.apiKey"],
+        },
+        {
+          kind: "route",
+          id: "webhooks/zapier",
+          reason: "secret provider failed",
+          state: "stale",
+          retryHint: "openclaw secrets reload",
+          paths: ["plugins.entries.webhooks.config.routes.zapier.secret"],
+        },
+      ],
+    });
     expect(JSON.stringify(summary.degradedSecretOwners)).not.toContain("PRIVATE_REF_ID");
+    expect(JSON.stringify(summary.secrets)).not.toContain("PRIVATE_REF_ID");
   });
 
   it("reuses one reconciled task snapshot for task summaries and audit findings", async () => {

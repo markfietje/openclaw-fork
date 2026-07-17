@@ -35,6 +35,7 @@ import {
   resolveMergedAssistantText,
   shouldSuppressAssistantEventForLiveChat,
 } from "./live-chat-projector.js";
+import type { GatewayBroadcastFn, GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import { isChatAbortMarkerCurrent } from "./server-chat-state.js";
 import type {
   BufferedAgentEvent,
@@ -202,11 +203,7 @@ function normalizeHeartbeatChatFinalText(params: {
  */
 const AGENT_LIFECYCLE_ERROR_RETRY_GRACE_MS = 15_000;
 
-export type ChatEventBroadcast = (
-  event: string,
-  payload: unknown,
-  opts?: { dropIfSlow?: boolean },
-) => void;
+export type ChatEventBroadcast = GatewayBroadcastFn;
 
 export type NodeSendToSession = (sessionKey: string, event: string, payload: unknown) => void;
 
@@ -304,12 +301,7 @@ function resolveBroadcastDelta(params: {
 
 export type AgentEventHandlerOptions = {
   broadcast: ChatEventBroadcast;
-  broadcastToConnIds: (
-    event: string,
-    payload: unknown,
-    connIds: ReadonlySet<string>,
-    opts?: { dropIfSlow?: boolean },
-  ) => void;
+  broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   nodeSendToSession: NodeSendToSession;
   agentRunSeq: Map<string, number>;
   chatRunState: ChatRunState;
@@ -1038,13 +1030,19 @@ export function createAgentEventHandler({
   ) => {
     const deliverySessionKey = resolveSessionDeliveryKey(sessionKey, opts?.agentId);
     if (opts?.controlUiVisible ?? true) {
-      broadcast("chat", payload, { dropIfSlow: opts?.dropIfSlow });
+      broadcast("chat", payload, {
+        dropIfSlow: opts?.dropIfSlow,
+        sessionKeys: [deliverySessionKey],
+      });
       sendNodeSessionPayloadForAgent(sessionKey, "chat", payload, opts?.agentId);
       return;
     }
     const recipients = sessionMessageSubscribers.get(deliverySessionKey);
     if (recipients.size > 0) {
-      broadcastToConnIds("chat", payload, recipients, { dropIfSlow: opts?.dropIfSlow });
+      broadcastToConnIds("chat", payload, recipients, {
+        dropIfSlow: opts?.dropIfSlow,
+        sessionKeys: [deliverySessionKey],
+      });
     }
   };
 
@@ -1121,7 +1119,11 @@ export function createAgentEventHandler({
     opts?: { agentId?: string; controlUiVisible?: boolean; dropIfSlow?: boolean },
   ) => {
     if (opts?.controlUiVisible ?? true) {
-      broadcast("agent", payload);
+      broadcast("agent", payload, {
+        sessionKeys: sessionKey
+          ? [resolveSessionDeliveryKey(sessionKey, opts?.agentId)]
+          : undefined,
+      });
       if (sessionKey) {
         sendNodeSessionPayloadForAgent(sessionKey, "agent", payload, opts?.agentId);
       }
@@ -1130,11 +1132,13 @@ export function createAgentEventHandler({
     if (!sessionKey) {
       return;
     }
-    const recipients = sessionMessageSubscribers.get(
-      resolveSessionDeliveryKey(sessionKey, opts?.agentId),
-    );
+    const deliverySessionKey = resolveSessionDeliveryKey(sessionKey, opts?.agentId);
+    const recipients = sessionMessageSubscribers.get(deliverySessionKey);
     if (recipients.size > 0) {
-      broadcastToConnIds("agent", payload, recipients, { dropIfSlow: opts?.dropIfSlow });
+      broadcastToConnIds("agent", payload, recipients, {
+        dropIfSlow: opts?.dropIfSlow,
+        sessionKeys: [deliverySessionKey],
+      });
     }
   };
 
@@ -1375,19 +1379,27 @@ export function createAgentEventHandler({
         : agentPayload;
     if (last > 0 && evt.seq !== last + 1 && isControlUiVisible) {
       flushBufferedAgentDeltaIfNeeded(clientRunId);
-      broadcast("agent", {
-        runId: eventRunId,
-        stream: "error",
-        ts: Date.now(),
-        sessionKey,
-        ...(spawnedBy && { spawnedBy }),
-        ...(isHeartbeat !== undefined && { isHeartbeat }),
-        data: {
-          reason: "seq gap",
-          expected: last + 1,
-          received: evt.seq,
+      broadcast(
+        "agent",
+        {
+          runId: eventRunId,
+          stream: "error",
+          ts: Date.now(),
+          sessionKey,
+          ...(spawnedBy && { spawnedBy }),
+          ...(isHeartbeat !== undefined && { isHeartbeat }),
+          data: {
+            reason: "seq gap",
+            expected: last + 1,
+            received: evt.seq,
+          },
         },
-      });
+        {
+          sessionKeys: sessionKey
+            ? [resolveSessionDeliveryKey(sessionKey, sessionAgentId)]
+            : undefined,
+        },
+      );
     }
     agentRunSeq.set(evt.runId, evt.seq);
     if (evt.stream === "assistant") {

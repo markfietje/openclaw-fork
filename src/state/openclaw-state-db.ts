@@ -1360,7 +1360,9 @@ function ensureAdditiveStateColumns(db: DatabaseSync): void {
   ensureColumn(db, "node_host_config", "gateway_context_path TEXT");
   ensureColumn(db, "apns_registrations", "relay_origin TEXT");
   ensureColumn(db, "device_pairing_pending", "refreshed_at_ms INTEGER");
+  ensureColumn(db, "device_pairing_pending", "browser_origin TEXT");
   ensureColumn(db, "device_pairing_paired", "approved_via TEXT");
+  ensureColumn(db, "device_pairing_paired", "browser_origin TEXT");
   ensureColumn(db, "device_pairing_paired", "operator_label TEXT");
   ensureColumn(db, "device_pairing_paired", "node_surface_json TEXT");
   ensureColumn(db, "device_pairing_paired", "pending_node_surface_json TEXT");

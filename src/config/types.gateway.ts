@@ -244,9 +244,34 @@ export type GatewayOperatorRolesConfig = Omit<
   default?: string;
 };
 
+export type GatewaySecurityConfig = {
+  /**
+   * Opt-in strict proxy/header validation. When enabled, the gateway rejects
+   * Forwarded/X-Forwarded-Proto mismatches with the socket transport (non-trusted
+   * peers only), X-Forwarded-For vs Forwarded client-IP contradictions, and
+   * duplicate or comma-chained sensitive proxy headers (read from the raw header
+   * line so duplicates Node would normalize away are still caught). Off by default
+   * because comma-chained `x-forwarded-for` is common behind real proxies.
+   */
+  strictHeaderValidation?: boolean;
+  /**
+   * Reject proxy headers arriving from a non-trusted peer. Off by default;
+   * enable only when `trustedProxies` is configured.
+   */
+  rejectUntrustedProxyHeaders?: boolean;
+  /**
+   * Reject browser WebSocket upgrades whose `Sec-Fetch-Site` is cross-site or
+   * cross-origin (CSRF-class defense). Off by default; browsers legitimately
+   * flag loopback aliases as cross-site, and origin allowlist admission already
+   * runs at this gate. Enable only when every legitimate browser WS client is
+   * same-origin to the gateway.
+   */
+  rejectCrossSiteWebSocketRequests?: boolean;
+};
+
 export type GatewayConfig = Omit<
   GatewayConfigInput,
-  "controlUi" | "nodes" | "roles" | "reload" | "auth" | "tailscale"
+  "controlUi" | "nodes" | "roles" | "reload" | "auth" | "tailscale" | "security"
 > & {
   auth?: GatewayAuthConfig;
   controlUi?: GatewayControlUiConfig;
@@ -254,4 +279,23 @@ export type GatewayConfig = Omit<
   roles?: GatewayOperatorRolesConfig;
   reload?: GatewayReloadConfig;
   tailscale?: GatewayTailscaleConfig;
+  /**
+   * IPs of trusted reverse proxies (e.g. Traefik, nginx). When a connection
+   * arrives from one of these IPs, the Gateway trusts `x-forwarded-for`
+   * to determine the client IP for local pairing and HTTP checks.
+   */
+  trustedProxies?: string[];
+  /**
+   * Allow `x-real-ip` as a fallback only when `x-forwarded-for` is missing.
+   * Default: false (safer fail-closed behavior).
+   */
+  allowRealIpFallback?: boolean;
+  /**
+   * Opt-in WebSocket/proxy hardening for the Gateway upgrade handshake.
+   * Origin and cross-site defenses are on by default; these toggles add
+   * stricter behavior for reverse-proxy deployments.
+   */
+  security?: GatewaySecurityConfig;
+  /** Tool access restrictions for HTTP /tools/invoke endpoint. */
+  tools?: GatewayToolsConfig;
 };

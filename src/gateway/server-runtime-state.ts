@@ -47,6 +47,7 @@ import {
   type PreauthConnectionBudget,
 } from "./server/preauth-connection-budget.js";
 import type { ReadinessChecker, StartupChecker } from "./server/readiness.js";
+import { createGatewayVerifyClient } from "./server/verify-client.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import type { NodeWorkerBundleTransferHttpCallback } from "./worker-environments/node-worker-bundle-transfer-http.js";
 import type { NodeWorkspaceTransferHttpCallback } from "./worker-environments/node-workspace-transfer-http.js";
@@ -311,6 +312,10 @@ export async function createGatewayHttpTransport(params: {
     // Serial inflate callbacks delay each frame behind busy event-loop turns,
     // before the bounded request-start scheduler can admit the burst.
     perMessageDeflate: false,
+    verifyClient: createGatewayVerifyClient({
+      log: params.log,
+      getConfigSnapshot: loadRuntimeConfig,
+    }),
   });
   const preauthConnectionBudget = createPreauthConnectionBudget();
 

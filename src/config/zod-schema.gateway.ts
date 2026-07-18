@@ -338,6 +338,13 @@ export const GatewayConfigSchema = z
      */
     allowRealIpFallback: z.boolean().optional(),
     /** Tool access restrictions for HTTP /tools/invoke endpoint. */
+    security: z
+      .strictObject({
+        strictHeaderValidation: z.boolean().optional(),
+        rejectUntrustedProxyHeaders: z.boolean().optional(),
+        rejectCrossSiteWebSocketRequests: z.boolean().optional(),
+      })
+      .optional(),
     tools: z
       .strictObject({
         /** Tools to deny via gateway HTTP /tools/invoke (extends defaults). */

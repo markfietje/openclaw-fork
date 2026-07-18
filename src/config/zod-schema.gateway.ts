@@ -462,6 +462,14 @@ export const GatewayConfigSchema = z
      * Default: false (safer fail-closed behavior).
      */
     allowRealIpFallback: z.boolean().optional(),
+    /** Opt-in hardening toggles for the gateway WebSocket upgrade handshake. */
+    security: z
+      .strictObject({
+        strictHeaderValidation: z.boolean().optional(),
+        rejectUntrustedProxyHeaders: z.boolean().optional(),
+        rejectCrossSiteWebSocketRequests: z.boolean().optional(),
+      })
+      .optional(),
     /** Tool access restrictions for HTTP /tools/invoke endpoint. */
     tools: z
       .strictObject({

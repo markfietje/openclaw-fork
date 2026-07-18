@@ -57,6 +57,7 @@ import {
   type PreauthConnectionBudget,
 } from "./server/preauth-connection-budget.js";
 import type { ReadinessChecker, StartupChecker } from "./server/readiness.js";
+import { createGatewayVerifyClient } from "./server/verify-client.js";
 import { GATEWAY_PER_MESSAGE_DEFLATE } from "./server/ws-compression.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import type { ArtifactTransferHttpCallback } from "./worker-environments/artifact-transfer-http.js";
@@ -317,6 +318,12 @@ export async function createGatewayHttpTransport(params: {
     // connection installs the inline codec (ws-compression.ts) so bursts are not
     // serialized behind ws's per-frame threadpool round trips.
     perMessageDeflate: GATEWAY_PER_MESSAGE_DEFLATE,
+    // Pre-handshake admission: unauthenticated or forged clients never complete
+    // the HTTP 101 upgrade.
+    verifyClient: createGatewayVerifyClient({
+      log: params.log,
+      getConfigSnapshot: loadRuntimeConfig,
+    }),
   });
   const preauthConnectionBudget = createPreauthConnectionBudget();
 

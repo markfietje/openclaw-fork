@@ -194,6 +194,14 @@ export const RUNTIME_FIELD_HELP: Record<string, string> = {
     'Allowed browser origins for Control UI/WebChat websocket connections (full origins only, e.g. https://control.example.com). Required for non-loopback Control UI deployments unless dangerous Host-header fallback is explicitly enabled. Setting ["*"] means allow any browser origin and should be avoided outside tightly controlled local testing.',
   "gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback":
     "DANGEROUS toggle that enables Host-header based origin fallback for Control UI/WebChat websocket checks. This mode is supported when your deployment intentionally relies on Host-header origin policy; explicit gateway.controlUi.allowedOrigins remains the recommended hardened default.",
+  "gateway.security":
+    "Opt-in hardening toggles for the gateway WebSocket upgrade handshake. Each flag is off by default to preserve existing deployment behavior; enable individual toggles when your reverse-proxy or network-exposed gateway needs stricter pre-handshake admission.",
+  "gateway.security.strictHeaderValidation":
+    "Opt-in strict proxy/header validation: reject Forwarded/X-Forwarded-Proto mismatches with the socket transport (non-trusted peers only), X-Forwarded-For vs Forwarded client-IP contradictions, and duplicate or comma-chained sensitive proxy headers (Host, Origin, Forwarded, X-Forwarded-*) read from the raw request line. Keep this off behind proxies that legitimately chain X-Forwarded-For; enable it only when clients send a single clean value per header.",
+  "gateway.security.rejectUntrustedProxyHeaders":
+    "Reject any proxy header (X-Forwarded-For/Host/Proto, Forwarded, X-Real-IP) arriving from a peer not listed in gateway.trustedProxies. Enable only after trustedProxies is configured, otherwise legitimate proxy traffic will be rejected.",
+  "gateway.security.rejectCrossSiteWebSocketRequests":
+    "Reject browser WebSocket upgrades whose Sec-Fetch-Site is cross-site or cross-origin. Keep this off for loopback deployments where browsers legitimately flag localhost/127.0.0.1 aliases as cross-site; enable it only when every legitimate browser WS client is same-origin to the gateway.",
   "mcp.apps":
     "MCP Apps UI support. When enabled, configured MCP servers may provide interactive HTML views for their tool results.",
   "mcp.apps.enabled":

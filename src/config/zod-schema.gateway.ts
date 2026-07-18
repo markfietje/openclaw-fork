@@ -84,6 +84,13 @@ export const GatewayConfigSchema = z
       .optional(),
     trustedProxies: z.array(z.string()).optional(),
     allowRealIpFallback: z.boolean().optional(),
+    security: z
+      .strictObject({
+        strictHeaderValidation: z.boolean().optional(),
+        rejectUntrustedProxyHeaders: z.boolean().optional(),
+        rejectCrossSiteWebSocketRequests: z.boolean().optional(),
+      })
+      .optional(),
     tools: z
       .strictObject({
         deny: z.array(z.string()).optional(),

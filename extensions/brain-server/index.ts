@@ -353,11 +353,15 @@ export default definePluginEntry({
 /** Map the SDK hook context into the minimal GateContext used for gating. */
 function mapCtx(ctx: PluginHookAgentContext | undefined): GateContext {
   if (!ctx) return {};
-  const chatType = deriveChatType({
-    ...(ctx.channel !== undefined ? { channel: ctx.channel } : {}),
-    ...(ctx.trigger !== undefined ? { trigger: ctx.trigger } : {}),
-    ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
-  });
+  // Prefer the gateway's already-classified chatType (e.g. telegram DM => "direct").
+  // deriveChatType is a fail-closed fallback for contexts that omit it.
+  const chatType =
+    ctx.chatType ??
+    deriveChatType({
+      ...(ctx.channel !== undefined ? { channel: ctx.channel } : {}),
+      ...(ctx.trigger !== undefined ? { trigger: ctx.trigger } : {}),
+      ...(ctx.chatId !== undefined ? { chatId: ctx.chatId } : {}),
+    });
   return {
     ...(ctx.agentId !== undefined ? { agentId: ctx.agentId } : {}),
     ...((ctx.chatId ?? ctx.channelId) !== undefined

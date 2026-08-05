@@ -5,6 +5,10 @@
  * Lakera AI Agent Security model (per-agent rating + Data Leakage Prevention):
  *   - memory is opt-in per agent (empty `agents` => disabled)
  *   - group/channel chats excluded by default to prevent private-memory leakage
+ *
+ * Server auth: the opaque bearer token lives on the server as `AUTH_TOKEN` (or
+ * `AUTH_TOKEN_FILE`, preferred). This plugin's `authToken` config must match it
+ * verbatim; both are sent as `Authorization: Bearer <token>`.
  */
 import { Type, type Static } from "typebox";
 

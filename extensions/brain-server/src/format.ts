@@ -17,16 +17,34 @@ export const MEMORY_BANNER =
 
 /** Format hits into the dynamic per-turn block (goes to prependContext). */
 export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string {
-  if (hits.length === 0) return "";
+  if (hits.length === 0) {
+    return "";
+  }
   const lines = hits.map((hit, i) => {
     const title = hit.title?.trim() ? ` ${hit.title.trim()}` : "";
     const domain = hit.domain ? ` [${hit.domain}]` : "";
+    // A `conflict` hit is contested by another current chunk (v1.6 supersedes /
+    // contradicts). Surface it so the model does not treat a contested memory
+    // as settled fact.
+    const conflict = hit.conflict ? " ⚠conflicted" : "";
     const score = Number.isFinite(hit.score) ? ` (${Math.round(hit.score * 100)}%)` : "";
     const body = sanitizeForBlock(hit.content);
-    return `${i + 1}.${title}${domain}${score} ${body}`;
+    return `${i + 1}.${title}${domain}${score}${conflict} ${body}`;
   });
   return `${MEMORY_BANNER}\n${lines.join("\n")}`;
 }
+
+/**
+ * Message for the `memory_recall` tool when the server abstains
+ * (`decision: "low_confidence"`, v1.5 calibrated abstention). Retrieval
+ * quality was too low to support a claim, so there are no hits — the agent
+ * should ask the user to clarify or fall back to web search, not treat the
+ * empty result as a plain "no memories".
+ */
+export const RECALL_ABSTENTION =
+  "Memory recall abstained (low confidence): the query was too ambiguous or " +
+  "under-specified to retrieve trustworthy memories. Ask the user to clarify, " +
+  "or fall back to web search. No memories were injected.";
 
 /**
  * Static system guidance (goes to prependSystemContext — provider-cacheable, so
@@ -42,7 +60,9 @@ export const STATIC_SYSTEM_GUIDANCE = [
 /** Normalize a query string to a bounded, single-line recall query. */
 export function normalizeRecallQuery(text: string, maxChars: number): string {
   const trimmed = text.replace(/\s+/g, " ").trim();
-  if (trimmed.length <= maxChars) return trimmed;
+  if (trimmed.length <= maxChars) {
+    return trimmed;
+  }
   return trimmed.slice(0, maxChars).trimEnd();
 }
 
@@ -52,21 +72,31 @@ export function normalizeRecallQuery(text: string, maxChars: number): string {
  * it keeps injected text tidy and reduces prompt-noise.
  */
 export function sanitizeForBlock(text: string): string {
-  return text
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Intentional: strip control chars (C0/C1) so recalled text cannot smuggle
+  // terminal/control sequences into the prompt block. The banner is the real
+  // injection boundary; this keeps injected text tidy and reduces prompt noise.
+  return (
+    text
+      // eslint-disable-next-line no-control-regex -- explicit C0/C1 class above
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 /** Extract the latest user turn text from the hook's messages array. */
 export function latestUserText(messages: ReadonlyArray<unknown>): string | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i] as { role?: string; content?: unknown } | null;
-    if (!msg || msg.role !== "user") continue;
+    if (!msg || msg.role !== "user") {
+      continue;
+    }
     const content = msg.content;
     if (typeof content === "string") {
       const t = content.trim();
-      if (t) return t;
+      if (t) {
+        return t;
+      }
     }
     if (Array.isArray(content)) {
       const joined = content
@@ -77,7 +107,9 @@ export function latestUserText(messages: ReadonlyArray<unknown>): string | undef
         )
         .join("\n")
         .trim();
-      if (joined) return joined;
+      if (joined) {
+        return joined;
+      }
     }
   }
   return undefined;
@@ -89,7 +121,9 @@ export function looksCaptureWorthy(
   customTriggers: ReadonlyArray<string> = [],
 ): boolean {
   const t = text.trim();
-  if (t.length < 20) return false; // too short to be a durable fact
+  if (t.length < 20) {
+    return false;
+  } // too short to be a durable fact
   const lower = t.toLowerCase();
   const signals = [
     "decided",

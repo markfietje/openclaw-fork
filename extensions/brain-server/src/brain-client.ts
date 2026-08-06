@@ -406,7 +406,8 @@ export class BrainClient {
     }
     return {
       name: res.name,
-      type: res.type,
+      // exactOptionalPropertyTypes: omit `type` when absent, not set undefined.
+      ...(res.type !== undefined ? { type: res.type } : {}),
       relations: res.relations ?? [],
     };
   }

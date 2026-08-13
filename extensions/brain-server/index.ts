@@ -274,8 +274,7 @@ export default definePluginEntry({
     registerBrainTools(api, client, liveCfg, cfg.proposalTools);
 
     // v0.4.0 procedural memory (runbooks / decision trees) — src/procedural.ts.
-    // procedure_store registers only in captureMode "direct" (a direct write).
-    registerProceduralTools(api, client, liveCfg, cfg.captureMode === "direct");
+    registerProceduralTools(api, client, liveCfg);
 
     // ------------------------------------------------------------------------
     // Service lifecycle

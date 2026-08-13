@@ -782,8 +782,11 @@ export class BrainClient {
    * Core transport. Throws BrainHttpError on every failure mode so callers can
    * distinguish 404/401/500/timeout/network/parse and act accordingly. An empty
    * 2xx body is a valid "no content" result and yields `undefined`.
+   *
+   * Public so the procedural-memory module (src/procedural.ts) can reuse the
+   * exact same transport + error model instead of duplicating fetch logic.
    */
-  private async fetchJson<T>(
+  async fetchJson<T>(
     path: string,
     method: string,
     body: unknown,

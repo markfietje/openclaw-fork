@@ -835,7 +835,17 @@ export class BrainClient {
       throw new BrainHttpError("http", detail, res.status);
     }
 
-    const text = await res.text();
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (err) {
+      // A timeout firing mid-body-read aborts here; classify it like the fetch
+      // call above instead of surfacing a raw AbortError.
+      if (controller.signal.aborted) {
+        throw new BrainHttpError("timeout", (err as Error)?.message ?? "timed out");
+      }
+      throw new BrainHttpError("network", (err as Error)?.message ?? "body read failed");
+    }
     if (!text) {
       return undefined;
     }

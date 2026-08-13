@@ -116,15 +116,10 @@ describe("plugin registration", () => {
     // v0.3.0: proposal review tools are gated behind config.proposalTools (off by default).
     expect(tools.has("memory_proposal_list")).toBe(false);
     expect(tools.has("memory_proposal_decide")).toBe(false);
-    // v0.4.0: procedural read tools always register; procedure_store is gated to direct mode.
+    // v0.4.0: procedural tools (runbooks / decision trees) are always registered.
     expect(tools.has("memory_procedure_get")).toBe(true);
-    expect(tools.has("memory_decision_evaluate")).toBe(true);
-    expect(tools.has("memory_procedure_store")).toBe(false); // proposal mode (default)
-  });
-
-  test("registers memory_procedure_store when captureMode is direct", () => {
-    const { tools } = registerPlugin({ agents: ["main"], captureMode: "direct" });
     expect(tools.has("memory_procedure_store")).toBe(true);
+    expect(tools.has("memory_decision_evaluate")).toBe(true);
   });
 
   test("registers the proposal review tools when config.proposalTools is true", () => {
@@ -805,11 +800,11 @@ describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
     expect((res as { details: { found: boolean } }).details.found).toBe(false);
   });
 
-  test("memory_procedure_store forwards title/content/steps + is_decision in direct mode", async () => {
+  test("memory_procedure_store forwards title/content/steps + is_decision", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(mockResponse({ id: 7, status: "created", step_ids: [8, 9] }));
-    const { tools } = registerPlugin({ agents: ["main"], captureMode: "direct" });
+    const { tools } = registerPlugin({ agents: ["main"] });
     expect(tools.has("memory_procedure_store")).toBe(true);
     const res = await tools.get("memory_procedure_store")!.execute("call-1", {
       title: "Onboarding",

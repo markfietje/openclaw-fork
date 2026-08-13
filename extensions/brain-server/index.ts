@@ -37,6 +37,7 @@ import {
   sanitizeForBlock,
 } from "./src/format.js";
 import { deriveChatType, isRecallAllowed, type GateContext } from "./src/gating.js";
+import { registerProceduralTools } from "./src/procedural.js";
 import { registerBrainTools } from "./src/tools.js";
 
 const PLUGIN_ID = "brain-server";
@@ -271,6 +272,10 @@ export default definePluginEntry({
     // Tools — explicit agent-callable surfaces. Defined in src/tools.ts.
     // ------------------------------------------------------------------------
     registerBrainTools(api, client, liveCfg, cfg.proposalTools);
+
+    // v0.4.0 procedural memory (runbooks / decision trees) — src/procedural.ts.
+    // procedure_store registers only in captureMode "direct" (a direct write).
+    registerProceduralTools(api, client, liveCfg, cfg.captureMode === "direct");
 
     // ------------------------------------------------------------------------
     // Service lifecycle

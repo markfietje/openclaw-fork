@@ -90,7 +90,7 @@ export default definePluginEntry({
     // memory-core, gated by the same `agents` allowlist + chat-type policy as
     // auto-recall. Fail-open — corpus search never stalls the host on a server error.
     // ------------------------------------------------------------------------
-    api.registerMemoryCorpusSupplement?.({
+    api.registerMemoryCorpusSupplement({
       search: async ({ query, maxResults, agentId, sandboxed }) => {
         // Reuse the auto-recall gate so the corpus honors the same least-privilege
         // policy (per-agent opt-in + chat-type leakage prevention).

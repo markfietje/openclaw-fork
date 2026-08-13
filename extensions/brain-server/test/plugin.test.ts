@@ -116,6 +116,15 @@ describe("plugin registration", () => {
     // v0.3.0: proposal review tools are gated behind config.proposalTools (off by default).
     expect(tools.has("memory_proposal_list")).toBe(false);
     expect(tools.has("memory_proposal_decide")).toBe(false);
+    // v0.4.0: procedural read tools always register; procedure_store is gated to direct mode.
+    expect(tools.has("memory_procedure_get")).toBe(true);
+    expect(tools.has("memory_decision_evaluate")).toBe(true);
+    expect(tools.has("memory_procedure_store")).toBe(false); // proposal mode (default)
+  });
+
+  test("registers memory_procedure_store when captureMode is direct", () => {
+    const { tools } = registerPlugin({ agents: ["main"], captureMode: "direct" });
+    expect(tools.has("memory_procedure_store")).toBe(true);
   });
 
   test("registers the proposal review tools when config.proposalTools is true", () => {
@@ -753,5 +762,112 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
     const out = await supplement!.search({ query: "anything", agentId: "main" });
     expect(out).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("memory_procedure_get renders the ordered step chain", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        procedure_id: 7,
+        title: "AI readiness",
+        content: "Overview",
+        steps: [
+          {
+            step_index: 0,
+            id: 8,
+            title: "Inventory",
+            content: "list software",
+            memory_kind: "step",
+          },
+          { step_index: 1, id: 9, title: "Decide tier", content: "{}", memory_kind: "decision" },
+        ],
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_procedure_get")!.execute("call-1", { id: 7 });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("Runbook #7");
+    expect(text).toContain("Inventory");
+    expect(text).toContain("[decision]");
+    expect((res as { details: { found: boolean; stepCount: number } }).details).toMatchObject({
+      found: true,
+      stepCount: 2,
+    });
+  });
+
+  test("memory_procedure_get 404 => not found", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("no procedure", { status: 404 }));
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_procedure_get")!.execute("call-1", { id: 99 });
+    expect((res as { details: { found: boolean } }).details.found).toBe(false);
+  });
+
+  test("memory_procedure_store forwards title/content/steps + is_decision in direct mode", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(mockResponse({ id: 7, status: "created", step_ids: [8, 9] }));
+    const { tools } = registerPlugin({ agents: ["main"], captureMode: "direct" });
+    expect(tools.has("memory_procedure_store")).toBe(true);
+    const res = await tools.get("memory_procedure_store")!.execute("call-1", {
+      title: "Onboarding",
+      content: "overview",
+      steps: [{ title: "s1", content: "do x", isDecision: true }],
+    });
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.title).toBe("Onboarding");
+    expect(body.steps[0].is_decision).toBe(true);
+    expect(
+      (res as { details: { stored: boolean; id: number; stepIds: number[] } }).details,
+    ).toMatchObject({
+      stored: true,
+      id: 7,
+      stepIds: [8, 9],
+    });
+  });
+
+  test("memory_decision_evaluate forwards variables and maps a matched branch", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        result: "enterprise",
+        matched_condition: "employee_count >= 50",
+        used_default: false,
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools
+      .get("memory_decision_evaluate")!
+      .execute("call-1", { id: 5, variables: { employee_count: 75 } });
+    const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
+    expect(url).toContain("/decision/5/evaluate");
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.variables.employee_count).toBe(75);
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("enterprise");
+    expect(text).toContain("employee_count >= 50");
+  });
+
+  test("memory_decision_evaluate default branch renders as default", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ result: "small-business", used_default: true }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools
+      .get("memory_decision_evaluate")!
+      .execute("call-1", { id: 5, variables: {} });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("small-business");
+    expect(text).toContain("default");
+  });
+
+  test("memory_decision_evaluate 404 => not found", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("no rule", { status: 404 }));
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools
+      .get("memory_decision_evaluate")!
+      .execute("call-1", { id: 5, variables: {} });
+    expect((res as { details: { evaluated: boolean } }).details.evaluated).toBe(false);
   });
 });

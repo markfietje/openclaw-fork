@@ -207,20 +207,15 @@ export async function evaluateDecision(
 // ---------------------------------------------------------------------------
 
 /**
- * Register the procedural-memory tools. `memory_procedure_get` and
- * `memory_decision_evaluate` are read-only and always register.
- * `memory_procedure_store` is a direct multi-chunk WRITE with no proposal
- * variant on the server, so it registers only when the operator opted into
- * direct writes (`captureMode: "direct"`) — consistent with the v1.20.25
- * "writes are reviewed" stance, since a runbook is instructions the agent may
- * execute. In the secure default, runbooks are authored via the server
- * console/CLI and the agent only retrieves/follows them.
+ * Register the procedural-memory tools. All three are always registered for any
+ * allowlisted agent; `memory_procedure_store` is a direct write (the server has
+ * no proposal variant for procedures), gated instead by the server's Write
+ * authz + injection screen and the plugin's per-agent `agents` allowlist.
  */
 export function registerProceduralTools(
   api: OpenClawPluginApi,
   client: BrainClient,
   liveCfg: LiveCfg,
-  procedureWrite: boolean,
 ): void {
   const memoryProcedureGetParamsSchema = Type.Object({
     id: Type.Integer({
@@ -281,87 +276,82 @@ export function registerProceduralTools(
     { name: "memory_procedure_get" },
   );
 
-  if (procedureWrite) {
-    const memoryProcedureStoreParamsSchema = Type.Object({
-      title: Type.String({ description: "Runbook title (e.g. 'New-hire laptop setup')." }),
-      content: Type.String({ description: "Overview / when-to-use for the runbook." }),
-      steps: Type.Array(
-        Type.Object({
-          title: Type.String({ description: "Step title." }),
-          content: Type.String({
-            description: "Step instructions (or decision-rule JSON if isDecision).",
-          }),
-          isDecision: Type.Optional(
-            Type.Boolean({
-              description:
-                "Mark this step as a decision rule; evaluate later via memory_decision_evaluate.",
-            }),
-          ),
+  const memoryProcedureStoreParamsSchema = Type.Object({
+    title: Type.String({ description: "Runbook title (e.g. 'New-hire laptop setup')." }),
+    content: Type.String({ description: "Overview / when-to-use for the runbook." }),
+    steps: Type.Array(
+      Type.Object({
+        title: Type.String({ description: "Step title." }),
+        content: Type.String({
+          description: "Step instructions (or decision-rule JSON if isDecision).",
         }),
-        { description: "Ordered steps. Server caps at 100." },
-      ),
-      domain: Type.Optional(Type.String()),
-    });
-    type MemoryProcedureStoreParams = Partial<Static<typeof memoryProcedureStoreParamsSchema>>;
+        isDecision: Type.Optional(
+          Type.Boolean({
+            description:
+              "Mark this step as a decision rule; evaluate later via memory_decision_evaluate.",
+          }),
+        ),
+      }),
+      { description: "Ordered steps. Server caps at 100." },
+    ),
+    domain: Type.Optional(Type.String()),
+  });
+  type MemoryProcedureStoreParams = Partial<Static<typeof memoryProcedureStoreParamsSchema>>;
 
-    api.registerTool(
-      {
-        name: "memory_procedure_store",
-        label: "Memory Procedure Store",
-        description:
-          "Create a runbook/procedure with ordered steps (knowledge base / troubleshooting playbook). Writes directly to memory — available only when captureMode is 'direct'.",
-        parameters: memoryProcedureStoreParamsSchema,
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = (params ?? {}) as MemoryProcedureStoreParams;
-          const title = (p.title ?? "").trim();
-          const content = (p.content ?? "").trim();
-          if (!title || !content) {
-            return {
-              content: [{ type: "text" as const, text: "Both title and content are required." }],
-              details: { stored: false },
-            };
-          }
-          const steps = Array.isArray(p.steps) ? p.steps : [];
-          try {
-            const res = await createProcedure(client, {
-              title,
-              content,
-              // No conditional spread: isDecision defaults to false and the
-              // server treats missing/false identically (#[serde(default)]).
-              steps: steps.map((s) => ({
-                title: (s.title ?? "").trim(),
-                content: (s.content ?? "").trim(),
-                isDecision: s.isDecision === true,
-              })),
-              ...(p.domain ? { domain: p.domain } : {}),
-              timeoutMs: c.requestTimeoutMs,
-            });
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Created runbook #${res.id} with ${res.stepIds.length} step(s).`,
-                },
-              ],
-              details: { stored: true, id: res.id, stepIds: res.stepIds },
-            };
-          } catch (err) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: `Procedure store failed: ${describeBrainError(err)}`,
-                },
-              ],
-              details: { stored: false, error: describeBrainError(err) },
-            };
-          }
-        },
+  api.registerTool(
+    {
+      name: "memory_procedure_store",
+      label: "Memory Procedure Store",
+      description:
+        "Create a runbook/procedure with ordered steps (knowledge base / troubleshooting playbook). Writes directly to memory (server-screened; no proposal review).",
+      parameters: memoryProcedureStoreParamsSchema,
+      async execute(_toolCallId, params) {
+        const c = liveCfg();
+        const p = (params ?? {}) as MemoryProcedureStoreParams;
+        const title = (p.title ?? "").trim();
+        const content = (p.content ?? "").trim();
+        if (!title || !content) {
+          return {
+            content: [{ type: "text" as const, text: "Both title and content are required." }],
+            details: { stored: false },
+          };
+        }
+        const steps = Array.isArray(p.steps) ? p.steps : [];
+        try {
+          const res = await createProcedure(client, {
+            title,
+            content,
+            // No conditional spread: isDecision defaults to false and the
+            // server treats missing/false identically (#[serde(default)]).
+            steps: steps.map((s) => ({
+              title: (s.title ?? "").trim(),
+              content: (s.content ?? "").trim(),
+              isDecision: s.isDecision === true,
+            })),
+            ...(p.domain ? { domain: p.domain } : {}),
+            timeoutMs: c.requestTimeoutMs,
+          });
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Created runbook #${res.id} with ${res.stepIds.length} step(s).`,
+              },
+            ],
+            details: { stored: true, id: res.id, stepIds: res.stepIds },
+          };
+        } catch (err) {
+          return {
+            content: [
+              { type: "text" as const, text: `Procedure store failed: ${describeBrainError(err)}` },
+            ],
+            details: { stored: false, error: describeBrainError(err) },
+          };
+        }
       },
-      { name: "memory_procedure_store" },
-    );
-  }
+    },
+    { name: "memory_procedure_store" },
+  );
 
   const memoryDecisionEvaluateParamsSchema = Type.Object({
     id: Type.Integer({

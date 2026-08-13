@@ -82,6 +82,7 @@ function registerPlugin(pluginConfig: unknown) {
     }),
     registerService: vi.fn((s) => services.push(s)),
     registerMemoryCapability: vi.fn(),
+    registerMemoryCorpusSupplement: vi.fn(),
   };
 
   plugin.register(api as unknown as OpenClawPluginApi);
@@ -138,6 +139,7 @@ describe("plugin registration", () => {
       registerTool: vi.fn(),
       registerService: vi.fn(),
       registerMemoryCapability,
+      registerMemoryCorpusSupplement: vi.fn(),
     } as unknown as MockApi;
     plugin.register(api as unknown as OpenClawPluginApi);
     expect(registerMemoryCapability).toHaveBeenCalledTimes(1);
@@ -265,6 +267,7 @@ describe("live config — re-reads the plugin slice from the runtime snapshot", 
       }),
       registerService: vi.fn((s) => services.push(s)),
       registerMemoryCapability: vi.fn(),
+      registerMemoryCorpusSupplement: vi.fn(),
     };
     plugin.register(api as unknown as OpenClawPluginApi);
     return { hooks, tools, services };

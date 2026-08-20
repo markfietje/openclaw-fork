@@ -4,6 +4,20 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.4.6] — 2026-08-20
+
+Recall-graph default-pinning; shipped with brain-server `v1.27.25`.
+
+- **Recall-graph flag (S3-7):** the plugin now sends `graph` **explicitly** on
+  every `/recall`, with the configured `autoRecallGraph` value — the server
+  default flipped to graph-on (`00a79fe`), so omitting the key on `false`
+  (the plugin's documented opt-in default) silently re-enabled the third
+  recall leg for every user. The parameter is now always present with the
+  configured value; the plugin default stays opt-in.
+
+Tests: **145** extension tests (openclaw vitest) + oxlint + `tsc --noEmit`
+clean.
+
 ## [0.4.5] — 2026-08-18
 
 Security + privacy + fence hardening; shipped with brain-server `v1.27.21`.

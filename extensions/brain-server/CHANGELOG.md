@@ -4,19 +4,29 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
-## [0.4.6] — 2026-08-20
+## [0.4.7] — 2026-08-23
 
-Recall-graph default-pinning; shipped with brain-server `v1.27.25`.
+Hardening patch; shipped with brain-server `v1.28.14 "Parity"`.
 
-- **Recall-graph flag (S3-7):** the plugin now sends `graph` **explicitly** on
-  every `/recall`, with the configured `autoRecallGraph` value — the server
-  default flipped to graph-on (`00a79fe`), so omitting the key on `false`
-  (the plugin's documented opt-in default) silently re-enabled the third
-  recall leg for every user. The parameter is now always present with the
-  configured value; the plugin default stays opt-in.
-
-Tests: **145** extension tests (openclaw vitest) + oxlint + `tsc --noEmit`
-clean.
+- **Drift reconciled:** the deployed extension was at 0.4.6 while the mirror
+  lagged at 0.4.5 (`tools.ts` import order + `format.test.ts` formatting);
+  the mirror is byte-identical again before any fix landed.
+- **F-I4 — sanitize every interpolation inside the fence:** `hit.domain`,
+  and `edgePath`/`domain`/`kind`/`screenVerdict` in the traverse + proposal
+  renderers run through the existing `sanitizeForBlock` (tag-block chars,
+  zero-width, bidi cannot reach the prompt or forge the fence).
+- **F-E3 — bound the error seam:** server error bodies reaching the agent are
+  routed through the same strip (invisible + markdown-ref), length cap kept;
+  hook-side `String(err)` log lines stripped too.
+- **F-E4 — scheme gate:** `baseUrl` must be `https:` or a loopback `http:`
+  host; anything else throws at registration with a clear message (the bearer
+  plus user-turn text never transits remote cleartext).
+- **Boundary provenance:** the per-hit label carries `origin:<origin>` when
+  the server ships it (absent field omits the segment — back-compat).
+- **Docs:** the two-token pattern (operator token vs agent token) documented
+  in README + the config ladder.
+- `scripts/sync-plugin.sh` (in brain-server) makes the mirror discipline
+  permanent.
 
 ## [0.4.5] — 2026-08-18
 

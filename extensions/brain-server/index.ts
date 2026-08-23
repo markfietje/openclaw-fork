@@ -226,11 +226,12 @@ export default definePluginEntry({
                 : {}),
               ...(c.strictDomain ? { strictDomain: true } : {}),
               limit: c.autoRecallTopK,
-              // v0.3.0: optional graph-PPR third leg + token-budgeted packing.
-              // S3-7 (pass-3 audit): ALWAYS send the flag explicitly — the
-              // server default flipped to graph-on (00a79fe), so omitting it
-              // on `false` silently enabled the leg for every plugin user.
-              // The plugin's documented default stays opt-in.
+              // v0.3.0: optional graph-PPR third leg + token-budgeted
+              // packing. S3-7 (pass-3 audit): ALWAYS send the flag
+              // explicitly — the server default flipped to graph-on
+              // (00a79fe), so omitting it on `false` silently enabled the
+              // leg for every plugin user. The plugin's documented default
+              // stays opt-in (`autoRecallGraph: false`).
               graph: c.autoRecallGraph,
               ...(c.autoRecallMaxContextTokens !== undefined
                 ? { maxContextTokens: c.autoRecallMaxContextTokens }
@@ -272,7 +273,9 @@ export default definePluginEntry({
           return { prependContext: block };
         } catch (err) {
           // FAIL-OPEN: never stall the agent on a memory error.
-          api.logger.warn?.(`${PLUGIN_ID}: recall failed (${String(err)}); skipping injection`);
+          api.logger.warn?.(
+            `${PLUGIN_ID}: recall failed (${sanitizeForBlock(String(err))}); skipping injection`,
+          );
           return undefined;
         }
       },
@@ -327,7 +330,7 @@ export default definePluginEntry({
           }
         }
       } catch (err) {
-        api.logger.warn?.(`${PLUGIN_ID}: capture failed (${String(err)})`);
+        api.logger.warn?.(`${PLUGIN_ID}: capture failed (${sanitizeForBlock(String(err))})`);
       }
     });
 

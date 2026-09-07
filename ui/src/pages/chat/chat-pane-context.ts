@@ -59,6 +59,15 @@ import { normalizeSidebarLayout } from "./sidebar-layout.ts";
 import { maybeResetToolStream } from "./stream-reconciliation.ts";
 import { reconcileWaitingApprovalsFromSnapshot } from "./tool-stream-status.ts";
 
+function hostListsEqual(
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((host, index) => host === right[index]);
+}
+
 export abstract class ChatPaneContext extends ChatPaneLifecycle {
   private gatewayConnectionLifecycle?: ReturnType<typeof createGatewayConnectionLifecycle>;
   private outboxRecoveryReady = false;
@@ -285,13 +294,15 @@ export abstract class ChatPaneContext extends ChatPaneLifecycle {
       state.terminalAvailable === previousTerminalAvailable &&
       state.embedSandboxMode === config.embedSandboxMode &&
       state.allowExternalEmbedUrls === config.allowExternalEmbedUrls &&
-      state.automaticallyFetchFavicons === config.automaticallyFetchFavicons
+      state.automaticallyFetchFavicons === config.automaticallyFetchFavicons &&
+      hostListsEqual(state.remoteImageHosts, config.remoteImageHosts)
     ) {
       return;
     }
     state.embedSandboxMode = config.embedSandboxMode;
     state.allowExternalEmbedUrls = config.allowExternalEmbedUrls;
     state.automaticallyFetchFavicons = config.automaticallyFetchFavicons;
+    state.remoteImageHosts = config.remoteImageHosts;
     state.requestUpdate?.();
   }
 

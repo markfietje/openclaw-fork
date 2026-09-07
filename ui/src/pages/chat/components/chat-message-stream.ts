@@ -49,6 +49,7 @@ type StreamMessageOptions = Pick<
   | "fetchLinkFavicon"
   | "pluginToolIcons"
   | "githubRepo"
+  | "remoteImageHosts"
   | "onOpenWorkspaceFile"
 >;
 

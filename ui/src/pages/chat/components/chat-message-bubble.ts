@@ -250,6 +250,8 @@ export function renderGroupedMessage(
     fetchLinkFavicon?: LinkFaviconFetcher;
     pluginToolIcons?: PluginToolIcons;
     githubRepo?: MarkdownRenderOptions["githubRepo"];
+    /** Operator-allowlisted image hosts; empty means document renders never fetch. */
+    remoteImageHosts?: string[];
     onOpenWorkspaceFile?: (target: { path: string; line?: number | null }) => void;
     avatar?: TemplateResult | typeof nothing;
     entryId?: string;
@@ -332,6 +334,7 @@ export function renderGroupedMessage(
     sessionLinks: true,
     tableInteractions: "enabled",
     linkFavicons: Boolean(opts.fetchLinkFavicon) && !opts.isStreaming,
+    remoteImageHosts: opts.remoteImageHosts ?? [],
   };
 
   // Detect pure-JSON messages and render as collapsible block

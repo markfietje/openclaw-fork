@@ -517,6 +517,25 @@
   text-decoration: none;
 }
 
+/* Letter tile for links whose favicon is not fetched (host not allowlisted).
+   Painted from text content so it stays inert: no src, no fetch, no paint
+   channel beyond the first letter of the link host. */
+.chat-text :where(.markdown-link-favicon-tile) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  margin-inline-end: 0.3em;
+  vertical-align: -0.12em;
+  border-radius: 0.2em;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 0.72em;
+  font-weight: 600;
+  line-height: 1;
+  user-select: none;
+}
+
 /* GitHub links carry a brand mark or an issue/pull-request icon. Painted as a
    masked ::before rather than markup: it
    stays out of the accessibility tree and out of copied text, and currentColor

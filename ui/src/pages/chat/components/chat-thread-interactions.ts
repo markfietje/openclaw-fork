@@ -142,6 +142,8 @@ export type ChatThreadProps = ChatSendStatusActions & {
   fetchLinkFavicon?: LinkFaviconFetcher;
   pluginToolIcons?: PluginToolIcons;
   githubRepo?: MarkdownRenderOptions["githubRepo"];
+  /** Operator-allowlisted image hosts; empty means document renders never fetch. */
+  remoteImageHosts?: string[];
   autoExpandToolCalls?: boolean;
   realtimeTalkConversation?: RealtimeTalkConversationEntry[];
   typingActors?: readonly { id: string; label: string; preview?: string }[];

@@ -150,6 +150,7 @@ export const GatewayConfigSchema = z
         automaticallyFetchFavicons: z.boolean().optional(),
         /** Optional max-width for grouped Control UI chat messages (default: min(900px, 68%)). */
         /** Allowed browser origins for Control UI/WebChat websocket connections. */
+        remoteImageHosts: z.array(z.string()).optional(),
         allowedOrigins: z.array(z.string()).optional(),
         /**
          * DANGEROUS: Keep Host-header origin fallback behavior.

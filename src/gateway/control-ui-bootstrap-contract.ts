@@ -60,6 +60,8 @@ export type ControlUiBootstrapConfig = {
   embedSandbox?: ControlUiEmbedSandboxMode;
   allowExternalEmbedUrls?: boolean;
   automaticallyFetchFavicons?: boolean;
+  /** Operator-allowlisted image/favicon hosts; empty means nothing auto-fetches. */
+  remoteImageHosts?: string[];
   seamColor?: string;
   environment?: ControlUiEnvironment;
   /** Whether this Gateway's served UI may show the Discord community invitation. */

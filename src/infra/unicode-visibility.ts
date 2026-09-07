@@ -1,6 +1,13 @@
 // Zero-width and bidi control characters used to conceal text or change its visual order.
+// v1.28.65 "Meridian" (X-S1): widened to the Rust canonical set
+// (brain-server `src/strip_invisible.rs` `is_invisible`) — adds the bidi
+// isolates (U+2066–2069, previously skipped between the two adjacent ranges),
+// ALM (U+061C), variation selectors (U+FE00–FE0F + U+E0100–E01EF), and the
+// legacy/residual members (soft hyphen, combining grapheme joiner, Mongolian
+// vowel separator, Hangul fillers, interlinear annotation). Keeps the
+// previously-covered extras (U+2064, U+206A–206F).
 const INVISIBLE_UNICODE_RE =
-  /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F\uFEFF\u{E0000}-\u{E007F}]/gu;
+  /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB]/gu;
 
 export function stripInvisibleUnicode(text: string): string {
   return text.replace(INVISIBLE_UNICODE_RE, "");

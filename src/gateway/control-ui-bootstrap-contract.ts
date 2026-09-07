@@ -83,6 +83,8 @@ export type ControlUiBootstrapConfig = {
   chatBubblesEnabled?: boolean;
   /** Whether optional composer prediction inference is enabled. */
   composerPredictionsEnabled?: boolean;
+  /** Operator-allowlisted image/favicon hosts; empty means nothing auto-fetches. */
+  remoteImageHosts?: string[];
   seamColor?: string;
   environment?: ControlUiEnvironment;
   /** Whether this Gateway's served UI may show the Discord community invitation. */

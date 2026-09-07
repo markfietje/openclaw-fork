@@ -19,6 +19,7 @@ import {
 } from "./markdown-file-links.ts";
 import { installMarkdownGitHubRefs } from "./markdown-github-refs.ts";
 import { installMarkdownHumanMentions } from "./markdown-human-mentions.ts";
+import { isBoundedDataImage, isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
 import { hasMarkdownLinkBoundaries } from "./markdown-link-boundary.ts";
 import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 import { installMarkdownSessionLinks } from "./markdown-session-links.ts";
@@ -506,7 +507,18 @@ export function createMarkdownParser(): MarkdownItParser {
           }
         }
         if (!githubLink && labelToken && state.env.linkFavicons) {
-          const favicon = new state.Token("link_favicon", "img", 0);
+          // Shutter: only allowlisted hosts ever reach the fetch path (the img
+          // the loader hydrates through the authenticated proxy); unlisted
+          // hosts degrade to the letter tile with no fetchable element.
+          const allowlisted = isRemoteImageHostAllowlisted(
+            state.env.remoteImageHosts ?? [],
+            `https://${host}`,
+          );
+          const favicon = new state.Token(
+            allowlisted ? "link_favicon" : "link_favicon_tile",
+            allowlisted ? "img" : "",
+            0,
+          );
           favicon.meta = { hostname: host };
           children.splice(index + 1, 0, favicon);
           index += 1;
@@ -568,6 +580,14 @@ export function createMarkdownParser(): MarkdownItParser {
     return typeof hostname === "string"
       ? `<img class="markdown-link-favicon" data-link-favicon-host="${escapeHtml(hostname)}" alt="" role="presentation">`
       : "";
+  };
+  markdownParser.renderer.rules.link_favicon_tile = (tokens, index) => {
+    const hostname: unknown = tokens[index]?.meta?.hostname;
+    if (typeof hostname !== "string" || hostname === "") {
+      return "";
+    }
+    const letter = escapeHtml(hostname[0].toUpperCase());
+    return `<span class="markdown-link-favicon-tile" aria-hidden="true">${letter}</span>`;
   };
   // Fenced and indented blocks share one interaction and overflow surface.
   markdownParser.renderer.rules.fence = markdownParser.renderer.rules.code_block = (

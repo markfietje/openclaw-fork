@@ -23,6 +23,7 @@ type ApplicationConfig = {
   embedSandboxMode: ControlUiEmbedSandboxMode;
   allowExternalEmbedUrls: boolean;
   automaticallyFetchFavicons: boolean;
+  remoteImageHosts: string[];
   communityInvite: boolean;
   /** Null until the serving Gateway publishes its bootstrap policy. */
   newSessionModelDefaults?: "last-used" | "configured" | null;
@@ -52,6 +53,7 @@ const DEFAULT_APPLICATION_CONFIG: ApplicationConfig = {
   embedSandboxMode: "strict",
   allowExternalEmbedUrls: false,
   automaticallyFetchFavicons: false,
+  remoteImageHosts: [],
   communityInvite: false,
   newSessionModelDefaults: null,
   terminalEnabled: readDocumentTerminalEnabled() ?? false,
@@ -100,6 +102,9 @@ function normalizeApplicationConfig(parsed: ControlUiBootstrapConfig): Applicati
     embedSandboxMode: parsed.embedSandbox ?? "scripts",
     allowExternalEmbedUrls: Boolean(parsed.allowExternalEmbedUrls),
     automaticallyFetchFavicons: Boolean(parsed.automaticallyFetchFavicons),
+    remoteImageHosts: (parsed.remoteImageHosts ?? [])
+      .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
+      .filter((host, index, hosts) => host !== "" && hosts.indexOf(host) === index),
     communityInvite: parsed.communityInvite === true,
     newSessionModelDefaults: parsed.newSessionModelDefaults ?? "last-used",
     terminalEnabled: Boolean(parsed.terminalEnabled),

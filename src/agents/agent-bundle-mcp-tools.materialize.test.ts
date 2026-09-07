@@ -86,6 +86,35 @@ function makeToolRuntime(
   };
 }
 
+// v1.28.65 "Meridian" (X-M2): callTool results are envelope-wrapped at the
+// projection boundary. These fixtures pin the PROJECTION (block coercion,
+// dedup, structured mirroring) — unwrap the external-content envelope first;
+// the envelope itself is pinned in mcp-content.wrap tests + the external-content
+// forging suite.
+function unwrapMeridianEnvelope(result: { content: Array<Record<string, unknown>> }) {
+  const blocks = result.content;
+  const isText = (block: unknown): block is { type: "text"; text: string } =>
+    (block as { type?: string })?.type === "text";
+  // Single-text-block envelope: warning + start marker + metadata + "---" +
+  // payload + end marker inside ONE text block.
+  if (blocks.length === 1 && isText(blocks[0])) {
+    const text = blocks[0].text;
+    const separator = text.indexOf("\n---\n");
+    const endMarker = text.lastIndexOf("\n<<<END_EXTERNAL_UNTRUSTED_CONTENT");
+    if (text.startsWith("SECURITY NOTICE") && separator >= 0 && endMarker >= 0) {
+      return [{ type: "text", text: text.slice(separator + 5, endMarker) }];
+    }
+    return blocks;
+  }
+  // Multi-block envelope: a leading prefix block and a trailing end-marker block.
+  const prefix = isText(blocks[0]) && blocks[0].text.includes("<<<EXTERNAL_UNTRUSTED_CONTENT");
+  const suffix =
+    blocks.length > 1 &&
+    isText(blocks[blocks.length - 1]) &&
+    blocks[blocks.length - 1].text.startsWith("<<<END_EXTERNAL_UNTRUSTED_CONTENT");
+  return blocks.slice(prefix ? 1 : 0, suffix ? blocks.length - 1 : blocks.length);
+}
+
 async function executeMcpToolResult(result: CallToolResult) {
   const runtime = await materializeBundleMcpToolsForRun({
     runtime: makeToolRuntime({ result }),
@@ -330,7 +359,9 @@ describe("createBundleMcpToolRuntime", () => {
       materialized.tools[0],
       "materialized.tools[0] test invariant",
     ).execute("call-1", {}, undefined, undefined);
-    expect(result.content).toEqual([{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }]);
+    expect(unwrapMeridianEnvelope(result)).toEqual([
+      { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+    ]);
     expect(result.details).toMatchObject({
       mcpAppPreview: {
         mcpApp: {
@@ -404,7 +435,7 @@ describe("createBundleMcpToolRuntime", () => {
       undefined,
       undefined,
     );
-    expectTextContentBlock(result.content[0], "FROM-BUNDLE");
+    expectTextContentBlock(unwrapMeridianEnvelope(result)[0], "FROM-BUNDLE");
     expect(result.details).toEqual({
       mcpServer: "bundleProbe",
       mcpTool: "bundle_probe",
@@ -430,7 +461,7 @@ describe("createBundleMcpToolRuntime", () => {
       isError: false,
     });
 
-    expect(result.content).toEqual([
+    expect(unwrapMeridianEnvelope(result)).toEqual([
       { type: "text", text: 'structuredContent:\n{\n  "retryable": true\n}' },
       { type: "text", text: "authentication expired; run login" },
     ]);
@@ -459,7 +490,7 @@ describe("createBundleMcpToolRuntime", () => {
       structuredContent,
     });
 
-    expect(result.content).toEqual([
+    expect(unwrapMeridianEnvelope(result)).toEqual([
       {
         type: "text",
         text: `structuredContent:\n${JSON.stringify(structuredContent, null, 2)}`,
@@ -482,7 +513,7 @@ describe("createBundleMcpToolRuntime", () => {
       structuredContent,
     });
 
-    expect(result.content).toEqual([
+    expect(unwrapMeridianEnvelope(result)).toEqual([
       {
         type: "text",
         text: 'structuredContent:\n{\n  "alpha": 1,\n  "zeta": 2\n}',
@@ -498,7 +529,7 @@ describe("createBundleMcpToolRuntime", () => {
       isError: true,
     });
 
-    expect(result.content).toContainEqual({
+    expect(unwrapMeridianEnvelope(result)).toContainEqual({
       type: "text",
       text: "authentication expired; run login",
     });
@@ -515,7 +546,7 @@ describe("createBundleMcpToolRuntime", () => {
       structuredContent: { zeta: 2, alpha: 1 },
     });
 
-    expect(result.content).toEqual([
+    expect(unwrapMeridianEnvelope(result)).toEqual([
       { type: "text", text: 'structuredContent:\n{\n  "alpha": 1,\n  "zeta": 2\n}' },
     ]);
   });
@@ -525,7 +556,7 @@ describe("createBundleMcpToolRuntime", () => {
       content: [{ type: "text", text: "plain result" }],
     });
 
-    expect(result.content).toEqual([{ type: "text", text: "plain result" }]);
+    expect(unwrapMeridianEnvelope(result)).toEqual([{ type: "text", text: "plain result" }]);
   });
 
   it("coerces non-text/image MCP tool-result blocks to text (resource_link/resource/audio)", async () => {
@@ -560,7 +591,7 @@ describe("createBundleMcpToolRuntime", () => {
       isError: false,
     });
 
-    expect(result.content).toEqual([
+    expect(unwrapMeridianEnvelope(result)).toEqual([
       { type: "text", text: "intro" },
       { type: "text", text: "[Quarterly report] https://example.com/a.docx" },
       { type: "text", text: "https://example.com/bare" },
@@ -578,7 +609,9 @@ describe("createBundleMcpToolRuntime", () => {
       isError: false,
     });
 
-    expect(result.content).toEqual([{ type: "text", text: JSON.stringify({ type: "image" }) }]);
+    expect(unwrapMeridianEnvelope(result)).toEqual([
+      { type: "text", text: JSON.stringify({ type: "image" }) },
+    ]);
   });
 
   it("disambiguates bundle MCP tools that collide with existing tool names", async () => {
@@ -810,7 +843,7 @@ describe("createBundleMcpToolRuntime", () => {
       undefined,
       undefined,
     );
-    expectTextContentBlock(result.content[0], "FROM-CONFIG");
+    expectTextContentBlock(unwrapMeridianEnvelope(result)[0], "FROM-CONFIG");
     expect(result.details).toEqual({
       mcpServer: "configuredProbe",
       mcpTool: "bundle_probe",

@@ -96,6 +96,7 @@ type ExternalContentSource =
   | "channel_metadata"
   | "web_search"
   | "web_fetch"
+  | "mcp_tool_result"
   | "unknown";
 
 const EXTERNAL_SOURCE_LABELS: Record<ExternalContentSource, string> = {
@@ -106,6 +107,7 @@ const EXTERNAL_SOURCE_LABELS: Record<ExternalContentSource, string> = {
   channel_metadata: "Channel metadata",
   web_search: "Web Search",
   web_fetch: "Web Fetch",
+  mcp_tool_result: "MCP Tool Result",
   unknown: "External",
 };
 
@@ -379,10 +381,23 @@ type WrapExternalContentOptions = {
  * // Pass safeContent to LLM instead of raw emailBody
  * ```
  */
-export function wrapExternalContent(content: string, options: WrapExternalContentOptions): string {
+/**
+ * Builds the open/close segments of one external-content envelope with a
+ * SHARED random boundary id, for callers that must wrap structured content
+ * the string wrapper cannot represent (e.g. multi-block MCP tool results):
+ * `prefix + content + suffix` (joined with "\n") is byte-identical to
+ * `wrapExternalContent(content, options)`.
+ *
+ * v1.28.65 "Meridian" (X-M2): extracted so the MCP result assembly can wrap
+ * ONCE per result (never per text block — per-block would double-wrap
+ * multi-block results) while reusing the exact marker/metadata family.
+ */
+export function createExternalContentEnvelopeSegments(options: WrapExternalContentOptions): {
+  prefix: string;
+  suffix: string;
+} {
   const { source, sender, subject, taskName, includeWarning = true } = options;
 
-  const sanitized = sanitizeExternalContentText(content);
   const sourceLabel = EXTERNAL_SOURCE_LABELS[source] ?? "External";
   const metadataLines: string[] = [`Source: ${sourceLabel}`];
   const sanitizeMetadataValue = (value: string) =>
@@ -402,14 +417,17 @@ export function wrapExternalContent(content: string, options: WrapExternalConten
   const warningBlock = includeWarning ? `${EXTERNAL_CONTENT_WARNING}\n\n` : "";
   const markerId = createExternalContentMarkerId();
 
-  return [
-    warningBlock,
-    createExternalContentStartMarker(markerId),
-    metadata,
-    "---",
-    sanitized,
-    createExternalContentEndMarker(markerId),
-  ].join("\n");
+  return {
+    prefix: [warningBlock, createExternalContentStartMarker(markerId), metadata, "---"].join("\n"),
+    suffix: createExternalContentEndMarker(markerId),
+  };
+}
+
+export function wrapExternalContent(content: string, options: WrapExternalContentOptions): string {
+  // Composed on the envelope segments so the string form and the segmented
+  // form can never drift apart.
+  const { prefix, suffix } = createExternalContentEnvelopeSegments(options);
+  return `${prefix}\n${sanitizeExternalContentText(content)}\n${suffix}`;
 }
 
 /**

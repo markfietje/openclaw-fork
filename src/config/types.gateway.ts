@@ -66,6 +66,32 @@ export type GatewayControlUiConfig = Omit<
    */
   dangerouslyDisableDeviceAuth?: boolean;
   github?: { token?: SecretInput };
+  /** Produce utility-model session status digests for subscribed Control UI clients (default true). */
+  sessionObserver?: boolean;
+  /**
+   * Embed sandbox mode for hosted Control UI previews.
+   * - strict: no script execution inside embeds
+   * - scripts: allow scripts while keeping embeds origin-isolated (default)
+   * - trusted: allow scripts and same-origin privileges
+   */
+  embedSandbox?: "strict" | "scripts" | "trusted";
+  /**
+   * DANGEROUS: Allow hosted embeds to load absolute external http(s) URLs.
+   * Default off; prefer hosted /__openclaw__/canvas or /__openclaw__/a2ui content.
+   */
+  allowExternalEmbedUrls?: boolean;
+  /** Fetch public-site favicons through the Gateway for Control UI links (default false). */
+  automaticallyFetchFavicons?: boolean;
+  /** Exact hosts the Control UI may auto-fetch images/favicons from (default: none). */
+  remoteImageHosts?: string[];
+  /** Optional max-width for grouped Control UI chat messages (default: min(900px, 68%)). */
+  /** Allowed browser origins for Control UI/WebChat websocket connections. */
+  allowedOrigins?: string[];
+  /**
+   * DANGEROUS: Keep Host-header origin fallback behavior.
+   * Supported long-term for deployments that intentionally rely on this policy.
+   */
+  dangerouslyAllowHostHeaderOriginFallback?: boolean;
 };
 
 /** Gateway authentication strategy for WebSocket and HTTP clients. */

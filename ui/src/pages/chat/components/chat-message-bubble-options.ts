@@ -48,6 +48,8 @@ export type MessageRenderOptions = {
   allowExternalEmbedUrls?: boolean;
   fetchLinkFavicon?: LinkFaviconFetcher;
   pluginToolIcons?: PluginToolIcons;
+  /** Operator-allowlisted image hosts; empty means document renders never fetch. */
+  remoteImageHosts?: string[];
   onOpenWorkspaceFile?: (target: { path: string; line?: number | null }) => void;
   onPermissionRetry?: (message: string) => void;
 };

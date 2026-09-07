@@ -142,6 +142,7 @@ export function createPageState(
     embedSandboxMode: appConfig.embedSandboxMode,
     allowExternalEmbedUrls: appConfig.allowExternalEmbedUrls,
     automaticallyFetchFavicons: appConfig.automaticallyFetchFavicons,
+    remoteImageHosts: appConfig.remoteImageHosts,
     client: null,
     connected: false,
     connectionEpoch: 0,

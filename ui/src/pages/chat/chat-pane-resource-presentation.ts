@@ -13,6 +13,7 @@ type ResourceProps = Pick<
   | "embedSandboxMode"
   | "allowExternalEmbedUrls"
   | "fetchLinkFavicon"
+  | "remoteImageHosts"
   | "assistantAttachmentAuthToken"
   | "resolveArtifactDownload"
   | "basePath"
@@ -30,6 +31,7 @@ export function chatPaneResourceProps(
     embedSandboxMode: state.embedSandboxMode,
     allowExternalEmbedUrls: state.allowExternalEmbedUrls,
     fetchLinkFavicon: resolveChatLinkFaviconFetcher(state),
+    remoteImageHosts: state.remoteImageHosts,
     assistantAttachmentAuthToken: resolveControlUiAuthToken(state),
     resolveArtifactDownload: (params, signal) =>
       resolveArtifactDownloadSource(state, params, signal),

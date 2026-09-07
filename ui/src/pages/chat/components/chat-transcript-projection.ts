@@ -294,6 +294,7 @@ export function projectChatTranscript(
     allowExternalEmbedUrls: props.allowExternalEmbedUrls ?? false,
     fetchLinkFavicon: props.fetchLinkFavicon,
     pluginToolIcons: props.pluginToolIcons,
+    remoteImageHosts: props.remoteImageHosts ?? [],
     showAssistantAvatar: avatarPlacement === "gutter",
     bubbleMode: props.chatBubbleMode === true && !searchFiltering,
   } satisfies StreamGroupOptions;
@@ -634,6 +635,7 @@ export function projectChatTranscript(
     props.allowExternalEmbedUrls ?? false,
     Boolean(props.fetchLinkFavicon),
     props.pluginToolIcons,
+    props.remoteImageHosts,
     threadContextWindow,
     Boolean(props.onSetReply),
     props.messageReactions,

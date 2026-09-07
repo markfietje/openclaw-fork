@@ -43,7 +43,13 @@ export function prepareMessageMarkdown(
   const recovered = recoverFullMessage && disclosure?.expanded;
   const source = recovered ? (disclosure.markdown ?? markdown) : markdown;
   const options: MarkdownRenderOptions = recovered
-    ? { ...markdownRenderOptions, mode: "document" }
+    ? {
+        ...markdownRenderOptions,
+        mode: "document",
+        // Document mode fetches remote images only when the operator
+        // curated trusted hosts; the empty list is the fail-safe posture.
+        remoteImages: markdownRenderOptions.remoteImageHosts.length > 0,
+      }
     : markdownRenderOptions;
   const parts: [string, string] = opts.isStreaming
     ? toStreamingMarkdownParts(source, options, isAssistant ? messageKey : undefined)

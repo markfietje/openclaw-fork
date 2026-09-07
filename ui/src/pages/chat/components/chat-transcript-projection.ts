@@ -321,7 +321,8 @@ export function projectChatTranscript(
     fetchLinkFavicon: props.fetchLinkFavicon,
     pluginToolIcons: props.pluginToolIcons,
     githubRepo: props.githubRepo,
-    showAssistantAvatar: avatarPlacement === "gutter",
+    remoteImageHosts: props.remoteImageHosts ?? [],
+    showAssistantAvatar: avatarPlacement === "gutter" && Boolean(assistantIdentity.avatar),
   } satisfies StreamGroupOptions;
   const streamGroupOptions = {
     ...sharedMessageRenderOptions,
@@ -688,6 +689,7 @@ export function projectChatTranscript(
     props.pluginToolIcons,
     props.githubRepo?.owner,
     props.githubRepo?.repo,
+    props.remoteImageHosts,
     threadContextWindow,
     Boolean(props.onSetReply),
     Boolean(props.onAsyncQuestionSubmit),

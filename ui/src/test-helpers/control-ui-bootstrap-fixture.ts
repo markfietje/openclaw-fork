@@ -14,6 +14,7 @@ type BootstrapFixtureScenario = Pick<
   | "serverBuildId"
   | "devGitBranch"
   | "automaticallyFetchFavicons"
+  | "remoteImageHosts"
   | "communityInvite"
   | "terminalEnabled"
   | "cliAgentsEnabled"
@@ -42,6 +43,7 @@ export function buildControlUiMockBootstrapConfig(
     })),
     allowExternalEmbedUrls: false,
     automaticallyFetchFavicons: normalizedScenario.automaticallyFetchFavicons,
+    remoteImageHosts: normalizedScenario.remoteImageHosts,
     communityInvite: normalizedScenario.communityInvite,
     assistantAgentId: normalizedScenario.assistantAgentId,
     assistantAvatar: "",

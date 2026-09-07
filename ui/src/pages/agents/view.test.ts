@@ -909,7 +909,9 @@ describe("renderAgentFiles", () => {
       "Markdown Preview",
     );
     const reader = container.querySelector(".md-preview-dialog__reader.sidebar-markdown");
-    expect(reader?.querySelector("img")?.getAttribute("src")).toBe("https://e.co/i");
+    // Shutter: remote images degrade to the labeled fallback unless allowlisted.
+    expect(reader?.querySelector("img")).toBeNull();
+    expect(reader?.querySelector(".markdown-external-image")).not.toBeNull();
     expect(reader?.querySelector("pre code")?.textContent).toBe("const answer = 42;\n");
     expect(reader?.querySelector(".code-block-copy, script")).toBeNull();
   });

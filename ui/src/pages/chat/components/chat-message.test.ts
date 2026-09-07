@@ -1075,6 +1075,7 @@ describe("grouped chat rendering", () => {
       githubRepo: null,
       interactiveImages: false,
       linkFavicons: false,
+      remoteImageHosts: [],
       sessionLinks: true,
       tableInteractions: "enabled",
     });
@@ -1219,6 +1220,7 @@ describe("grouped chat rendering", () => {
       githubRepo,
       interactiveImages: false,
       linkFavicons: false,
+      remoteImageHosts: [],
       sessionLinks: true,
       tableInteractions: "enabled",
     });
@@ -1766,6 +1768,7 @@ describe("grouped chat rendering", () => {
         githubRepo: null,
         interactiveImages: false,
         linkFavicons: false,
+        remoteImageHosts: [],
         sessionLinks: true,
         tableInteractions: "enabled",
       },

@@ -473,6 +473,7 @@ export type ControlUiMockGatewayScenario = {
   assistantAgentId?: string;
   assistantName?: string;
   automaticallyFetchFavicons?: boolean;
+  remoteImageHosts?: string[];
   communityInvite?: boolean;
   /** Only invitation behavior tests opt into a fresh visitor; visual proofs keep it dismissed. */
   communityInviteDismissed?: boolean;
@@ -1174,6 +1175,7 @@ function normalizeScenario(
     pluginAssetsRequireAuth: scenario.pluginAssetsRequireAuth ?? true,
     attachmentMaxBytes: scenario.attachmentMaxBytes ?? DEFAULT_MOCK_ATTACHMENT_MAX_BYTES,
     automaticallyFetchFavicons: scenario.automaticallyFetchFavicons ?? false,
+    remoteImageHosts: scenario.remoteImageHosts ?? [],
     communityInvite: scenario.communityInvite ?? true,
     communityInviteDismissed: scenario.communityInviteDismissed ?? true,
     agentModel:
@@ -1276,6 +1278,7 @@ export function createControlUiMockBootstrapConfig(scenario: ControlUiMockGatewa
     })),
     allowExternalEmbedUrls: false,
     automaticallyFetchFavicons: normalizedScenario.automaticallyFetchFavicons,
+    remoteImageHosts: normalizedScenario.remoteImageHosts,
     communityInvite: normalizedScenario.communityInvite,
     assistantAgentId: normalizedScenario.assistantAgentId,
     assistantAvatar: "",

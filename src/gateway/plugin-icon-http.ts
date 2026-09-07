@@ -342,6 +342,9 @@ export async function handlePluginIconHttpRequest(
     return true;
   }
 
+  // Shutter posture: the favicon proxy stays dark unless the operator
+  // explicitly enabled fetching AND allowlisted the host. The SSRF guard,
+  // byte/time caps, and caching below still enforce whenever it is ON.
   if (
     activityRequest.matched &&
     (toolNames.length > 1 || (toolName !== undefined && !isPluginActivityToolName(toolName)))
@@ -352,7 +355,11 @@ export async function handlePluginIconHttpRequest(
 
   if (
     faviconRequest.matched &&
-    opts.config.gateway?.controlUi?.automaticallyFetchFavicons === false
+    (opts.config.gateway?.controlUi?.automaticallyFetchFavicons !== true ||
+      !faviconHostname ||
+      !(opts.config.gateway?.controlUi?.remoteImageHosts ?? [])
+        .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
+        .includes(faviconHostname))
   ) {
     sendNotFound(res);
     return true;

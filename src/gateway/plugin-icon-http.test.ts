@@ -198,9 +198,40 @@ describe("Control UI plugin and catalog icon routes", () => {
     expect(mocks.readRemoteMediaBuffer).not.toHaveBeenCalled();
   });
 
-  it("authenticates enabled link favicon requests before any remote fetch", async () => {
+  it("keeps link favicon fetching off by default without any opt-in", async () => {
+    configForRequest = () => ({});
+    const response = await request("/__openclaw__/link-favicon/example.com");
+
+    expect(response.status).toBe(404);
+    expect(mocks.authorize).toHaveBeenCalledOnce();
+    expect(mocks.readRemoteMediaBuffer).not.toHaveBeenCalled();
+  });
+
+  it("refuses enabled favicon fetches for hosts outside the trusted image hosts", async () => {
+    configForRequest = () => ({
+      gateway: { controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["other.com"] } },
+    });
+    const response = await request("/__openclaw__/link-favicon/example.com");
+
+    expect(response.status).toBe(404);
+    expect(mocks.readRemoteMediaBuffer).not.toHaveBeenCalled();
+  });
+
+  it("refuses enabled favicon fetches when the trusted host list is empty", async () => {
     configForRequest = () => ({
       gateway: { controlUi: { automaticallyFetchFavicons: true } },
+    });
+    const response = await request("/__openclaw__/link-favicon/example.com");
+
+    expect(response.status).toBe(404);
+    expect(mocks.readRemoteMediaBuffer).not.toHaveBeenCalled();
+  });
+
+  it("authenticates enabled link favicon requests before any remote fetch", async () => {
+    configForRequest = () => ({
+      gateway: {
+        controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["example.com"] },
+      },
     });
     mocks.authorize.mockImplementationOnce(async ({ res }) => {
       res.statusCode = 401;
@@ -225,8 +256,15 @@ describe("Control UI plugin and catalog icon routes", () => {
     "example.com:443",
     "user@example.com",
   ])("rejects non-public-domain favicon host %s without fetching", async (hostname) => {
+    // The adversarial host is allowlisted on purpose: the SSRF guard must keep
+    // refusing it even when the operator listed it as trusted.
     configForRequest = () => ({
-      gateway: { controlUi: { automaticallyFetchFavicons: true } },
+      gateway: {
+        controlUi: {
+          automaticallyFetchFavicons: true,
+          remoteImageHosts: [decodeURIComponent(hostname).split(":")[0]],
+        },
+      },
     });
 
     const response = await request(`/__openclaw__/link-favicon/${encodeURIComponent(hostname)}`);
@@ -235,7 +273,12 @@ describe("Control UI plugin and catalog icon routes", () => {
     expect(mocks.readRemoteMediaBuffer).not.toHaveBeenCalled();
   });
 
-  it("fetches by default only through the fixed HTTPS path and strict media guard", async () => {
+  it("fetches allowlisted hosts when enabled only through the fixed HTTPS path and strict media guard", async () => {
+    configForRequest = () => ({
+      gateway: {
+        controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["example.com"] },
+      },
+    });
     const response = await request("/__openclaw__/link-favicon/Example.COM");
 
     expect(response.status).toBe(200);
@@ -270,7 +313,11 @@ describe("Control UI plugin and catalog icon routes", () => {
       overrides: {
         controlUiEnabled: true,
         controlUiBasePath: "",
-        getRuntimeConfig: () => ({}),
+        getRuntimeConfig: () => ({
+          gateway: {
+            controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["example.com"] },
+          },
+        }),
       },
       run: async (gateway) => {
         const started = process.hrtime.bigint();
@@ -291,7 +338,9 @@ describe("Control UI plugin and catalog icon routes", () => {
 
   it("serves standard ICO favicon bytes without invoking raster processing", async () => {
     configForRequest = () => ({
-      gateway: { controlUi: { automaticallyFetchFavicons: true } },
+      gateway: {
+        controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["github.com"] },
+      },
     });
     mocks.readRemoteMediaBuffer.mockResolvedValueOnce({
       buffer: ICO_BYTES,
@@ -317,6 +366,13 @@ describe("Control UI plugin and catalog icon routes", () => {
   )(
     "normalizes APNG $label bytes declared as $contentType to PNG",
     async ({ label, pathname, contentType }) => {
+      if (label === "favicon") {
+        configForRequest = () => ({
+          gateway: {
+            controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["example.com"] },
+          },
+        });
+      }
       if (label === "plugin") {
         writeFileSync(localIconPath, APNG_BYTES);
       } else {
@@ -339,7 +395,9 @@ describe("Control UI plugin and catalog icon routes", () => {
 
   it("negatively caches failed link favicon fetches", async () => {
     configForRequest = () => ({
-      gateway: { controlUi: { automaticallyFetchFavicons: true } },
+      gateway: {
+        controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["missing.example"] },
+      },
     });
     mocks.readRemoteMediaBuffer.mockRejectedValueOnce(new Error("upstream failed"));
 
@@ -404,6 +462,13 @@ describe("Control UI plugin and catalog icon routes", () => {
   )(
     "preserves $contentType $label GET/HEAD headers and revalidates cached bytes",
     async ({ contentType, label, pathname }) => {
+      if (label === "favicon") {
+        configForRequest = () => ({
+          gateway: {
+            controlUi: { automaticallyFetchFavicons: true, remoteImageHosts: ["example.com"] },
+          },
+        });
+      }
       const svg = "<svg xmlns='http://www.w3.org/2000/svg'></svg>";
       if (contentType === "image/svg+xml") {
         mocks.readRemoteMediaBuffer.mockResolvedValue({ buffer: Buffer.from(svg), contentType });

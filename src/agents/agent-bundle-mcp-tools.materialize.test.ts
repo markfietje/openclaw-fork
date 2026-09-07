@@ -7,6 +7,7 @@ import { validateToolArguments } from "openclaw/plugin-sdk/llm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
+import { EXTERNAL_CONTENT_WARNING } from "../security/external-content.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createCombinedSessionMcpRuntime } from "./agent-bundle-mcp-combined.js";
 import { fixtureCatalog, fixtureRuntime } from "./agent-bundle-mcp-fixture.test-support.js";
@@ -23,6 +24,7 @@ import type {
 } from "./agent-bundle-mcp-types.js";
 import { getMcpAppViewLease } from "./mcp-ui-resource.js";
 import { testing as mcpUiResourceTesting } from "./mcp-ui-resource.test-support.js";
+import type { AgentToolResult } from "./runtime/index.js";
 import { createAgentCleanupScope } from "./run-cleanup-timeout.js";
 import { isToolResultError } from "./tool-result-error.js";
 
@@ -103,6 +105,37 @@ function makeToolRuntime(
     joinCleanup: async () => {},
     dispose: async () => {},
   });
+}
+
+// v1.28.65 "Meridian" (X-M2): callTool results are envelope-wrapped at the
+// projection boundary. These fixtures pin the PROJECTION (block coercion,
+// dedup, structured mirroring) — unwrap the external-content envelope first;
+// the envelope itself is pinned in mcp-content.wrap tests + the external-content
+// forging suite.
+function unwrapMeridianEnvelope(
+  result: AgentToolResult<unknown>,
+): AgentToolResult<unknown>["content"] {
+  const blocks = result.content;
+  const textOf = (block: (typeof blocks)[number] | undefined): string | undefined =>
+    block?.type === "text" ? block.text : undefined;
+  // Single-text-block envelope: warning + start marker + metadata + "---" +
+  // payload + end marker inside ONE text block. The warning prefix is matched
+  // against the exported constant so a warning rewording cannot silently
+  // disarm the unwrap.
+  const onlyText = blocks.length === 1 ? textOf(blocks[0]) : undefined;
+  if (onlyText !== undefined) {
+    const separator = onlyText.indexOf("\n---\n");
+    const endMarker = onlyText.lastIndexOf("\n<<<END_EXTERNAL_UNTRUSTED_CONTENT");
+    if (onlyText.startsWith(EXTERNAL_CONTENT_WARNING) && separator >= 0 && endMarker >= 0) {
+      return [{ type: "text", text: onlyText.slice(separator + 5, endMarker) }];
+    }
+    return blocks;
+  }
+  // Multi-block envelope: a leading prefix block and a trailing end-marker block.
+  const prefix = textOf(blocks[0])?.includes("<<<EXTERNAL_UNTRUSTED_CONTENT") === true;
+  const suffix =
+    textOf(blocks[blocks.length - 1])?.startsWith("<<<END_EXTERNAL_UNTRUSTED_CONTENT") === true;
+  return blocks.slice(prefix ? 1 : 0, suffix ? blocks.length - 1 : blocks.length);
 }
 
 async function executeMcpToolResult(result: CallToolResult) {
@@ -344,7 +377,9 @@ describe("createBundleMcpToolRuntime", () => {
     materialized.restrictAppTools?.(materialized.tools);
 
     const result = await firstTool(materialized).execute("call-1", {}, undefined, undefined);
-    expect(result.content).toEqual([{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }]);
+    expect(unwrapMeridianEnvelope(result)).toEqual([
+      { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+    ]);
     expect(result.details).toMatchObject({
       mcpAppPreview: {
         mcpApp: {
@@ -412,6 +447,32 @@ describe("createBundleMcpToolRuntime", () => {
     expect(firstTool(runtime).executionMode).toBe("parallel");
   });
 
+  it("preserves recovery text alongside structuredContent", async () => {
+    const result = await executeMcpToolResult({
+      content: [{ type: "text", text: "authentication expired; run login" }],
+      structuredContent: { retryable: true },
+      isError: false,
+    });
+
+    expect(unwrapMeridianEnvelope(result)).toEqual([
+      { type: "text", text: 'structuredContent:\n{\n  "retryable": true\n}' },
+      { type: "text", text: "authentication expired; run login" },
+    ]);
+    expect(result.details).toEqual({
+      mcpServer: "bundleProbe",
+      mcpTool: "bundle_probe",
+      structuredContent: { retryable: true },
+    });
+  });
+
+  it("keeps text-only results unchanged", async () => {
+    const result = await executeMcpToolResult({
+      content: [{ type: "text", text: "plain result" }],
+    });
+
+    expect(unwrapMeridianEnvelope(result)).toEqual([{ type: "text", text: "plain result" }]);
+  });
+
   it("marks isError through the tool-result owner while preserving recovery text", async () => {
     const result = await executeMcpToolResult({
       content: [{ type: "text", text: "authentication expired; run login" }],
@@ -419,7 +480,7 @@ describe("createBundleMcpToolRuntime", () => {
       isError: true,
     });
 
-    expect(result.content).toContainEqual({
+    expect(unwrapMeridianEnvelope(result)).toContainEqual({
       type: "text",
       text: "authentication expired; run login",
     });
@@ -466,7 +527,7 @@ describe("createBundleMcpToolRuntime", () => {
       isError: false,
     });
 
-    expect(result.content).toEqual([
+    expect(unwrapMeridianEnvelope(result)).toEqual([
       { type: "text", text: "intro" },
       { type: "text", text: "[Quarterly report] https://example.com/a.docx" },
       { type: "text", text: "https://example.com/bare" },

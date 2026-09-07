@@ -16,6 +16,7 @@ import { formatHookErrorForLog } from "../hooks/fire-and-forget.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { projectModelContextMessages } from "../shared/model-context-message.js";
 import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
+import { sanitizePluginContext } from "./context-hygiene.js";
 import {
   projectAgentEndEvent,
   withAgentRunId,
@@ -344,15 +345,42 @@ export function createHookRunner(
       // Keep the first defined system prompt so higher-priority hooks win.
       systemPrompt: acc?.systemPrompt ?? next.systemPrompt,
       ...mergeAgentTurnPrepare(acc, next),
+      // v1.28.65 "Meridian" (X-S1): every plugin-supplied context segment is
+      // invisible-stripped + host-marker-neutralized at this ONE seam. The
+      // JOINED accumulator is sanitized (not each plugin's slice), so no
+      // marker can synthesize across a segment boundary; re-sanitizing the
+      // already-sanitized left side is idempotent by construction.
+      prependContext: sanitizePluginContext(
+        concatOptionalTextSegments({
+          left: acc?.prependContext,
+          right: next.prependContext,
+        }),
+      ),
+      appendContext: sanitizePluginContext(
+        concatOptionalTextSegments({
+          left: acc?.appendContext,
+          right: next.appendContext,
+        }),
+      ),
       ...(toolsAllow !== undefined ? { toolsAllow } : {}),
-      prependSystemContext: concatOptionalTextSegments({
-        left: acc?.prependSystemContext,
-        right: prependSystemContext,
-      }),
-      appendSystemContext: concatOptionalTextSegments({
-        left: acc?.appendSystemContext,
-        right: appendSystemContext,
-      }),
+      // v1.28.65 "Meridian" (X-S1): every plugin-supplied context segment is
+      // invisible-stripped + host-marker-neutralized at this ONE seam. The
+      // JOINED accumulator is sanitized (not each plugin's slice), so no
+      // marker can synthesize across a segment boundary; re-sanitizing the
+      // already-sanitized left side is idempotent by construction. The system
+      // context segments ride the same seam, after the per-plugin limit.
+      prependSystemContext: sanitizePluginContext(
+        concatOptionalTextSegments({
+          left: acc?.prependSystemContext,
+          right: prependSystemContext,
+        }),
+      ),
+      appendSystemContext: sanitizePluginContext(
+        concatOptionalTextSegments({
+          left: acc?.appendSystemContext,
+          right: appendSystemContext,
+        }),
+      ),
     };
   };
 

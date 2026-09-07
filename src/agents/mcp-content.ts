@@ -1,6 +1,11 @@
 import type { GetPromptResult } from "@modelcontextprotocol/client";
 import { stableStringify } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { stripInvisibleUnicode } from "../infra/unicode-visibility.js";
+import {
+  createExternalContentEnvelopeSegments,
+  wrapExternalContent,
+} from "../security/external-content.js";
 import { createMcpStructuredContentMirrorMatcher } from "./mcp-structured-mirror.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { isToolResultError } from "./tool-result-error.js";
@@ -153,6 +158,44 @@ function projectMcpCallToolResultContent(
   return { content: sourceContent.map(mcpContentBlockToAgentContent) };
 }
 
+/**
+ * v1.28.65 "Meridian" (X-M2): MCP tool results ride the external-content
+ * idiom — the same convention web_fetch uses. Per TEXT block: invisible
+ * unicode is stripped (the U+E0000 tag-smuggling class dies here). Per
+ * RESULT (this top-level assembly — never per block, which would double-wrap
+ * multi-block results): the joined content is enveloped in the untrusted
+ * external-content boundary with the `MCP Tool Result` source label, so the
+ * `untrustedMcpOutput` taint finally renders as prompt framing instead of
+ * staying a non-rendering metadata flag.
+ */
+function wrapMcpToolResultContent(
+  content: McpAgentContentBlock[],
+  details: Record<string, unknown>,
+): McpAgentContentBlock[] {
+  const options = {
+    source: "mcp_tool_result" as const,
+    ...(typeof details.mcpServer === "string" && typeof details.mcpTool === "string"
+      ? { taskName: `${details.mcpServer}/${details.mcpTool}` }
+      : {}),
+  };
+  const singleText =
+    content.length === 1 && content[0]?.type === "text" && typeof content[0].text === "string"
+      ? content[0]
+      : undefined;
+  if (singleText) {
+    return [{ type: "text", text: wrapExternalContent(singleText.text, options) }];
+  }
+  const { prefix, suffix } = createExternalContentEnvelopeSegments(options);
+  return [{ type: "text", text: prefix }, ...content, { type: "text", text: suffix }];
+}
+
+/** Strips invisible unicode from every text block; image/data blocks pass through. */
+function stripInvisibleFromTextBlocks(content: McpAgentContentBlock[]): McpAgentContentBlock[] {
+  return content.map((block) =>
+    block.type === "text" ? { ...block, text: stripInvisibleUnicode(block.text) } : block,
+  );
+}
+
 /** Projects a raw MCP CallToolResult exactly once at the model boundary. */
 export function projectMcpCallToolResult(
   result: { content?: unknown; structuredContent?: unknown; isError?: unknown },
@@ -162,11 +205,14 @@ export function projectMcpCallToolResult(
   const projectedContent = projectMcpCallToolResultContent(sourceContent, result.structuredContent);
   const unprojectable = projectedContent.unprojectable === true;
   const isError = result.isError === true || unprojectable;
-  const content = projectedContent.content;
+  const content = stripInvisibleFromTextBlocks(projectedContent.content);
   const projected: AgentToolResult<unknown> = {
+    // The host-generated placeholder is host-authored text (zero untrusted
+    // bytes) — it rides unwrapped; every result with real content is
+    // envelope-wrapped exactly once.
     content:
       content.length > 0
-        ? content
+        ? wrapMcpToolResultContent(content, details)
         : [
             {
               type: "text",
@@ -188,7 +234,10 @@ export function projectMcpCallToolResult(
   return setMcpCodeModeGuestResult(projected, {
     // Guest callers read this snapshot instead of the model-facing result, so an
     // unprojectable value is a failure for them too and carries the same notice.
-    content: unprojectable ? projected.content : sourceContent,
+    // The guest snapshot stays UNWRAPPED (it is a raw projection for code-mode
+    // callers, not a model-facing prompt block), but it is invisible-stripped
+    // like the model-facing path.
+    content: unprojectable ? content : sourceContent,
     ...(result.structuredContent !== undefined && !unprojectable
       ? { structuredContent: result.structuredContent }
       : {}),

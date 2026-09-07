@@ -311,8 +311,16 @@ const DEFAULT_SUFFIX = (truncatedChars: number) =>
   formatContextLimitTruncationNotice(truncatedChars);
 const COMPACT_RECOVERY_SUFFIX = (truncatedChars: number) =>
   `[... ${Math.max(1, Math.floor(truncatedChars))} chars truncated; narrow args]`;
-const AGGREGATE_ELISION_MARKER =
-  "[tool result elided: aggregate tool-result budget exceeded; rerun the command if the output is needed]";
+const AGGREGATE_ELISION_MARKER_GUIDANCE =
+  "aggregate tool-result budget exceeded; rerun the command if the output is needed";
+/**
+ * The aggregate elision marker carries the EXACT elided count for what it
+ * replaces — a fixed-text marker is silent elision by another name. The
+ * count sits FIRST: under a crushed budget the marker is sliced from the
+ * tail, so slicing costs the guidance before it can cost the count.
+ */
+const aggregateElisionMarker = (elidedChars: number) =>
+  `[tool result elided: ${Math.max(1, Math.floor(elidedChars))} chars elided; ${AGGREGATE_ELISION_MARKER_GUIDANCE}]`;
 
 function logToolResultSessionTruncation(params: {
   rewrittenEntries: number;
@@ -400,19 +408,18 @@ function appendBoundedTruncationSuffix(params: {
   }
 }
 
-const MIDDLE_OMISSION_MARKER =
-  "\n\n⚠️ [... middle content omitted — showing head and tail ...]\n\n";
+const TAIL_KEEP_CHARS = 400;
+/**
+ * The exact middle-elision marker: the count is the contract (an elided
+ * byte that is not accounted for is the truncation-shaping shape this
+ * module exists to prevent). The tail rides UNCONDITIONALLY — tail
+ * visibility is not guessed from keywords; caveats and disclaimers live
+ * at the end of real tool output.
+ */
+const MIDDLE_ELISION_MARKER = (elidedChars: number) =>
+  `\n\n[... ${Math.max(1, Math.floor(elidedChars))} chars elided between head and tail ...]\n\n`;
 
-function hasImportantTail(text: string): boolean {
-  const tail = normalizeLowercaseStringOrEmpty(sliceUtf16Safe(text, -2000));
-  return (
-    /\b(error|exception|failed|fatal|traceback|panic|stack trace|errno|exit code)\b/.test(tail) ||
-    /\}\s*$/.test(tail.trim()) ||
-    /\b(total|summary|result|complete|finished|done)\b/.test(tail)
-  );
-}
-
-/** Truncates text while preserving an important diagnostic tail when present. */
+/** Truncates text keeping BOTH ends; the marker states the exact elided count. */
 export function truncateToolResultText(
   text: string,
   maxChars: number,
@@ -436,36 +443,64 @@ export function truncateToolResultText(
     maxChars - estimateToolResultTextChars(defaultSuffix, budgetOptions),
   );
 
-  if (hasImportantTail(text) && budget > minKeepChars * 2) {
-    const tailBudget = Math.min(Math.floor(budget * 0.3), 4_000);
-    const headBudget =
-      budget - tailBudget - estimateToolResultTextChars(MIDDLE_OMISSION_MARKER, budgetOptions);
-
-    if (headBudget > minKeepChars) {
-      let headText = sliceToolResultTextToBudget(text, headBudget, budgetOptions);
-      const headNewline = headText.lastIndexOf("\n");
-      if (headNewline > headText.length * 0.8) {
-        headText = sliceUtf16Safe(headText, 0, headNewline);
+  // Unconditional head+tail: reserve the tail floor first — bounded to half
+  // the budget minus the marker's widest form (the marker at text.length is
+  // the exact upper bound, since keeping head/tail only shrinks the count
+  // toward it), so a tight budget shrinks the tail instead of falling back
+  // to head-only — then spend the rest on the head and bake the exact
+  // elided count into the marker. The fit loop absorbs digit-width drift
+  // between the marker estimate and the baked marker; it cannot loop
+  // forever because every round strictly shrinks the head.
+  const markerUpperBound = estimateToolResultTextChars(
+    MIDDLE_ELISION_MARKER(text.length),
+    budgetOptions,
+  );
+  const tailBudget = Math.min(
+    TAIL_KEEP_CHARS,
+    Math.max(0, Math.floor((budget - markerUpperBound) / 2)),
+  );
+  if (tailBudget > 0) {
+    let tailText = sliceToolResultTextTailToBudget(text, tailBudget, budgetOptions);
+    const tailNewline = tailText.indexOf("\n");
+    if (tailNewline !== -1 && tailNewline < tailText.length * 0.2) {
+      tailText = sliceUtf16Safe(tailText, tailNewline + 1);
+    }
+    let headText = sliceToolResultTextToBudget(text, budget - tailText.length, budgetOptions);
+    const headNewline = headText.lastIndexOf("\n");
+    if (headNewline > headText.length * 0.8) {
+      headText = sliceUtf16Safe(headText, 0, headNewline);
+    }
+    for (let round = 0; round < 4; round += 1) {
+      if (headText.length + tailText.length >= text.length) {
+        break;
       }
-
-      let tailText = sliceToolResultTextTailToBudget(text, tailBudget, budgetOptions);
-      const tailNewline = tailText.indexOf("\n");
-      if (tailNewline !== -1 && tailNewline < tailText.length * 0.2) {
-        tailText = sliceUtf16Safe(tailText, tailNewline + 1);
-      }
-
-      if (headText.length + tailText.length < text.length) {
+      const marker = MIDDLE_ELISION_MARKER(text.length - headText.length - tailText.length);
+      const projected =
+        estimateToolResultTextChars(headText + marker + tailText, budgetOptions) +
+        estimateToolResultTextChars(defaultSuffix, budgetOptions);
+      if (projected <= maxChars) {
         return appendBoundedTruncationSuffix({
-          keptText: headText + MIDDLE_OMISSION_MARKER + tailText,
+          keptText: headText + marker + tailText,
           originalTextLength: text.length,
           maxChars,
           suffixFactory,
           minimumRawWeight: options.minimumRawWeight,
         });
       }
+      const overshoot = projected - maxChars;
+      headText = sliceToolResultTextToBudget(
+        headText,
+        Math.max(0, headText.length - overshoot - 1),
+        budgetOptions,
+      );
+      if (headText.length === 0) {
+        break;
+      }
     }
   }
 
+  // Head-only fallback for budgets too tight to reserve a tail (minKeep
+  // floor vs maxChars): still counted via the suffix notice.
   let keptText = sliceToolResultTextToBudget(text, budget, budgetOptions);
   const lastNewline = keptText.lastIndexOf("\n");
   if (lastNewline > keptText.length * 0.8) {
@@ -1211,7 +1246,9 @@ function buildAggregateToolResultReplacements(params: {
         // Cleared fresh results keep a visible elision notice on projection
         // paths; an empty tool result reads as failure and loses rerun guidance.
         const noticeFloor = params.protectedEntryIds
-          ? estimateToolResultTextChars(spillMarkers?.compact ?? AGGREGATE_ELISION_MARKER)
+          ? estimateToolResultTextChars(
+              spillMarkers?.compact ?? aggregateElisionMarker(baseTextLength),
+            )
           : 0;
         message = clearToolResultText(
           candidate.message,
@@ -1293,7 +1330,14 @@ function clearToolResultText(
           (marker): marker is string =>
             typeof marker === "string" &&
             estimateToolResultTextChars(marker) <= remainingTextBudget,
-        ) ?? sliceToolResultTextToBudget(AGGREGATE_ELISION_MARKER, remainingTextBudget);
+        ) ??
+        // Per-block exact count: this block's whole content is elided, and
+        // the marker says so in chars. Budget slicing keeps the leading
+        // count preferentially (the guidance tail may go, the count stays).
+        sliceToolResultTextToBudget(
+          aggregateElisionMarker(estimateToolResultTextChars(String(block.text ?? ""), {})),
+          remainingTextBudget,
+        );
       remainingTextBudget = Math.max(
         0,
         remainingTextBudget - estimateToolResultTextChars(replacementText),

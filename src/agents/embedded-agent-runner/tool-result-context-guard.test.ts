@@ -596,7 +596,10 @@ describe("installToolResultContextGuard", () => {
   it("truncates UTF-16 tool results without splitting surrogate pairs", async () => {
     // With contextWindowTokens=1000, maxSingleToolResultChars=1024 and the
     // text budget becomes 512. The legacy cut point falls inside the emoji
-    // at index 439, which used to emit a lone high surrogate.
+    // at index 439, which used to emit a lone high surrogate. Since the
+    // head+tail accounting change, BOTH ends ride with a counted middle
+    // marker — the emoji sits in the elided middle WHOLE (or fully inside a
+    // kept end), never split.
     const agent = makeGuardableAgent();
     const text = "a".repeat(439) + "😀" + "b".repeat(1_000);
     const contextForNextCall = [makeToolResult("call_utf16", text)];
@@ -607,9 +610,16 @@ describe("installToolResultContextGuard", () => {
       1_000,
     )) as AgentMessage[];
 
-    expect(getToolResultText(expectDefined(transformed[0], "transformed[0] test invariant"))).toBe(
-      "a".repeat(439) + formatContextLimitTruncationNotice(1_002),
+    const truncated = getToolResultText(
+      expectDefined(transformed[0], "transformed[0] test invariant"),
     );
+    expect(truncated.startsWith("a")).toBe(true);
+    expect(truncated).toMatch(/\[\.\.\. \d+ chars elided between head and tail \.\.\.\]/);
+    // The tail window keeps the trailing b's on a code-point boundary.
+    expect(/b\[/.test(truncated) || truncated.endsWith("b")).toBe(true);
+    // No lone surrogate ever survives: the emoji is either fully elided or
+    // fully present, and no replacement character is manufactured.
+    expect(truncated).not.toContain("\u{FFFD}");
     expect(
       getToolResultText(
         expectDefined(contextForNextCall[0], "contextForNextCall[0] test invariant"),

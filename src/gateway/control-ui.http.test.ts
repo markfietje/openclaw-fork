@@ -1654,7 +1654,8 @@ describe("handleControlUiHttpRequest", () => {
           expect(parsed.environment).toEqual({ label: "edge", color: "amber" });
           expect(parsed.terminalEnabled).toBe(true);
           expect(parsed.cliAgentsEnabled).toBe(enabled !== false);
-          expect(parsed.automaticallyFetchFavicons).toBe(true);
+          expect(parsed.automaticallyFetchFavicons).toBe(false);
+          expect(parsed.remoteImageHosts).toEqual([]);
           expect(parsed.communityInvite).toBe(true);
           expect(parsed.devGitBranch).toBeUndefined();
         },
@@ -1685,6 +1686,34 @@ describe("handleControlUiHttpRequest", () => {
       });
     },
   );
+
+  it("projects an explicit favicon opt-in and trusted image hosts into bootstrap config", async () => {
+    await withControlUiRoot({
+      fn: async (tmp) => {
+        const { res, end } = makeMockHttpResponse();
+        const handled = await handleControlUiHttpRequest(
+          { url: CONTROL_UI_BOOTSTRAP_CONFIG_PATH, method: "GET" } as IncomingMessage,
+          res,
+          {
+            root: { kind: "resolved", path: tmp },
+            config: {
+              gateway: {
+                controlUi: {
+                  automaticallyFetchFavicons: true,
+                  remoteImageHosts: ["Docs.Example.com", "  other.example ", "", "."],
+                },
+              },
+            },
+          },
+        );
+
+        expect(handled).toBe(true);
+        const parsed = parseBootstrapPayload(end);
+        expect(parsed.automaticallyFetchFavicons).toBe(true);
+        expect(parsed.remoteImageHosts).toEqual(["docs.example.com", "other.example"]);
+      },
+    });
+  });
 
   it("omits the assistant agent id without a config snapshot", async () => {
     await withControlUiRoot({

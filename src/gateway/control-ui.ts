@@ -246,6 +246,17 @@ function isValidAgentPathSegment(agentId: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(agentId);
 }
 
+function normalizeRemoteImageHosts(hosts: string[]): string[] {
+  const normalized: string[] = [];
+  for (const host of hosts) {
+    const trimmed = host.trim().toLowerCase().replace(/\.$/, "");
+    if (trimmed !== "" && !normalized.includes(trimmed)) {
+      normalized.push(trimmed);
+    }
+  }
+  return normalized;
+}
+
 function normalizeAssistantMediaSource(source: string): string | null {
   const trimmed = source.trim();
   if (!trimmed) {
@@ -1097,7 +1108,12 @@ export async function handleControlUiHttpRequest(
             ? "strict"
             : "scripts",
       allowExternalEmbedUrls: config?.gateway?.controlUi?.allowExternalEmbedUrls === true,
-      automaticallyFetchFavicons: config?.gateway?.controlUi?.automaticallyFetchFavicons !== false,
+      // Shutter default: favicons fetch only when the operator enables them
+      // AND curates remoteImageHosts; the empty list is the fail-safe posture.
+      automaticallyFetchFavicons: config?.gateway?.controlUi?.automaticallyFetchFavicons === true,
+      remoteImageHosts: normalizeRemoteImageHosts(
+        config?.gateway?.controlUi?.remoteImageHosts ?? [],
+      ),
       seamColor: config?.ui?.seamColor,
       environment: config?.gateway?.controlUi?.environment,
       communityInvite: config?.gateway?.controlUi?.communityInvite !== false,

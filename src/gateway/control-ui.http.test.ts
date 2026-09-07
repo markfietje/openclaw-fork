@@ -778,6 +778,32 @@ describe("handleControlUiHttpRequest", () => {
     }
   });
 
+  it("projects favicon defaults and an explicit opt-in with trusted image hosts into bootstrap config", async () => {
+    const tmp = await createControlUiRoot();
+
+    const defaults = await runBootstrapConfigRequest({ rootPath: tmp, config: {} });
+    expect(defaults.res.statusCode).toBe(200);
+    const defaultsPayload = parseBootstrapPayload(defaults.end);
+    expect(defaultsPayload.automaticallyFetchFavicons).toBe(false);
+    expect(defaultsPayload.remoteImageHosts).toEqual([]);
+
+    const optedIn = await runBootstrapConfigRequest({
+      rootPath: tmp,
+      config: {
+        gateway: {
+          controlUi: {
+            automaticallyFetchFavicons: true,
+            remoteImageHosts: ["Docs.Example.com", "  other.example ", "", "."],
+          },
+        },
+      } as never,
+    });
+    expect(optedIn.res.statusCode).toBe(200);
+    const payload = parseBootstrapPayload(optedIn.end);
+    expect(payload.automaticallyFetchFavicons).toBe(true);
+    expect(payload.remoteImageHosts).toEqual(["docs.example.com", "other.example"]);
+  });
+
   it("keeps a maximum-size local avatar out of base-mounted bootstrap", async () => {
     const basePath = "/openclaw";
     const tmp = await createControlUiRoot();

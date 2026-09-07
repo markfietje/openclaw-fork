@@ -7,6 +7,7 @@ import {
 import { escapeHtml } from "../../../src/shared/html-escape.js";
 import { t } from "../i18n/index.ts";
 import { registerChatMediaEnglish } from "../i18n/locales/en-chat-media.ts";
+import { isBoundedDataImage, isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
 
 registerChatMediaEnglish();
 
@@ -75,7 +76,16 @@ export function installAssistantTranscriptRoleMarkdown(md: MarkdownIt): void {
     const roleMeta = (token.meta as AssistantTranscriptRoleImageMeta | undefined)
       ?.assistantTranscriptRoleImage;
     const linkedImage = linkedImageIndices(tokens).has(index);
-    if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(src) && env?.remoteImages !== true) {
+    // Shutter image-egress gate: an inline data-URI renders only inside the
+    // decoded byte budget (markdown-image-gate), and a remote image only when
+    // remote images are enabled AND its exact host is allowlisted. Everything
+    // else degrades to the not-loaded fallback without emitting any fetchable
+    // element.
+    const isInlineDataImage =
+      /^data:image\/[a-z0-9.+-]+;base64,/i.test(src) && isBoundedDataImage(src);
+    const remoteImageAllowed =
+      env?.remoteImages === true && isRemoteImageHostAllowlisted(env?.remoteImageHosts ?? [], src);
+    if (!isInlineDataImage && !remoteImageAllowed) {
       const renderedLabel = roleMeta
         ? renderAssistantTranscriptRoleImageLabel(roleMeta.text, roleMeta.spans)
         : escapeHtml(alt);

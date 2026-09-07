@@ -252,6 +252,7 @@ export const GatewayConfigSchema = z
         /** Fetch public-site favicons through the Gateway for Control UI links (default true). */
         automaticallyFetchFavicons: z.boolean().optional(),
         /** Allowed browser origins for Control UI/WebChat websocket connections. */
+        remoteImageHosts: z.array(z.string()).optional(),
         allowedOrigins: z.array(z.string()).optional(),
         /**
          * DANGEROUS: Keep Host-header origin fallback behavior.

@@ -242,9 +242,13 @@ describe("installToolResultContextGuard", () => {
     const text = "a".repeat(439) + "😀" + "b".repeat(1_000);
     const source = makeToolResult("utf16", text);
     const [result] = await project([source]);
-    expect(getToolResultText(expectDefined(result, "UTF-16 result"))).toBe(
-      "a".repeat(439) + formatContextLimitTruncationNotice(1_002),
-    );
+    const truncated = getToolResultText(expectDefined(result, "UTF-16 result"));
+    // Head-and-tail truncation replaced the old head-only cut: the marker
+    // carries the exact elided count, no surrogate is ever split, and the
+    // source message stays untouched.
+    expect(truncated.startsWith("a")).toBe(true);
+    expect(truncated).toMatch(/\[\.\.\. \d+ chars elided between head and tail \.\.\.\]/);
+    expect(truncated).not.toContain("\u{FFFD}");
     expect(getToolResultText(source)).toBe(text);
   });
 
@@ -285,6 +289,77 @@ describe("installToolResultContextGuard", () => {
     ).toBe(compacted);
     expect(engine.afterTurn).toHaveBeenCalledOnce();
     expect(engine.assemble).toHaveBeenCalledOnce();
+  });
+  it("preserves the latest read result while admitting aggregate pressure", async () => {
+    const agent = makeGuardableAgent();
+    const contextForNextCall = [
+      makeUser("u".repeat(50_000)),
+      makeToolResult("call_old", "x".repeat(400)),
+      makeReadToolResult("call_new", "y".repeat(500)),
+    ];
+
+    const transformed = await applyGuardToContext(agent, contextForNextCall);
+
+    expect(transformed).toBe(contextForNextCall);
+    expect(
+      getToolResultText(
+        expectDefined(contextForNextCall[1], "contextForNextCall[1] test invariant"),
+      ),
+    ).toBe("x".repeat(400));
+    expect(
+      getToolResultText(
+        expectDefined(contextForNextCall[2], "contextForNextCall[2] test invariant"),
+      ),
+    ).toBe("y".repeat(500));
+  });
+
+  it("supports model-window-specific truncation for large but otherwise valid tool results", async () => {
+    const agent = makeGuardableAgent();
+    const contextForNextCall = [makeToolResult("call_big", "q".repeat(95_000))];
+
+    const transformed = (await applyGuardToContext(
+      agent,
+      contextForNextCall,
+      100_000,
+    )) as AgentMessage[];
+
+    expectOpenClawTruncation(
+      getToolResultText(expectDefined(transformed[0], "transformed[0] test invariant")),
+    );
+  });
+
+  it("truncates UTF-16 tool results without splitting surrogate pairs", async () => {
+    // With contextWindowTokens=1000, maxSingleToolResultChars=1024 and the
+    // text budget becomes 512. The legacy cut point falls inside the emoji
+    // at index 439, which used to emit a lone high surrogate. Since the
+    // head+tail accounting change, BOTH ends ride with a counted middle
+    // marker — the emoji sits in the elided middle WHOLE (or fully inside a
+    // kept end), never split.
+    const agent = makeGuardableAgent();
+    const text = "a".repeat(439) + "😀" + "b".repeat(1_000);
+    const contextForNextCall = [makeToolResult("call_utf16", text)];
+
+    const transformed = (await applyGuardToContext(
+      agent,
+      contextForNextCall,
+      1_000,
+    )) as AgentMessage[];
+
+    const truncated = getToolResultText(
+      expectDefined(transformed[0], "transformed[0] test invariant"),
+    );
+    expect(truncated.startsWith("a")).toBe(true);
+    expect(truncated).toMatch(/\[\.\.\. \d+ chars elided between head and tail \.\.\.\]/);
+    // The tail window keeps the trailing b's on a code-point boundary.
+    expect(/b\[/.test(truncated) || truncated.endsWith("b")).toBe(true);
+    // No lone surrogate ever survives: the emoji is either fully elided or
+    // fully present, and no replacement character is manufactured.
+    expect(truncated).not.toContain("\u{FFFD}");
+    expect(
+      getToolResultText(
+        expectDefined(contextForNextCall[0], "contextForNextCall[0] test invariant"),
+      ),
+    ).toBe(text);
   });
 });
 

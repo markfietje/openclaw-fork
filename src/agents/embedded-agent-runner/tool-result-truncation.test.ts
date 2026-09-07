@@ -253,14 +253,19 @@ describe("truncateToolResultText", () => {
   it.each(["m", "你𠀀😀"])(
     "keeps both head and tail cuts on complete code points (%s)",
     (middle) => {
-      const marker = "\n\n⚠️ [... middle content omitted — showing head and tail ...]\n\n";
       const text = `${"a".repeat(6)}😀${middle.repeat(100)}😀${"x".repeat(22)} Error`;
-      expect(
-        truncateToolResultText(text, 100, {
-          suffix: () => "!",
-          minKeepChars: 1,
-        }),
-      ).toBe(`${"a".repeat(6)}${marker}${"x".repeat(22)} Error!`);
+      const truncated = truncateToolResultText(text, 100, {
+        suffix: () => "!",
+        minKeepChars: 1,
+      });
+      // The exact-count elision marker replaced the fixed "middle content
+      // omitted" wording; head and tail still ride on code-point boundaries.
+      expect(truncated.startsWith("a".repeat(6))).toBe(true);
+      // A tight budget shrinks the tail reservation (never falls back to
+      // head-only), so the surviving tail may be just the suffix.
+      expect(truncated.endsWith("!")).toBe(true);
+      expect(truncated).toMatch(/\[\.\.\. \d+ chars elided between head and tail \.\.\.\]/);
+      expect(truncated).not.toContain("\u{FFFD}");
     },
   );
 });
@@ -1055,6 +1060,201 @@ describe("truncateOversizedToolResultsInMessages", () => {
       }
     },
   );
+  it("points aggregate elision at live spill files", async () => {
+    const spillPath = path.join(await createShortTmpDir(), "o");
+    await fs.writeFile(spillPath, "complete command output", { mode: 0o600 });
+    const messages: AgentMessage[] = [
+      makeToolResult(textWithFullOutputFooter("a".repeat(100), spillPath), "spill_1", {
+        fullOutputPath: spillPath,
+      }),
+      makeToolResult("b".repeat(100), "spill_2"),
+      makeToolResult("c".repeat(100), "spill_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 500, 100);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toContain("read");
+    expect(text).toContain(spillPath);
+    await fs.rm(spillPath, { force: true });
+  });
+
+  it("keeps capped spill markers distinct during aggregate elision", async () => {
+    const spillPath = path.join(await createShortTmpDir(), "p");
+    await fs.writeFile(spillPath, "partial web output", { mode: 0o600 });
+    const messages: AgentMessage[] = [
+      makeToolResult(textWithFullOutputFooter("a".repeat(100), spillPath), "partial_spill_1", {
+        spill: {
+          path: spillPath,
+          chars: 2_000_000,
+          truncated: true,
+        },
+      }),
+      makeToolResult("b".repeat(100), "partial_spill_2"),
+      makeToolResult("c".repeat(100), "partial_spill_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 300, 100);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toContain("partial");
+    expect(text).toContain(spillPath);
+    expect(text).not.toContain("full output preserved");
+    await fs.rm(spillPath, { force: true });
+  });
+
+  it("detects spill footers escaped inside JSON tool results", async () => {
+    const spillPath = path.join(await createShortTmpDir(), "C:\\s");
+    await fs.writeFile(spillPath, "json wrapped output", { mode: 0o600 });
+    const messages: AgentMessage[] = [
+      makeToolResult(
+        JSON.stringify({ text: textWithFullOutputFooter("a".repeat(100), spillPath) }, null, 2),
+        "escaped_spill_1",
+        { fullOutputPath: spillPath },
+      ),
+      makeToolResult("b".repeat(100), "escaped_spill_2"),
+      makeToolResult("c".repeat(100), "escaped_spill_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 300, 100);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toContain("read");
+    expect(text).toContain(spillPath);
+    await fs.rm(spillPath, { force: true });
+  });
+
+  it("falls back to rerun guidance when the spill file is gone", async () => {
+    const dir = await createTmpDir();
+    const spillPath = path.join(dir, "deleted-output.log");
+    await fs.writeFile(spillPath, "complete command output", { mode: 0o600 });
+    await fs.rm(spillPath);
+    const messages: AgentMessage[] = [
+      makeToolResult(textWithFullOutputFooter("a".repeat(100), spillPath), "deleted_spill_1", {
+        fullOutputPath: spillPath,
+      }),
+      makeToolResult("b".repeat(100), "deleted_spill_2"),
+      makeToolResult("c".repeat(100), "deleted_spill_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 100, 100);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toContain("[tool result elided");
+    expect(text).not.toContain(spillPath);
+  });
+
+  it("keeps plain aggregate elision behavior without a spill pointer", () => {
+    const messages: AgentMessage[] = [
+      makeToolResult("a".repeat(100), "plain_1"),
+      makeToolResult("b".repeat(100), "plain_2"),
+      makeToolResult("c".repeat(100), "plain_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 100, 100);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toContain("[tool result elided");
+    expect(text).not.toContain("full output preserved at");
+  });
+
+  it("does not disclose details-only spill paths during aggregate elision", async () => {
+    const spillPath = path.join(await createTmpDir(), "private-output.log");
+    await fs.writeFile(spillPath, "private output", { mode: 0o600 });
+    const messages: AgentMessage[] = [
+      makeToolResult("a".repeat(100), "private_spill_1", { fullOutputPath: spillPath }),
+      makeToolResult("b".repeat(100), "private_spill_2"),
+      makeToolResult("c".repeat(100), "private_spill_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 100, 100);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toContain("[tool result elided");
+    expect(text).not.toContain(spillPath);
+    await fs.rm(spillPath, { force: true });
+  });
+
+  it("floors tiny aggregate elision budgets at compact spill markers", async () => {
+    const dir = await createTmpDir();
+    const spillPath = path.join(dir, "budget-output.log");
+    await fs.writeFile(spillPath, "complete command output", { mode: 0o600 });
+    const messages: AgentMessage[] = [
+      makeToolResult(textWithFullOutputFooter("a".repeat(100), spillPath), "budget_1", {
+        fullOutputPath: spillPath,
+      }),
+      makeToolResult("b".repeat(100), "budget_2"),
+      makeToolResult("c".repeat(100), "budget_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 1_000, 8);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toBe(`[read ${spillPath}]`);
+  });
+
+  it("keeps a counted elision notice at pointerless near-zero aggregate budgets", async () => {
+    // Results must OUTSIZE the counted notice (a notice longer than the
+    // result it replaces is a net increase — the budget loop skips it, as
+    // it should). Under this crushed budget the marker is sliced; the
+    // count-first ordering (pinned below) means slicing costs the rerun
+    // guidance before it can cost the count.
+    const messages: AgentMessage[] = [
+      makeToolResult("a".repeat(300), "sliced_plain_1"),
+      makeToolResult("b".repeat(300), "sliced_plain_2"),
+      makeToolResult("c".repeat(300), "sliced_plain_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 1_000, 94);
+    const texts = result.messages.map((message) => getFirstToolResultText(message));
+
+    expect(texts.some((text) => text.startsWith("[tool result elided:"))).toBe(true);
+    const source = await fs.readFile(new URL("tool-result-truncation.ts", import.meta.url), "utf8");
+    // Count-first in the template, guidance last in the const — slicing the
+    // rendered marker costs the guidance before the count.
+    expect(source).toMatch(
+      /\[tool result elided: \$\{Math\.max\(1, Math\.floor\(elidedChars\)\)\} chars elided;/,
+    );
+    expect(source).toMatch(
+      /AGGREGATE_ELISION_MARKER_GUIDANCE =\s*"aggregate tool-result budget exceeded/,
+    );
+  });
+
+  it("keeps realistic spill pointers intact in near-zero aggregate elision budgets", async () => {
+    const dir = await createTmpDir();
+    const spillPath = realisticSpillPath(dir, "realistic");
+    await fs.writeFile(spillPath, "complete command output", { mode: 0o600 });
+    const messages: AgentMessage[] = [
+      makeToolResult(textWithFullOutputFooter("a".repeat(2_000), spillPath), "realistic_1", {
+        fullOutputPath: spillPath,
+      }),
+      makeToolResult("b".repeat(2_000), "realistic_2"),
+      makeToolResult("c".repeat(2_000), "realistic_3"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 5_000, 1);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toBe(`[read ${spillPath}]`);
+  });
+
+  it("uses spill-aware aggregate truncation suffixes with realistic paths", async () => {
+    const dir = await createTmpDir();
+    const spillPath = realisticSpillPath(dir, "suffix");
+    await fs.writeFile(spillPath, "complete command output", { mode: 0o600 });
+    const messages: AgentMessage[] = [
+      makeToolResult(textWithFullOutputFooter("a".repeat(5_000), spillPath), "suffix_1", {
+        fullOutputPath: spillPath,
+      }),
+      makeToolResult("b".repeat(5_000), "suffix_2"),
+    ];
+
+    const result = truncateOversizedToolResultsInMessages(messages, 128_000, 8_000, 9_000);
+    const text = getFirstToolResultText(result.messages[0] ?? makeToolResult(""));
+
+    expect(text).toContain(`full output at ${spillPath}`);
+    expect(text).not.toContain("narrow args");
+  });
 
   it("does not restore filtered image blocks when reusing a projection", () => {
     const projectionState = createPromptProjectionStateForTest();
@@ -1601,7 +1801,7 @@ describe("truncateToolResultText head+tail strategy", () => {
     if (kind === "error") {
       expect(result).toContain("Line 1");
       expect(result).toContain("Error: something failed");
-      expect(result).toContain("middle content omitted");
+      expect(result).toMatch(/\[\.\.\. \d+ chars elided between head and tail \.\.\.\]/);
     } else if (kind === "newline") {
       expect(result).toContain("truncated");
       expect(result.length).toBeLessThan(text.length);

@@ -9,18 +9,32 @@ function htmlFragment(html: string): HTMLElement {
 }
 
 describe("document markdown", () => {
-  it("preserves safe remote images while sanitizing unsafe sources", () => {
-    const safe = htmlFragment(
+  it("preserves allowlisted remote images while defaulting to fallbacks", () => {
+    const allowlisted = htmlFragment(
       toSanitizedMarkdownHtml("![Alt text](https://example.com/img.png)", {
         mode: "document",
+        remoteImages: true,
+        remoteImageHosts: ["example.com"],
+      }),
+    );
+    const unlisted = htmlFragment(
+      toSanitizedMarkdownHtml("![Alt text](https://attacker.example/img.png)", {
+        mode: "document",
+        remoteImages: true,
       }),
     );
     const unsafe = htmlFragment(
       toSanitizedMarkdownHtml("![Alt text](javascript:alert(1))", { mode: "document" }),
     );
 
-    expect(safe.querySelector("img")?.getAttribute("src")).toBe("https://example.com/img.png");
-    expect(unsafe.querySelector("img")?.hasAttribute("src")).toBe(false);
+    expect(allowlisted.querySelector("img")?.getAttribute("src")).toBe(
+      "https://example.com/img.png",
+    );
+    // Fail-safe posture: an explicit opt-in with no curated hosts still
+    // renders the fallback instead of any fetchable image.
+    expect(unlisted.querySelector("img")).toBeNull();
+    expect(unlisted.querySelector(".markdown-external-image")).not.toBeNull();
+    expect(unsafe.querySelector("img")).toBeNull();
     const clickToOpen = htmlFragment(
       toSanitizedMarkdownHtml("![Alt text](https://example.com/img.png)", {
         mode: "document",

@@ -14,6 +14,7 @@ export type MarkdownRenderOptions = {
   progressBars?: boolean;
   mode?: MarkdownRenderMode;
   remoteImages?: boolean;
+  remoteImageHosts?: string[];
   sessionLinks?: boolean;
   tableInteractions?: MarkdownTableInteractions;
 };
@@ -35,8 +36,23 @@ export function normalizeMarkdownRenderOptions(
     linkFavicons: options.linkFavicons ?? false,
     progressBars: options.progressBars ?? false,
     mode: options.mode ?? "message",
-    remoteImages: options.remoteImages ?? options.mode === "document",
+    // Remote images are OFF by default in every mode: fetching model-controlled
+    // URLs is an exfiltration channel, so document renders opt in explicitly
+    // and every fetched host must also be allowlisted (markdown-image-gate).
+    remoteImages: options.remoteImages ?? false,
+    remoteImageHosts: normalizeRemoteImageHosts(options.remoteImageHosts),
     sessionLinks: options.sessionLinks ?? false,
     tableInteractions: options.tableInteractions ?? "none",
   };
+}
+
+function normalizeRemoteImageHosts(hosts: string[] | undefined): string[] {
+  const normalized: string[] = [];
+  for (const host of hosts ?? []) {
+    const trimmed = host.trim().toLowerCase().replace(/\.$/, "");
+    if (trimmed !== "" && !normalized.includes(trimmed)) {
+      normalized.push(trimmed);
+    }
+  }
+  return normalized;
 }

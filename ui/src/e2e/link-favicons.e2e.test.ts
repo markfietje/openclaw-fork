@@ -1,4 +1,4 @@
-// Control UI tests cover the authenticated default-on link-favicon flow and explicit opt-out.
+// Control UI tests cover the authenticated allowlisted link-favicon flow and explicit opt-out.
 import { expect, it } from "vitest";
 import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-support.ts";
 
@@ -9,7 +9,7 @@ const ONE_PIXEL_PNG = Buffer.from(
 );
 
 suite.define(() => {
-  it("loads enabled favicons only through the authenticated same-origin route", async () => {
+  it("loads allowlisted favicons only through the authenticated same-origin route", async () => {
     const context = await suite.newBrowserContext({
       locale: "en-US",
       serviceWorkers: "block",
@@ -30,6 +30,7 @@ suite.define(() => {
     });
     await installMockGateway(page, {
       automaticallyFetchFavicons: true,
+      remoteImageHosts: ["docs.example.com"],
       historyMessages: [
         {
           content: [{ type: "text", text: "Read [the docs](https://docs.example.com/guide)." }],

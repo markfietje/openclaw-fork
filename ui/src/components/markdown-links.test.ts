@@ -556,10 +556,11 @@ describe("toSanitizedMarkdownHtml links", () => {
       expect(fragment.querySelector("img.markdown-link-favicon")).toBeNull();
     });
 
-    it("emits an inert hostname-only placeholder for enabled web links", () => {
+    it("emits an inert hostname-only placeholder for allowlisted web links", () => {
       const fragment = htmlFragment(
         toSanitizedMarkdownHtml("[Docs](https://docs.example.com/a?secret=1#fragment)", {
           linkFavicons: true,
+          remoteImageHosts: ["docs.example.com"],
         }),
       );
 
@@ -567,6 +568,19 @@ describe("toSanitizedMarkdownHtml links", () => {
       expect(image?.dataset.linkFaviconHost).toBe("docs.example.com");
       expect(image?.hasAttribute("src")).toBe(false);
       expect(image?.alt).toBe("");
+    });
+
+    it("emits a letter tile without any fetchable element for unlisted hosts", () => {
+      const fragment = htmlFragment(
+        toSanitizedMarkdownHtml("[Docs](https://docs.example.com/a)", {
+          linkFavicons: true,
+          remoteImageHosts: ["other.example"],
+        }),
+      );
+
+      expect(fragment.querySelector("img.markdown-link-favicon")).toBeNull();
+      const tile = fragment.querySelector<HTMLElement>(".markdown-link-favicon-tile");
+      expect(tile?.textContent).toBe("D");
     });
 
     it("keeps the bundled GitHub mark and skips image-only links", () => {

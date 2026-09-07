@@ -21,6 +21,7 @@ import {
   splitMarkdownFileLineSuffix,
 } from "./markdown-file-links.ts";
 import { installMarkdownGitHubRefs } from "./markdown-github-refs.ts";
+import { isBoundedDataImage, isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
 import { hasMarkdownLinkBoundaries } from "./markdown-link-boundary.ts";
 import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 import { installMarkdownSessionLinks, SESSION_LINK_SCAN_RE } from "./markdown-session-links.ts";
@@ -611,7 +612,18 @@ export function createMarkdownParser(): MarkdownItParser {
           }
         }
         if (!githubLink && labelToken && state.env.linkFavicons) {
-          const favicon = new state.Token("link_favicon", "img", 0);
+          // Shutter: only allowlisted hosts ever reach the fetch path (the img
+          // the loader hydrates through the authenticated proxy); unlisted
+          // hosts degrade to the letter tile with no fetchable element.
+          const allowlisted = isRemoteImageHostAllowlisted(
+            state.env.remoteImageHosts ?? [],
+            `https://${host}`,
+          );
+          const favicon = new state.Token(
+            allowlisted ? "link_favicon" : "link_favicon_tile",
+            allowlisted ? "img" : "",
+            0,
+          );
           favicon.meta = { hostname: host };
           children.splice(index + 1, 0, favicon);
           index += 1;
@@ -664,6 +676,14 @@ export function createMarkdownParser(): MarkdownItParser {
       ? `<img class="markdown-link-favicon" data-link-favicon-host="${escapeMarkdownHtml(hostname)}" alt="" role="presentation">`
       : "";
   };
+  markdownParser.renderer.rules.link_favicon_tile = (tokens, index) => {
+    const hostname: unknown = tokens[index]?.meta?.hostname;
+    if (typeof hostname !== "string" || hostname === "") {
+      return "";
+    }
+    const letter = escapeMarkdownHtml(hostname[0].toUpperCase());
+    return `<span class="markdown-link-favicon-tile" aria-hidden="true">${letter}</span>`;
+  };
   markdownParser.renderer.rules.code_inline = (tokens, index, options, env, self) => {
     const rendered = defaultCodeInlineRenderer(tokens, index, options, env, self);
     const target = tokens[index]?.meta?.fileLink as MarkdownFileLinkMeta | undefined;
@@ -680,7 +700,6 @@ export function createMarkdownParser(): MarkdownItParser {
   // Remote images can stay click-to-open without truncating a document preview.
   installAssistantTranscriptRoleImageRenderer(markdownParser, {
     escapeHtml: escapeMarkdownHtml,
-    isInlineDataImage: (src) => INLINE_DATA_IMAGE_RE.test(src),
     normalizeLabel: normalizeMarkdownImageLabel,
     assistantLabel: () => t("sessionsView.assistant"),
     openImageLabel: (alt, hasAlt) =>
@@ -699,8 +718,17 @@ export function createMarkdownParser(): MarkdownItParser {
     },
     interactiveImages: (env) =>
       (env as Partial<MarkdownRenderEnv> | undefined)?.interactiveImages === true,
-    allowRemoteImages: (env) =>
-      (env as Partial<MarkdownRenderEnv> | undefined)?.remoteImages === true,
+    // A remote image renders only when the operator opted in AND allowlisted
+    // its exact host; inline data-URIs additionally stay inside the decoded
+    // byte budget (markdown-image-gate). Everything else degrades to the
+    // not-loaded fallback span without emitting any fetchable <img>.
+    isInlineDataImage: (src) => INLINE_DATA_IMAGE_RE.test(src) && isBoundedDataImage(src),
+    allowRemoteImages: (env, src) =>
+      (env as Partial<MarkdownRenderEnv> | undefined)?.remoteImages === true &&
+      isRemoteImageHostAllowlisted(
+        (env as Partial<MarkdownRenderEnv> | undefined)?.remoteImageHosts ?? [],
+        src,
+      ),
   });
 
   // Fenced and indented blocks share one interaction and overflow surface.

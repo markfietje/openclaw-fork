@@ -63,6 +63,7 @@ export type ChatPageHost = ChatHost &
     embedSandboxMode: EmbedSandboxMode;
     allowExternalEmbedUrls: boolean;
     automaticallyFetchFavicons: boolean;
+    remoteImageHosts: string[];
     chatToolMessages: Record<string, unknown>[];
     guardianNotices: ChatGuardianNotice[];
     chatComposerFallbackByScope: Record<string, ChatComposerMemoryFallback>;

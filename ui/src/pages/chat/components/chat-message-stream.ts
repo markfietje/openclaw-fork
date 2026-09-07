@@ -52,6 +52,7 @@ type StreamMessageOptions = Pick<
   | "pluginToolIcons"
   | "githubRepo"
   | "githubRepositories"
+  | "remoteImageHosts"
   | "onOpenWorkspaceFile"
 >;
 

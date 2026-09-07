@@ -201,6 +201,8 @@ export function renderGroupedMessage(
     pluginToolIcons?: PluginToolIcons;
     githubRepo?: MarkdownRenderOptions["githubRepo"];
     githubRepositories?: MarkdownRenderOptions["githubRepositories"];
+    /** Operator-allowlisted image hosts; empty means document renders never fetch. */
+    remoteImageHosts?: string[];
     onOpenWorkspaceFile?: (target: { path: string; line?: number | null }) => void;
     avatar?: TemplateResult | typeof nothing;
     entryId?: string;
@@ -301,6 +303,7 @@ export function renderGroupedMessage(
     sessionLinks: true,
     tableInteractions: "enabled",
     linkFavicons: Boolean(opts.fetchLinkFavicon) && !opts.isStreaming,
+    remoteImageHosts: opts.remoteImageHosts ?? [],
   };
 
   // Classify completed bare JSON before Markdown can interpret its literal values.

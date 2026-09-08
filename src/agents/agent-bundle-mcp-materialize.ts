@@ -12,6 +12,7 @@ import {
 } from "../plugins/tool-metadata.js";
 import { sanitizeModelSpecialTokens } from "../security/external-content.js";
 import { releaseSessionMcpRuntime } from "./agent-bundle-mcp-manager-cleanup.js";
+import { pendingAckToolNames, reconcileCatalogPins } from "./agent-bundle-mcp-catalog-pins.js";
 import {
   buildSafeToolName,
   compareMcpCatalogTools,
@@ -411,6 +412,13 @@ export async function materializeBundleMcpToolsForRun(params: {
   /** Transfer the lease admitted by the manager before returning this runtime. */
   releaseLease?: () => void;
   disposeRuntime?: () => Promise<void>;
+  /** v1.28.67 "Pin" (X-M3): path of the agent's `mcp-catalog-pins.json`.
+   * When set, the fetched catalog is fingerprinted and diffed against the
+   * acknowledged pins every run (openclaw materializes per RUN, so per-run
+   * re-hash IS the per-execution cadence); drift notifies the operator and
+   * the drifted tools carry `pendingAck` in their plugin meta. Surfacing,
+   * not gating — first use is never blocked. */
+  catalogPinsPath?: string;
 }): Promise<BundleMcpToolRuntime> {
   const runtime = params.runtime;
   let disposal: Promise<void> | undefined;
@@ -449,6 +457,16 @@ export async function materializeBundleMcpToolsForRun(params: {
       ? Array.from(params.reservedToolNames)
       : undefined;
     const materializedCatalog = mergeMcpConnectCatalog(catalog, runtime.requesterConnect);
+    // v1.28.67 "Pin" (X-M3): fingerprint + diff BEFORE projection. Drift
+    // notifies the operator (log seam by default) — the MODEL-visible
+    // descriptions render unchanged; the operator sees the drift, not the
+    // agent. No pins file is written here: acknowledgment is an explicit
+    // operator touch (acknowledgeCatalogPins).
+    const driftByServer = reconcileCatalogPins({
+      catalog: materializedCatalog,
+      ...(params.catalogPinsPath ? { pinsPath: params.catalogPinsPath } : {}),
+    });
+    const pendingAck = pendingAckToolNames(driftByServer);
     const getPrompt = runtime.getPrompt?.bind(runtime);
     const createListExecute = (
       method: "listResources" | "listPrompts",
@@ -628,6 +646,24 @@ export async function materializeBundleMcpToolsForRun(params: {
       modelTools: tools,
       reservedToolNames,
     });
+    // Flag the drifted tools in their plugin meta (additive; hosts can read
+    // or hide them) — pendingAck survives as long as the operator has not
+    // acknowledged the current fingerprints.
+    if (pendingAck.size > 0) {
+      for (const tool of [...tools, ...appTools]) {
+        const meta = getPluginToolMeta(tool)?.mcp;
+        if (!meta || meta.operation !== "tool") {
+          continue;
+        }
+        if (pendingAck.get(meta.serverName)?.has(meta.toolName)) {
+          setPluginToolMeta(tool, {
+            pluginId: "bundle-mcp",
+            optional: false,
+            mcp: { ...meta, pendingAck: true },
+          });
+        }
+      }
+    }
 
     return {
       tools,

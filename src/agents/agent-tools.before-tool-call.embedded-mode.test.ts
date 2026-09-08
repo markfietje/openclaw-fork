@@ -225,6 +225,9 @@ describe("runBeforeToolCallHook — embedded mode approvals", () => {
       {
         agentId: undefined,
         allowedDecisions: undefined,
+        // Truthglass: the effective arguments ride the payload (redacted,
+        // capped host-side) beside the plugin-authored prose.
+        args: '{"command":"ls","adjusted":true}',
         description: "Test approval request",
         sessionKey: undefined,
         severity: "info",

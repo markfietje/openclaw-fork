@@ -43,6 +43,16 @@ export const PluginApprovalRequestParamsSchema = closedObject({
       }),
     ),
   ),
+  args: Type.Optional(
+    nullableMetadata(
+      Type.String({
+        minLength: 1,
+        maxLength: 2_000,
+        description:
+          "Redacted JSON of the effective tool-call arguments, computed by the host with the persistence redaction; capped with a visible truncation marker. Reviewer-surface truth for what will run — display-only, never authorization.",
+      }),
+    ),
+  ),
   severity: Type.Optional(nullableMetadata(Type.String({ enum: ["info", "warning", "critical"] }))),
   scope: Type.Optional(
     Type.Unsafe<Static<typeof ApprovalScopeSchema> | null>({

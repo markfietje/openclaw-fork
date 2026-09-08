@@ -1,4 +1,5 @@
 import { truncateCodePoints } from "@openclaw/normalization-core/code-points";
+import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { summarizeApprovalScope, type ApprovalScope } from "./approval-scope.js";
 import type { ExecApprovalDecision } from "./exec-approvals-core.js";
 
@@ -31,6 +32,14 @@ export type PluginApprovalRequestPayload = {
   title: string;
   description: string;
   detail?: string | null;
+  /**
+   * Redacted JSON of the effective tool-call arguments (the act, not the
+   * prose). The host computes it with the persistence redaction and a
+   * visible truncation cap, so the reviewer always sees the raw operation
+   * alongside the plugin-authored description. Display-only — never
+   * authorization.
+   */
+  args?: string | null;
   severity?: "info" | "warning" | "critical" | null;
   /** Owner-declared blast-radius facts; display-only, never authorization. */
   scope?: ApprovalScope | null;
@@ -83,7 +92,14 @@ export const PLUGIN_APPROVAL_TITLE_MAX_LENGTH = 80;
 export const PLUGIN_APPROVAL_DESCRIPTION_MAX_LENGTH = 512;
 const PLUGIN_APPROVAL_DETAIL_MAX_LENGTH = 16_384;
 const PLUGIN_APPROVAL_DETAIL_TRUNCATION_SUFFIX = "…[truncated]";
-const DEFAULT_PLUGIN_APPROVAL_DECISIONS = [
+export const PLUGIN_APPROVAL_ARGS_MAX_LENGTH = 2_000;
+/**
+ * The args truncation marker carries the EXACT elided count — silent elision
+ * is the laundering shape this cap exists to close. Counted in Unicode code
+ * points, consistent with the other approval caps.
+ */
+const PLUGIN_APPROVAL_ARGS_TRUNCATION_MARKER = (elided: number) => `[…truncated ${elided} chars]`;
+export const DEFAULT_PLUGIN_APPROVAL_DECISIONS = [
   "allow-once",
   "allow-always",
   "deny",
@@ -103,6 +119,29 @@ export function truncatePluginApprovalDetail(value: string): string {
   return `${truncateCodePoints(bounded, contentLimit)}${PLUGIN_APPROVAL_DETAIL_TRUNCATION_SUFFIX}`;
 }
 
+/**
+ * Caps approval args at the visible limit with a marker that states the
+ * exact elided count (no silent elision). Code-point safe like the detail
+ * cap; the marker length is part of the accounting.
+ */
+export function truncatePluginApprovalArgs(value: string): string {
+  if (Array.from(value).length <= PLUGIN_APPROVAL_ARGS_MAX_LENGTH) {
+    return value;
+  }
+  let codePointCount = 0;
+  let contentCodeUnitLength = 0;
+  for (const char of value) {
+    if (codePointCount >= PLUGIN_APPROVAL_ARGS_MAX_LENGTH) {
+      break;
+    }
+    codePointCount += 1;
+    contentCodeUnitLength += char.length;
+  }
+  const elided = Array.from(value).length - codePointCount;
+  return `${truncateUtf16Safe(value, contentCodeUnitLength)}${PLUGIN_APPROVAL_ARGS_TRUNCATION_MARKER(elided)}`;
+}
+
+/** Clamp a plugin approval timeout to the supported runtime bounds. */
 export function resolvePluginApprovalTimeoutMs(value: unknown): number {
   const candidate =
     typeof value === "number" && Number.isFinite(value)

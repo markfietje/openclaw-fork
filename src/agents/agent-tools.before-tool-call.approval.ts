@@ -16,7 +16,9 @@ import { resolveCanonicalPluginApprovalRequestAllowedDecisions } from "../infra/
 import {
   DEFAULT_PLUGIN_APPROVAL_TIMEOUT_MS,
   MAX_PLUGIN_APPROVAL_TIMEOUT_MS,
+  truncatePluginApprovalArgs,
 } from "../infra/plugin-approvals.js";
+import { redactToolPayloadText } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { cloneHookIsolationValue } from "../plugins/hook-isolation.js";
 import {
@@ -87,6 +89,33 @@ export function mergeParamsWithApprovalOverrides(
       ? { ...originalParams, ...approvalParams }
       : approvalParams
     : originalParams;
+}
+
+/**
+ * The tool-call truth for the approval surface: the EFFECTIVE arguments
+ * (base merged with approval overrides — what will actually run) as display
+ * JSON. Redacted with the same tools-mode redaction the persistence layer
+ * applies (secrets in args reach the reviewer masked), then capped with a
+ * VISIBLE marker carrying the exact elided count. `null` when there is
+ * nothing to show.
+ */
+export function buildApprovalArgs(baseParams: unknown, overrideParams?: unknown): string | null {
+  const effective = mergeParamsWithApprovalOverrides(baseParams, overrideParams);
+  if (effective === undefined || effective === null) {
+    return null;
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(effective);
+  } catch {
+    // BigInt/circular params refuse to serialize. The reviewer still learns
+    // that arguments EXIST — silent omission is the laundering shape.
+    serialized = '"<unserializable arguments>"';
+  }
+  if (!serialized) {
+    return null;
+  }
+  return truncatePluginApprovalArgs(redactToolPayloadText(serialized));
 }
 
 function notifyPluginApprovalResolution(
@@ -242,6 +271,9 @@ async function requestPluginToolApprovalDecision(
   const gatewayTimeoutMs =
     addTimerTimeoutGraceMs(timeoutMs, 10_000) ?? DEFAULT_PLUGIN_APPROVAL_TIMEOUT_MS + 10_000;
   const allowedDecisions = resolveCanonicalPluginApprovalRequestAllowedDecisions(approval);
+  // The raw act alongside the plugin's prose: the reviewer sees the
+  // effective tool-call arguments, redacted and capped, at BOTH surfaces.
+  const args = buildApprovalArgs(params.baseParams, params.overrideParams);
   const resolveDecision = (decision: unknown): HookOutcome | undefined => {
     const resolution = resolvePermittedPluginApprovalResolution(decision, allowedDecisions);
     notifyPluginApprovalResolution(approval, resolution);
@@ -304,6 +336,7 @@ async function requestPluginToolApprovalDecision(
           title: approval.title,
           description: approval.description,
           ...(approval.scope ? { scope: sanitizeApprovalScope(approval.scope) } : {}),
+          args,
           severity: approval.severity,
           allowedDecisions: approval.allowedDecisions,
           ...requestIdentity,
@@ -361,6 +394,7 @@ async function requestPluginToolApprovalDecision(
             title: approval.title,
             description: approval.description,
             ...(approval.scope ? { scope: approval.scope } : {}),
+            args,
             severity: approval.severity,
             allowedDecisions: approval.allowedDecisions,
             ...requestIdentity,

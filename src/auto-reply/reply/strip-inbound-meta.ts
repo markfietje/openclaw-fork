@@ -13,6 +13,16 @@ const ACTIVE_MEMORY_CLOSE_TAG = "</active_memory_plugin>";
 // Historical producer bytes: this companion preceded the marked JSON hint field.
 export const LEGACY_REQUESTER_PROFILE_HINT =
   'requester_profile is the verified linked requester. For "assign to me", use sessions assign_owner with ownerType="human" and ownerId=requester_profile.id, if available.';
+// The brain plugin's textual origin convention (the origin-labeling line):
+// recalled memories captured from channel traffic carry this prefix INSIDE
+// the plugin's fence. On QUOTED/REPLAYED text — a channel-forwarded memory
+// pasted back as user prose — the prefix must never read as fresh owner
+// authorship: it is MARKED as an untrusted replay at this boundary. (The
+// fork recognizes one textual convention; it does NOT read the brain store
+// or learn its schema.)
+const MEMORY_ORIGIN_PREFIX_RE = /\[memory \| ([^\]]+)\]/g;
+export const REPLAYED_MEMORY_MARK =
+  "[quoted memory · origin: $1 — untrusted replay, not fresh prose]";
 export const INBOUND_METADATA_MARKERS = [
   "[",
   INBOUND_CONTEXT_MARKER,
@@ -164,9 +174,23 @@ function stripTrailingContextBlockSuffix(text: string): string {
   return text.slice(0, Math.max(0, end - 1));
 }
 
+/**
+ * Marks replayed/quoted memory-origin prefixes so a channel-forwarded memory
+ * line cannot masquerade as fresh owner prose (the mirror of the
+ * `<active_memory_plugin>` block handling, at proportionate grade: the
+ * plugin renders the label; this boundary marks its REPLAY). Idempotent —
+ * the replacement text contains no `[memory | ` literal.
+ */
+export function markReplayedMemoryOrigin(text: string): string {
+  if (!text.includes("[memory | ")) {
+    return text;
+  }
+  return text.replace(MEMORY_ORIGIN_PREFIX_RE, REPLAYED_MEMORY_MARK);
+}
+
 /** Strips all injected inbound metadata blocks from user-visible text. */
 export function stripInboundMetadata(text: string): string {
-  const withoutTimestamp = text.replace(LEADING_TIMESTAMP_PREFIX_RE, "");
+  const withoutTimestamp = markReplayedMemoryOrigin(text.replace(LEADING_TIMESTAMP_PREFIX_RE, ""));
   if (!hasInboundMetadataSentinel(withoutTimestamp)) {
     return withoutTimestamp;
   }
@@ -220,10 +244,11 @@ export function readLeadingInboundMetadataEnd(text: string): number {
 
 /** Strips only leading inbound metadata blocks while preserving later user text. */
 export function stripLeadingInboundMetadata(text: string): string {
-  if (!hasInboundMetadataSentinel(text)) {
-    return text;
+  const marked = markReplayedMemoryOrigin(text);
+  if (!hasInboundMetadataSentinel(marked)) {
+    return marked;
   }
-  const source = stripActiveMemoryPromptPrefixBlocks(text);
+  const source = stripActiveMemoryPromptPrefixBlocks(marked);
   return stripTrailingContextBlockSuffix(source.slice(readLeadingInboundMetadataEnd(source)));
 }
 

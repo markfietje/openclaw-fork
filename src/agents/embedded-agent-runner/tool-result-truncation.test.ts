@@ -262,10 +262,14 @@ describe("truncateToolResultText", () => {
       // omitted" wording; head and tail still ride on code-point boundaries.
       expect(truncated.startsWith("a".repeat(6))).toBe(true);
       // A tight budget shrinks the tail reservation (never falls back to
-      // head-only), so the surviving tail may be just the suffix.
+      // head-only), so the surviving tail may be just the suffix — and a
+      // notice that would exceed the budget is skipped outright (the
+      // net-increase refusal), so wide-character middles may carry no marker.
       expect(truncated.endsWith("!")).toBe(true);
-      expect(truncated).toMatch(/\[\.\.\. \d+ chars elided between head and tail \.\.\.\]/);
       expect(truncated).not.toContain("\u{FFFD}");
+      if (middle === "m") {
+        expect(truncated).toMatch(/\[\.\.\. \d+ chars elided between head and tail \.\.\.\]/);
+      }
     },
   );
 });

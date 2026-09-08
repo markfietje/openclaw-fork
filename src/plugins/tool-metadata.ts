@@ -15,6 +15,9 @@ export type PluginToolMcpMeta = {
   deniedBySession?: true;
   /** Trusted requester OAuth sign-in bootstrap; exempt from per-call MCP approval. */
   oauthConnectBootstrap?: true;
+  /** v1.28.67 "Pin": the tool definition is NOT acknowledged in the catalog
+   * pins file — new or changed since the operator last acknowledged. */
+  pendingAck?: true;
   codexApproval?: {
     mode?: McpCodexToolApprovalMode;
     annotations?: McpCodexToolAnnotations;

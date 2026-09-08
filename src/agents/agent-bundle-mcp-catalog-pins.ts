@@ -46,7 +46,11 @@ export type CatalogPinEntry = {
 export type CatalogPinsFile = Record<string, CatalogPinEntry>;
 
 /** Deterministic JSON: sorted object keys, recursive. Schema normalize first
- * (the materialize path does), so key order from the server never matters. */
+ * (the materialize path does), so key order from the server never matters.
+ * Key ordering is a CODE-UNIT compare, never localeCompare: a locale-aware
+ * collation reorders non-ASCII keys differently across ICU builds, which
+ * would make the same catalog fingerprint differently on two machines —
+ * permanent false drift. (Pinned by stable_stringify_is_icu_independent.) */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value) ?? "null";
@@ -56,7 +60,7 @@ export function stableStringify(value: unknown): string {
   }
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => a.localeCompare(b));
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
 }
 

@@ -79,6 +79,14 @@ describe("mcp catalog pins", () => {
     );
   });
 
+  // Key ordering is CODE-UNIT compare, never locale-aware collation: an ICU
+  // build difference would fingerprint the same catalog differently on two
+  // machines — permanent false drift. The exact expected serialization pins
+  // the collation (localeCompare would reorder é/Z/_ differently).
+  it("stable_stringify_is_icu_independent", () => {
+    expect(stableStringify({ é: 1, Z: 2, a: 3, _: 4 })).toBe('{"Z":2,"_":4,"a":3,"\u00e9":1}');
+  });
+
   it("description_change_surfaces_drift", () => {
     const target = pinsPath();
     const first = {

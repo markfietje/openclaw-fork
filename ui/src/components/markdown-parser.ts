@@ -611,12 +611,13 @@ export function createMarkdownParser(): MarkdownItParser {
             open.attrSet("title", href);
           }
         }
-        if (!githubLink && labelToken && state.env.linkFavicons) {
+        const renderEnv = state.env as Partial<MarkdownRenderEnv> | undefined;
+        if (!githubLink && labelToken && renderEnv?.linkFavicons) {
           // Shutter: only allowlisted hosts ever reach the fetch path (the img
           // the loader hydrates through the authenticated proxy); unlisted
           // hosts degrade to the letter tile with no fetchable element.
           const allowlisted = isRemoteImageHostAllowlisted(
-            state.env.remoteImageHosts ?? [],
+            renderEnv.remoteImageHosts ?? [],
             `https://${host}`,
           );
           const favicon = new state.Token(
@@ -681,7 +682,7 @@ export function createMarkdownParser(): MarkdownItParser {
     if (typeof hostname !== "string" || hostname === "") {
       return "";
     }
-    const letter = escapeMarkdownHtml(hostname[0].toUpperCase());
+    const letter = escapeMarkdownHtml(hostname.slice(0, 1).toUpperCase());
     return `<span class="markdown-link-favicon-tile" aria-hidden="true">${letter}</span>`;
   };
   markdownParser.renderer.rules.code_inline = (tokens, index, options, env, self) => {

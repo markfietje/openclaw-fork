@@ -22,7 +22,7 @@ import {
 import { installMarkdownGitHubRefs } from "./markdown-github-refs.ts";
 import { installMarkdownHexColors } from "./markdown-hex-colors.ts";
 import { installMarkdownHumanMentions } from "./markdown-human-mentions.ts";
-import { isBoundedDataImage, isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
+import { isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
 import { hasMarkdownLinkBoundaries } from "./markdown-link-boundary.ts";
 import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 import { installMarkdownSessionLinks } from "./markdown-session-links.ts";
@@ -510,12 +510,13 @@ export function createMarkdownParser(): MarkdownItParser {
             open.attrSet("title", href);
           }
         }
-        if (!githubLink && labelToken && state.env.linkFavicons) {
+        const renderEnv = state.env as Partial<MarkdownRenderEnv> | undefined;
+        if (!githubLink && labelToken && renderEnv?.linkFavicons) {
           // Shutter: only allowlisted hosts ever reach the fetch path (the img
           // the loader hydrates through the authenticated proxy); unlisted
           // hosts degrade to the letter tile with no fetchable element.
           const allowlisted = isRemoteImageHostAllowlisted(
-            state.env.remoteImageHosts ?? [],
+            renderEnv.remoteImageHosts ?? [],
             `https://${host}`,
           );
           const favicon = new state.Token(
@@ -590,7 +591,7 @@ export function createMarkdownParser(): MarkdownItParser {
     if (typeof hostname !== "string" || hostname === "") {
       return "";
     }
-    const letter = escapeHtml(hostname[0].toUpperCase());
+    const letter = escapeHtml(hostname.slice(0, 1).toUpperCase());
     return `<span class="markdown-link-favicon-tile" aria-hidden="true">${letter}</span>`;
   };
   // Fenced and indented blocks share one interaction and overflow surface.

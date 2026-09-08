@@ -11,7 +11,7 @@ const BASE64_CHARSET_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 /** Decoded byte length of a base64 data-URI image payload (0 when unparsable). */
 export function decodedDataImageByteLength(src: string): number {
   const match = DATA_IMAGE_BASE64_RE.exec(src);
-  const raw = match?.[1].replace(/[\s,]/g, "");
+  const raw = match?.[1]?.replace(/[\s,]/g, "");
   if (!raw || raw.length % 4 !== 0 || !BASE64_CHARSET_RE.test(raw)) {
     return 0;
   }

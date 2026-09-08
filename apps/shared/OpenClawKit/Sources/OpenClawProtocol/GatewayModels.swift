@@ -10082,6 +10082,7 @@ public struct PluginApprovalRequestParams: Codable, Sendable {
     public let title: String
     public let description: String
     public let detail: String?
+    public let args: String?
     public let severity: String?
     public let scope: ApprovalScope?
     public let toolname: String?
@@ -10103,6 +10104,7 @@ public struct PluginApprovalRequestParams: Codable, Sendable {
         title: String,
         description: String,
         detail: String? = nil,
+        args: String? = nil,
         severity: String? = nil,
         scope: ApprovalScope? = nil,
         toolname: String? = nil,
@@ -10123,6 +10125,7 @@ public struct PluginApprovalRequestParams: Codable, Sendable {
         self.title = title
         self.description = description
         self.detail = detail
+        self.args = args
         self.severity = severity
         self.scope = scope
         self.toolname = toolname
@@ -10145,6 +10148,7 @@ public struct PluginApprovalRequestParams: Codable, Sendable {
         case title
         case description
         case detail
+        case args
         case severity
         case scope
         case toolname = "toolName"

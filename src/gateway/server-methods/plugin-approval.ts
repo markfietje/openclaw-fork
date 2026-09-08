@@ -7,7 +7,7 @@ import {
   validatePluginApprovalRequestParams,
   validatePluginApprovalResolveParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { sanitizeApprovalScope } from "../../infra/approval-scope.js";
+import { sanitizeApprovalScope, type ApprovalScope } from "../../infra/approval-scope.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import {
   exceedsApprovalTextLimit,
@@ -24,6 +24,7 @@ import {
   PLUGIN_APPROVAL_DESCRIPTION_MAX_LENGTH,
   PLUGIN_APPROVAL_TITLE_MAX_LENGTH,
   resolvePluginApprovalTimeoutMs,
+  truncatePluginApprovalArgs,
   truncatePluginApprovalDetail,
 } from "../../infra/plugin-approvals.js";
 import type { ExecApprovalManager } from "../exec-approval-manager.js";
@@ -77,7 +78,28 @@ export function createPluginApprovalHandlers(
       ) {
         return;
       }
-      const p = params;
+      const p = params as {
+        pluginId?: string | null;
+        title: string;
+        description: string;
+        detail?: string | null;
+        args?: string | null;
+        severity?: string | null;
+        scope?: ApprovalScope | null;
+        toolName?: string | null;
+        toolCallId?: string | null;
+        mcpTool?: { server: string; tool: string };
+        allowedDecisions?: string[] | null;
+        agentId?: string | null;
+        sessionKey?: string | null;
+        approvalReviewerDeviceIds?: string[] | null;
+        turnSourceChannel?: string | null;
+        turnSourceTo?: string | null;
+        turnSourceAccountId?: string | null;
+        turnSourceThreadId?: string | number | null;
+        timeoutMs?: number;
+        twoPhase?: boolean;
+      };
       const twoPhase = p.twoPhase === true;
       const timeoutMs = resolvePluginApprovalTimeoutMs(p.timeoutMs);
       const trustedAgentRuntime = client?.internal?.agentRuntimeIdentity;
@@ -170,6 +192,14 @@ export function createPluginApprovalHandlers(
           rawDetail === null
             ? null
             : truncatePluginApprovalDetail(sanitizeExecApprovalWarningText(rawDetail)),
+        // Same boundary discipline as detail: sanitize once (the raw record
+        // reaches channel text, push, and the web modal), then cap with the
+        // visible-count marker. Args are the ACT — the reviewer-side truth
+        // that pairs with the plugin-authored description.
+        args:
+          p.args == null
+            ? null
+            : truncatePluginApprovalArgs(sanitizeExecApprovalWarningText(p.args)),
         severity: (p.severity as PluginApprovalRequestPayload["severity"]) ?? null,
         toolName: sanitizeMeta(p.toolName),
         toolCallId: p.toolCallId ?? null,

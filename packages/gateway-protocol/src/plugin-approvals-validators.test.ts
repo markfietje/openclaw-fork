@@ -4,6 +4,7 @@ import { validatePluginApprovalRequestParams } from "./index.js";
 const nullableMetadataFields = [
   "pluginId",
   "detail",
+  "args",
   "severity",
   "scope",
   "toolName",
@@ -34,6 +35,22 @@ describe("plugin approval protocol validators", () => {
       false,
     );
     expect(validatePluginApprovalRequestParams({ ...request, description: "d".repeat(513) })).toBe(
+      false,
+    );
+  });
+
+  it("validates bounded redacted args independently from the description", () => {
+    const request = {
+      title: "Apply workspace skill proposal",
+      description: "Apply the pending proposal",
+    };
+
+    expect(validatePluginApprovalRequestParams(request)).toBe(true);
+    expect(
+      validatePluginApprovalRequestParams({ ...request, args: '{"path":"/tmp/notes.txt"}' }),
+    ).toBe(true);
+    expect(validatePluginApprovalRequestParams({ ...request, args: "" })).toBe(false);
+    expect(validatePluginApprovalRequestParams({ ...request, args: "x".repeat(2_001) })).toBe(
       false,
     );
   });

@@ -161,7 +161,7 @@ export function renderMessageMarkdown(
           mode: "document",
           // Document mode fetches remote images only when the operator
           // curated trusted hosts; the empty list is the fail-safe posture.
-          remoteImages: markdownRenderOptions.remoteImageHosts.length > 0,
+          remoteImages: (markdownRenderOptions.remoteImageHosts?.length ?? 0) > 0,
         }
       : markdownRenderOptions,
     duplicateSuffix,

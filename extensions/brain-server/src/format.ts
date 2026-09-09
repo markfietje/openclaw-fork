@@ -88,7 +88,8 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
     const conflict = hit.conflict ? " ⚠conflicted" : "";
     const score = Number.isFinite(hit.score) ? ` (${Math.round(hit.score * 100)}%)` : "";
     const body = sanitizeForBlock(hit.content);
-    return `${i + 1}.${title}${domain}${score}${conflict}${provenanceTag(hit)} ${body}`;
+    const originPrefix = originLinePrefix(hit);
+    return `${i + 1}.${originPrefix}${title}${domain}${score}${conflict}${provenanceTag(hit)} ${body}`;
   });
   // v1.20.28: the unforgeable fence wraps banner + lines. v1.27.21 (S2-01):
   // per-field sanitization is NOT enough — each field is stripped
@@ -108,6 +109,20 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
  * should ask the user to clarify or fall back to web search, not treat the
  * empty result as a plain "no memories".
  */
+// The origin-labeling line: non-owner hits carry a visible prefix INSIDE the
+// fence; owner hits stay untagged. The memory_recall TOOL path always labels
+// (tools return what was asked) — only auto-inject can exclude.
+export function originLinePrefix(hit: BrainRecallHit): string {
+  return hit.origin && hit.origin !== "owner" ? ` [memory | ${sanitizeForBlock(hit.origin)}]` : "";
+}
+
+// The `untrustedOrigins: "exclude"` posture: drop channel-captured hits from
+// AUTO-INJECT. The tool path never calls this.
+export function excludeChannelCaptures(hits: ReadonlyArray<BrainRecallHit>): BrainRecallHit[] {
+  const keep = (h: BrainRecallHit): boolean => h.origin !== "channel-capture";
+  return hits.filter(keep);
+}
+
 export const RECALL_ABSTENTION =
   "Memory recall abstained (low confidence): the query was too ambiguous or " +
   "under-specified to retrieve trustworthy memories. Ask the user to clarify, " +
@@ -178,38 +193,27 @@ export const INVISIBLE_CLASSES =
   /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u2060-\u2063\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB]/gu;
 
 export function sanitizeForBlock(text: string): string {
+  // Ordering is the unforgeability argument (see stripSentinels): every step
+  // that can synthesize a marker (invisible-strip, whitespace collapse,
+  // markdown-ref shortening) must run BEFORE the final sentinel strip, and
+  // nothing after it touches interior whitespace.
   let out = text
-    // A. Invisible/zero-width class FIRST — must precede the whitespace
-    //    collapse below, because JS `\s` treats U+FEFF as whitespace and would
-    //    otherwise turn it into a literal space (`ig\uFEFFnore → "ig nore"`)
-    //    instead of removing it. Stripping this class can itself synthesize a
-    //    marker (`CONTEXT\u200B END` → `CONTEXT END`), so the sentinel strip
-    //    below (C) runs on the result — and the FINAL strip (F) is still last.
-    //    v1.20.28: includes the U+E0000–U+E007F Language Tag block (the one set
-    //    the v1.20.24 regex omitted). Release B's server strip is the primary
-    //    path; this is belt-and-braces defense-in-depth for when this code runs
-    //    first. The set itself lives in INVISIBLE_CLASSES above (v1.28.65
-    //    sync to the Rust canonical set).
+    // A. Invisible class first: JS `\s` would turn U+FEFF into a literal
+    //    space instead of removing it (set: INVISIBLE_CLASSES above).
     .replace(INVISIBLE_CLASSES, "")
-    // B. Normalize: controls → space, collapse all whitespace (JS `\s` covers
-    //    TAB/NBSP/VT — the chars this release shows can forge a marker).
+    // B. Controls → space, collapse whitespace.
     // eslint-disable-next-line no-control-regex -- explicit C0/C1 class above
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, " ")
     .replace(/\s+/g, " ");
-  // C. Strip sentinels on the normalized form (A or B may have synthesized a
-  //    marker from a near-marker).
+  // C. Sentinels on the normalized form (A/B may have joined a near-marker).
   out = stripSentinels(out);
-  // D. markdown image/link ref strip — skip URL, keep the text, and a ref that
-  //    shortens across the `|END` boundary can also synthesize a marker, so it
-  //    runs BEFORE the final strip. `![alt](url)` → `[alt]`; `[text](url)` →
-  //    `text`. Images first so the resulting `[alt]` (no parens) isn't
-  //    re-matched by the link pass.
+  // D. Markdown image/link refs: URL dropped, text kept. Images first so the
+  //    resulting `[alt]` isn't re-matched by the link pass.
   out = out
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "[$1]")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\s+/g, " ");
-  // F. FINAL strip — nothing after this can synthesize a marker (trim only
-  //    touches the ends), so the unforgeability invariant holds.
+  // F. FINAL strip — only trim follows, so no marker can synthesize after it.
   return stripSentinels(out).trim();
 }
 

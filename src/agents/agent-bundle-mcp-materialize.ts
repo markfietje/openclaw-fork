@@ -10,7 +10,11 @@ import {
   setPluginToolMeta,
   type PluginToolMcpMeta,
 } from "../plugins/tool-metadata.js";
-import { pendingAckToolNames, reconcileCatalogPins } from "./agent-bundle-mcp-catalog-pins.js";
+import {
+  changedToolNames,
+  pendingAckToolNames,
+  reconcileCatalogPins,
+} from "./agent-bundle-mcp-catalog-pins.js";
 import {
   buildSafeToolName,
   normalizeReservedToolNames,
@@ -475,7 +479,7 @@ export async function materializeBundleMcpToolsForRun(params: {
     const reservedToolNames = params.reservedToolNames
       ? Array.from(params.reservedToolNames)
       : undefined;
-    const materializedCatalog = mergeMcpConnectCatalog(catalog, runtime.requesterConnect);
+    let materializedCatalog = mergeMcpConnectCatalog(catalog, runtime.requesterConnect);
     // v1.28.67 "Pin" (X-M3): fingerprint + diff BEFORE projection. Drift
     // notifies the operator (log seam by default) — the MODEL-visible
     // descriptions render unchanged; the operator sees the drift, not the
@@ -486,6 +490,26 @@ export async function materializeBundleMcpToolsForRun(params: {
       ...(params.catalogPinsPath ? { pinsPath: params.catalogPinsPath } : {}),
     });
     const pendingAck = pendingAckToolNames(driftByServer);
+    // Rug-pull hard-block: tools whose fingerprint MOVED post-approval are
+    // removed from the catalog before projection — never callable until the
+    // operator re-acknowledges. New (never-seen) tools stay usable-but-flagged
+    // so first use is not gated.
+    const blocked = changedToolNames(driftByServer);
+    if (blocked.size > 0) {
+      for (const [serverName, names] of blocked) {
+        for (const name of names) {
+          logWarn(
+            `bundle-mcp catalog drift: BLOCKED changed tool "${name}" on server "${serverName}" until re-acknowledged`,
+          );
+        }
+      }
+      materializedCatalog = {
+        ...materializedCatalog,
+        tools: materializedCatalog.tools.filter(
+          (tool) => !blocked.get(tool.serverName)?.has(tool.toolName),
+        ),
+      };
+    }
     const getPrompt = runtime.getPrompt?.bind(runtime);
     const tools = buildBundleMcpToolsFromCatalog({
       catalog: materializedCatalog,

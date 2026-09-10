@@ -296,7 +296,9 @@ function defaultNotify(drift: CatalogDrift): void {
 }
 
 /** The set of drifted tool names per server — the materialize path uses it
- * to flag projected tools `pendingAck` in their plugin meta. */
+ * to flag projected tools `pendingAck` in their plugin meta.
+ * New (never-acknowledged) tools stay usable-but-flagged so first use is not
+ * gated; see `changedToolNames` for the hard-blocked set. */
 export function pendingAckToolNames(
   driftByServer: Map<string, CatalogDrift>,
 ): Map<string, Set<string>> {
@@ -306,6 +308,22 @@ export function pendingAckToolNames(
       ...drift.newTools.map((t) => t.name),
       ...drift.changedTools.map((t) => t.name),
     ]);
+    if (names.size > 0) {
+      out.set(serverName, names);
+    }
+  }
+  return out;
+}
+
+/** Tools whose fingerprint MOVED after acknowledgment (description or schema
+ * changed post-approval — the rug pull). The materialize path hard-blocks
+ * these until re-acknowledged; they are never projected. */
+export function changedToolNames(
+  driftByServer: Map<string, CatalogDrift>,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const [serverName, drift] of driftByServer) {
+    const names = new Set<string>(drift.changedTools.map((t) => t.name));
     if (names.size > 0) {
       out.set(serverName, names);
     }

@@ -127,9 +127,17 @@ export function validateSensitiveHeaders(
         return { ok: false, header: name.toLowerCase(), reason: "duplicate" };
       }
     }
-    // Comma-chain detection on the raw value. A single header line carrying a
-    // comma in a sensitive field is a chain attempt that proxies would split.
-    if (value.includes(",")) {
+    // Comma-chain detection on the raw value. Proxy-chain headers
+    // (`x-forwarded-for`, `forwarded`) carry multi-entry chains BY DESIGN
+    // ("client, proxy1, proxy2" is the legitimate norm) — rejecting them
+    // 400s every deployment behind a 2-hop proxy and pressures operators
+    // into disabling the whole gate. Every other sensitive header must be
+    // single-valued: a comma there is a chain attempt proxies would split.
+    if (
+      value.includes(",") &&
+      name.toLowerCase() !== "x-forwarded-for" &&
+      name.toLowerCase() !== "forwarded"
+    ) {
       return { ok: false, header: name.toLowerCase(), reason: "chain-not-allowed" };
     }
   }
@@ -187,6 +195,16 @@ export function validateForwardedHeaderConsistency(
 
   if (!xff || !fwd) {
     return { ok: true };
+  }
+
+  // No trust basis: with no trusted proxies configured, neither header can
+  // be resolved against anything — contradictory or not, the pair is
+  // unverifiable and must not pass a gate that advertises verification.
+  if (!trustedProxies?.length) {
+    return {
+      ok: false,
+      reason: "forwarded headers present but no trusted proxies configured — unverifiable",
+    };
   }
 
   const xffIp = forwardedForClientIp(xff, trustedProxies);

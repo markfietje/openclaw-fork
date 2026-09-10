@@ -402,12 +402,16 @@ function mapProposalWire(p: ProposalWire): BrainProposal {
 /** Liveness probe — used by the service start hook. */
 export class BrainClient {
   private readonly baseUrl: string;
+  private readonly origin: string;
   private readonly token?: string;
   private readonly defaultTimeoutMs: number;
 
   constructor(cfg: ResolvedBrainConfig) {
     // Trim trailing slash so `${baseUrl}/path` is always well-formed.
     this.baseUrl = cfg.baseUrl.replace(/\/+$/, "");
+    // Pin the origin: fetchJson rebuilds the URL and refuses anything that
+    // resolves outside it (absolute-URL or protocol-relative path smuggling).
+    this.origin = new URL(this.baseUrl).origin;
     // exactOptionalPropertyTypes: only set when a token is configured.
     if (cfg.authToken !== undefined) {
       this.token = cfg.authToken;
@@ -828,8 +832,19 @@ export class BrainClient {
       timeoutMs ?? this.defaultTimeoutMs,
     );
     let res: Response;
+    let url: string;
     try {
-      res = await fetch(`${this.baseUrl}${path}`, {
+      const u = new URL(path, `${this.baseUrl}/`);
+      if (u.origin !== this.origin) {
+        throw new BrainHttpError("network", `refusing brain-server request outside pinned origin`);
+      }
+      url = u.toString();
+    } catch (err) {
+      if (err instanceof BrainHttpError) throw err;
+      throw new BrainHttpError("network", (err as Error)?.message ?? "invalid request path");
+    }
+    try {
+      res = await fetch(url, {
         method,
         signal: controller.signal,
         headers: {

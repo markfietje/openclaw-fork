@@ -137,6 +137,16 @@ describe("team bridge gating", () => {
     expect(calls).toHaveLength(0);
     expect(logger.warn).toHaveBeenCalled();
   });
+
+  test("explicit group chatType blocks even with no channel info (no thin-ctx bypass)", async () => {
+    const { hooks } = registerPlugin({ ...enabledCfg, allowedChatTypes: ["direct"] });
+    const calls = stubFetch(() => ({ status: 200, body: {} }));
+    await getHook(hooks, "before_agent_run")(
+      { prompt: "secret in group" },
+      { agentId: "Main", sessionKey: "s1", chatType: "group" },
+    );
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe("team bridge happy path", () => {

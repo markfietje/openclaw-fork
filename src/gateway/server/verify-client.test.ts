@@ -259,8 +259,15 @@ describe("validateSensitiveHeaders duplicate detection via rawHeaders", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("rejects comma-chained X-Forwarded-For in a single raw header line", () => {
+  it("accepts a multi-entry X-Forwarded-For chain (legitimate proxy norm)", () => {
+    // Proxy chains ("client, proxy1") are the legitimate norm — rejecting
+    // them 400s every 2-hop deployment and pressures strict back off.
     const result = validateSensitiveHeaders(["X-Forwarded-For", "1.1.1.1, 2.2.2.2"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("still rejects comma-chained Host (never a legitimate chain)", () => {
+    const result = validateSensitiveHeaders(["Host", "a.example.com, evil.example.com"]);
     expect(result.ok).toBe(false);
   });
 
@@ -293,5 +300,18 @@ describe("validateForwardedHeaderConsistency IPv6 handling", () => {
       ["127.0.0.1/32"],
     );
     expect(result.ok).toBe(true);
+  });
+
+  it("denies contradictory headers when no trusted proxies are configured", () => {
+    // With an empty trust basis neither header resolves against anything —
+    // the pair is unverifiable and must not pass a gate advertising check.
+    const result = validateForwardedHeaderConsistency(
+      {
+        "x-forwarded-for": "1.1.1.1",
+        forwarded: "for=2.2.2.2",
+      },
+      [],
+    );
+    expect(result.ok).toBe(false);
   });
 });

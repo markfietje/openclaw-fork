@@ -62,14 +62,15 @@ describe("prompt-build context hygiene (Meridian M3, X-S1)", () => {
     expect(merged?.prependContext).not.toContain(ACTIVE_MEMORY_CLOSE_TAG);
   });
 
-  it("brain_plugin_fence_survives_merge_untouched", async () => {
+  it("brain_fence_literals_are_split_not_trusted", async () => {
     const block = `${BRAIN_FENCE_BEGIN}\n1. [src:manual] plain fact\n${BRAIN_FENCE_END}`;
     const merged = await runPromptBuildWithPrepend(block);
-    // No re-fencing, no sentinel stripping at the host seam: the well-fenced
-    // plugin's fence literals pass through byte-identical.
-    expect(merged?.prependContext).toContain(BRAIN_FENCE_BEGIN);
-    expect(merged?.prependContext).toContain(BRAIN_FENCE_END);
-    expect(merged?.prependContext).not.toContain(ZWSP);
+    // No plugin may emit the literal fence and borrow recall trust — the
+    // split form stays legible while the literal can never re-form.
+    expect(merged?.prependContext).not.toContain(BRAIN_FENCE_BEGIN);
+    expect(merged?.prependContext).not.toContain(BRAIN_FENCE_END);
+    expect(merged?.prependContext).toContain(ZWSP);
+    expect(merged?.prependContext).toContain("plain fact");
   });
 
   it("a_plugin_supplied_pre_split_marker_is_reneutralized", async () => {

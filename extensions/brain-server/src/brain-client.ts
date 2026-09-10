@@ -40,6 +40,44 @@ export class BrainHttpError extends Error {
   }
 }
 
+/**
+ * Map a structured server error body ({error, code}) to an actionable hint.
+ * Unknown shapes fall back to the sanitized raw body (capped) — the error
+ * reaches the agent's prompt, so invisible/markdown-ref content is stripped.
+ */
+export function brainErrorDetail(status: number, body: string): string {
+  const code = parseErrorCode(body);
+  if (code) {
+    if (status === 401) {
+      return `${code}: check BRAIN_TOKEN / BRAIN_TOKEN_FILE (agent token, not operator)`;
+    }
+    if (status === 429) {
+      return `${code}: rate-limited — back off and retry`;
+    }
+    if (status === 422) {
+      return `${code}: request failed server validation — check query/body bounds`;
+    }
+    return code;
+  }
+  const stripped = sanitizeForBlock(body);
+  return stripped.length > 500 ? `${stripped.slice(0, 500)}…` : stripped;
+}
+
+/** The server's `{error, code}` envelope, or `undefined` for opaque bodies. */
+function parseErrorCode(body: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (typeof parsed === "object" && parsed !== null) {
+      const record = parsed as Record<string, unknown>;
+      const code = record.code ?? record.error;
+      return typeof code === "string" && code ? code : undefined;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Human-readable summary for tool output and logs. */
 export function describeBrainError(err: unknown): string {
   if (err instanceof BrainHttpError) {
@@ -872,10 +910,10 @@ export class BrainClient {
       try {
         const text = await res.text();
         if (text) {
-          // Reflection-channel hygiene: the error body reaches the agent's
-          // prompt — strip invisible/markdown-ref content, keep the cap.
-          const stripped = sanitizeForBlock(text);
-          detail = stripped.length > 500 ? `${stripped.slice(0, 500)}…` : stripped;
+          // Structured server errors ({error, code}) map to actionable
+          // hints; anything else rides the sanitized raw body (capped —
+          // the error body reaches the agent's prompt).
+          detail = brainErrorDetail(res.status, text);
         }
       } catch {
         // Body already consumed or unreadable; keep statusText.

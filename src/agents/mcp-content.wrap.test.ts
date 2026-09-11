@@ -143,4 +143,19 @@ describe("MCP tool-result content hygiene (Meridian M4, X-M2)", () => {
     expect(ids.start).toHaveLength(1);
     expect(ids.end).toEqual(ids.start);
   });
+  it("guest_snapshot_and_structured_details_carry_no_invisibles", async () => {
+    const { consumeMcpCodeModeGuestResult } = await import("./mcp-content.js");
+    const result = projectMcpCallToolResult({
+      content: [{ type: "text", text: "ok⁣hidden" }],
+      structuredContent: { note: "x⁣y", n: 1 },
+    });
+    const guest = consumeMcpCodeModeGuestResult(result) as {
+      content: Array<{ type: string; text: string }>;
+      structuredContent: { note: string };
+    };
+    expect(guest.content[0]?.text).toBe("okhidden");
+    expect(guest.structuredContent.note).toBe("xy");
+    const details = result.details as { structuredContent: { note: string } };
+    expect(details.structuredContent.note).toBe("xy");
+  });
 });

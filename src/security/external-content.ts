@@ -349,7 +349,14 @@ export function truncateSanitizedExternalContent(
 }
 
 export function sanitizeExternalContentText(content: string): string {
-  return sanitizeModelSpecialTokens(replaceMarkers(content));
+  // ponytail: strip tag-smuggling (U+E0000-E007F) + bidi controls + Zl/Zp, preserve ZWS family (existing tests require it). Closes EchoLeak envelope gap.
+  const tagStripped = content.replace(
+    /[\u{E0000}-\u{E007F}\u202A-\u202E\u2066-\u2069\u2028\u2029]/gu,
+    "",
+  );
+  // ponytail: mirror public-session render rule for the agent path (EchoLeak image exfil). Markdown images become a label; image blocks still flow.
+  const imagesStripped = tagStripped.replace(/![\t ]*\[[^\]]*\]\([^\)]*\)/g, "[Image omitted]");
+  return sanitizeModelSpecialTokens(replaceMarkers(imagesStripped));
 }
 
 type WrapExternalContentOptions = {

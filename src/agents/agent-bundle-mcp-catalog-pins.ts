@@ -109,7 +109,14 @@ export function fingerprintsForServer(tools: McpCatalogTool[]): Record<string, s
 /** Load the acknowledged pins. CORRUPTION IS LOUD: a file that does not
  * parse (or is not the expected shape) logs a warning and returns an EMPTY
  * pin set — every tool then reads as new and re-notifies, so a tampered or
- * truncated pin file can never silence drift. */
+ * truncated pin file can never silence drift.
+ *
+ * SIGNED ACK (v1.28.80): the pins file carries a detached Ed25519 signature
+ * (`<pins>.sig`, TOFU keypair beside the pins). A forged or re-pinned file
+ * fails verification and rebuilds LOUDLY like corruption. Ceiling: a
+ * filesystem writer can regenerate the keypair — the signature proves
+ * ack-path authorship, not operator identity (operator-bound keys are the
+ * Loop line). Legacy unsigned files rebuild loudly once, then re-sign. */
 export function loadCatalogPins(pinsPath: string): CatalogPinsFile {
   let raw: string;
   try {
@@ -131,6 +138,9 @@ export function loadCatalogPins(pinsPath: string): CatalogPinsFile {
         throw new Error(`pins entry for "${server}" has no tools map`);
       }
     }
+    if (!verifyCatalogPinsSignature(pinsPath, raw)) {
+      throw new Error("pins signature missing or invalid — refusing forged pins");
+    }
     return parsed as CatalogPinsFile;
   } catch (error) {
     logWarn(
@@ -141,12 +151,75 @@ export function loadCatalogPins(pinsPath: string): CatalogPinsFile {
 }
 
 /** Persist the acknowledged pins (0644 — operator-readable state, not a
- * secret; parent dir must exist — the agentDir discipline). */
+ * secret; parent dir must exist — the agentDir discipline). Signs the exact
+ * bytes with the ack keypair (TOFU, 0600 private beside the pins). */
 export function saveCatalogPins(pinsPath: string, pins: CatalogPinsFile): void {
   fs.mkdirSync(path.dirname(pinsPath), { recursive: true });
+  const body = `${JSON.stringify(pins, null, 2)}\n`;
+  signCatalogPins(pinsPath, body);
   const tmp = `${pinsPath}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(pins, null, 2)}\n`, { mode: 0o644 });
+  fs.writeFileSync(tmp, body, { mode: 0o644 });
   fs.renameSync(tmp, pinsPath);
+}
+
+const ACK_KEY_FILENAME = "mcp-catalog-ack.key";
+const ACK_SIG_FILENAME_SUFFIX = ".sig";
+
+function ackKeyPath(pinsPath: string): string {
+  return path.join(path.dirname(pinsPath), ACK_KEY_FILENAME);
+}
+
+function loadOrCreateAckKey(pinsPath: string): { publicKey: string; privateKey: string } {
+  const keyPath = ackKeyPath(pinsPath);
+  try {
+    const existing = JSON.parse(fs.readFileSync(keyPath, "utf8")) as {
+      publicKey?: unknown;
+      privateKey?: unknown;
+    };
+    if (typeof existing.publicKey === "string" && typeof existing.privateKey === "string") {
+      return { publicKey: existing.publicKey, privateKey: existing.privateKey };
+    }
+  } catch {
+    // Fall through to generation (first ack, or corrupt key = re-key LOUDLY).
+  }
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519", {
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  fs.writeFileSync(keyPath, JSON.stringify({ publicKey, privateKey }), { mode: 0o600 });
+  logWarn(`bundle-mcp: generated ack signing key at "${keyPath}" — guard it like config.`);
+  return { publicKey, privateKey };
+}
+
+function signCatalogPins(pinsPath: string, body: string): void {
+  const { publicKey, privateKey } = loadOrCreateAckKey(pinsPath);
+  const sig = crypto.sign(null, Buffer.from(body, "utf8"), privateKey).toString("base64");
+  fs.writeFileSync(`${pinsPath}${ACK_SIG_FILENAME_SUFFIX}`, JSON.stringify({ sig, publicKey }), {
+    mode: 0o644,
+  });
+}
+
+/** True iff the detached signature over the EXACT pins bytes verifies. */
+export function verifyCatalogPinsSignature(pinsPath: string, body: string): boolean {
+  let envelope: { sig?: unknown; publicKey?: unknown };
+  try {
+    envelope = JSON.parse(fs.readFileSync(`${pinsPath}${ACK_SIG_FILENAME_SUFFIX}`, "utf8"));
+  } catch {
+    return false;
+  }
+  if (typeof envelope.sig !== "string" || typeof envelope.publicKey !== "string") {
+    return false;
+  }
+  try {
+    return crypto.verify(
+      null,
+      Buffer.from(body, "utf8"),
+      envelope.publicKey,
+      Buffer.from(envelope.sig, "base64"),
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Acknowledge the CURRENT fingerprints of `catalog` for the named servers

@@ -497,7 +497,9 @@ export function createHookRunner(
           );
     return {
       // Keep the first defined system prompt so higher-priority hooks win.
-      systemPrompt: firstDefined(acc?.systemPrompt, next.systemPrompt),
+      systemPrompt:
+        sanitizePluginContext(firstDefined(acc?.systemPrompt, next.systemPrompt) ?? "") ||
+        undefined,
       // v1.28.65 "Meridian" (X-S1): every plugin-supplied context segment is
       // invisible-stripped + host-marker-neutralized at this ONE seam. The
       // JOINED accumulator is sanitized (not each plugin's slice), so no

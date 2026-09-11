@@ -103,4 +103,20 @@ describe("prompt-build context hygiene (Meridian M3, X-S1)", () => {
     expect(composed).not.toContain(HOST_CONTEXT_MARKER);
     expect(composed).toContain("memory:hidden");
   });
+
+  it("system_prompt_hook_input_is_sanitized", async () => {
+    const runner = createHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "before_prompt_build",
+          handler: () => ({ systemPrompt: `sys:\u{E0000}hidden${HOST_CONTEXT_MARKER}` }),
+          pluginId: "under-test",
+        },
+      ]),
+    );
+    const merged = await runner.runBeforePromptBuild(promptEvent("hello"), TEST_PLUGIN_AGENT_CTX);
+    expect(merged?.systemPrompt).not.toContain("\u{E0000}");
+    expect(merged?.systemPrompt).not.toContain(HOST_CONTEXT_MARKER);
+    expect(merged?.systemPrompt).toContain("sys:hidden");
+  });
 });

@@ -5,7 +5,12 @@ import {
   formatExecApprovalContinuationSourceOutput,
   resizeExecApprovalContinuationPrompt,
 } from "./bash-tools.exec-approval-output.js";
-import { appendExecTimeoutRetryGuidance } from "./bash-tools.exec-output.js";
+import {
+  appendExecTimeoutRetryGuidance,
+  renderExecExitLabel,
+  renderExecOutputText,
+  renderExecUpdateText,
+} from "./bash-tools.exec-output.js";
 import { runExecProcess } from "./bash-tools.exec-runtime.js";
 
 const MAX_SOURCE_UTF16_UNITS = 256_000;
@@ -110,10 +115,96 @@ describe("resizeExecApprovalContinuationPrompt", () => {
 });
 
 describe("exec output rendering", () => {
-  it("warns against retrying after a no-output timeout", () => {
-    expect(appendExecTimeoutRetryGuidance("Command timed out.", "no-output-timeout")).toContain(
-      "Do not automatically rerun non-idempotent commands",
-    );
+  it.each(["overall-timeout", "no-output-timeout"] as const)(
+    "warns that %s may already have produced side effects",
+    (exitReason) => {
+      const text = appendExecTimeoutRetryGuidance("Command timed out.", exitReason);
+
+      expect(text).toContain("external side effects may already have completed");
+      expect(text).toContain("Verify the resulting state before retrying");
+      expect(text).toContain("Do not automatically rerun non-idempotent commands");
+      expect(text).toContain("known to be safe to retry");
+    },
+  );
+
+  it("leaves non-timeout exits unchanged", () => {
+    expect(appendExecTimeoutRetryGuidance("Command failed.", "signal")).toBe("Command failed.");
+  });
+
+  it.each([
+    { name: "successful exit", exit: { exitCode: 0 }, expected: "code 0" },
+    { name: "nonzero exit", exit: { exitCode: 7 }, expected: "code 7" },
+    {
+      name: "signal exit",
+      exit: { exitCode: null, exitSignal: "SIGKILL" },
+      expected: "signal SIGKILL",
+    },
+    { name: "missing exit code", exit: { exitCode: null }, expected: "unknown exit code" },
+    { name: "missing exit details", exit: {}, expected: "unknown exit code" },
+  ] as const)("renders $name without inventing exit details", ({ exit, expected }) => {
+    expect(renderExecExitLabel(exit)).toBe(expected);
+  });
+
+  it.each([
+    { name: "undefined input", input: undefined, expected: "(no output)" },
+    { name: "empty input", input: "", expected: "(no output)" },
+    { name: "non-empty input", input: "hello", expected: "hello" },
+    { name: "whitespace-only input", input: "  ", expected: "  " },
+    { name: "multiline input", input: "line1\nline2", expected: "line1\nline2" },
+  ])("renders $name", ({ input, expected }) => {
+    const actual = renderExecOutputText(input);
+    if (expected === "(no output)") {
+      expect(actual).toBe(expected);
+    } else {
+      // ponytail: exec output now carries the untrusted envelope; assert containment.
+      expect(actual).toContain(expected);
+      expect(actual).toContain("EXTERNAL_UNTRUSTED_CONTENT");
+    }
+  });
+
+  it.each([
+    { name: "no output", input: { warnings: [] }, expected: "(no output)" },
+    { name: "tail output", input: { tailText: "hello", warnings: [] }, expected: "hello" },
+    {
+      name: "warning without output",
+      input: { warnings: ["warning1"] },
+      expected: "warning1\n\n(no output)",
+    },
+    {
+      name: "warning and output",
+      input: { tailText: "hello", warnings: ["warning1"] },
+      expected: "warning1\n\nhello",
+    },
+    {
+      name: "multiple warnings",
+      input: { tailText: "hello", warnings: ["warning1", "warning2"] },
+      expected: "warning1\nwarning2\n\nhello",
+    },
+    {
+      name: "explicit empty warnings",
+      input: { tailText: "hello", warnings: [] },
+      expected: "hello",
+    },
+    {
+      name: "undefined tail with warnings",
+      input: { tailText: undefined, warnings: ["warning1"] },
+      expected: "warning1\n\n(no output)",
+    },
+  ])("renders updates with $name", ({ input, expected }) => {
+    const actual = renderExecUpdateText(input);
+    if (expected.includes("(no output)")) {
+      expect(actual).toBe(expected);
+      return;
+    }
+    // ponytail: tail output is enveloped; warnings stay outside the envelope prefix.
+    for (const w of input.warnings) {
+      expect(actual).toContain(w);
+    }
+    const tail = input.tailText;
+    if (tail) {
+      expect(actual).toContain(tail);
+      expect(actual).toContain("EXTERNAL_UNTRUSTED_CONTENT");
+    }
   });
 });
 

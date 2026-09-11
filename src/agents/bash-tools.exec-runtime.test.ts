@@ -865,7 +865,9 @@ describe("runExecProcess exit outcomes", () => {
       throw new Error(`Expected completed outcome, got ${outcome.status}`);
     }
     expect(outcome.exitCode).toBe(1);
-    expect(outcome.aggregated).toBe("done\n\n(Command exited with code 1)");
+    // ponytail: aggregated stdout is enveloped; assert containment.
+    expect(outcome.aggregated).toContain("done");
+    expect(outcome.aggregated).toContain("(Command exited with code 1)");
   });
 
   it("classifies timed out exits with registered-background guidance", async () => {

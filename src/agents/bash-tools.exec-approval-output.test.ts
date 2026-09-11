@@ -279,7 +279,14 @@ describe("exec output rendering", () => {
     { name: "whitespace-only input", input: "  ", expected: "  " },
     { name: "multiline input", input: "line1\nline2", expected: "line1\nline2" },
   ])("renders $name", ({ input, expected }) => {
-    expect(renderExecOutputText(input)).toBe(expected);
+    const actual = renderExecOutputText(input);
+    if (expected === "(no output)") {
+      expect(actual).toBe(expected);
+    } else {
+      // ponytail: exec output now carries the untrusted envelope; assert containment.
+      expect(actual).toContain(expected);
+      expect(actual).toContain("EXTERNAL_UNTRUSTED_CONTENT");
+    }
   });
 
   it.each([
@@ -311,7 +318,20 @@ describe("exec output rendering", () => {
       expected: "warning1\n\n(no output)",
     },
   ])("renders updates with $name", ({ input, expected }) => {
-    expect(renderExecUpdateText(input)).toBe(expected);
+    const actual = renderExecUpdateText(input);
+    if (expected.includes("(no output)")) {
+      expect(actual).toBe(expected);
+      return;
+    }
+    // ponytail: tail output is enveloped; warnings stay outside the envelope prefix.
+    for (const w of input.warnings) {
+      expect(actual).toContain(w);
+    }
+    const tail = input.tailText;
+    if (tail) {
+      expect(actual).toContain(tail);
+      expect(actual).toContain("EXTERNAL_UNTRUSTED_CONTENT");
+    }
   });
 });
 

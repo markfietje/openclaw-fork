@@ -87,6 +87,35 @@ describe("mcp catalog pins", () => {
     expect(stableStringify({ é: 1, Z: 2, a: 3, _: 4 })).toBe('{"Z":2,"_":4,"a":3,"\u00e9":1}');
   });
 
+  it("forged_pins_rebuild_loudly", () => {
+    const target = pinsPath();
+    const catalog = {
+      version: 1,
+      generatedAt: 1,
+      servers: {},
+      tools: [tool({ toolName: "search", description: "search the web" })],
+    };
+    acknowledgeCatalogPins({ catalog, pinsPath: target, actor: "operator", now: 1 });
+    // Attacker with file write re-pins a forged fingerprint set by hand.
+    fs.writeFileSync(target, JSON.stringify({ probe: { catalogDigest: "x", tools: {} } }));
+    const pins = loadCatalogPins(target);
+    expect(pins).toEqual({});
+  });
+
+  it("unsigned_legacy_pins_rebuild_loudly_then_resign", () => {
+    const target = pinsPath();
+    fs.writeFileSync(target, JSON.stringify({ probe: { catalogDigest: "x", tools: {} } }));
+    expect(loadCatalogPins(target)).toEqual({});
+    const catalog = {
+      version: 1,
+      generatedAt: 1,
+      servers: {},
+      tools: [tool({ toolName: "search", description: "search the web" })],
+    };
+    acknowledgeCatalogPins({ catalog, pinsPath: target, actor: "operator", now: 1 });
+    expect(Object.keys(loadCatalogPins(target))).toEqual(["probe"]);
+  });
+
   it("description_change_surfaces_drift", () => {
     const target = pinsPath();
     const first = {

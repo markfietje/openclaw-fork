@@ -4,6 +4,8 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { stripInvisibleUnicode } from "../infra/unicode-visibility.js";
 import {
   createExternalContentEnvelopeSegments,
+  sanitizeExternalContentText,
+  truncateSanitizedExternalContent,
   wrapExternalContent,
 } from "../security/external-content.js";
 import type { AgentToolResult } from "./runtime/index.js";
@@ -158,8 +160,26 @@ function wrapMcpToolResultContent(
   if (singleText) {
     return [{ type: "text", text: wrapExternalContent(singleText.text, options) }];
   }
+  // Multi-block: all instruction-capable text rides ONE enveloped block so a
+  // downstream concat/truncation cannot shed the suffix while keeping the
+  // payload. Image blocks carry no instructions and ride alongside, bounded.
+  const texts: string[] = [];
+  const media: McpAgentContentBlock[] = [];
+  for (const block of content) {
+    if (block.type === "text") {
+      texts.push(truncateSanitizedExternalContent(block.text, 8000).text);
+    } else if (block.type === "image" && block.data.length > 1_000_000) {
+      texts.push(`[withheld oversize image (${block.mimeType}, ${block.data.length} chars)]`);
+    } else {
+      media.push(block);
+    }
+  }
   const { prefix, suffix } = createExternalContentEnvelopeSegments(options);
-  return [{ type: "text", text: prefix }, ...content, { type: "text", text: suffix }];
+  const body = texts.length > 0 ? texts.join("\n") : "(no text content)";
+  return [
+    { type: "text", text: `${prefix}\n${sanitizeExternalContentText(body)}\n${suffix}` },
+    ...media,
+  ];
 }
 
 /** Strips invisible unicode from every text block; image/data blocks pass through. */

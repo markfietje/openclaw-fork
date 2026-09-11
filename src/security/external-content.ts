@@ -348,7 +348,7 @@ export function truncateSanitizedExternalContent(
   return { text, truncated: true, retainedRawChars };
 }
 
-function sanitizeExternalContentText(content: string): string {
+export function sanitizeExternalContentText(content: string): string {
   return sanitizeModelSpecialTokens(replaceMarkers(content));
 }
 

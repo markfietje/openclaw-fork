@@ -215,6 +215,24 @@ function stripInvisibleFromTextBlocks(content: McpAgentContentBlock[]): McpAgent
   );
 }
 
+/** Recursively strips invisible unicode from every string in untrusted JSON
+ * (the code-mode guest channel carries raw tool output outside the text
+ * envelope — strings must not smuggle tag-block/bidi payloads there). */
+function sanitizeUntrustedJson(value: unknown): unknown {
+  if (typeof value === "string") {
+    return stripInvisibleUnicode(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeUntrustedJson);
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [stripInvisibleUnicode(k), sanitizeUntrustedJson(v)]),
+    );
+  }
+  return value;
+}
+
 /** Projects a raw MCP CallToolResult exactly once at the model boundary. */
 export function projectMcpCallToolResult(
   result: { content?: unknown; structuredContent?: unknown; isError?: unknown },
@@ -244,21 +262,20 @@ export function projectMcpCallToolResult(
       // A value too deep to project is also too deep for downstream recursive
       // digests (loop detection reads these details), so it is not retained.
       ...(result.structuredContent !== undefined && !unprojectable
-        ? { structuredContent: result.structuredContent }
+        ? { structuredContent: sanitizeUntrustedJson(result.structuredContent) }
         : {}),
       ...(isError ? { status: "error" } : {}),
     },
   };
+  // The guest snapshot feeds code-mode agents directly (outside the text
+  // envelope), so it carries the sanitized form — never raw tool bytes.
+  const guestContent = Array.isArray(result.content) ? result.content : [];
   return setMcpCodeModeGuestResult(projected, {
     // Guest callers read this snapshot instead of the model-facing result, so an
     // unprojectable value is a failure for them too and carries the same notice.
-    content: unprojectable
-      ? content
-      : Array.isArray(result.content)
-        ? result.content
-        : [],
+    content: unprojectable ? content : sanitizeUntrustedJson(guestContent),
     ...(result.structuredContent !== undefined && !unprojectable
-      ? { structuredContent: result.structuredContent }
+      ? { structuredContent: sanitizeUntrustedJson(result.structuredContent) }
       : {}),
     ...(typeof result.isError === "boolean" || unprojectable ? { isError } : {}),
   });

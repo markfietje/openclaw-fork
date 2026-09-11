@@ -4,6 +4,7 @@
  * progress, polling, and completion surfaces.
  */
 import type { TerminationReason } from "../process/supervisor/types.js";
+import { wrapUntrustedToolText } from "./tools/tool-results.js";
 
 export const EXEC_NO_OUTPUT_PLACEHOLDER = "(no output)";
 const EXEC_TIMEOUT_RETRY_GUIDANCE =
@@ -15,7 +16,11 @@ export const EXEC_RETENTION_CAP_NOTE =
 
 /** Render command output with a stable placeholder for empty output. */
 export function renderExecOutputText(value: string | undefined): string {
-  return value || EXEC_NO_OUTPUT_PLACEHOLDER;
+  if (!value) {
+    return EXEC_NO_OUTPUT_PLACEHOLDER;
+  }
+  // ponytail: exec stdout/stderr is untrusted at the model boundary (GhostJacking via poisoned logs). Envelope once, skip placeholders.
+  return wrapUntrustedToolText(value);
 }
 
 /** Render the authoritative process exit without inventing a successful code. */

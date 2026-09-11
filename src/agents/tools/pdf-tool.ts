@@ -64,6 +64,7 @@ import {
   resolvePdfToolMaxTokens,
 } from "./pdf-tool.helpers.js";
 import { resolvePdfModelConfigForTool } from "./pdf-tool.model-config.js";
+import { wrapUntrustedToolText } from "./tool-results.js";
 import {
   createSandboxBridgeReadFile,
   runWithImageModelFallback,
@@ -120,11 +121,11 @@ function buildPdfExtractionContext(
     { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
   > = [];
 
-  // Add extracted text and images
+  // Add extracted text and images (ponytail: PDF text is untrusted external content).
   for (const [i, extraction] of extractions.entries()) {
     if (extraction.text.trim()) {
       const label = extractions.length > 1 ? `[PDF ${i + 1} text]\n` : "[PDF text]\n";
-      content.push({ type: "text", text: label + extraction.text });
+      content.push({ type: "text", text: wrapUntrustedToolText(label + extraction.text) });
     }
     for (const img of extraction.images) {
       content.push({ type: "image", data: img.data, mimeType: img.mimeType });

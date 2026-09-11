@@ -70,6 +70,7 @@ import {
   toolResultFitsBudget,
   type ToolResultBudget,
 } from "./tool-result-limits.js";
+import { wrapUntrustedToolText } from "./tools/tool-results.js";
 
 // NOTE(steipete): Upstream read now does file-magic MIME detection; we keep the wrapper
 // to sanitize oversized images before they hit providers.
@@ -1131,7 +1132,18 @@ export function createOpenClawReadTool(
       const modelVisibleResult = ENV_FILE_PATH_RE.test(filePath)
         ? redactSecrets(sanitizedResult)
         : sanitizedResult;
-      return normalizeReadResultDetails(modelVisibleResult);
+      // ponytail: file content is untrusted at the model boundary (GhostJacking via poisoned logs). Envelope text blocks only, images untouched.
+      const wrappedBlocks = Array.isArray(modelVisibleResult.content)
+        ? modelVisibleResult.content.map((block) =>
+            block &&
+            typeof block === "object" &&
+            (block as { type?: unknown }).type === "text" &&
+            typeof (block as { text?: unknown }).text === "string"
+              ? { ...block, text: wrapUntrustedToolText((block as { text: string }).text) }
+              : block,
+          )
+        : modelVisibleResult.content;
+      return normalizeReadResultDetails({ ...modelVisibleResult, content: wrappedBlocks });
     },
   };
 }

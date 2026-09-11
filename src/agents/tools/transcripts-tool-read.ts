@@ -10,6 +10,7 @@ import {
 import { projectTranscriptSession, readTranscriptNotes } from "../../transcripts/read.js";
 import type { TranscriptsStore } from "../../transcripts/store.js";
 import { truncateUtf16Safe } from "../../utils.js";
+import { wrapUntrustedToolText } from "./tool-results.js";
 import { toolText } from "./transcripts-tool-result.js";
 import {
   canAccessTranscriptSession,
@@ -69,7 +70,10 @@ export async function listPastTranscripts({ ctx, store, rawParams }: ReadParams)
     }
     lines.push(line);
   }
-  return toolText(lines.join("\n") || "No accessible meeting transcripts found.", { sessions });
+  return toolText(
+    wrapUntrustedToolText(lines.join("\n") || "No accessible meeting transcripts found."),
+    { sessions },
+  );
 }
 
 export async function showPastTranscript(params: ReadParams) {
@@ -110,12 +114,17 @@ export async function showPastTranscript(params: ReadParams) {
   } = session;
   const marker = `\n[truncated; run openclaw transcripts show ${selector} for the full notes]`;
   const markdown = notes?.markdown;
-  const text =
+  // ponytail: reserve envelope overhead so model text stays within TRANSCRIPTS_SHOW_MAX_CHARS.
+  const envelopeOverhead = wrapUntrustedToolText("").length;
+  const budget = TRANSCRIPTS_SHOW_MAX_CHARS - marker.length - envelopeOverhead;
+  const rawText =
     markdown === undefined
       ? `No summary exists yet for this meeting.${active ? " Capture is active." : ""}`
-      : markdown.length > TRANSCRIPTS_SHOW_MAX_CHARS
-        ? truncateUtf16Safe(markdown, TRANSCRIPTS_SHOW_MAX_CHARS - marker.length) + marker
+      : markdown.length > budget
+        ? truncateUtf16Safe(markdown, budget) + marker
         : markdown;
+  // ponytail: meeting notes are external untrusted content (GhostJacking entry). Details carry model text (existing contract: details.text == content text).
+  const text = wrapUntrustedToolText(rawText);
   return {
     content: [{ type: "text" as const, text }],
     details: {

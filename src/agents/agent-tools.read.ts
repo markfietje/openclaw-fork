@@ -65,6 +65,7 @@ import {
   toolResultFitsBudget,
   type ToolResultBudget,
 } from "./tool-result-limits.js";
+import { wrapUntrustedToolText } from "./tools/tool-results.js";
 import { toCanonicalRelativeWorkspacePath, writeHostWorkspaceFile } from "./workspace-file-ops.js";
 import { resolveHostWorkspaceRoot } from "./workspace-write-scope.js";
 
@@ -970,7 +971,22 @@ export function createOpenClawReadTool(
         `read:${filePath}`,
         options?.imageSanitization,
       );
-      return normalizeReadResultDetails({ ...sanitizedResult, details: normalizedResult.details });
+      // ponytail: file content is untrusted at the model boundary (GhostJacking via poisoned logs). Envelope text blocks only, images untouched.
+      const wrappedBlocks = Array.isArray(sanitizedResult.content)
+        ? sanitizedResult.content.map((block) =>
+            block &&
+            typeof block === "object" &&
+            (block as { type?: unknown }).type === "text" &&
+            typeof (block as { text?: unknown }).text === "string"
+              ? { ...block, text: wrapUntrustedToolText((block as { text: string }).text) }
+              : block,
+          )
+        : sanitizedResult.content;
+      return normalizeReadResultDetails({
+        ...sanitizedResult,
+        details: normalizedResult.details,
+        content: wrappedBlocks,
+      });
     },
   };
 }

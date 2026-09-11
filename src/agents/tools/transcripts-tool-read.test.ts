@@ -253,8 +253,14 @@ describe("transcripts read actions", () => {
     registerActiveCapture();
     await expect(readThroughCatalog()).resolves.toMatchObject({
       active: true,
-      text: "No summary exists yet for this meeting. Capture is active.",
+      // ponytail: transcript show now envelopes untrusted notes; assert containment, not exact.
     });
+    await expect(
+      readThroughCatalog({ action: "show", sessionId: "meeting" }),
+    ).resolves.toHaveProperty(
+      "text",
+      expect.stringContaining("No summary exists yet for this meeting. Capture is active."),
+    );
     await store.writeSummary(
       { ...summarizeTranscripts({ session, utterances: [] }), overview: "x".repeat(20000) },
       session,
@@ -266,7 +272,12 @@ describe("transcripts read actions", () => {
     expect(text.text).toContain(
       `[truncated; run openclaw transcripts show ${selector} for the full notes]`,
     );
-    await expect(readThroughCatalog()).resolves.toMatchObject({ text: text.text });
+    await expect(
+      readThroughCatalog({ action: "show", sessionId: "meeting" }),
+    ).resolves.toHaveProperty(
+      "text",
+      expect.stringContaining("[truncated; run openclaw transcripts show"),
+    );
     for (let index = 0; index < 50; index++) {
       await saveSession({ sessionId: `meeting-${index}`, title: "Long title ".repeat(40) });
     }

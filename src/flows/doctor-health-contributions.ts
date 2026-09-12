@@ -110,6 +110,31 @@ async function runGatewayConfigHealth(ctx: DoctorHealthFlowContext): Promise<voi
       "Gateway auth",
     );
   }
+  // Proxy-hardening posture (brain-server v1.28.88 gateway drill): behind a
+  // reverse proxy (gateway.trustedProxies set) or bound beyond loopback
+  // (bind lan/custom) with all three verify-client hardening toggles off,
+  // forged proxy-header shape reaches post-handshake auth with no
+  // pre-handshake rejection. Docs + when-to-enable live in
+  // docs/gateway/config-gateway.md ("Proxy hardening toggles").
+  const gwSecurity = ctx.cfg.gateway?.security ?? {};
+  const behindProxy =
+    Array.isArray(ctx.cfg.gateway?.trustedProxies) && ctx.cfg.gateway.trustedProxies.length > 0;
+  const exposedBind = ctx.cfg.gateway?.bind === "lan" || ctx.cfg.gateway?.bind === "custom";
+  if (
+    (behindProxy || exposedBind) &&
+    gwSecurity.strictHeaderValidation !== true &&
+    gwSecurity.rejectUntrustedProxyHeaders !== true &&
+    gwSecurity.rejectCrossSiteWebSocketRequests !== true
+  ) {
+    note(
+      [
+        `Gateway accepts proxy/exposed traffic with all three pre-handshake hardening toggles OFF (${behindProxy ? "trustedProxies set" : ""}${behindProxy && exposedBind ? " + " : ""}${exposedBind ? `bind=${ctx.cfg.gateway?.bind}` : ""}). Risk: forged X-Forwarded-*/Forwarded headers and cross-site WebSocket initiations are not rejected pre-handshake; only post-handshake auth stands in the way.`,
+        "Toggles (all default off): gateway.security.strictHeaderValidation, gateway.security.rejectUntrustedProxyHeaders, gateway.security.rejectCrossSiteWebSocketRequests.",
+        "Behind a proxy you control, enable all three (see docs/gateway/config-gateway.md). Direct-local dev over loopback with no proxy may leave them off.",
+      ].join("\n"),
+      "Gateway proxy hardening",
+    );
+  }
 }
 
 async function runAuthProfileHealth(ctx: DoctorHealthFlowContext): Promise<void> {

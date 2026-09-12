@@ -15,9 +15,6 @@ export type PluginToolMcpMeta = {
   deniedBySession?: true;
   /** Trusted requester OAuth sign-in bootstrap; exempt from per-call MCP approval. */
   oauthConnectBootstrap?: true;
-  /** v1.28.67 "Pin": the tool definition is NOT acknowledged in the catalog
-   * pins file — new or changed since the operator last acknowledged. */
-  pendingAck?: true;
   codexApproval?: {
     mode?: McpCodexToolApprovalMode;
     annotations?: McpCodexToolAnnotations;
@@ -26,6 +23,11 @@ export type PluginToolMcpMeta = {
     id: string;
     displayName?: string;
   };
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. v1.28.67 "Pin": the tool
+   * definition is NOT acknowledged in the catalog pins file — new or changed
+   * since the operator last acknowledged. */
+  pendingAck?: true;
 };
 
 /** Runtime metadata used to trace an agent tool back to its owning plugin registration. */

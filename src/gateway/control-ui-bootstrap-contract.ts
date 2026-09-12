@@ -60,8 +60,6 @@ export type ControlUiBootstrapConfig = {
   embedSandbox?: ControlUiEmbedSandboxMode;
   allowExternalEmbedUrls?: boolean;
   automaticallyFetchFavicons?: boolean;
-  /** Operator-allowlisted image/favicon hosts; empty means nothing auto-fetches. */
-  remoteImageHosts?: string[];
   seamColor?: string;
   environment?: ControlUiEnvironment;
   /** Whether this Gateway's served UI may show the Discord community invitation. */
@@ -77,4 +75,8 @@ export type ControlUiBootstrapConfig = {
   /** Only explicit no-auth Gateways permit native asset loading without scoped cookies. */
   pluginAssetsRequireAuth?: boolean;
   pluginFrameGrants?: ControlUiPluginFrameGrantAck[];
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. Operator-allowlisted
+   * image/favicon hosts; empty means nothing auto-fetches. */
+  remoteImageHosts?: string[];
 };

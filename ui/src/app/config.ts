@@ -35,12 +35,14 @@ type ApplicationConfig = {
   embedSandboxMode: ControlUiEmbedSandboxMode;
   allowExternalEmbedUrls: boolean;
   automaticallyFetchFavicons: boolean;
-  remoteImageHosts: string[];
   communityInvite: boolean;
   terminalEnabled: boolean;
   cliAgentsEnabled?: boolean;
   pluginAssetsRequireAuth: boolean;
   pluginFrameGrants: ControlUiPluginFrameGrantAck[];
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. */
+  remoteImageHosts: string[];
 };
 
 export type ApplicationConfigCapability = {
@@ -69,12 +71,12 @@ const DEFAULT_APPLICATION_CONFIG: ApplicationConfig = {
   embedSandboxMode: "strict",
   allowExternalEmbedUrls: false,
   automaticallyFetchFavicons: false,
-  remoteImageHosts: [],
   communityInvite: false,
   terminalEnabled: readDocumentTerminalEnabled() ?? false,
   cliAgentsEnabled: false,
   pluginAssetsRequireAuth: true,
   pluginFrameGrants: [],
+  remoteImageHosts: [],
 };
 
 function loadControlUiPresentation(
@@ -116,9 +118,6 @@ function normalizeApplicationConfig(parsed: ControlUiBootstrapConfig): Applicati
     embedSandboxMode: parsed.embedSandbox ?? "scripts",
     allowExternalEmbedUrls: Boolean(parsed.allowExternalEmbedUrls),
     automaticallyFetchFavicons: Boolean(parsed.automaticallyFetchFavicons),
-    remoteImageHosts: (parsed.remoteImageHosts ?? [])
-      .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
-      .filter((host, index, hosts) => host !== "" && hosts.indexOf(host) === index),
     communityInvite: parsed.communityInvite === true,
     terminalEnabled: Boolean(parsed.terminalEnabled),
     cliAgentsEnabled: Boolean(parsed.cliAgentsEnabled),
@@ -135,6 +134,9 @@ function normalizeApplicationConfig(parsed: ControlUiBootstrapConfig): Applicati
         path: uiDevGatewayResourceUrl(grant.path),
         match: grant.match,
       })),
+    remoteImageHosts: (parsed.remoteImageHosts ?? [])
+      .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
+      .filter((host, index, hosts) => host !== "" && hosts.indexOf(host) === index),
   };
 }
 

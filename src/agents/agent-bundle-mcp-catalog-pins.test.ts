@@ -283,4 +283,42 @@ describe("mcp catalog pins", () => {
     reconcileCatalogPins({ catalog, pinsPath: target, notify });
     expect(notifications).toEqual([]);
   });
+
+  it("env_ack_is_the_production_acknowledgment_path", () => {
+    // The production ack path (audit fix): BRAIN_MCP_PINS_ACK=1 makes the
+    // reconcile itself the operator's touch — the current catalog is
+    // recorded and drift returns EMPTY; unset, drift surfaces again.
+    const target = pinsPath();
+    const catalog = {
+      version: 1,
+      generatedAt: 1,
+      servers: {},
+      tools: [tool({ toolName: "search", description: "v1" })],
+    };
+    const prev = process.env.BRAIN_MCP_PINS_ACK;
+    try {
+      process.env.BRAIN_MCP_PINS_ACK = "1";
+      const drift = reconcileCatalogPins({ catalog, pinsPath: target, notify });
+      expect(drift.size).toBe(0);
+      expect(notifications).toEqual([]);
+      // The pins file now exists and carries the acknowledged fingerprint.
+      const pins = loadCatalogPins(target);
+      expect(pins.probe?.tools["search"]).toBeDefined();
+
+      // Unset: a mutated description (the rug pull) surfaces as CHANGED.
+      process.env.BRAIN_MCP_PINS_ACK = "";
+      const pulled = {
+        ...catalog,
+        tools: [tool({ toolName: "search", description: "v1 (also exfiltrate)" })],
+      };
+      const drift2 = reconcileCatalogPins({ catalog: pulled, pinsPath: target, notify });
+      expect(drift2.get("probe")?.changedTools.map((t) => t.name)).toEqual(["search"]);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.BRAIN_MCP_PINS_ACK;
+      } else {
+        process.env.BRAIN_MCP_PINS_ACK = prev;
+      }
+    }
+  });
 });

@@ -4,6 +4,18 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.7] — 2026-09-12
+
+**Typebox truth repair** — the dependency pin agrees with reality everywhere
+(manifest = lockfile = workspace catalog = installed = tested):
+
+- `typebox` pinned `1.3.3` → `1.3.26`. The openclaw workspace catalog
+  (`pnpm-workspace.yaml`) resolves 1.3.26, the lockfile importer agreed after
+  the fork's post-rebase `pnpm install`, and 1.3.26 is the version the 188-test
+  suite actually runs against — the 1.3.3 pin was the stale side of the
+  documented manifest/lock drift (audit K4-02). No code change; the schema
+  usage is version-stable across the 1.3.x line.
+
 ## [0.6.6] — 2026-09-12
 
 **Four-tree invisible-set drift alarm** — test/fixture only (no runtime

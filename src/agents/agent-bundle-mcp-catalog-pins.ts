@@ -10,11 +10,20 @@
  *   catalogDigest(server) = sha256(sortedServerName + Σ fp in name order)
  *
  * and the acknowledged state lives in `mcp-catalog-pins.json` beside the
- * agent bundle (the agentDir discipline — NOT a secret; 0644). Drift
- * SURFACES to the operator (notification); it does not hard-block — no ack
- * UX exists yet, and first use is deliberately not gated (the ceiling is
- * stated here and in the changelog; tool shadowing remains a model-level
- * residual mitigated by args-visibility, not closed by this file).
+ * agent bundle (the agentDir discipline — NOT a secret; 0644). Drift is
+ * SURFACED (notification + `pendingAck` meta) and CHANGED tools are
+ * HARD-BLOCKED — removed from the catalog before projection until
+ * re-acknowledged (never callable). First use of a never-seen tool stays
+ * usable-but-flagged so first use is not gated (the stated ceiling; tool
+ * shadowing remains a model-level residual mitigated by args-visibility,
+ * not closed by this file).
+ *
+ * ACKNOWLEDGMENT (the production path): set `BRAIN_MCP_PINS_ACK=1` for ONE
+ * run — reconcile then records the CURRENT catalog as acknowledged (signed,
+ * actor `operator-env`) and returns zero drift. UNSET it afterwards: left
+ * set, every run re-acks and drift can never surface. A missing pins file
+ * beside an existing `.sig` logs LOUDLY (a deletion downgrades hard-block
+ * back to flagged — see loadCatalogPins).
  *
  * `ponytail:` no MCP registry / Transparency-log infrastructure and no
  * cross-host pin sharing — the pin is per-agent-bundle local state; multi-host
@@ -122,6 +131,18 @@ export function loadCatalogPins(pinsPath: string): CatalogPinsFile {
   try {
     raw = fs.readFileSync(pinsPath, "utf8");
   } catch {
+    // A DELETED pins file downgrades hard-block to flagged-but-usable
+    // (every tool reads as new). If ack state existed (a detached signature
+    // or TOFU key survives the deletion), say so LOUDLY — a filesystem
+    // writer who cannot forge the signature can still delete (audit fix).
+    if (fs.existsSync(`${pinsPath}.sig`) || fs.existsSync(`${pinsPath}.key`)) {
+      logWarn(
+        `bundle-mcp catalog pins file MISSING at ${pinsPath} but signature/ack ` +
+          "state exists — deletion downgrades the changed-tool hard-block to " +
+          "flagged-but-usable; re-acknowledge (BRAIN_MCP_PINS_ACK=1 for one run) " +
+          "or investigate the deletion",
+      );
+    }
     return {};
   }
   try {
@@ -327,6 +348,23 @@ export function reconcileCatalogPins(params: {
 }): Map<string, CatalogDrift> {
   const out = new Map<string, CatalogDrift>();
   if (!params.pinsPath) {
+    return out;
+  }
+  // The production ack path (audit fix): BRAIN_MCP_PINS_ACK=1 makes THIS
+  // reconcile the operator's explicit touch — the current catalog is
+  // recorded as acknowledged (signed) and drift returns empty. Set it for
+  // ONE acknowledging run; left set, every run re-acks and drift can never
+  // surface (the loud log below names that on every fire).
+  if (process.env.BRAIN_MCP_PINS_ACK === "1") {
+    acknowledgeCatalogPins({
+      catalog: params.catalog,
+      pinsPath: params.pinsPath,
+      actor: "operator-env",
+    });
+    logWarn(
+      "bundle-mcp catalog pins ACKNOWLEDGED via BRAIN_MCP_PINS_ACK — current " +
+        `catalog recorded at ${params.pinsPath}; UNSET the env so future drift surfaces`,
+    );
     return out;
   }
   const pins = loadCatalogPins(params.pinsPath);

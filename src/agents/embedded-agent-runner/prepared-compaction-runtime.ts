@@ -366,6 +366,9 @@ export async function buildPreparedCompactionRuntime(
           workspaceDir: effectiveWorkspace,
           cfg: params.config,
           reservedToolNames: tools.map((tool) => tool.name),
+          // v1.28.84 "PinsThrough": the helper derives catalogPinsPath from
+          // agentDir, so compaction runs enforce pins like every runner.
+          ...(agentDir ? { agentDir } : {}),
         })
       : undefined;
     bundleLspRuntime = toolsEnabled

@@ -14,6 +14,7 @@ import {
   changedToolNames,
   pendingAckToolNames,
   reconcileCatalogPins,
+  resolveCatalogPinsPath,
 } from "./agent-bundle-mcp-catalog-pins.js";
 import {
   buildSafeToolName,
@@ -440,6 +441,11 @@ export async function materializeBundleMcpToolsForRun(params: {
    * the drifted tools carry `pendingAck` in their plugin meta. Surfacing,
    * not gating — first use is never blocked. */
   catalogPinsPath?: string;
+  /** v1.28.84 "PinsThrough": the agent dir that owns the pins — the
+   * fail-closed anchor for reconcile when catalogPinsPath is absent. */
+  agentDir?: string;
+  /** Carried into the pins warn-once log when no pins exist yet. */
+  runId?: string;
 }): Promise<BundleMcpToolRuntime> {
   const runtime = params.runtime;
   let disposal: Promise<void> | undefined;
@@ -488,6 +494,8 @@ export async function materializeBundleMcpToolsForRun(params: {
     const driftByServer = reconcileCatalogPins({
       catalog: materializedCatalog,
       ...(params.catalogPinsPath ? { pinsPath: params.catalogPinsPath } : {}),
+      ...(params.agentDir ? { agentDir: params.agentDir } : {}),
+      ...(params.runId ? { runId: params.runId } : {}),
     });
     const pendingAck = pendingAckToolNames(driftByServer);
     // Rug-pull hard-block: tools whose fingerprint MOVED post-approval are
@@ -691,9 +699,14 @@ export async function createBundleMcpToolRuntime(params: {
       ? { safeServerNamesByServer: params.safeServerNamesByServer }
       : {}),
   });
+  // v1.28.84 "PinsThrough": the helper threads the agent's pins path so
+  // non-embedded runners (doctor, compaction) enforce pins like the embedded
+  // runner does — agentDir-disciplined, no traversal (resolve throws).
   return await materializeBundleMcpToolsForRun({
     runtime,
     reservedToolNames: params.reservedToolNames,
+    ...(params.agentDir ? { catalogPinsPath: resolveCatalogPinsPath(params.agentDir) } : {}),
+    ...(params.agentDir ? { agentDir: params.agentDir } : {}),
     disposeRuntime: async () => {
       await runtime.dispose();
     },

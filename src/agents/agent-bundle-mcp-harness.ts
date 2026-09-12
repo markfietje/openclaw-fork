@@ -3,6 +3,7 @@ import type { SessionToolOverrides } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { getPluginToolMeta, setPluginToolMeta } from "../plugins/tool-metadata.js";
+import { resolveCatalogPinsPath } from "./agent-bundle-mcp-catalog-pins.js";
 import {
   getAdvertisedScopedMcpCatalog,
   acquireRequesterScopedMcpRuntime,
@@ -279,10 +280,16 @@ export async function materializeStaticMcpToolsForHarnessRunCore(
     : undefined;
   let liveRuntime: Awaited<ReturnType<typeof materializeBundleMcpToolsForRun>>;
   try {
+    // v1.28.84 "PinsThrough": thread the agent's pins path (agentDir
+    // discipline) so the static/CLI path hard-blocks drift like the embedded
+    // runner — agentDir doubles as the fail-closed anchor.
     liveRuntime = await materializeBundleMcpToolsForRun({
       ...acquisition,
       agentId: params.agentId,
       reservedToolNames: params.reservedToolNames,
+      ...(params.agentDir ? { catalogPinsPath: resolveCatalogPinsPath(params.agentDir) } : {}),
+      ...(params.agentDir ? { agentDir: params.agentDir } : {}),
+      ...(params.agentDir ? { runId: params.sessionId } : {}),
       ...(retireSnapshotRuntime ? { disposeRuntime: retireSnapshotRuntime } : {}),
     });
   } catch (error) {
@@ -378,11 +385,16 @@ export async function materializeRequesterScopedMcpToolsForHarnessRunCore(
   let liveCatalog: McpToolCatalog | undefined;
   try {
     if (scopedRuntime) {
+      // v1.28.84 "PinsThrough": same pins thread-through for the
+      // requester-scoped/steward path — drift hard-blocks here too.
       liveRuntime = await materializeBundleMcpToolsForRun({
         runtime: scopedRuntime,
         releaseLease: scopedRuntimeHandle?.releaseLease,
         agentId: params.agentId,
         reservedToolNames: params.reservedToolNames,
+        ...(params.agentDir ? { catalogPinsPath: resolveCatalogPinsPath(params.agentDir) } : {}),
+        ...(params.agentDir ? { agentDir: params.agentDir } : {}),
+        ...(params.agentDir ? { runId: params.sessionId } : {}),
       });
       liveCatalog = scopedRuntime.peekCatalog() ?? (await scopedRuntime.getCatalog());
       if (liveCatalog.tools.length > 0 && scopedRuntimeHandle) {

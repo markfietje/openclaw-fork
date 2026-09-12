@@ -248,6 +248,37 @@ Convenience flags: `--dev` (uses `~/.openclaw-dev` + port `19001`), `--profile <
 
 See [Multiple Gateways](/gateway/multiple-gateways).
 
+### Proxy hardening toggles
+
+Three pre-handshake verify-client toggles, all default off for
+zero-new-rejection compat (`src/gateway/server/verify-client.ts`).
+With all three off behind a proxy, forged proxy headers reach
+post-handshake auth with no pre-handshake rejection — `openclaw doctor`
+warns loudly in that posture ("Gateway proxy hardening").
+
+- `gateway.security.strictHeaderValidation`: reject proto mismatch +
+  forwarded-header contradiction + duplicate/chained sensitive headers.
+  Behind a proxy you control: **on**. Direct-local dev: off acceptable.
+- `gateway.security.rejectUntrustedProxyHeaders`: reject proxy headers
+  from non-`trustedProxies` peers. Behind a proxy: **on**.
+- `gateway.security.rejectCrossSiteWebSocketRequests`: reject cross-site
+  browser WS upgrades (`Sec-Fetch-Site`). Same-origin production: **on**;
+  loopback-alias browser clients legitimately flag cross-site, so
+  direct-local dev leaves it off.
+
+```json5
+{
+  gateway: {
+    trustedProxies: ["10.0.0.1"], // behind a proxy you control
+    security: {
+      strictHeaderValidation: true,
+      rejectUntrustedProxyHeaders: true,
+      rejectCrossSiteWebSocketRequests: true, // same-origin browsers only
+    },
+  },
+}
+```
+
 ### `gateway.tls`
 
 ```json5

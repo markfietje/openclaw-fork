@@ -20,8 +20,9 @@
  *
  * ACKNOWLEDGMENT (the production path): set `BRAIN_MCP_PINS_ACK=1` for ONE
  * run — reconcile then records the CURRENT catalog as acknowledged (signed,
- * actor `operator-env`) and returns zero drift. UNSET it afterwards: left
- * set, every run re-acks and drift can never surface. A missing pins file
+ * actor `operator-env`) and returns zero drift. UNSET it afterwards: the ACK
+ * is one-shot per process (a stale second use logs `pins_ack_stale` and
+ * diffs normally), but unsetting keeps the intent explicit. A missing pins file
  * beside an existing `.sig` logs LOUDLY (a deletion downgrades hard-block
  * back to flagged — see loadCatalogPins).
  *
@@ -44,6 +45,43 @@ import type { McpCatalogTool, McpToolCatalog } from "./agent-bundle-mcp-types.js
 
 /** The pins file lives beside the agent bundle (agentDir discipline). */
 export const CATALOG_PINS_FILENAME = "mcp-catalog-pins.json";
+
+/** Derive the pins path from an agentDir (v1.28.84 "PinsThrough").
+ * Traversal-disciplined: the filename is a module constant, so the result
+ * always stays inside the resolved agentDir; an empty agentDir or one with
+ * `..` segments throws instead of resolving somewhere surprising. */
+export function resolveCatalogPinsPath(agentDir: string): string {
+  if (!agentDir || agentDir.split(path.sep).includes("..")) {
+    throw new Error(
+      `bundle-mcp catalog pins: refusing unsafe agentDir ${JSON.stringify(agentDir)}`,
+    );
+  }
+  return path.join(path.resolve(agentDir), CATALOG_PINS_FILENAME);
+}
+
+/** One-shot ACK consumption (v1.28.84): BRAIN_MCP_PINS_ACK=1 is honored by
+ * the FIRST reconcile per process only. A stale (already-consumed) ACK is
+ * ignored and logged as `pins_ack_stale` so a forgotten env var can never
+ * silently re-ack drift on every run. */
+let pinsAckConsumed = false;
+
+/** Test-only reset of the one-shot ACK flag (and warn-once memory). */
+export function resetCatalogPinsAckForTests(): void {
+  pinsAckConsumed = false;
+  warnedOnceKeys.clear();
+}
+
+const warnedOnceKeys = new Set<string>();
+
+/** Loud-once log: the first occurrence carries the run id; repeats are
+ * dropped so per-run reconcile cannot spam the operator seam. */
+function warnOnce(key: string, message: string): void {
+  if (warnedOnceKeys.has(key)) {
+    return;
+  }
+  warnedOnceKeys.add(key);
+  logWarn(message);
+}
 
 export type CatalogPinEntry = {
   catalogDigest: string;
@@ -127,6 +165,20 @@ export function fingerprintsForServer(tools: McpCatalogTool[]): Record<string, s
  * ack-path authorship, not operator identity (operator-bound keys are the
  * Loop line). Legacy unsigned files rebuild loudly once, then re-sign. */
 export function loadCatalogPins(pinsPath: string): CatalogPinsFile {
+  // Operator-owned dir check (v1.28.84): a group/world-writable pins dir
+  // lets any local user rewrite ack state — say so LOUDLY on every load.
+  try {
+    const dir = path.dirname(pinsPath);
+    const mode = fs.statSync(dir).mode;
+    if ((mode & 0o022) !== 0) {
+      logWarn(
+        `bundle-mcp catalog pins dir "${dir}" is group/world-writable — ` +
+          "any local user can rewrite ack state; chmod it operator-only",
+      );
+    }
+  } catch {
+    // The dir may not exist yet (first ack creates it) — not a finding.
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(pinsPath, "utf8");
@@ -175,7 +227,10 @@ export function loadCatalogPins(pinsPath: string): CatalogPinsFile {
  * secret; parent dir must exist — the agentDir discipline). Signs the exact
  * bytes with the ack keypair (TOFU, 0600 private beside the pins). */
 export function saveCatalogPins(pinsPath: string, pins: CatalogPinsFile): void {
-  fs.mkdirSync(path.dirname(pinsPath), { recursive: true });
+  // Operator-only dir (v1.28.84): 0700 so group/world cannot rewrite ack
+  // state (0600 would deny even owner traversal — dirs need +x). The ack
+  // key beside it is already 0600; the pins + sig stay operator-readable.
+  fs.mkdirSync(path.dirname(pinsPath), { recursive: true, mode: 0o700 });
   const body = `${JSON.stringify(pins, null, 2)}\n`;
   signCatalogPins(pinsPath, body);
   const tmp = `${pinsPath}.tmp`;
@@ -344,30 +399,85 @@ function diffServer(
 export function reconcileCatalogPins(params: {
   catalog: Pick<McpToolCatalog, "tools">;
   pinsPath?: string;
+  /** Fail-closed anchor (v1.28.84): when pinsPath is absent but the agent
+   * dir is known, the derived pins location is checked — a forgotten
+   * thread-through with existing pins throws instead of silently passing. */
+  agentDir?: string;
+  /** Carried into the warn-once log when no pins exist yet. */
+  runId?: string;
   notify?: (drift: CatalogDrift) => void;
 }): Map<string, CatalogDrift> {
   const out = new Map<string, CatalogDrift>();
-  if (!params.pinsPath) {
+  let pinsPath = params.pinsPath;
+  if (!pinsPath && params.agentDir) {
+    const derived = resolveCatalogPinsPath(params.agentDir);
+    if (fs.existsSync(derived)) {
+      throw new Error(
+        `bundle-mcp catalog pins file exists at ${derived} but no pinsPath ` +
+          "was threaded to reconcile — refusing silent pass-through (fail-closed); " +
+          "thread catalogPinsPath from the agentDir",
+      );
+    }
+    pinsPath = derived;
+  }
+  if (!pinsPath) {
     return out;
   }
   // The production ack path (audit fix): BRAIN_MCP_PINS_ACK=1 makes THIS
   // reconcile the operator's explicit touch — the current catalog is
   // recorded as acknowledged (signed) and drift returns empty. Set it for
-  // ONE acknowledging run; left set, every run re-acks and drift can never
-  // surface (the loud log below names that on every fire).
+  // ONE acknowledging run (one-shot per process — v1.28.84); a stale
+  // (already-consumed) ACK is ignored with a pins_ack_stale log and the
+  // catalog diffs normally, so a forgotten env var can never silence drift.
   if (process.env.BRAIN_MCP_PINS_ACK === "1") {
-    acknowledgeCatalogPins({
-      catalog: params.catalog,
-      pinsPath: params.pinsPath,
-      actor: "operator-env",
-    });
-    logWarn(
-      "bundle-mcp catalog pins ACKNOWLEDGED via BRAIN_MCP_PINS_ACK — current " +
-        `catalog recorded at ${params.pinsPath}; UNSET the env so future drift surfaces`,
-    );
-    return out;
+    if (pinsAckConsumed) {
+      logWarn(
+        "bundle-mcp catalog pins_ack_stale: BRAIN_MCP_PINS_ACK was already " +
+          "consumed by an earlier reconcile in this process — ignoring the " +
+          `stale ACK and diffing ${pinsPath} normally; UNSET the env var`,
+      );
+    } else {
+      pinsAckConsumed = true;
+      acknowledgeCatalogPins({
+        catalog: params.catalog,
+        pinsPath,
+        actor: "operator-env",
+      });
+      logWarn(
+        "bundle-mcp catalog pins ACKNOWLEDGED via BRAIN_MCP_PINS_ACK — current " +
+          `catalog recorded at ${pinsPath}; UNSET the env so future drift surfaces`,
+      );
+      return out;
+    }
   }
-  const pins = loadCatalogPins(params.pinsPath);
+  if (!fs.existsSync(pinsPath)) {
+    // A DELETED pins file beside surviving ack state is a loud ERROR naming
+    // the files (audit fix): a filesystem writer who cannot forge the
+    // signature can still delete, and that must not quietly downgrade the
+    // hard-block. Recovery stays open: acknowledgeCatalogPins (or a fresh
+    // BRAIN_MCP_PINS_ACK run) re-records the catalog.
+    const survivors = [`${pinsPath}.sig`, ackKeyPath(pinsPath)].filter((candidate) =>
+      fs.existsSync(candidate),
+    );
+    if (survivors.length > 0) {
+      throw new Error(
+        `bundle-mcp catalog pins file MISSING at ${pinsPath} but ack state ` +
+          `survives (${survivors.join(", ")}) — deletion downgrades the ` +
+          "changed-tool hard-block to flagged-but-usable; re-acknowledge " +
+          "(BRAIN_MCP_PINS_ACK=1 for one run) or investigate the deletion",
+      );
+    }
+    // All three deleted (or never created): the documented ceiling — warn
+    // ONCE with the run id, then diff against empty so every tool reads as
+    // new (usable-but-flagged, never silent).
+    warnOnce(
+      `missing-pins:${pinsPath}`,
+      `bundle-mcp catalog pins file MISSING at ${pinsPath} (run ${params.runId ?? "unknown"}) — ` +
+        "no acknowledged state; every tool reads as new (flagged-but-usable ceiling); " +
+        "acknowledge (BRAIN_MCP_PINS_ACK=1 for one run) to pin the catalog",
+    );
+  }
+  const pins = loadCatalogPins(pinsPath);
   const byServer = new Map<string, McpCatalogTool[]>();
   for (const tool of params.catalog.tools) {
     const list = byServer.get(tool.serverName) ?? [];

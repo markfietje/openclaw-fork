@@ -50,7 +50,6 @@ export type ChatPageHost = ChatHost &
     embedSandboxMode: EmbedSandboxMode;
     allowExternalEmbedUrls: boolean;
     automaticallyFetchFavicons: boolean;
-    remoteImageHosts: string[];
     guardianNotices: ChatGuardianNotice[];
     chatComposerFallbackByScope: Record<string, ChatComposerMemoryFallback>;
     chatSendingScopeKey: string | null;
@@ -139,4 +138,8 @@ export type ChatPageHost = ChatHost &
     handleOpenImage: (item: ImageLightboxItem, requestVersion?: number) => void;
     handleCloseImage: () => void;
     retireSessionCompanion?: (sessionKey: string, agentId?: string | null) => void;
+    /** Fork addition — kept at the end of the type to reduce merge conflicts
+     * with upstream edits to this shared block. Operator-allowlisted image
+     * hosts; empty means nothing auto-fetches. */
+    remoteImageHosts: string[];
   };

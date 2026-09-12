@@ -22,9 +22,11 @@ export type MarkdownRenderOptions = {
   progressBars?: boolean;
   mode?: "document" | "message";
   remoteImages?: boolean;
-  remoteImageHosts?: string[];
   sessionLinks?: boolean;
   tableInteractions?: "enabled" | "none";
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. */
+  remoteImageHosts?: string[];
 };
 
 export type MarkdownGitHubContext = Pick<
@@ -56,9 +58,10 @@ export function normalizeMarkdownRenderOptions(
     // URLs is an exfiltration channel, so document renders opt in explicitly
     // and every fetched host must also be allowlisted (markdown-image-gate).
     remoteImages: options.remoteImages ?? false,
-    remoteImageHosts: normalizeRemoteImageHosts(options.remoteImageHosts),
     sessionLinks: options.sessionLinks ?? false,
     tableInteractions: options.tableInteractions ?? "none",
+    // Fork addition — kept at the end to mirror the type order above.
+    remoteImageHosts: normalizeRemoteImageHosts(options.remoteImageHosts),
   };
 }
 

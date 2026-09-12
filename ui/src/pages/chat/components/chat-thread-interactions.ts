@@ -179,8 +179,6 @@ export type ChatThreadProps = ChatSendStatusActions &
     pluginToolIcons?: PluginToolIcons;
     githubRepo?: MarkdownRenderOptions["githubRepo"];
     githubRepositories?: MarkdownRenderOptions["githubRepositories"];
-    /** Operator-allowlisted image hosts; empty means document renders never fetch. */
-    remoteImageHosts?: string[];
     autoExpandToolCalls?: boolean;
     realtimeTalkConversation?: RealtimeTalkConversationEntry[];
     typingActors?: readonly ChatTypingActorView[];
@@ -213,6 +211,11 @@ export type ChatThreadProps = ChatSendStatusActions &
     onOpenSubagents?: () => void;
     modelSetupRequired?: boolean;
     onModelSetup?: () => void;
+
+    /** Fork addition — kept at the end of the type to reduce merge conflicts
+     * with upstream edits to this shared block. Operator-allowlisted image
+     * hosts; empty means document renders never fetch. */
+    remoteImageHosts?: string[];
   };
 
 type TranscriptInteractionProps = Pick<

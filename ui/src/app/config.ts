@@ -23,7 +23,6 @@ type ApplicationConfig = {
   embedSandboxMode: ControlUiEmbedSandboxMode;
   allowExternalEmbedUrls: boolean;
   automaticallyFetchFavicons: boolean;
-  remoteImageHosts: string[];
   communityInvite: boolean;
   /** Null until the serving Gateway publishes its bootstrap policy. */
   newSessionModelDefaults?: "last-used" | "configured" | null;
@@ -32,6 +31,9 @@ type ApplicationConfig = {
   cliAgentsEnabled?: boolean;
   pluginAssetsRequireAuth: boolean;
   pluginFrameGrants: ControlUiPluginFrameGrantAck[];
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. */
+  remoteImageHosts: string[];
 };
 
 export type ApplicationConfigCapability = ReturnType<typeof createApplicationConfigCapability>;
@@ -53,7 +55,6 @@ const DEFAULT_APPLICATION_CONFIG: ApplicationConfig = {
   embedSandboxMode: "strict",
   allowExternalEmbedUrls: false,
   automaticallyFetchFavicons: false,
-  remoteImageHosts: [],
   communityInvite: false,
   newSessionModelDefaults: null,
   terminalEnabled: readDocumentTerminalEnabled() ?? false,
@@ -61,6 +62,7 @@ const DEFAULT_APPLICATION_CONFIG: ApplicationConfig = {
   cliAgentsEnabled: false,
   pluginAssetsRequireAuth: true,
   pluginFrameGrants: [],
+  remoteImageHosts: [],
 };
 
 function loadControlUiPresentation(
@@ -102,9 +104,6 @@ function normalizeApplicationConfig(parsed: ControlUiBootstrapConfig): Applicati
     embedSandboxMode: parsed.embedSandbox ?? "scripts",
     allowExternalEmbedUrls: Boolean(parsed.allowExternalEmbedUrls),
     automaticallyFetchFavicons: Boolean(parsed.automaticallyFetchFavicons),
-    remoteImageHosts: (parsed.remoteImageHosts ?? [])
-      .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
-      .filter((host, index, hosts) => host !== "" && hosts.indexOf(host) === index),
     communityInvite: parsed.communityInvite === true,
     newSessionModelDefaults: parsed.newSessionModelDefaults ?? "last-used",
     terminalEnabled: Boolean(parsed.terminalEnabled),
@@ -123,6 +122,9 @@ function normalizeApplicationConfig(parsed: ControlUiBootstrapConfig): Applicati
         path: uiDevGatewayResourceUrl(grant.path),
         match: grant.match,
       })),
+    remoteImageHosts: (parsed.remoteImageHosts ?? [])
+      .map((host) => host.trim().toLowerCase().replace(/\.$/, ""))
+      .filter((host, index, hosts) => host !== "" && hosts.indexOf(host) === index),
   };
 }
 

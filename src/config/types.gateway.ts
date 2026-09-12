@@ -45,6 +45,33 @@ export type GatewayControlUiConfig = Omit<
    */
   dangerouslyDisableDeviceAuth?: boolean;
   github?: { host?: string; token?: SecretInput };
+  /** Produce utility-model session status digests for subscribed Control UI clients (default true). */
+  sessionObserver?: boolean;
+  /**
+   * Embed sandbox mode for hosted Control UI previews.
+   * - strict: no script execution inside embeds
+   * - scripts: allow scripts while keeping embeds origin-isolated (default)
+   * - trusted: allow scripts and same-origin privileges
+   */
+  embedSandbox?: "strict" | "scripts" | "trusted";
+  /**
+   * DANGEROUS: Allow hosted embeds to load absolute external http(s) URLs.
+   * Default off; prefer hosted /__openclaw__/canvas or /__openclaw__/a2ui content.
+   */
+  allowExternalEmbedUrls?: boolean;
+  /** Fetch public-site favicons through the Gateway for Control UI links (default false). */
+  automaticallyFetchFavicons?: boolean;
+  /** Allowed browser origins for Control UI/WebChat websocket connections. */
+  allowedOrigins?: string[];
+  /**
+   * DANGEROUS: Keep Host-header origin fallback behavior.
+   * Supported long-term for deployments that intentionally rely on this policy.
+   */
+  dangerouslyAllowHostHeaderOriginFallback?: boolean;
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. Exact hosts the Control UI may
+   * auto-fetch images/favicons from (default: none). */
+  remoteImageHosts?: string[];
 };
 
 /** Gateway authentication strategy for WebSocket and HTTP clients. */
@@ -175,12 +202,14 @@ export type GatewayConfig = Omit<
    * Default: false (safer fail-closed behavior).
    */
   allowRealIpFallback?: boolean;
-  /**
-   * Opt-in WebSocket/proxy hardening for the Gateway upgrade handshake.
-   * Origin and cross-site defenses are on by default; these toggles add
-   * stricter behavior for reverse-proxy deployments.
-   */
-  security?: GatewaySecurityConfig;
   /** Tool access restrictions for HTTP /tools/invoke endpoint. */
   tools?: GatewayToolsConfig;
+  /**
+   * Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. Opt-in WebSocket/proxy hardening
+   * for the Gateway upgrade handshake. Origin and cross-site defenses are on
+   * by default; these toggles add stricter behavior for reverse-proxy
+   * deployments.
+   */
+  security?: GatewaySecurityConfig;
 };

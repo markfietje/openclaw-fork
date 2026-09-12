@@ -36,14 +36,6 @@ export type PluginApprovalRequestPayload = {
   title: string;
   description: string;
   detail?: string | null;
-  /**
-   * Redacted JSON of the effective tool-call arguments (the act, not the
-   * prose). The host computes it with the persistence redaction and a
-   * visible truncation cap, so the reviewer always sees the raw operation
-   * alongside the plugin-authored description. Display-only — never
-   * authorization.
-   */
-  args?: string | null;
   severity?: "info" | "warning" | "critical" | null;
   /** Owner-declared blast-radius facts; display-only, never authorization. */
   scope?: ApprovalScope | null;
@@ -68,6 +60,15 @@ export type PluginApprovalRequestPayload = {
   turnSourceTo?: string | null;
   turnSourceAccountId?: string | null;
   turnSourceThreadId?: string | number | null;
+  /**
+   * Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. Redacted JSON of the effective
+   * tool-call arguments (the act, not the prose). The host computes it with
+   * the persistence redaction and a visible truncation cap, so the reviewer
+   * always sees the raw operation alongside the plugin-authored description.
+   * Display-only — never authorization.
+   */
+  args?: string | null;
 };
 
 /** Timed plugin approval request persisted while awaiting a decision. */

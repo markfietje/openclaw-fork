@@ -98,9 +98,9 @@ export const GatewayConfigSchema = z
           .optional(),
         allowExternalEmbedUrls: z.boolean().optional(),
         automaticallyFetchFavicons: z.boolean().optional(),
-        remoteImageHosts: z.array(z.string()).optional(),
         allowedOrigins: z.array(z.string()).optional(),
         dangerouslyAllowHostHeaderOriginFallback: z.boolean().optional(),
+        remoteImageHosts: z.array(z.string()).optional(),
       })
       .optional(),
     cliAgents: z
@@ -175,17 +175,17 @@ export const GatewayConfigSchema = z
       .optional(),
     trustedProxies: z.array(z.string()).optional(),
     allowRealIpFallback: z.boolean().optional(),
+    tools: z
+      .strictObject({
+        deny: z.array(z.string()).optional(),
+        allow: z.array(z.string()).optional(),
+      })
+      .optional(),
     security: z
       .strictObject({
         strictHeaderValidation: z.boolean().optional(),
         rejectUntrustedProxyHeaders: z.boolean().optional(),
         rejectCrossSiteWebSocketRequests: z.boolean().optional(),
-      })
-      .optional(),
-    tools: z
-      .strictObject({
-        deny: z.array(z.string()).optional(),
-        allow: z.array(z.string()).optional(),
       })
       .optional(),
     tailscale: z

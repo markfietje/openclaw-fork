@@ -96,8 +96,10 @@ type ExternalContentSource =
   | "channel_metadata"
   | "web_search"
   | "web_fetch"
-  | "mcp_tool_result"
-  | "unknown";
+  | "unknown"
+  // Fork addition — kept after the fallback member to reduce merge conflicts
+  // with upstream additions to this shared union.
+  | "mcp_tool_result";
 
 const EXTERNAL_SOURCE_LABELS: Record<ExternalContentSource, string> = {
   email: "Email",
@@ -107,8 +109,9 @@ const EXTERNAL_SOURCE_LABELS: Record<ExternalContentSource, string> = {
   channel_metadata: "Channel metadata",
   web_search: "Web Search",
   web_fetch: "Web Fetch",
-  mcp_tool_result: "MCP Tool Result",
   unknown: "External",
+  // Fork addition — kept last to mirror the union above.
+  mcp_tool_result: "MCP Tool Result",
 };
 
 const SPECIAL_TOKEN_REPLACEMENT = "[REMOVED_SPECIAL_TOKEN]";

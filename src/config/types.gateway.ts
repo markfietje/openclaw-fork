@@ -157,8 +157,6 @@ export type GatewayControlUiConfig = {
   allowExternalEmbedUrls?: boolean;
   /** Fetch public-site favicons through the Gateway for Control UI links (default false). */
   automaticallyFetchFavicons?: boolean;
-  /** Exact hosts the Control UI may auto-fetch images/favicons from (default: none). */
-  remoteImageHosts?: string[];
   /** Optional max-width for grouped Control UI chat messages (default: min(900px, 68%)). */
   /** Allowed browser origins for Control UI/WebChat websocket connections. */
   allowedOrigins?: string[];
@@ -167,6 +165,10 @@ export type GatewayControlUiConfig = {
    * Supported long-term for deployments that intentionally rely on this policy.
    */
   dangerouslyAllowHostHeaderOriginFallback?: boolean;
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. Exact hosts the Control UI may
+   * auto-fetch images/favicons from (default: none). */
+  remoteImageHosts?: string[];
 };
 
 /** Gateway authentication strategy for WebSocket and HTTP clients. */
@@ -507,12 +509,14 @@ export type GatewayConfig = {
    * Default: false (safer fail-closed behavior).
    */
   allowRealIpFallback?: boolean;
-  /**
-   * Opt-in WebSocket/proxy hardening for the Gateway upgrade handshake.
-   * Origin and cross-site defenses are on by default; these toggles add
-   * stricter behavior for reverse-proxy deployments.
-   */
-  security?: GatewaySecurityConfig;
   /** Tool access restrictions for HTTP /tools/invoke endpoint. */
   tools?: GatewayToolsConfig;
+  /**
+   * Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. Opt-in WebSocket/proxy hardening
+   * for the Gateway upgrade handshake. Origin and cross-site defenses are on
+   * by default; these toggles add stricter behavior for reverse-proxy
+   * deployments.
+   */
+  security?: GatewaySecurityConfig;
 };

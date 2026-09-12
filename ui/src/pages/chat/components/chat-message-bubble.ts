@@ -201,8 +201,6 @@ export function renderGroupedMessage(
     pluginToolIcons?: PluginToolIcons;
     githubRepo?: MarkdownRenderOptions["githubRepo"];
     githubRepositories?: MarkdownRenderOptions["githubRepositories"];
-    /** Operator-allowlisted image hosts; empty means document renders never fetch. */
-    remoteImageHosts?: string[];
     onOpenWorkspaceFile?: (target: { path: string; line?: number | null }) => void;
     avatar?: TemplateResult | typeof nothing;
     entryId?: string;
@@ -212,6 +210,10 @@ export function renderGroupedMessage(
     onResolveReply?: (replyToId: string) => void;
     onOpenReply?: (replyToId: string) => void;
     replyNavigationId?: string | null;
+    /** Fork addition — kept at the end of the type to reduce merge conflicts
+     * with upstream edits to this shared block. Operator-allowlisted image
+     * hosts; empty means document renders never fetch. */
+    remoteImageHosts?: string[];
   },
   onOpenSidebar?: (content: SidebarContent) => void,
 ) {

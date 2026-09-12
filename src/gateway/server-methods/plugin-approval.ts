@@ -83,7 +83,6 @@ export function createPluginApprovalHandlers(
         title: string;
         description: string;
         detail?: string | null;
-        args?: string | null;
         severity?: string | null;
         scope?: ApprovalScope | null;
         toolName?: string | null;
@@ -99,6 +98,9 @@ export function createPluginApprovalHandlers(
         turnSourceThreadId?: string | number | null;
         timeoutMs?: number;
         twoPhase?: boolean;
+        /** Fork addition — kept at the end of the type to reduce merge
+         * conflicts with upstream edits to this shared block. */
+        args?: string | null;
       };
       const twoPhase = p.twoPhase === true;
       const timeoutMs = resolvePluginApprovalTimeoutMs(p.timeoutMs);
@@ -192,14 +194,6 @@ export function createPluginApprovalHandlers(
           rawDetail === null
             ? null
             : truncatePluginApprovalDetail(sanitizeExecApprovalWarningText(rawDetail)),
-        // Same boundary discipline as detail: sanitize once (the raw record
-        // reaches channel text, push, and the web modal), then cap with the
-        // visible-count marker. Args are the ACT — the reviewer-side truth
-        // that pairs with the plugin-authored description.
-        args:
-          p.args == null
-            ? null
-            : truncatePluginApprovalArgs(sanitizeExecApprovalWarningText(p.args)),
         severity: (p.severity as PluginApprovalRequestPayload["severity"]) ?? null,
         toolName: sanitizeMeta(p.toolName),
         toolCallId: p.toolCallId ?? null,
@@ -228,6 +222,15 @@ export function createPluginApprovalHandlers(
         turnSourceThreadId: trustedAgentRuntime
           ? (trustedAgentRuntime.turnSourceThreadId ?? null)
           : (p.turnSourceThreadId ?? null),
+        // Same boundary discipline as detail: sanitize once (the raw record
+        // reaches channel text, push, and the web modal), then cap with the
+        // visible-count marker. Args are the ACT — the reviewer-side truth
+        // that pairs with the plugin-authored description. Kept at the end of
+        // the literal to reduce merge conflicts with upstream edits.
+        args:
+          p.args == null
+            ? null
+            : truncatePluginApprovalArgs(sanitizeExecApprovalWarningText(p.args)),
       };
 
       // Always server-generate the ID — never accept plugin-provided IDs.

@@ -7,6 +7,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
 import { createDedupeCache } from "../infra/dedupe.js";
 import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
+import { sanitizePluginContext } from "./context-hygiene.js";
 import type { HookRunnerOptions } from "./hook-runner-types.js";
 import type {
   PluginAgentTurnPrepareResult,
@@ -71,16 +72,26 @@ export function createPluginSystemContextLimiter(logger: HookRunnerOptions["logg
   };
 }
 
+// v1.28.83 "Recall" (S5-02): the turn-prepare + heartbeat contributions join
+// the model prompt DIRECTLY (embedded attempt-prompt-build.ts + cli-runner
+// prepare.ts prepend/append the joined result with no later sanitize), so
+// they ride the SAME one-seam hygiene as prompt-build: the JOINED accumulator
+// is sanitized (no cross-segment marker synthesis; idempotent on the
+// already-sanitized left side).
 export const mergeAgentTurnPrepare = (
   acc: PluginAgentTurnPrepareResult | undefined,
   next: PluginAgentTurnPrepareResult,
 ): PluginAgentTurnPrepareResult => ({
-  prependContext: concatOptionalTextSegments({
-    left: acc?.prependContext,
-    right: next.prependContext,
-  }),
-  appendContext: concatOptionalTextSegments({
-    left: acc?.appendContext,
-    right: next.appendContext,
-  }),
+  prependContext: sanitizePluginContext(
+    concatOptionalTextSegments({
+      left: acc?.prependContext,
+      right: next.prependContext,
+    }),
+  ),
+  appendContext: sanitizePluginContext(
+    concatOptionalTextSegments({
+      left: acc?.appendContext,
+      right: next.appendContext,
+    }),
+  ),
 });

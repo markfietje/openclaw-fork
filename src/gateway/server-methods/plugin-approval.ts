@@ -173,14 +173,6 @@ export function createPluginApprovalHandlers(
             rawDetail === null
               ? null
               : truncatePluginApprovalDetail(sanitizeExecApprovalWarningText(rawDetail)),
-          // Same boundary discipline as detail: sanitize once (the raw record
-          // reaches channel text, push, and the web modal), then cap with the
-          // visible-count marker. Args are the ACT — the reviewer-side truth
-          // that pairs with the plugin-authored description.
-          args:
-            p.args == null
-              ? null
-              : truncatePluginApprovalArgs(sanitizeExecApprovalWarningText(p.args)),
           severity: (p.severity as PluginApprovalRequestPayload["severity"]) ?? null,
           toolName: sanitizeMeta(p.toolName),
           toolCallId: p.toolCallId ?? null,
@@ -204,6 +196,15 @@ export function createPluginApprovalHandlers(
           turnSourceTo: normalizeNullableString(turnSource.turnSourceTo),
           turnSourceAccountId: normalizeNullableString(turnSource.turnSourceAccountId),
           turnSourceThreadId: turnSource.turnSourceThreadId ?? null,
+          // Same boundary discipline as detail: sanitize once (the raw record
+          // reaches channel text, push, and the web modal), then cap with the
+          // visible-count marker. Args are the ACT — the reviewer-side truth
+          // that pairs with the plugin-authored description. Kept at the end of
+          // the literal to reduce merge conflicts with upstream edits.
+          args:
+            p.args == null
+              ? null
+              : truncatePluginApprovalArgs(sanitizeExecApprovalWarningText(p.args)),
         };
 
         // Always server-generate the ID — never accept plugin-provided IDs.

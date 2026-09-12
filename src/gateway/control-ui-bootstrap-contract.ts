@@ -83,8 +83,6 @@ export type ControlUiBootstrapConfig = {
   chatBubblesEnabled?: boolean;
   /** Whether optional composer prediction inference is enabled. */
   composerPredictionsEnabled?: boolean;
-  /** Operator-allowlisted image/favicon hosts; empty means nothing auto-fetches. */
-  remoteImageHosts?: string[];
   seamColor?: string;
   environment?: ControlUiEnvironment;
   /** Whether this Gateway's served UI may show the Discord community invitation. */
@@ -105,4 +103,8 @@ export type ControlUiBootstrapConfig = {
   pluginAssetsRequireAuth?: boolean;
   pluginFrameGrants?: ControlUiPluginFrameGrantAck[];
   pluginControlUiModules?: PluginControlUiModule[];
+  /** Fork addition — kept at the end of the type to reduce merge conflicts
+   * with upstream edits to this shared block. Operator-allowlisted
+   * image/favicon hosts; empty means nothing auto-fetches. */
+  remoteImageHosts?: string[];
 };

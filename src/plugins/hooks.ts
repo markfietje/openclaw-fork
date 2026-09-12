@@ -533,6 +533,12 @@ export function createHookRunner(
     };
   };
 
+  // v1.28.83 "Recall" (S5-02): the turn-prepare + heartbeat contributions
+  // join the model prompt DIRECTLY (embedded attempt-prompt-build.ts +
+  // cli-runner prepare.ts prepend/append the joined result with no later
+  // sanitize), so they ride the SAME one-seam hygiene as prompt-build: the
+  // JOINED accumulator is sanitized (no cross-segment marker synthesis;
+  // idempotent on the already-sanitized left side).
   const mergeAgentTurnPrepare = <
     TResult extends { prependContext?: string; appendContext?: string },
   >(
@@ -540,14 +546,18 @@ export function createHookRunner(
     next: TResult,
   ): TResult =>
     ({
-      prependContext: concatOptionalTextSegments({
-        left: acc?.prependContext,
-        right: next.prependContext,
-      }),
-      appendContext: concatOptionalTextSegments({
-        left: acc?.appendContext,
-        right: next.appendContext,
-      }),
+      prependContext: sanitizePluginContext(
+        concatOptionalTextSegments({
+          left: acc?.prependContext,
+          right: next.prependContext,
+        }),
+      ),
+      appendContext: sanitizePluginContext(
+        concatOptionalTextSegments({
+          left: acc?.appendContext,
+          right: next.appendContext,
+        }),
+      ),
     }) as TResult;
 
   const mergeBeforeAgentFinalize = (

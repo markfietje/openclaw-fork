@@ -171,22 +171,23 @@ context tokens when set.
 
 ## Files
 
-| File                              | Purpose                                                                                               |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `index.ts`                        | Plugin entry: `definePluginEntry`, hooks, tools, service                                              |
-| `src/config.ts`                   | Typebox schema + resolved config + defaults                                                           |
-| `src/brain-client.ts`             | Thin typed HTTP client → Rust brain-server (no logic)                                                 |
-| `src/gating.ts`                   | OWASP/Lakera access gating (per-agent + chat-type)                                                    |
-| `src/format.ts`                   | Recall formatting + anti-injection banner + capture heuristics                                        |
-| `src/tools.ts`                    | Recall/store/verify/get/graph/proposal tool definitions                                               |
-| `src/procedural.ts`               | Procedural memory: runbooks + decision-tree tools                                                     |
-| `src/team-bridge.ts`              | Team bridge: mirror agent activity onto governed workflow surfaces                                    |
-| `openclaw.plugin.json`            | Manifest (`kind: "memory"`, contracts, config)                                                        |
-| `package.json`                    | Package metadata, min host version, plugin API compat                                                 |
-| `test/plugin.test.ts`             | Integration: hook/tool flow against a mocked Rust server (`fetch`)                                    |
-| `test/team-bridge.test.ts`        | Integration: bridge gating + mirror flow (`fetch`)                                                    |
-| `src/*.test.ts`                   | Unit tests: config, gating, format, brain-client transport                                            |
-| `fixtures/invisible-classes.json` | Canonical invisible-Unicode classes (four-tree drift alarm; truth: brain-server `strip_invisible.rs`) |
+| File                              | Purpose                                                                                                          |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `index.ts`                        | Plugin entry: `definePluginEntry`, hooks, tools, service                                                         |
+| `src/config.ts`                   | Typebox schema + resolved config + defaults                                                                      |
+| `src/brain-client.ts`             | Thin typed HTTP client → Rust brain-server (no logic)                                                            |
+| `src/gating.ts`                   | OWASP/Lakera access gating (per-agent + chat-type)                                                               |
+| `src/format.ts`                   | Recall formatting + anti-injection banner + capture heuristics                                                   |
+| `src/tools.ts`                    | Recall/store/verify/get/graph/proposal tool definitions                                                          |
+| `src/procedural.ts`               | Procedural memory: runbooks + decision-tree tools                                                                |
+| `src/team-bridge.ts`              | Team bridge: mirror agent activity onto governed workflow surfaces                                               |
+| `openclaw.plugin.json`            | Manifest (`kind: "memory"`, contracts, config)                                                                   |
+| `package.json`                    | Package metadata, min host version, plugin API compat                                                            |
+| `test/plugin.test.ts`             | Integration: hook/tool flow against a mocked Rust server (`fetch`)                                               |
+| `test/team-bridge.test.ts`        | Integration: bridge gating + mirror flow (`fetch`)                                                               |
+| `src/*.test.ts`                   | Unit tests: config, gating, format, brain-client transport                                                       |
+| `fixtures/invisible-classes.json` | Canonical invisible-Unicode classes (four-tree drift alarm; truth: brain-server `strip_invisible.rs`)            |
+| `fixtures/hostile-elements.json`  | Closed 26-name hostile-element set + MathML-children appendix (v1; truth: brain-server `strip_hostile_elements`) |
 
 ## Testing
 
@@ -218,6 +219,14 @@ What the suite covers (brain-server-specific):
   counter-samples. The same fixture drives the brain-server Rust lane
   (exhaustive over all scalar values), the client lane, and the openclaw
   host lane — one file pins four trees.
+- **Hostile-element fixture parity (v0.6.8)** — `format.test.ts` consumes
+  `fixtures/hostile-elements.json` (the closed 26-name set + 30-name
+  MathML-children appendix, truth: brain-server `strip_hostile_elements`)
+  and asserts `stripHostileElements` strips every in-fixture element with
+  `math`/`style` opaque (tag + inner content) while prose
+  angle-brackets survive. Same four-lane shape as the invisible-set
+  fixture: server lane, plugin lane, client vendored strip, fork-host
+  lane.
 
 ## Team Bridge (v0.5.0) — put your agents on the dashboard
 

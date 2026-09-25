@@ -67,6 +67,7 @@ overrides:
   "werift-ice@0.2.2>ip": "npm:neoip@3.1.0"
   ip-address: 10.7.2
   "mailauth@5.0.3>nodemailer": 10.0.10
+  # Mailauth 5.0.3 pins vulnerable Joi; keep the fix scoped to this dependency path.
   "mailauth@5.0.3>joi": 18.2.9
   # Mailauth pins vulnerable Undici; remove when its direct dependency is fixed.
   "mailauth@5.0.3>undici": 8.10.2

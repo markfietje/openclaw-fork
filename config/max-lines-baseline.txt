@@ -343,7 +343,6 @@ src/gateway/session-utils.test.ts
 src/gateway/sessions-patch.test.ts
 src/gateway/talk/handlers/index.test.ts
 src/gateway/talk/handlers/index.ts
-src/gateway/talk/relay/index.test.ts
 src/gateway/test-helpers.server.ts
 src/gateway/watch-node-http.ts
 src/infra/backup-create.test.ts
@@ -434,4 +433,8 @@ ui/src/pages/chat/chat-send.test.ts
 ui/src/pages/chat/chat-state.test.ts
 ui/src/pages/chat/chat-thread.test.ts
 ui/src/pages/chat/chat-view.test.ts
+ui/src/pages/chat/components/chat-message.test.ts
+ui/src/pages/chat/composer-persistence.ts
+ui/src/pages/config/config-page.ts
+ui/src/pages/sessions/sessions-page.ts
 ui/src/test-helpers/control-ui-e2e.ts

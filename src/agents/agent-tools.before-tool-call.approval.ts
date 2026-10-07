@@ -554,6 +554,7 @@ export async function resolveBeforeToolCallApprovalOutcome(params: {
     params.result?.params === undefined
       ? undefined
       : cloneHookIsolationValue("before_tool_call", params.result.params);
+<<<<<<< HEAD
   const createDeferredApproval = () => ({
     approval,
     toolName: params.toolName,
@@ -562,6 +563,8 @@ export async function resolveBeforeToolCallApprovalOutcome(params: {
     baseParams: baseParamsSnapshot,
     overrideParams: overrideParamsSnapshot,
   });
+=======
+>>>>>>> c66c68991ae (fix(brain-server): the plugin's isolated-typecheck scaffolding leaves the whole-program tree)
   if (params.approvalMode === "defer") {
     return {
       blocked: false,

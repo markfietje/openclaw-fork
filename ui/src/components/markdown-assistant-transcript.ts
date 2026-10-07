@@ -8,6 +8,7 @@ import { escapeHtml } from "../../../src/shared/html-escape.js";
 import { t } from "../i18n/index.ts";
 import { registerChatMediaEnglish } from "../i18n/locales/en-chat-media.ts";
 import { isBoundedDataImage, isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
+import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 
 registerChatMediaEnglish();
 
@@ -83,8 +84,10 @@ export function installAssistantTranscriptRoleMarkdown(md: MarkdownIt): void {
     // element.
     const isInlineDataImage =
       /^data:image\/[a-z0-9.+-]+;base64,/i.test(src) && isBoundedDataImage(src);
+    const renderEnv = env as Partial<MarkdownRenderEnv> | undefined;
     const remoteImageAllowed =
-      env?.remoteImages === true && isRemoteImageHostAllowlisted(env?.remoteImageHosts ?? [], src);
+      renderEnv?.remoteImages === true &&
+      isRemoteImageHostAllowlisted(renderEnv?.remoteImageHosts ?? [], src);
     if (!isInlineDataImage && !remoteImageAllowed) {
       const renderedLabel = roleMeta
         ? renderAssistantTranscriptRoleImageLabel(roleMeta.text, roleMeta.spans)

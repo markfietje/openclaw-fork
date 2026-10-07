@@ -17,13 +17,13 @@ import { formatHookErrorForLog } from "../hooks/fire-and-forget.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { projectModelContextMessages } from "../shared/model-context-message.js";
 import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
+import { sanitizePluginContext } from "./context-hygiene.js";
 import {
   projectAgentEndEvent,
   withAgentRunId,
   withoutIncognitoLlmContent,
 } from "./hook-agent-observations.js";
 import { readClaimingHookAdmission, type ClaimingHookAdmission } from "./hook-claim-admission.js";
-import { sanitizePluginContext } from "./context-hygiene.js";
 import {
   type GateHookResult,
   type InputGateDecision,
@@ -43,8 +43,6 @@ import type {
 import { withHookTimeout } from "./hook-timeout.js";
 import { isPluginHookReplyDispatchKind } from "./hook-types.js";
 import type {
-  PluginAgentTurnPrepareResult,
-  PluginHookAfterToolCallEvent,
   PluginHookAgentContext,
   PluginHookAgentTrigger,
   PluginHookBeforeAgentFinalizeResult,

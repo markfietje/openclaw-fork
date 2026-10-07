@@ -172,14 +172,10 @@ export function createGatewayVerifyClient(params: GatewayVerifyClientParams): Ga
       return;
     }
 
-    // Canonical locality: same `isLocalDirectRequest` helper and trusted-proxy
-    // inputs as the post-handshake admission path, so a loopback request carrying
+    // Canonical locality: same `isLocalDirectRequest` helper as the
+    // post-handshake admission path, so a loopback request carrying
     // forwarded/proxy headers is not treated as a direct-local client.
-    const isLocalClient = isLocalDirectRequest(
-      req,
-      trustedProxies,
-      configSnapshot.gateway?.allowRealIpFallback === true,
-    );
+    const isLocalClient = isLocalDirectRequest(req);
     // Resolve the allowlist through the same resolver the post-handshake
     // admission path uses, so both gates share one source of truth: an authored
     // controlUi.allowedOrigins overrides the advertised publicOrigin (including

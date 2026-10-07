@@ -202,8 +202,6 @@ export type GatewayConfig = Omit<
    * Default: false (safer fail-closed behavior).
    */
   allowRealIpFallback?: boolean;
-  /** Tool access restrictions for HTTP /tools/invoke endpoint. */
-  tools?: GatewayToolsConfig;
   /**
    * Fork addition — kept at the end of the type to reduce merge conflicts
    * with upstream edits to this shared block. Opt-in WebSocket/proxy hardening

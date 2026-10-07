@@ -114,22 +114,6 @@ export function buildApprovalArgs(baseParams: unknown, overrideParams?: unknown)
   return truncatePluginApprovalArgs(redactToolPayloadText(serialized));
 }
 
-const warnedDeprecatedTimeoutBehaviorPluginIds = new Set<string>();
-
-function warnDeprecatedApprovalTimeoutBehavior(approval: PluginApprovalRequest): void {
-  if (approval.timeoutBehavior !== "allow") {
-    return;
-  }
-  const pluginId = approval.pluginId ?? "unknown-plugin";
-  if (warnedDeprecatedTimeoutBehaviorPluginIds.has(pluginId)) {
-    return;
-  }
-  warnedDeprecatedTimeoutBehaviorPluginIds.add(pluginId);
-  log.warn(
-    `plugin '${pluginId}' sets deprecated requireApproval.timeoutBehavior:"allow"; the field is ignored and approvals fail closed on timeout (see docs/plugins/plugin-permission-requests.md)`,
-  );
-}
-
 function notifyPluginApprovalResolution(
   approval: PluginApprovalRequest,
   resolution: PluginApprovalResolution,
@@ -537,7 +521,6 @@ export async function resolveBeforeToolCallApprovalOutcome(params: {
     params.result?.params === undefined
       ? undefined
       : cloneHookIsolationValue("before_tool_call", params.result.params);
-  warnDeprecatedApprovalTimeoutBehavior(approval);
   if (params.approvalMode === "defer") {
     return {
       blocked: false,

@@ -19,7 +19,7 @@ import {
 } from "./markdown-file-links.ts";
 import { installMarkdownGitHubRefs } from "./markdown-github-refs.ts";
 import { installMarkdownHumanMentions } from "./markdown-human-mentions.ts";
-import { isBoundedDataImage, isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
+import { isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
 import { hasMarkdownLinkBoundaries } from "./markdown-link-boundary.ts";
 import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 import { installMarkdownSessionLinks } from "./markdown-session-links.ts";

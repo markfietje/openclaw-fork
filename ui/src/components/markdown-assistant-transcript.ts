@@ -7,6 +7,7 @@ import {
 import { escapeHtml } from "../../../src/shared/html-escape.js";
 import { t } from "../i18n/index.ts";
 import { isBoundedDataImage, isRemoteImageHostAllowlisted } from "./markdown-image-gate.ts";
+import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 
 function renderAssistantTranscriptRoleMarker(text: string): string {
   return `<code class="assistant-transcript-role">${escapeHtml(text)}</code>`;
@@ -81,8 +82,10 @@ export function installAssistantTranscriptRoleMarkdown(md: MarkdownIt): void {
     // element.
     const isInlineDataImage =
       /^data:image\/[a-z0-9.+-]+;base64,/i.test(src) && isBoundedDataImage(src);
+    const renderEnv = env as Partial<MarkdownRenderEnv> | undefined;
     const remoteImageAllowed =
-      env?.remoteImages === true && isRemoteImageHostAllowlisted(env?.remoteImageHosts ?? [], src);
+      renderEnv?.remoteImages === true &&
+      isRemoteImageHostAllowlisted(renderEnv?.remoteImageHosts ?? [], src);
     if (!isInlineDataImage && !remoteImageAllowed) {
       const renderedLabel = roleMeta
         ? renderAssistantTranscriptRoleImageLabel(roleMeta.text, roleMeta.spans)

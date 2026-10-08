@@ -46,6 +46,10 @@ export const brainConfigSchema = Type.Object({
   //   only by the server-side injection screen.
   captureMode: Type.Optional(Type.Union([Type.Literal("proposal"), Type.Literal("direct")])),
   strictDomain: Type.Optional(Type.Boolean()),
+  /** The read-scope stamp: every recall the model leaves unscoped (plain chat)
+   * is stamped into this domain, so a corpus outside `global` stays reachable
+   * without the model knowing domain names. An explicit model domain always
+   * wins; "global" (the default) stamps nothing. Also the teamBridge fallback. */
   defaultDomain: Type.Optional(Type.String()),
 
   autoRecallTopK: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
@@ -186,7 +190,24 @@ function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
     }
     return envToken;
   }
-  return cfg.authToken?.trim() || undefined;
+  const cfgToken = cfg.authToken?.trim();
+  if (cfgToken) {
+    // Same refusal as the two env rungs above: a config value carrying
+    // more than one token means the operator pasted the server's two-line
+    // token file into openclaw.json (env placeholders make this easy) —
+    // its FIRST line is the privileged OPERATOR token, and transmitting
+    // it whole would leak operator authority down the agent path. This
+    // rung is the one production actually rides (the env rungs are empty
+    // in a default gateway install), so it carries the same teeth.
+    if (/\s/.test(cfgToken)) {
+      throw new Error(
+        "brain-server plugin: authToken holds more than one token — " +
+          "set it to the single agent-token value, never the operator token",
+      );
+    }
+    return cfgToken;
+  }
+  return undefined;
 }
 
 /** Resolve raw plugin config into a fully-populated, validated config. */
@@ -228,6 +249,22 @@ function assertValidTeamDomain(raw: string): void {
   if (!TEAM_DOMAIN_RE.test(raw)) {
     throw new Error(
       `brain-server plugin: teamDomain '${raw}' invalid — use 1..=63 lowercase alnum/hyphen (server would reject every mirrored request)`,
+    );
+  }
+}
+
+const DEFAULT_DOMAIN_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
+/**
+ * Mirrors the server's ingest/recall domain pattern (lowercase alnum, `-`/`_`
+ * after position one, <= 63). The resolver stamps this value into every
+ * unscoped recall, so an invalid shape would turn EVERY retrieval into a 4xx
+ * — fail at boot with the fix named, never per-turn.
+ */
+function assertValidDefaultDomain(raw: string): void {
+  if (!DEFAULT_DOMAIN_RE.test(raw)) {
+    throw new Error(
+      `brain-server plugin: defaultDomain '${raw}' invalid — use 1..=63 lowercase alnum/-/_ (it is stamped into every unscoped recall; a bad value would break all retrieval)`,
     );
   }
 }
@@ -334,6 +371,7 @@ export function resolveConfig(raw: unknown): ResolvedBrainConfig {
   const baseUrl = (cfg.baseUrl && cfg.baseUrl.trim()) || DEFAULTS.baseUrl;
   const defaultDomain = cfg.defaultDomain?.trim() || DEFAULTS.defaultDomain;
   assertSafeBaseUrl(baseUrl);
+  assertValidDefaultDomain(defaultDomain);
   return {
     enabled: cfg.enabled ?? DEFAULTS.enabled,
     baseUrl,

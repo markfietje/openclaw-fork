@@ -66,6 +66,17 @@ describe("resolveConfig", () => {
     expect(cfg.defaultDomain).toBe(DEFAULTS.defaultDomain);
   });
 
+  test("defaultDomain accepts the server's domain shape (underscore included)", () => {
+    const cfg = resolveConfig({ defaultDomain: "gut_mind-synergy2" });
+    expect(cfg.defaultDomain).toBe("gut_mind-synergy2");
+  });
+
+  test("defaultDomain with an invalid shape refuses registration (it is stamped into EVERY unscoped recall)", () => {
+    for (const bad of ["GutMind", "gut mind", "-leading", "a".repeat(64), "gut; DROP"]) {
+      expect(() => resolveConfig({ defaultDomain: bad })).toThrow(/defaultDomain .*invalid/);
+    }
+  });
+
   test("authToken blank string resolves to undefined (not emitted)", () => {
     const cfg = resolveConfig({ authToken: "   " });
     expect(cfg.authToken).toBeUndefined();
@@ -132,6 +143,53 @@ describe("resolveConfig", () => {
         process.env.BRAIN_TOKEN_FILE = prev;
       }
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("plugin_config_token_refuses_a_multi_token_value", () => {
+    // The config rung is the one production rides in a default gateway
+    // install (the env rungs are empty), so it carries the same refusal
+    // the file and env rungs already enforce: a value with two
+    // tokens/separators is the server's two-line token file pasted whole,
+    // and its FIRST line is the privileged operator token.
+    const prevFile = process.env.BRAIN_TOKEN_FILE;
+    const prevVar = process.env.BRAIN_TOKEN;
+    delete process.env.BRAIN_TOKEN_FILE;
+    delete process.env.BRAIN_TOKEN;
+    try {
+      // Multi-token forms all refuse — newline, spaces, tabs, and leading
+      // operator token before the agent one (the paste direction that
+      // leaks operator authority, not just a malformed value).
+      for (const bad of [
+        "operator-token\nagent-token",
+        "operator-token agent-token",
+        "operator-token\tagent-token",
+        "operator-token\r\nagent-token",
+      ]) {
+        expect(() => resolveConfig({ authToken: bad })).toThrow(
+          /authToken holds more than one token/,
+        );
+      }
+
+      // Anti-vacuity: a single-token config value still resolves and is
+      // emitted trimmed — the refusal is about the multi-token shape, not
+      // about disabling the rung.
+      expect(resolveConfig({ authToken: "agent-token" }).authToken).toBe("agent-token");
+
+      // Blank stays unset (an env placeholder that substituted to empty
+      // must not become a bogus token).
+      expect(resolveConfig({ authToken: "   " }).authToken).toBeUndefined();
+    } finally {
+      if (prevFile === undefined) {
+        delete process.env.BRAIN_TOKEN_FILE;
+      } else {
+        process.env.BRAIN_TOKEN_FILE = prevFile;
+      }
+      if (prevVar === undefined) {
+        delete process.env.BRAIN_TOKEN;
+      } else {
+        process.env.BRAIN_TOKEN = prevVar;
+      }
     }
   });
 });

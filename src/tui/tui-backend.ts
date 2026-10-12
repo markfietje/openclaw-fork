@@ -58,6 +58,10 @@ export type TuiPluginApproval = {
   request: {
     title: string;
     description?: string | null;
+    /** Requester-supplied reviewer detail (the effective arguments / blast
+     *  radius). Plugin-authored prose — display-only, never authorization;
+     *  rendered bounded so the reviewer sees more than the title. */
+    detail?: string | null;
     pluginId?: string | null;
     severity?: "info" | "warning" | "critical" | null;
     toolName?: string | null;

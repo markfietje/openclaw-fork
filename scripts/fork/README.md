@@ -32,3 +32,22 @@ SPARKLE_PUBLIC_ED_KEY="<fork Ed25519 base64>" \
 Honest ceiling: invoking upstream's `scripts/package-mac-app.sh` _directly_
 bypasses this gate — point every fork build path (CI, docs, muscle memory)
 at the wrapper.
+
+## install-cli-gated.sh
+
+Wraps upstream's `scripts/install-cli.sh` (never edited). Upstream's
+installer hardcodes `repo_url="https://github.com/openclaw/openclaw.git"`
+and defaults to the upstream npm package — a fork operator following the
+install docs gets a perfectly green install of UPSTREAM, with every fork
+commit and hardening silently absent (register K4-12).
+
+The gate: on a DIVERGED tree, an upstream-sourced install (npm default, or
+the git path) REFUSES until the operator passes
+`--allow-upstream-source`; a built `.tgz` (the fork's own artifact) passes;
+a pure upstream checkout passes untouched. Ceiling, stated: invoking
+upstream's installer DIRECTLY bypasses this gate — fork install docs must
+point at the wrapper.
+
+Drilled: `--gate-only` four arms (fork+default exit 1; allow-upstream exit
+0; git exit 1 naming the hardcoded URL; tgz exit 0) + the upstream-checkout
+pass-through.

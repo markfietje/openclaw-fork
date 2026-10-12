@@ -323,6 +323,58 @@ describe("TUI plugin approvals", () => {
     expect(stripAnsi(renderedPrompt)).toContain("Request: Review Press Enter again this change");
   });
 
+  it("renders the requester-supplied detail — the effective arguments — bounded with named elision", async () => {
+    // K4-05: the reviewer must see more than plugin-authored title +
+    // description. The detail rides the broker's listPending verbatim; the
+    // projection used to drop it here.
+    const harness = createHarness();
+    harness.controller.handleEvent(
+      "plugin.approval.requested",
+      approvalPayload({
+        request: {
+          ...approvalPayload().request,
+          detail: '{"path":"/etc/hosts","mode":"append","line":"127.0.0.1 evil.example"}',
+        },
+      }),
+    );
+
+    const prompt = harness.openOverlay.mock.calls[0]?.[0];
+    const rendered = stripAnsi(
+      expectDefined(prompt, "prompt test invariant").render(80).join("\n"),
+    );
+    expect(rendered).toContain("Detail (requester-supplied):");
+    expect(rendered).toContain("127.0.0.1 evil.example");
+  });
+
+  it("caps an oversized detail with head+tail kept and the elision count named", async () => {
+    // The cap (Truthglass shape): head AND tail survive, the elision names
+    // the exact omitted count — a silent clamp is its own defect.
+    const harness = createHarness();
+    harness.controller.handleEvent(
+      "plugin.approval.requested",
+      approvalPayload({
+        request: { ...approvalPayload().request, detail: "x".repeat(5000) },
+      }),
+    );
+    const prompt = harness.openOverlay.mock.calls[0]?.[0];
+    // The 80-col viewport clips a 1000-char head line before the elision
+    // marker, so the cap is asserted against the prompt's own detail text —
+    // the same string the reviewer's renderer receives.
+    const details = (
+      prompt as {
+        details?: Array<{ component: { render?: (w: number) => string[] } }>;
+      }
+    ).details;
+    const detailText = expectDefined(details, "details invariant")
+      .map((d) => (d.component.render ? d.component.render(4000).join("\n") : ""))
+      .join("\n");
+    expect(detailText).toContain("detail truncated: 3000 chars elided");
+    const xRuns = (detailText.match(/x+/g) ?? [])
+      .filter((run) => run.length > 10)
+      .reduce((sum, run) => sum + run.length, 0);
+    expect(xRuns).toBe(2000);
+  });
+
   it("clears the active prompt timer when disposed", () => {
     const setTimer = vi.spyOn(globalThis, "setTimeout");
     const harness = createHarness();
@@ -394,3 +446,8 @@ describe("TUI plugin approvals", () => {
     expect(harness.requestRender).not.toHaveBeenCalled();
   });
 });
+
+function croppedDetailXCount(rendered: string): number {
+  const matches = rendered.match(/x+/g) ?? [];
+  return matches.filter((run) => run.length > 10).reduce((sum, run) => sum + run.length, 0);
+}

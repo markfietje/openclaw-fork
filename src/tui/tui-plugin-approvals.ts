@@ -17,6 +17,26 @@ function sanitizeApprovalText(text: string): string {
   return sanitizeRenderableText(flattened);
 }
 
+/// Reviewer-detail display cap (Truthglass shape): head AND tail survive,
+/// the elision names the exact omitted count — a silent clamp is its own
+/// defect. The schema caps detail at 16 KiB; the prompt shows the head and
+/// the tail around a named middle.
+const APPROVAL_DETAIL_MAX_CHARS = 2000;
+
+function renderApprovalDetail(detail: string): string | null {
+  const sanitized = sanitizeApprovalText(detail);
+  if (!sanitized) {
+    return null;
+  }
+  if (sanitized.length <= APPROVAL_DETAIL_MAX_CHARS) {
+    return sanitized;
+  }
+  const head = Math.ceil(APPROVAL_DETAIL_MAX_CHARS / 2);
+  const tail = APPROVAL_DETAIL_MAX_CHARS - head;
+  const omitted = sanitized.length - head - tail;
+  return `${sanitized.slice(0, head)}[… detail truncated: ${omitted} chars elided …]${sanitized.slice(sanitized.length - tail)}`;
+}
+
 type ApprovalTimer = ReturnType<typeof setTimeout>;
 
 type TuiPluginApprovalControllerDeps = {
@@ -91,6 +111,10 @@ function parseTuiPluginApproval(payload: unknown): TuiPluginApproval | null {
     request: {
       title,
       description: typeof request.description === "string" ? request.description : null,
+      // the effective-arguments detail rides the projection (K4-05): the
+      // broker's listPending ships request.detail verbatim; dropping it here
+      // was how the reviewer ended up approving plugin-authored prose alone.
+      detail: typeof request.detail === "string" ? request.detail : null,
       pluginId: typeof request.pluginId === "string" ? request.pluginId : null,
       severity: parseSeverity(request.severity),
       toolName: typeof request.toolName === "string" ? request.toolName : null,
@@ -173,11 +197,19 @@ export function createTuiPluginApprovalController(deps: TuiPluginApprovalControl
         ? [`Plugin: ${sanitizeApprovalText(approval.request.pluginId)}`]
         : []),
     ];
+    // The effective arguments (K4-05): a reviewer approving on title +
+    // description alone is approving plugin-authored prose. The detail is
+    // still requester-supplied — labeled as such, sanitized, display-capped.
+    const detail = approval.request.detail ? renderApprovalDetail(approval.request.detail) : null;
     const prompt = new TuiChoicePrompt(
       theme.header(`plugin approval: ${title}`),
       [
         theme.dim(metadata.join("\n")),
         { text: theme.system(description ? `Request: ${description}` : ""), optional: true },
+        {
+          text: theme.system(detail ? `Detail (requester-supplied):\n${detail}` : ""),
+          optional: true,
+        },
       ],
       selector,
     );

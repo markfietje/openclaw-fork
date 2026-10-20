@@ -112,6 +112,11 @@ export default definePluginEntry({
 
     const inflight = new Map<string, Promise<BrainRecallResult>>();
     let sessionRecallCount = 0;
+    // The chat-type fact of the CURRENT turn (R116): recorded on every
+    // before_prompt_build so the tool lane (brain_memory_store) applies the
+    // same taint the autoCapture hook does — a channel-grouped turn's
+    // model-driven store cannot launder what the turn is.
+    let currentTurnOrigin: "owner" | "channel" = "owner";
     const boundedRecall = (
       queryKey: string,
       run: () => Promise<BrainRecallResult>,
@@ -213,6 +218,14 @@ export default definePluginEntry({
     api.on(
       "before_prompt_build",
       async (event, ctx) => {
+        // The label recorder runs FIRST, on every turn — before any config
+        // gate can early-return — because the tool lane
+        // (brain_memory_store) reads it later in the same turn. The SDK
+        // refuses a duplicate before_prompt_build registration, so this
+        // rides the existing handler rather than a second one.
+        const turnGate = mapCtx(ctx);
+        currentTurnOrigin =
+          turnGate.chatType === "group" || turnGate.chatType === "channel" ? "channel" : "owner";
         const c = liveCfg();
         if (!c.autoRecall || !c.enabled) {
           return undefined;
@@ -390,7 +403,7 @@ export default definePluginEntry({
     // ------------------------------------------------------------------------
     // Tools — explicit agent-callable surfaces. Defined in src/tools.ts.
     // ------------------------------------------------------------------------
-    registerBrainTools(api, client, liveCfg, cfg.proposalTools);
+    registerBrainTools(api, client, liveCfg, cfg.proposalTools, () => currentTurnOrigin);
 
     // v0.4.0 procedural memory (runbooks / decision trees) — src/procedural.ts.
     registerProceduralTools(api, client, liveCfg);

@@ -16,10 +16,8 @@ import { Check } from "typebox/value";
 import {
   BrainClient,
   describeBrainError,
-  type BrainApproveResult,
   type BrainProposal,
   type BrainRecallHit,
-  type BrainRejectResult,
   type BrainTraverseResult,
 } from "./brain-client.js";
 import type { ResolvedBrainConfig } from "./config.js";
@@ -141,6 +139,7 @@ export function registerBrainTools(
   client: BrainClient,
   liveCfg: LiveCfg,
   proposalTools: boolean,
+  turnOrigin: () => "owner" | "channel",
 ): void {
   const memoryRecallParamsSchema = Type.Object({
     query: Type.String({ description: "Search query" }),
@@ -366,6 +365,11 @@ export function registerBrainTools(
               ...(p.domain ? { domain: p.domain } : {}),
               ...(Array.isArray(p.entities) ? { entities: p.entities } : {}),
               ...(Array.isArray(p.relations) ? { relations: p.relations } : {}),
+              // The turn's chat-type fact rides the tool lane too (R116):
+              // a channel-grouped turn's model-driven store carries the same
+              // taint the autoCapture hook applies, so the tool cannot
+              // launder what the turn is.
+              originContext: turnOrigin(),
               timeoutMs: c.requestTimeoutMs,
             });
           } else {
@@ -373,6 +377,7 @@ export function registerBrainTools(
               content: text,
               source: "brain_memory_store",
               ...(p.title?.trim() ? { sourcePrompt: p.title.trim() } : {}),
+              originContext: turnOrigin(),
               timeoutMs: c.requestTimeoutMs,
             });
             res = { id: prop.id, status: prop.status };
@@ -482,18 +487,34 @@ export function registerBrainTools(
               details: { found: false, id: p.id },
             };
           }
+          // The exclude posture applies HERE too (R116): a by-id read is model
+          // context exactly like a recall hit, so captured traffic the
+          // operator excluded cannot re-enter through its id.
+          if (c.untrustedOrigins === "exclude" && chunk.origin === "channel-capture") {
+            return {
+              content: [{ type: "text" as const, text: `No memory with id ${p.id}.` }],
+              details: { found: false, id: p.id, excludedByPosture: true },
+            };
+          }
           const title = chunk.title?.trim() ? `\n${sanitizeForBlock(chunk.title)}` : "";
+          // And the label rides the text (recall parity): a by-id read of
+          // captured traffic says so in the model's context.
+          const originTag =
+            chunk.origin && chunk.origin !== "owner"
+              ? `[memory | ${sanitizeForBlock(chunk.origin)}]`
+              : "";
           return {
             content: [
               {
                 type: "text" as const,
-                text: `Memory ${chunk.id}:${title}\n${sanitizeForBlock(chunk.content)}`,
+                text: `Memory ${chunk.id}:${title}\n${originTag ? originTag + "\n" : ""}${sanitizeForBlock(chunk.content)}`,
               },
             ],
             details: {
               found: true,
               id: chunk.id,
               title: chunk.title ? sanitizeForBlock(chunk.title) : chunk.title,
+              origin: chunk.origin,
             },
           };
         } catch (err) {
@@ -541,10 +562,13 @@ export function registerBrainTools(
             entity.relations.length === 0
               ? " (no relations)"
               : entity.relations
-                  .map(
-                    (r) =>
-                      `\n  - ${r.direction === "out" ? "→" : "←"} ${sanitizeForBlock(r.relation_type).trim()} ${sanitizeForBlock(r.to_entity).trim()}`,
-                  )
+                  .map((r) => {
+                    // The taint marker per relation (R116): the graph family
+                    // renders captured content, so the edge says so.
+                    const tag =
+                      r.origin && r.origin !== "owner" ? ` [${sanitizeForBlock(r.origin)}]` : "";
+                    return `\n  - ${r.direction === "out" ? "→" : "←"} ${sanitizeForBlock(r.relation_type).trim()} ${sanitizeForBlock(r.to_entity).trim()}${tag}`;
+                  })
                   .join("");
           return {
             content: [
@@ -784,74 +808,12 @@ export function registerBrainTools(
       { name: "brain_memory_proposal_list" },
     );
 
-    const memoryProposalDecideParamsSchema = Type.Object({
-      id: Type.Integer({ description: "Proposal id from brain_memory_proposal_list." }),
-      decision: Type.Union([Type.Literal("approve"), Type.Literal("reject")]),
-      supersedes: Type.Optional(
-        Type.Integer({
-          description:
-            "On approve: atomically expire this older chunk id in the same transaction (supersession).",
-        }),
-      ),
-    });
-
-    api.registerTool(
-      {
-        name: "brain_memory_proposal_decide",
-        label: "Memory Proposal Decide",
-        description:
-          "Approve or reject a captured proposal. Approving promotes it to memory (recallable); rejecting drops it (audited). This is the human-review gate for captureMode 'proposal'.",
-        parameters: memoryProposalDecideParamsSchema,
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = checkedParams(memoryProposalDecideParamsSchema, params ?? {});
-          if (typeof p.id !== "number" || (p.decision !== "approve" && p.decision !== "reject")) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: "Both id and decision (approve|reject) are required.",
-                },
-              ],
-              details: { decided: false },
-            };
-          }
-          try {
-            if (p.decision === "approve") {
-              const res: BrainApproveResult = await client.approveProposal({
-                id: p.id,
-                ...(p.supersedes !== undefined ? { supersedes: p.supersedes } : {}),
-                timeoutMs: c.requestTimeoutMs,
-              });
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: `Approved proposal #${res.proposalId} -> chunk #${res.chunkId}.${res.superseded !== null ? ` Superseded chunk #${res.superseded}.` : ""}`,
-                  },
-                ],
-                details: { decided: true, ...res },
-              };
-            }
-            const res: BrainRejectResult = await client.rejectProposal({
-              id: p.id,
-              timeoutMs: c.requestTimeoutMs,
-            });
-            return {
-              content: [{ type: "text" as const, text: `Rejected proposal #${res.proposalId}.` }],
-              details: { decided: true, ...res },
-            };
-          } catch (err) {
-            return {
-              content: [
-                { type: "text" as const, text: `Decide failed: ${describeBrainError(err)}` },
-              ],
-              details: { decided: false, error: describeBrainError(err) },
-            };
-          }
-        },
-      },
-      { name: "brain_memory_proposal_decide" },
-    );
+    // The decide tool is GONE, deliberately (brain-server R115/R118): the
+    // review queue is not the model's to prune. The server role-gates BOTH
+    // verbs to humans — the agent class holds neither `approve` nor `reject`,
+    // and approve additionally demands the content digest the queue list
+    // never carried, so the tool advertised a promotion it could never
+    // perform. A human decides; the model watches the queue through
+    // brain_memory_proposal_list.
   }
 }

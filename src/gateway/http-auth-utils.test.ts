@@ -505,7 +505,7 @@ describe("HTTP gateway owner profiles", () => {
           } else {
             expect(result.requestAuth.authenticatedUserProfile).toBeDefined();
             expect(result.requestAuth.trustDeclaredOperatorScopes).toBe(false);
-            expect(resolveSharedSecretHttpOperatorScopes(req, result.requestAuth)).toContain(
+            expect(resolveSharedSecretHttpOperatorScopes(req, result.requestAuth)).not.toContain(
               "operator.admin",
             );
           }

@@ -64,6 +64,7 @@ import { hasCurrentGatewayOperatorAccess } from "./operator-access-policy.js";
 import { resolveBrowserOriginPolicy } from "./origin-check.js";
 import { withSerializedCredentialFallbackAttempt } from "./rate-limit-attempt-serialization.js";
 import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
+import { SHARED_SECRET_OPERATOR_SCOPES } from "./shared-secret-operator-scopes.js";
 
 const CONTROL_UI_OPERATOR_READ_SCOPE = "operator.read";
 const CONTROL_UI_OPERATOR_ROLE = "operator";
@@ -178,7 +179,7 @@ function resolveControlUiReadOperatorScopes(
       ...authenticatedRequest,
     });
   }
-  return authMethod === "bootstrap-token" ? [] : [...CLI_DEFAULT_OPERATOR_SCOPES];
+  return authMethod === "bootstrap-token" ? [] : [...SHARED_SECRET_OPERATOR_SCOPES];
 }
 
 type HttpOperatorCredentialResult = {
@@ -617,11 +618,14 @@ export function resolveSharedSecretHttpOperatorScopes(
   requestAuth: AuthorizedGatewayHttpRequest,
 ): string[] {
   if (usesSharedSecretGatewayMethod(requestAuth.authMethod)) {
-    // Shared-secret HTTP bearer auth is a documented trusted-operator surface
-    // for direct HTTP surfaces that opt into it. This is designed-as-is:
-    // token/password auth proves possession of the gateway operator secret, not
-    // a narrower per-request scope identity, so restore the normal defaults.
-    return [...CLI_DEFAULT_OPERATOR_SCOPES];
+    // A shared secret proves possession of the gateway operator secret and
+    // nothing more. It grants the SAME named scope set on every transport,
+    // and that set carries no administrative scope: `operator.admin` is a
+    // universal bypass in `authorizeOperatorScopesForMethod`, so a shared
+    // secret holding it would be a full administrator. The WebSocket path
+    // already refuses to bind scopes to a shared secret; this is the HTTP
+    // side of the same rule.
+    return [...SHARED_SECRET_OPERATOR_SCOPES];
   }
   return resolveTrustedHttpOperatorScopes(req, requestAuth);
 }
@@ -630,6 +634,13 @@ export function resolveOpenAiCompatibleHttpSenderIsOwner(
   req: IncomingMessage,
   requestAuth: AuthorizedGatewayHttpRequest,
 ): boolean {
+  // "Owner" describes the CALLER - it proved possession of the gateway secret -
+  // not a consequence of its scope set. Deriving it from the scope set would
+  // re-couple the two: narrowing the shared-secret set must not silently
+  // demote a shared-secret caller on the OpenAI-compatible surface.
+  if (usesSharedSecretGatewayMethod(requestAuth.authMethod)) {
+    return true;
+  }
   return resolveSharedSecretHttpOperatorScopes(req, requestAuth).includes(ADMIN_SCOPE);
 }
 

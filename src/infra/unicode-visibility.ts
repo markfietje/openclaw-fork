@@ -13,8 +13,12 @@
 // only, so user-visible drift is nil by construction; the fixture lane pins
 // the canonical SUBSET (every canonical class stripped here), never exact
 // equality — host extras are documented here, not asserted there.
+//
+// Musical format controls (U+1D173–1D17A) close the fixture's last uncovered
+// class: without them the host lane left eight codepoints readable by the
+// model but invisible on screen.
 const INVISIBLE_UNICODE_RE =
-  /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB]/gu;
+  /[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB\u{1D173}-\u{1D17A}]/gu;
 
 export function stripInvisibleUnicode(text: string): string {
   return text.replace(INVISIBLE_UNICODE_RE, "");

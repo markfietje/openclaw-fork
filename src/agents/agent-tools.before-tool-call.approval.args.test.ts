@@ -55,11 +55,10 @@ describe("plugin approval args — the approver sees the truth", () => {
   });
 
   it("plugin_approval_payload_includes_args", async () => {
-    const broker = new EmbeddedPluginApprovalBroker();
-    setEmbeddedMode(true);
-    setEmbeddedPluginApprovalBroker(broker);
+    // The broker's only observer seam is its constructor callback
+    // (`onEvent` in embedded-plugin-approval-broker.ts); there is no subscribe().
     const requested: Array<{ id: string; request: Record<string, unknown> }> = [];
-    const unsubscribe = broker.subscribe((event) => {
+    const broker = new EmbeddedPluginApprovalBroker((event) => {
       if (event.event === "plugin.approval.requested") {
         requested.push({
           id: event.payload.id,
@@ -67,20 +66,18 @@ describe("plugin approval args — the approver sees the truth", () => {
         });
       }
     });
-    try {
-      const outcome = approvalOutcome({ path: "/tmp/notes.txt", content: "hello" });
-      await vi.waitFor(() => expect(requested).toHaveLength(1));
-      const { id, request } = requested[0]!;
-      expect(request.title).toBe(APPROVAL.title);
-      expect(request.description).toBe(APPROVAL.description);
-      expect(request.toolName).toBe("brain_ingest");
-      expect(request.args).toContain('"path":"/tmp/notes.txt"');
-      expect(request.args).toContain('"content":"hello"');
-      expect(broker.resolve(id, "deny")).toBe(true);
-      await expect(outcome).resolves.toMatchObject({ blocked: true });
-    } finally {
-      unsubscribe();
-    }
+    setEmbeddedMode(true);
+    setEmbeddedPluginApprovalBroker(broker);
+    const outcome = approvalOutcome({ path: "/tmp/notes.txt", content: "hello" });
+    await vi.waitFor(() => expect(requested).toHaveLength(1));
+    const { id, request } = requested[0]!;
+    expect(request.title).toBe(APPROVAL.title);
+    expect(request.description).toBe(APPROVAL.description);
+    expect(request.toolName).toBe("brain_ingest");
+    expect(request.args).toContain('"path":"/tmp/notes.txt"');
+    expect(request.args).toContain('"content":"hello"');
+    expect(broker.resolve(id, "deny")).toBe(true);
+    await expect(outcome).resolves.toMatchObject({ blocked: true });
   });
 
   it("args_redacted_like_persistence", () => {

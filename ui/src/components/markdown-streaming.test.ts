@@ -101,7 +101,9 @@ describe("toStreamingMarkdownParts", () => {
     const source = "![Diagram](https://example.com/image.png)\n\n";
     expect(streamFragment(source, {}, key).querySelector("img")).toBeNull();
     expect(
-      streamFragment(source, { remoteImages: true }, key).querySelector("img")?.getAttribute("src"),
+      streamFragment(source, { remoteImages: true, remoteImageHosts: ["example.com"] }, key)
+        .querySelector("img")
+        ?.getAttribute("src"),
     ).toBe("https://example.com/image.png");
     i18n.registerTranslation("pt-BR", {
       chat: { externalImage: { notLoaded: "Imagem não carregada", open: "Abrir" } },
